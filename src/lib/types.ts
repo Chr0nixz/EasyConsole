@@ -1,0 +1,210 @@
+export type ApiEnvelope<T> = {
+  code: number;
+  msg?: string;
+  message?: string;
+  data: T;
+};
+
+export type ApiErrorKind = "http" | "business" | "network" | "parse";
+
+export class ApiError extends Error {
+  code?: number;
+  status?: number;
+  kind: ApiErrorKind;
+
+  constructor(message: string, options: { code?: number; status?: number; kind: ApiErrorKind }) {
+    super(message);
+    this.name = "ApiError";
+    this.code = options.code;
+    this.status = options.status;
+    this.kind = options.kind;
+  }
+}
+
+export type UnknownRecord = Record<string, unknown>;
+
+export type UserInfo = UnknownRecord & {
+  id?: string | number;
+  username?: string;
+  name?: string;
+  role?: string;
+};
+
+export type TaskStatus = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | number;
+
+export type Task = UnknownRecord & {
+  id: string | number;
+  task_id?: string | number;
+  name?: string;
+  task_name?: string;
+  description?: string;
+  status?: TaskStatus;
+  cpu?: number;
+  gpu?: number;
+  memory?: number;
+  ip?: string;
+  node_name?: string;
+  user_group?: string;
+  image_id?: string | number;
+  img?: string | number;
+  image_name?: string;
+  username?: string;
+  create_time?: string;
+  created_at?: string;
+  start_time?: string | null;
+  releace_time?: string | null;
+  update_time?: string;
+  releace_conditions?: number;
+  release_condition?: number;
+  use_time?: number;
+  cost?: number;
+  is_delete?: boolean;
+  storage_path?: string;
+  mount_path?: string;
+  work_directory?: string;
+  script_path?: string;
+};
+
+export type ConsoleSummary = UnknownRecord & {
+  run_task_count?: number;
+  pending_task_count?: number;
+  run_time?: {
+    month?: number;
+    week?: number;
+    day?: number;
+  };
+  cost_map?: {
+    month?: number;
+    week?: number;
+    day?: number;
+  };
+};
+
+export type ImageItem = UnknownRecord & {
+  id: string | number;
+  name?: string;
+  image_name?: string;
+  tag?: string;
+  create_time?: string;
+  created_at?: string;
+  update_time?: string;
+  is_default?: boolean;
+  description?: string;
+};
+
+export type StorageEntry = UnknownRecord & {
+  name: string;
+  path?: string;
+  size?: number;
+  type?: "file" | "dir" | string;
+  is_dir?: boolean;
+  modified?: string;
+};
+
+export type ResourceSpec = UnknownRecord & {
+  id?: string | number;
+  name?: string;
+  label?: string;
+  cpu?: number;
+  memory?: number;
+  gpu?: number;
+};
+
+export type ListResult<T> = {
+  items: T[];
+  total?: number;
+  raw: unknown;
+};
+
+export type TaskQuery = {
+  page?: number;
+  page_size?: number;
+  keyword?: string;
+  name?: string;
+  status?: string | number;
+};
+
+export type StorageQuery = {
+  path?: string;
+};
+
+export type CreateTaskPayload = UnknownRecord & {
+  name: string;
+  price?: string | number;
+  cpu?: string | number;
+  gpu?: string | number;
+  memory?: string | number;
+  img?: string | number;
+  storage_path?: string;
+  mount_path?: string;
+  releace_conditions?: number;
+  releace_time?: string;
+  work_directory?: string;
+  script_path?: string;
+};
+
+export type LoginPayload = {
+  username: string;
+  password: string;
+};
+
+export type LoginResult = UnknownRecord & {
+  token?: string;
+  access?: string;
+  access_token?: string;
+};
+
+export type UploadChunkRange = {
+  start: number;
+  end: number;
+  total: number;
+};
+
+export type UploadProgress = {
+  loaded: number;
+  total?: number;
+  percent: number;
+};
+
+export type RuntimeStorage = {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  remove(key: string): Promise<void>;
+};
+
+export type RuntimeHttpRequest = {
+  method: string;
+  url: string;
+  headers?: Record<string, string>;
+  query?: Record<string, unknown>;
+  body?: unknown;
+  responseType?: "json" | "blob" | "text";
+  timeoutMs?: number;
+  onUploadProgress?: (progress: UploadProgress) => void;
+};
+
+export type RuntimeHttpResponse<T = unknown> = {
+  status: number;
+  headers: Headers;
+  data: T;
+};
+
+export type RuntimeWebSocketMessage = {
+  data: unknown;
+};
+
+export type RuntimeWebSocket = {
+  readonly readyState: number;
+  onopen: (() => void) | null;
+  onmessage: ((event: RuntimeWebSocketMessage) => void) | null;
+  onerror: ((event?: unknown) => void) | null;
+  onclose: (() => void) | null;
+  send(data: string): void | Promise<void>;
+  close(): void | Promise<void>;
+};
+
+export type RuntimeTransport = {
+  storage: RuntimeStorage;
+  request<T = unknown>(request: RuntimeHttpRequest): Promise<RuntimeHttpResponse<T>>;
+  createWebSocket(url: string): Promise<RuntimeWebSocket>;
+};
