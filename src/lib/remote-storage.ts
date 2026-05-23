@@ -6,7 +6,7 @@ export type RemoteStoragePickMode = "directory" | "file";
 export type RemoteStorageService = {
   list(query: StorageQuery): Promise<{ items: StorageEntry[]; total?: number; raw: unknown }>;
   createDirectory(path: string): Promise<unknown>;
-  remove(path: string): Promise<unknown>;
+  remove(path: string, isDirectory?: boolean): Promise<unknown>;
   uploadLocalFile(file: File, remoteDirectory: string, onProgress?: (progress: UploadProgress) => void): Promise<unknown>;
   uploadLocalFiles(files: File[], remoteDirectory: string, onProgress?: (progress: UploadProgress) => void): Promise<unknown>;
   getDirectorySize(path: string): Promise<number>;
@@ -210,8 +210,8 @@ export const remoteStorage: RemoteStorageService = {
   createDirectory(path) {
     return storageApi.mkdir(normalizeStoragePath(path));
   },
-  remove(path) {
-    return storageApi.delete(normalizeStoragePath(path));
+  remove(path, isDirectory) {
+    return storageApi.delete(normalizeStoragePath(path), isDirectory);
   },
   uploadLocalFile(file, remoteDirectory, onProgress) {
     return storageApi.uploadFile(file, normalizeStoragePath(remoteDirectory), onProgress);
