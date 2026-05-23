@@ -1,4 +1,3 @@
-import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";

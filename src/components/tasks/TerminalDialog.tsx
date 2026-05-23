@@ -1,111 +1,122 @@
-import { FitAddon } from "@xterm/addon-fit";
-import { Terminal as XTerm } from "@xterm/xterm";
-import { useEffect, useRef, useState } from "react";
+import { Copy, KeyRound, Server, Terminal } from "lucide-react";
+import { useMemo } from "react";
 
-import { browserRuntime, RUNTIME_SOCKET_OPEN } from "../../lib/runtime";
-import { formatTerminalInput, formatTerminalResize, deriveWebsshUrl } from "../../lib/webssh";
+import { browserRuntime } from "../../lib/runtime";
+import { buildTaskSshInfo, toSshConnectionRequest } from "../../lib/ssh-info";
 import { getTaskName } from "../../lib/format";
-import type { RuntimeWebSocket, Task } from "../../lib/types";
+import type { Task } from "../../lib/types";
+import { useToast } from "../../lib/use-toast";
 import { Button, Dialog } from "../ui";
 
-export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: () => void }) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const socketRef = useRef<RuntimeWebSocket | null>(null);
-  const terminalRef = useRef<XTerm | null>(null);
-  const [status, setStatus] = useState("未连接");
-
-  useEffect(() => {
-    if (!task || !containerRef.current) return;
-
-    let disposed = false;
-    const fit = new FitAddon();
-    const terminal = new XTerm({
-      convertEol: true,
-      cursorStyle: "underline",
-      cursorBlink: true,
-      allowTransparency: true,
-      theme: {
-        foreground: "#f8fafc",
-        background: "#0f172a",
-      },
-    });
-
-    terminalRef.current = terminal;
-    terminal.loadAddon(fit);
-    terminal.open(containerRef.current);
-    fit.fit();
-
-    const dimensions = fit.proposeDimensions() ?? { cols: 80, rows: 24 };
-
-    void browserRuntime.createWebSocket(deriveWebsshUrl(task.id, dimensions.cols, dimensions.rows)).then((socket) => {
-      if (disposed) {
-        void socket.close();
-        return;
-      }
-
-      socketRef.current = socket;
-
-      terminal.onData((data) => {
-        if (socket.readyState === RUNTIME_SOCKET_OPEN) {
-          void socket.send(formatTerminalInput(data));
-        } else {
-          terminal.writeln("\r\n连接已断开");
-        }
-      });
-
-      terminal.onResize(({ cols, rows }) => {
-        if (socket.readyState === RUNTIME_SOCKET_OPEN) void socket.send(formatTerminalResize(cols, rows));
-      });
-
-      socket.onopen = () => {
-        setStatus("已连接");
-        terminal.writeln(`当前实例 ${getTaskName(task)}`);
-        terminal.write("\r\n$ ");
-        terminal.focus();
-      };
-      socket.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data as string) as { status: number; message?: string };
-          if (payload.status === 0) terminal.write(payload.message ?? "");
-          else {
-            setStatus("已断开");
-            terminal.writeln("\r\n实例 SSH 连接已断开");
-          }
-        } catch {
-          terminal.write(String(event.data ?? ""));
-        }
-      };
-      socket.onerror = () => {
-        setStatus("连接错误");
-        terminal.writeln("\r\n连接出错");
-      };
-      socket.onclose = () => setStatus("已断开");
-    });
-
-    const onResize = () => fit.fit();
-    window.addEventListener("resize", onResize);
-
-    return () => {
-      disposed = true;
-      window.removeEventListener("resize", onResize);
-      void socketRef.current?.close();
-      terminal.dispose();
-      socketRef.current = null;
-      terminalRef.current = null;
-    };
-  }, [task]);
+function InfoRow({
+  label,
+  value,
+  sensitive,
+  onCopy,
+}: {
+  label: string;
+  value: string;
+  sensitive?: boolean;
+  onCopy: (value: string, label: string) => void;
+}) {
+  const hasValue = value && value !== "-";
 
   return (
-    <Dialog open={Boolean(task)} title={`终端 ${task ? getTaskName(task) : ""}`} onClose={onClose} width="max-w-6xl">
-      <div className="flex h-[70vh] flex-col">
-        <div className="flex h-10 items-center justify-between border-b border-app-border px-3 text-sm">
-          <span className="text-app-muted">{status}</span>
-          <Button variant="secondary" onClick={() => void socketRef.current?.close()}>
-            断开
-          </Button>
+    <div className="grid gap-2 border-b border-app-border px-4 py-3 last:border-0 sm:grid-cols-[7rem_1fr_auto] sm:items-center">
+      <div className="text-xs font-medium uppercase tracking-wide text-app-muted">{label}</div>
+      <code className="min-w-0 overflow-x-auto whitespace-nowrap rounded-md bg-app-panel px-2.5 py-2 font-mono text-xs text-app-text">
+        {sensitive && hasValue ? "••••••••" : value}
+      </code>
+      <Button
+        className="h-8 px-2"
+        disabled={!hasValue}
+        type="button"
+        variant="secondary"
+        onClick={() => onCopy(value, label)}
+      >
+        <Copy className="h-4 w-4" />
+        复制
+      </Button>
+    </div>
+  );
+}
+
+export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: () => void }) {
+  const toast = useToast();
+  const sshInfo = useMemo(() => (task ? buildTaskSshInfo(task) : null), [task]);
+  const canConnect = Boolean(sshInfo && sshInfo.host !== "-" && sshInfo.command !== "-");
+
+  const copyValue = (value: string, label: string) => {
+    if (!value || value === "-") return;
+    void browserRuntime
+      .copyText(value)
+      .then(() => toast.success("已复制", label))
+      .catch(() => toast.error("复制失败", "当前浏览器不允许写入剪贴板"));
+  };
+
+  const openDesktopSsh = (mode: "app" | "system") => {
+    if (!sshInfo || !canConnect) return;
+    const request = toSshConnectionRequest(sshInfo);
+    const action =
+      mode === "app" ? browserRuntime.openSshSession(request) : browserRuntime.openSystemSshTerminal(request);
+    void action
+      .then(() => toast.success(mode === "app" ? "已打开应用内 SSH" : "已打开系统终端", sshInfo.taskName))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "请确认桌面端 SSH 能力已配置";
+        toast.error(mode === "app" ? "应用内 SSH 打开失败" : "系统终端打开失败", message);
+      });
+  };
+
+  return (
+    <Dialog open={Boolean(task)} title={`SSH 连接信息 ${task ? getTaskName(task) : ""}`} onClose={onClose} width="max-w-3xl">
+      {task && sshInfo ? (
+        <div className="space-y-4 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border pb-4">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-md border border-app-border bg-app-panel text-app-accent">
+                <Server className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-app-text">{getTaskName(task)}</div>
+                <div className="mt-1 font-mono text-xs text-app-muted">#{task.task_id ?? task.id}</div>
+              </div>
+            </div>
+            {browserRuntime.isDesktop ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button disabled={!canConnect} type="button" variant="secondary" onClick={() => openDesktopSsh("app")}>
+                  <Terminal className="h-4 w-4" />
+                  应用内 SSH
+                </Button>
+                <Button disabled={!canConnect} type="button" onClick={() => openDesktopSsh("system")}>
+                  <Terminal className="h-4 w-4" />
+                  系统终端
+                </Button>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="overflow-hidden rounded-lg border border-app-border">
+            <InfoRow label="Host" value={sshInfo.host} onCopy={copyValue} />
+            <InfoRow label="Port" value={sshInfo.port} onCopy={copyValue} />
+            <InfoRow label="Username" value={sshInfo.username} onCopy={copyValue} />
+            <InfoRow label="Password" value={sshInfo.password} sensitive onCopy={copyValue} />
+            <InfoRow label="SSH 命令" value={sshInfo.command} onCopy={copyValue} />
+          </div>
+
+          <div className="grid gap-3 rounded-lg border border-app-border bg-app-panel p-3 text-sm text-app-muted sm:grid-cols-[auto_1fr]">
+            <KeyRound className="h-4 w-4 text-app-warning" />
+            <p className="leading-5">
+              SSH 信息来自实例列表返回字段。若 Host、Port 或密码为空，请刷新实例列表或查看原始 JSON 确认后端是否返回该字段。
+            </p>
+            <Terminal className="h-4 w-4 text-app-accent" />
+            <p className="leading-5">
+              {browserRuntime.isDesktop
+                ? "桌面端可选择应用内 SSH 或系统终端；网页端请复制 SSH 命令后在本机终端中执行。"
+                : "网页端不能直接建立 SSH 连接，请复制 SSH 命令后在本机终端中执行。"}
+            </p>
+          </div>
         </div>
-        <div ref={containerRef} className="min-h-0 flex-1 bg-slate-950" />
-      </div>
+      ) : null}
     </Dialog>
   );
 }

@@ -6,6 +6,7 @@ import { ApiError, type RuntimeHttpRequest, type RuntimeTransport } from "./type
 function createRuntime() {
   const calls: unknown[] = [];
   const runtime: RuntimeTransport = {
+    isDesktop: false,
     storage: {
       async get() {
         return null;
@@ -39,6 +40,10 @@ function createRuntime() {
         },
       };
     },
+    async copyText() {},
+    openExternal() {},
+    async openSshSession() {},
+    async openSystemSshTerminal() {},
   };
   return { runtime, calls };
 }

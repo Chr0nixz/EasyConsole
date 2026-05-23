@@ -43,8 +43,22 @@ export type Task = UnknownRecord & {
   gpu?: number;
   memory?: number;
   ip?: string;
+  host?: string;
+  hostname?: string;
+  port?: string | number;
+  ssh_host?: string;
+  ssh_port?: string | number;
+  ssh_username?: string;
+  ssh_user?: string;
+  ssh_password?: string;
+  password?: string;
+  login_user?: string;
   node_name?: string;
   user_group?: string;
+  user?: UnknownRecord & {
+    username?: string;
+    name?: string;
+  };
   image_id?: string | number;
   img?: string | number;
   image_name?: string;
@@ -204,7 +218,22 @@ export type RuntimeWebSocket = {
 };
 
 export type RuntimeTransport = {
+  isDesktop: boolean;
   storage: RuntimeStorage;
   request<T = unknown>(request: RuntimeHttpRequest): Promise<RuntimeHttpResponse<T>>;
   createWebSocket(url: string): Promise<RuntimeWebSocket>;
+  copyText(text: string): Promise<void>;
+  openExternal(url: string): void;
+  openSshSession(request: SshConnectionRequest): Promise<void>;
+  openSystemSshTerminal(request: SshConnectionRequest): Promise<void>;
+};
+
+export type SshConnectionRequest = {
+  host: string;
+  port?: string;
+  username?: string;
+  password?: string;
+  command: string;
+  taskId?: string;
+  taskName?: string;
 };

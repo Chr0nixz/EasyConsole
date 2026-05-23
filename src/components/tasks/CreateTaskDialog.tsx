@@ -4,7 +4,9 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ErrorState } from "../DataState";
 import { Button, Dialog, Input, Select } from "../ui";
 import { imageApi, instanceApi } from "../../lib/api";
+import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../../lib/batch";
 import { useAuth } from "../../lib/use-auth";
+import { useToast } from "../../lib/use-toast";
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText } from "../../lib/format";
 import type { CreateTaskPayload, ImageItem, Task } from "../../lib/types";
 
@@ -12,6 +14,7 @@ const DEFAULT_PRICE = 1;
 const DEFAULT_CPU = "4";
 const DEFAULT_GPU = "0";
 const DEFAULT_MEMORY = "16";
+const MAX_BATCH_COUNT = 50;
 
 function getImageOptionLabel(image: ImageItem) {
   const name = image.name ?? image.image_name ?? String(image.id);
@@ -90,8 +93,15 @@ function getCloneCreateFields(task?: Task | null) {
   return Object.fromEntries(Object.entries(task).filter(([key]) => CLONE_CREATE_FIELDS.has(key)));
 }
 
+function formatBatchTaskName(baseName: string, index: number, total: number) {
+  if (total === 1) return baseName;
+  const width = String(total).length;
+  return `${baseName}-${String(index + 1).padStart(width, "0")}`;
+}
+
 export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean; onClose: () => void; initialTask?: Task | null }) {
   const auth = useAuth();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const images = useQuery({ queryKey: ["images", "task-create"], queryFn: () => imageApi.list({ page: 1, page_size: 100 }), enabled: open });
   const systemImages = useQuery({ queryKey: ["images", "system", "task-create"], queryFn: () => imageApi.system({}), enabled: open });
@@ -104,6 +114,7 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
   const [releaseTime, setReleaseTime] = useState("");
   const [workDirectory, setWorkDirectory] = useState("");
   const [scriptPath, setScriptPath] = useState("");
+  const [batchCount, setBatchCount] = useState("1");
   const [formError, setFormError] = useState<string | null>(null);
 
   const imageOptions = useMemo(() => [...(images.data?.items ?? []), ...(systemImages.data?.items ?? [])], [images.data, systemImages.data]);
@@ -120,6 +131,7 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       setReleaseTime(formatClonedReleaseTime(initialTask?.releace_time));
       setWorkDirectory(initialTask?.work_directory ?? "");
       setScriptPath(initialTask?.script_path ?? "");
+      setBatchCount("1");
       setFormError(null);
     }
   }, [initialTask, open]);
@@ -151,10 +163,19 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
   }
 
   const mutation = useMutation({
-    mutationFn: (payload: CreateTaskPayload) => instanceApi.createTask(payload),
-    onSuccess: () => {
+    mutationFn: async (payloads: CreateTaskPayload[]) => {
+      await runSequentiallyWithDelay(payloads, (payload) => instanceApi.createTask(payload));
+    },
+    onSuccess: (_data, payloads) => {
+      const firstName = String(payloads[0]?.name ?? "");
+      const delayText = payloads.length > 1 ? `，间隔 ${BATCH_REQUEST_DELAY_MS}ms` : "";
+      const description = payloads.length > 1 ? `${firstName} 等 ${payloads.length} 个实例${delayText}` : firstName;
+      toast.success(initialTask ? "复制创建已提交" : "实例创建已提交", description);
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       onClose();
+    },
+    onError: (error) => {
+      toast.error("实例创建失败", error instanceof Error ? error.message : "请检查表单或稍后重试");
     },
   });
 
@@ -194,9 +215,15 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       setFormError("请填写工作目录和脚本路径");
       return;
     }
-    mutation.mutate({
+
+    const count = Number(batchCount);
+    if (!Number.isInteger(count) || count < 1 || count > MAX_BATCH_COUNT) {
+      setFormError(`批量数量必须在 1-${MAX_BATCH_COUNT} 之间`);
+      return;
+    }
+
+    const sharedPayload = {
       ...getCloneCreateFields(initialTask),
-      name: taskName,
       price: DEFAULT_PRICE,
       cpu: cpuValue,
       gpu: gpuValue > 0 ? gpuValue : undefined,
@@ -208,7 +235,14 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       releace_time: releaceConditions === 2 ? formatDateTimeForApi(releaseTime) : undefined,
       work_directory: releaceConditions === 3 ? workDirectory.trim() : undefined,
       script_path: releaceConditions === 3 ? scriptPath.trim() : undefined,
-    });
+    };
+
+    mutation.mutate(
+      Array.from({ length: count }, (_, index) => ({
+        ...sharedPayload,
+        name: formatBatchTaskName(taskName, index, count),
+      })),
+    );
   }
 
   return (
@@ -220,6 +254,21 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
               <span className="mb-1 block text-app-muted">任务名称</span>
               <Input className="w-full" value={name} onChange={(event) => setName(event.target.value)} required />
             </label>
+            <label className="block text-sm">
+              <span className="mb-1 block text-app-muted">创建数量</span>
+              <Input
+                className="w-full"
+                type="number"
+                min="1"
+                max={MAX_BATCH_COUNT}
+                step="1"
+                value={batchCount}
+                onChange={(event) => setBatchCount(event.target.value)}
+                required
+              />
+            </label>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">释放条件</span>
               <Select className="w-full" value={releaseCondition} onChange={(event) => handleReleaseConditionChange(event.target.value)}>

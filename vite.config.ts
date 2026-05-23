@@ -3,6 +3,21 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("@xterm")) return "vendor-xterm";
+          if (id.includes("@tanstack")) return "vendor-tanstack";
+          if (id.includes("@tauri-apps")) return "vendor-tauri";
+          if (id.includes("lucide-react")) return "vendor-icons";
+          if (id.includes("react") || id.includes("react-dom") || id.includes("react-router-dom")) return "vendor-react";
+          return "vendor";
+        },
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     globals: true,

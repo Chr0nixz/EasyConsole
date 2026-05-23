@@ -6,6 +6,7 @@ import type {
   RuntimeStorage,
   RuntimeTransport,
   RuntimeWebSocket,
+  SshConnectionRequest,
   UploadProgress,
 } from "./types";
 
@@ -166,11 +167,30 @@ async function createTauriWebSocket(url: string): Promise<RuntimeWebSocket> {
   return wrapper;
 }
 
+async function invokeTauriCommand(command: string, request: SshConnectionRequest) {
+  if (!isTauri()) throw new Error("当前环境不是桌面端");
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke(command, { request });
+}
+
 export const browserRuntime: RuntimeTransport = {
+  isDesktop: isTauri(),
   storage: localStorageAdapter,
   request: fetchRequest,
   async createWebSocket(url) {
     return isTauri() ? createTauriWebSocket(url) : createBrowserWebSocket(url);
+  },
+  async copyText(text) {
+    await window.navigator.clipboard.writeText(text);
+  },
+  openExternal(url) {
+    window.open(url, "_blank", "noopener,noreferrer");
+  },
+  openSshSession(request) {
+    return invokeTauriCommand("open_ssh_session", request);
+  },
+  openSystemSshTerminal(request) {
+    return invokeTauriCommand("open_system_ssh_terminal", request);
   },
 };
 

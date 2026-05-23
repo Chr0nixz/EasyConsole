@@ -1,5 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createColumnHelper, flexRender, getCoreRowModel, useReactTable, type VisibilityState } from "@tanstack/react-table";
+import {
+  createColumnHelper,
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+  type RowSelectionState,
+  type VisibilityState,
+} from "@tanstack/react-table";
 import {
   ActivitySquare,
   Braces,
@@ -15,25 +22,44 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
 import { CreateTaskDialog } from "../components/tasks/CreateTaskDialog";
 import { TaskLogDialog } from "../components/tasks/TaskLogDialog";
-import { TerminalDialog } from "../components/tasks/TerminalDialog";
-import { Button, Dialog, Input, Panel } from "../components/ui";
+import { Button, Dialog, Input, Panel, Select } from "../components/ui";
 import { instanceApi } from "../lib/api";
+import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { saveBlob } from "../lib/download";
 import { asJson, formatCost, formatHours, getTaskName } from "../lib/format";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
 import type { Task } from "../lib/types";
+import { useToast } from "../lib/use-toast";
 
 const columnHelper = createColumnHelper<Task>();
+const TerminalDialog = lazy(() => import("../components/tasks/TerminalDialog").then((module) => ({ default: module.TerminalDialog })));
 const COLUMN_VISIBILITY_KEY = "easy-console.tasks.columnVisibility";
-const ALWAYS_VISIBLE_COLUMNS = new Set(["actions"]);
-const defaultColumnVisibility: VisibilityState = {};
+const AUTO_REFRESH_KEY = "easy-console.tasks.autoRefresh";
+const AUTO_REFRESH_INTERVAL_KEY = "easy-console.tasks.autoRefreshInterval";
+const DEFAULT_AUTO_REFRESH_INTERVAL = 10_000;
+const autoRefreshOptions = [
+  { label: "5 秒", value: 5_000 },
+  { label: "10 秒", value: 10_000 },
+  { label: "30 秒", value: 30_000 },
+];
+const ALWAYS_VISIBLE_COLUMNS = new Set(["select", "actions"]);
+const defaultColumnVisibility: VisibilityState = {
+  node: false,
+  endpoint: false,
+  owner: false,
+  group: false,
+  cost: false,
+  created: false,
+  deleted: false,
+};
 const columnLabels: Record<string, string> = {
   name: "实例名称",
   status: "状态",
@@ -61,15 +87,38 @@ function isRunningTask(task: Task) {
   return Number(task.status) === 2;
 }
 
+function isActionsColumn(id: string) {
+  return id === "actions";
+}
+
 function loadColumnVisibility(): VisibilityState {
   try {
     const raw = window.localStorage.getItem(COLUMN_VISIBILITY_KEY);
     if (!raw) return defaultColumnVisibility;
     const parsed = JSON.parse(raw) as VisibilityState;
     delete parsed.actions;
+    delete parsed.select;
+    if (Object.keys(parsed).length === 0) return defaultColumnVisibility;
     return parsed;
   } catch {
     return defaultColumnVisibility;
+  }
+}
+
+function loadBooleanSetting(key: string, fallback = false) {
+  try {
+    return window.localStorage.getItem(key) === "true" || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function loadNumberSetting(key: string, fallback: number) {
+  try {
+    const value = Number(window.localStorage.getItem(key));
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  } catch {
+    return fallback;
   }
 }
 
@@ -83,14 +132,53 @@ function MoreActionsMenu({
   onDownload: (task: Task) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const updatePosition = () => {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const width = 144;
+      const estimatedHeight = 80;
+      const margin = 8;
+      const left = Math.min(Math.max(margin, rect.right - width), window.innerWidth - width - margin);
+      const top =
+        rect.bottom + estimatedHeight + margin > window.innerHeight ? rect.top - estimatedHeight - 4 : rect.bottom + 4;
+
+      setMenuPosition({ left, top: Math.max(margin, top) });
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    const handleScroll = () => setOpen(false);
+
+    updatePosition();
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", handleScroll, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", handleScroll, true);
+    };
+  }, [open]);
 
   return (
-    <div
-      className="relative"
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
-      }}
-    >
+    <div ref={triggerRef} className="relative z-30">
       <Button
         aria-expanded={open}
         aria-haspopup="menu"
@@ -102,10 +190,13 @@ function MoreActionsMenu({
       >
         <MoreHorizontal className="h-4 w-4" />
       </Button>
-      {open ? (
+      {open && menuPosition
+        ? createPortal(
         <div
-          className="absolute right-0 top-9 z-20 w-36 rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
+            ref={menuRef}
+            className="fixed z-[100] w-36 rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
           role="menu"
+            style={{ left: menuPosition.left, top: menuPosition.top }}
         >
           <button
             className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
@@ -131,14 +222,17 @@ function MoreActionsMenu({
             <Braces className="h-4 w-4 text-app-muted" />
             原始 JSON
           </button>
-        </div>
-      ) : null}
+          </div>,
+          document.body,
+        )
+        : null}
     </div>
   );
 }
 
 export function TasksPage() {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [keyword, setKeyword] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [cloneTask, setCloneTask] = useState<Task | null>(null);
@@ -147,19 +241,69 @@ export function TasksPage() {
   const [rawTask, setRawTask] = useState<Task | null>(null);
   const [columnSettingsOpen, setColumnSettingsOpen] = useState(false);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => loadColumnVisibility());
-  const query = useQuery({
-    queryKey: ["tasks", keyword],
-    queryFn: () => instanceApi.tasks({ page: 1, page_size: 50, keyword, name: keyword }),
-  });
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+  const [autoRefresh, setAutoRefresh] = useState(() => loadBooleanSetting(AUTO_REFRESH_KEY));
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState(() =>
+    loadNumberSetting(AUTO_REFRESH_INTERVAL_KEY, DEFAULT_AUTO_REFRESH_INTERVAL),
+  );
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string | number) => instanceApi.deleteTask(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tasks"] }),
+    mutationFn: (task: Task) => instanceApi.deleteTask(task.id),
+    onSuccess: (_data, task) => {
+      toast.success("实例删除已提交", getTaskName(task));
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+    onError: (error, task) => {
+      toast.error("实例删除失败", `${getTaskName(task)}：${error instanceof Error ? error.message : "请稍后重试"}`);
+    },
   });
 
   const releaseMutation = useMutation({
-    mutationFn: (id: string | number) => instanceApi.operateTask(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tasks"] }),
+    mutationFn: (task: Task) => instanceApi.operateTask(task.id),
+    onSuccess: (_data, task) => {
+      toast.success("实例释放已提交", getTaskName(task));
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+    onError: (error, task) => {
+      toast.error("实例释放失败", `${getTaskName(task)}：${error instanceof Error ? error.message : "请稍后重试"}`);
+    },
+  });
+
+  const batchDeleteMutation = useMutation({
+    mutationFn: async (tasks: Task[]) => {
+      await runSequentiallyWithDelay(tasks, (task) => instanceApi.deleteTask(task.id));
+    },
+    onSuccess: (_data, tasks) => {
+      toast.success("批量删除已提交", `${tasks.length} 个非运行实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`);
+      setRowSelection({});
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+    onError: (error) => {
+      toast.error("批量删除失败", error instanceof Error ? error.message : "请稍后重试");
+    },
+  });
+
+  const batchReleaseMutation = useMutation({
+    mutationFn: async (tasks: Task[]) => {
+      await runSequentiallyWithDelay(tasks, (task) => instanceApi.operateTask(task.id));
+    },
+    onSuccess: (_data, tasks) => {
+      toast.success("批量释放已提交", `${tasks.length} 个运行中实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`);
+      setRowSelection({});
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+    onError: (error) => {
+      toast.error("批量释放失败", error instanceof Error ? error.message : "请稍后重试");
+    },
+  });
+
+  const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending;
+  const autoRefreshPaused = batchPending || createOpen || Boolean(logTask) || Boolean(terminalTask) || Boolean(rawTask) || columnSettingsOpen;
+  const query = useQuery({
+    queryKey: ["tasks", keyword],
+    queryFn: () => instanceApi.tasks({ page: 1, page_size: 50, keyword, name: keyword }),
+    refetchInterval: autoRefresh && !autoRefreshPaused ? autoRefreshInterval : false,
+    refetchIntervalInBackground: false,
   });
 
   const handleDownloadTask = (task: Task) => {
@@ -183,11 +327,32 @@ export function TasksPage() {
 
   const columns = useMemo(
     () => [
+      columnHelper.display({
+        id: "select",
+        header: ({ table }) => (
+          <input
+            aria-label="选择当前页实例"
+            className="h-4 w-4 accent-app-accent"
+            type="checkbox"
+            checked={table.getIsAllPageRowsSelected()}
+            onChange={table.getToggleAllPageRowsSelectedHandler()}
+          />
+        ),
+        cell: ({ row }) => (
+          <input
+            aria-label={`选择实例 ${getTaskName(row.original)}`}
+            className="h-4 w-4 accent-app-accent"
+            type="checkbox"
+            checked={row.getIsSelected()}
+            onChange={row.getToggleSelectedHandler()}
+          />
+        ),
+      }),
       columnHelper.accessor((row) => getTaskName(row), {
         id: "name",
         header: "实例名称",
         cell: ({ row, getValue }) => (
-          <div className="min-w-44">
+          <div className="whitespace-nowrap">
             <div className="font-medium">{getValue()}</div>
             <div className="mt-0.5 text-xs text-app-muted">#{row.original.id}</div>
           </div>
@@ -279,7 +444,7 @@ export function TasksPage() {
                   disabled={releaseMutation.isPending}
                   title="释放"
                   variant="ghost"
-                  onClick={() => releaseMutation.mutate(task.id)}
+                  onClick={() => releaseMutation.mutate(task)}
                 >
                   <Power className="h-4 w-4" />
                   释放
@@ -290,7 +455,7 @@ export function TasksPage() {
                   disabled={deleteMutation.isPending}
                   title="删除"
                   variant="ghost"
-                  onClick={() => deleteMutation.mutate(task.id)}
+                  onClick={() => deleteMutation.mutate(task)}
                 >
                   <Trash2 className="h-4 w-4" />
                   删除
@@ -309,17 +474,31 @@ export function TasksPage() {
     data: query.data?.items ?? [],
     columns,
     getCoreRowModel: getCoreRowModel(),
+    enableRowSelection: true,
     state: {
       columnVisibility,
+      rowSelection,
     },
     onColumnVisibilityChange: setColumnVisibility,
+    onRowSelectionChange: setRowSelection,
   });
 
   useEffect(() => {
     window.localStorage.setItem(COLUMN_VISIBILITY_KEY, JSON.stringify(columnVisibility));
   }, [columnVisibility]);
 
+  useEffect(() => {
+    window.localStorage.setItem(AUTO_REFRESH_KEY, String(autoRefresh));
+  }, [autoRefresh]);
+
+  useEffect(() => {
+    window.localStorage.setItem(AUTO_REFRESH_INTERVAL_KEY, String(autoRefreshInterval));
+  }, [autoRefreshInterval]);
+
   const configurableColumns = table.getAllLeafColumns().filter((column) => !ALWAYS_VISIBLE_COLUMNS.has(column.id));
+  const selectedTasks = table.getSelectedRowModel().flatRows.map((row) => row.original);
+  const selectedRunningTasks = selectedTasks.filter(isRunningTask);
+  const selectedStoppedTasks = selectedTasks.filter((task) => !isRunningTask(task));
 
   return (
     <div className="space-y-4">
@@ -333,6 +512,30 @@ export function TasksPage() {
             <RefreshCw className="h-4 w-4" />
             刷新
           </Button>
+          <div className="flex h-9 items-center gap-2 rounded-md border border-app-border bg-app-surface px-3 text-sm">
+            <label className="flex cursor-pointer items-center gap-2 text-app-text">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-app-accent"
+                checked={autoRefresh}
+                onChange={(event) => setAutoRefresh(event.target.checked)}
+              />
+              自动刷新
+            </label>
+            <Select
+              className="h-7 border-0 bg-app-panel px-2 text-xs"
+              disabled={!autoRefresh}
+              value={String(autoRefreshInterval)}
+              onChange={(event) => setAutoRefreshInterval(Number(event.target.value))}
+            >
+              {autoRefreshOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
+            {autoRefresh && autoRefreshPaused ? <span className="text-xs text-app-warning">已暂停</span> : null}
+          </div>
           <Button variant="secondary" onClick={() => setColumnSettingsOpen(true)}>
             <Settings2 className="h-4 w-4" />
             列设置
@@ -344,6 +547,42 @@ export function TasksPage() {
         </Button>
       </div>
 
+      {selectedTasks.length > 0 ? (
+        <Panel className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
+          <div className="text-sm text-app-muted">
+            已选 <span className="font-medium text-app-text">{selectedTasks.length}</span> 个实例
+            {selectedRunningTasks.length > 0 ? `，运行中 ${selectedRunningTasks.length} 个` : ""}
+            {selectedStoppedTasks.length > 0 ? `，非运行 ${selectedStoppedTasks.length} 个` : ""}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {selectedRunningTasks.length > 0 ? (
+              <Button
+                disabled={batchPending}
+                variant="secondary"
+                onClick={() => batchReleaseMutation.mutate(selectedRunningTasks)}
+              >
+                <Power className="h-4 w-4 text-app-warning" />
+                批量释放 {selectedRunningTasks.length}
+              </Button>
+            ) : null}
+            {selectedStoppedTasks.length > 0 ? (
+              <Button
+                className="border-app-danger text-app-danger hover:text-app-danger"
+                disabled={batchPending}
+                variant="secondary"
+                onClick={() => batchDeleteMutation.mutate(selectedStoppedTasks)}
+              >
+                <Trash2 className="h-4 w-4" />
+                批量删除 {selectedStoppedTasks.length}
+              </Button>
+            ) : null}
+            <Button disabled={batchPending} variant="ghost" onClick={() => setRowSelection({})}>
+              取消选择
+            </Button>
+          </div>
+        </Panel>
+      ) : null}
+
       <Panel className="overflow-hidden">
         {query.isLoading ? (
           <LoadingState />
@@ -353,12 +592,20 @@ export function TasksPage() {
           <EmptyState title="暂无任务实例" action={<Button onClick={openCreateTask}>新建任务</Button>} />
         ) : (
           <div className="overflow-auto">
-            <table className="w-full min-w-[1500px] border-collapse text-sm">
+            <table className="w-max min-w-full table-auto border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 {table.getHeaderGroups().map((headerGroup) => (
                   <tr key={headerGroup.id}>
                     {headerGroup.headers.map((header) => (
-                      <th key={header.id} className="border-b border-app-border px-3 py-2 font-medium">
+                      <th
+                        key={header.id}
+                        className={[
+                          "whitespace-nowrap border-b border-app-border px-3 py-2 font-medium",
+                          isActionsColumn(header.column.id)
+                            ? "sticky right-0 z-20 bg-app-panel shadow-[-10px_0_16px_-16px_rgb(15_23_42_/_0.45)]"
+                            : "",
+                        ].join(" ")}
+                      >
                         {flexRender(header.column.columnDef.header, header.getContext())}
                       </th>
                     ))}
@@ -367,9 +614,17 @@ export function TasksPage() {
               </thead>
               <tbody>
                 {table.getRowModel().rows.map((row) => (
-                  <tr key={row.id} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
+                  <tr key={row.id} className="relative border-b border-app-border last:border-0 hover:z-20 hover:bg-app-panel/60">
                     {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="px-3 py-2 align-middle">
+                      <td
+                        key={cell.id}
+                        className={[
+                          "whitespace-nowrap px-3 py-2 align-middle",
+                          isActionsColumn(cell.column.id)
+                            ? "sticky right-0 z-30 bg-app-surface shadow-[-10px_0_16px_-16px_rgb(15_23_42_/_0.45)]"
+                            : "",
+                        ].join(" ")}
+                      >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </td>
                     ))}
@@ -383,7 +638,9 @@ export function TasksPage() {
 
       <CreateTaskDialog initialTask={cloneTask} open={createOpen} onClose={closeCreateTask} />
       <TaskLogDialog task={logTask} onClose={() => setLogTask(null)} />
-      <TerminalDialog task={terminalTask} onClose={() => setTerminalTask(null)} />
+      <Suspense fallback={null}>
+        <TerminalDialog task={terminalTask} onClose={() => setTerminalTask(null)} />
+      </Suspense>
       <Dialog open={Boolean(rawTask)} title={`实例原始 JSON ${rawTask ? getTaskName(rawTask) : ""}`} onClose={() => setRawTask(null)} width="max-w-4xl">
         <pre className="max-h-[70vh] overflow-auto bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100">
           {asJson(rawTask)}
