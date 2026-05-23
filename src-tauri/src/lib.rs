@@ -243,7 +243,9 @@ async fn run_russh_session(
     emit_session_event(&app, &session_id, "status", None, Some(format!("正在连接 {host}:{port}")));
 
     let config = Arc::new(client::Config {
-        inactivity_timeout: Some(Duration::from_secs(30)),
+        inactivity_timeout: None,
+        keepalive_interval: Some(Duration::from_secs(20)),
+        keepalive_max: 0,
         ..<_>::default()
     });
     let mut session = client::connect(config, (host.as_str(), port), EasyConsoleSshClient)
