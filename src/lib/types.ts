@@ -55,9 +55,13 @@ export type Task = UnknownRecord & {
   login_user?: string;
   node_name?: string;
   user_group?: string;
+  user_group_name?: string;
+  group_name?: string;
   user?: UnknownRecord & {
     username?: string;
     name?: string;
+    user_group?: string;
+    group_name?: string;
   };
   image_id?: string | number;
   img?: string | number;

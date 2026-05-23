@@ -34,8 +34,9 @@ import { Button, Dialog, Input, Panel, Select } from "../components/ui";
 import { instanceApi } from "../lib/api";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { saveBlob } from "../lib/download";
-import { asJson, formatCost, formatHours, getTaskName } from "../lib/format";
+import { asJson, formatSecondsDuration, getTaskName } from "../lib/format";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
+import { filterAndSortTasks } from "../lib/task-search";
 import type { Task } from "../lib/types";
 import { useToast } from "../lib/use-toast";
 
@@ -45,6 +46,7 @@ const COLUMN_VISIBILITY_KEY = "easy-console.tasks.columnVisibility";
 const AUTO_REFRESH_KEY = "easy-console.tasks.autoRefresh";
 const AUTO_REFRESH_INTERVAL_KEY = "easy-console.tasks.autoRefreshInterval";
 const DEFAULT_AUTO_REFRESH_INTERVAL = 10_000;
+const TASK_LIST_PAGE_SIZE = 500;
 const autoRefreshOptions = [
   { label: "5 秒", value: 5_000 },
   { label: "10 秒", value: 10_000 },
@@ -56,8 +58,8 @@ const defaultColumnVisibility: VisibilityState = {
   endpoint: false,
   owner: false,
   group: false,
-  cost: false,
-  created: false,
+  duration: false,
+  release: false,
   deleted: false,
 };
 const columnLabels: Record<string, string> = {
@@ -68,19 +70,45 @@ const columnLabels: Record<string, string> = {
   endpoint: "入口",
   owner: "用户",
   group: "用户组",
-  cost: "费用/时长",
+  duration: "时长",
   created: "创建时间",
   release: "释放时间",
   releaseCondition: "释放条件",
   deleted: "删除状态",
 };
+const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_2rem_2rem_5rem_2rem] items-center gap-1";
 
 function resourceText(task: Task) {
   return `${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`;
 }
 
 function endpointText(task: Task) {
+  if (Number(task.status) !== 2) return "-";
   return task.ip && task.ip !== "None" ? task.ip : "-";
+}
+
+function displayText(value: unknown) {
+  if (value === undefined || value === null || value === "") return "-";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  return "-";
+}
+
+function userRecord(task: Task) {
+  return task.user && typeof task.user === "object" ? task.user : undefined;
+}
+
+function ownerText(task: Task) {
+  const user = userRecord(task);
+  return displayText(task.username ?? user?.username ?? user?.name ?? task.user);
+}
+
+function groupText(task: Task) {
+  const user = userRecord(task);
+  return displayText(task.user_group ?? task.user_group_name ?? task.group_name ?? user?.user_group ?? user?.group_name);
+}
+
+function taskRowId(task: Task) {
+  return String(task.task_id ?? task.id);
 }
 
 function isRunningTask(task: Task) {
@@ -91,6 +119,19 @@ function isActionsColumn(id: string) {
   return id === "actions";
 }
 
+function ActionHeader() {
+  return (
+    <div className={`${ACTION_GRID_CLASS} text-center text-xs text-app-muted`}>
+      <span>监控</span>
+      <span>日志</span>
+      <span>终端</span>
+      <span>复制</span>
+      <span>释放/删除</span>
+      <span>更多</span>
+    </div>
+  );
+}
+
 function loadColumnVisibility(): VisibilityState {
   try {
     const raw = window.localStorage.getItem(COLUMN_VISIBILITY_KEY);
@@ -98,7 +139,20 @@ function loadColumnVisibility(): VisibilityState {
     const parsed = JSON.parse(raw) as VisibilityState;
     delete parsed.actions;
     delete parsed.select;
+    if ("cost" in parsed) {
+      parsed.duration = parsed.duration ?? parsed.cost;
+      delete parsed.cost;
+    }
     if (Object.keys(parsed).length === 0) return defaultColumnVisibility;
+    if (!("release" in parsed)) {
+      return {
+        ...defaultColumnVisibility,
+        ...parsed,
+        node: false,
+        created: true,
+        release: false,
+      };
+    }
     return parsed;
   } catch {
     return defaultColumnVisibility;
@@ -300,11 +354,16 @@ export function TasksPage() {
   const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending;
   const autoRefreshPaused = batchPending || createOpen || Boolean(logTask) || Boolean(terminalTask) || Boolean(rawTask) || columnSettingsOpen;
   const query = useQuery({
-    queryKey: ["tasks", keyword],
-    queryFn: () => instanceApi.tasks({ page: 1, page_size: 50, keyword, name: keyword }),
+    queryKey: ["tasks"],
+    queryFn: () => instanceApi.tasks({ page: 1, page_size: TASK_LIST_PAGE_SIZE }),
     refetchInterval: autoRefresh && !autoRefreshPaused ? autoRefreshInterval : false,
     refetchIntervalInBackground: false,
   });
+
+  const filteredTasks = useMemo(() => {
+    const tasks = query.data?.items ?? [];
+    return filterAndSortTasks(tasks, keyword);
+  }, [keyword, query.data?.items]);
 
   const handleDownloadTask = (task: Task) => {
     void instanceApi.downloadTask({ task_id: task.id }).then((blob) => saveBlob(blob, `${getTaskName(task)}.zip`));
@@ -377,24 +436,20 @@ export function TasksPage() {
         header: "入口",
         cell: (info) => <span className="whitespace-nowrap font-mono text-xs text-app-muted">{info.getValue()}</span>,
       }),
-      columnHelper.accessor((row) => row.username ?? "-", {
+      columnHelper.accessor((row) => ownerText(row), {
         id: "owner",
         header: "用户",
         cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
       }),
-      columnHelper.accessor((row) => row.user_group ?? "-", {
+      columnHelper.accessor((row) => groupText(row), {
         id: "group",
         header: "用户组",
         cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
       }),
-      columnHelper.accessor((row) => row.cost, {
-        id: "cost",
-        header: "费用/时长",
-        cell: ({ row }) => (
-          <span className="whitespace-nowrap text-app-muted">
-            {formatCost(row.original.cost)} / {formatHours(row.original.use_time)}
-          </span>
-        ),
+      columnHelper.accessor((row) => row.use_time, {
+        id: "duration",
+        header: "时长",
+        cell: (info) => <span className="whitespace-nowrap text-app-muted">{formatSecondsDuration(info.getValue())}</span>,
       }),
       columnHelper.accessor((row) => row.create_time ?? row.created_at ?? "-", {
         id: "created",
@@ -420,12 +475,12 @@ export function TasksPage() {
       }),
       columnHelper.display({
         id: "actions",
-        header: "操作",
+        header: () => <ActionHeader />,
         cell: ({ row }) => {
           const task = row.original;
           const release = isRunningTask(task);
           return (
-            <div className="flex items-center gap-1">
+            <div className={ACTION_GRID_CLASS}>
               <Button className="h-8 w-8 px-0" variant="ghost" title="监控" onClick={() => openMonitorDashboard(task)}>
                 <ActivitySquare className="h-4 w-4" />
               </Button>
@@ -440,7 +495,7 @@ export function TasksPage() {
               </Button>
               {release ? (
                 <Button
-                  className="h-8 px-2 text-app-warning hover:text-app-warning"
+                  className="h-8 w-20 justify-center px-2 text-app-warning hover:text-app-warning"
                   disabled={releaseMutation.isPending}
                   title="释放"
                   variant="ghost"
@@ -451,7 +506,7 @@ export function TasksPage() {
                 </Button>
               ) : (
                 <Button
-                  className="h-8 px-2 text-app-danger hover:text-app-danger"
+                  className="h-8 w-20 justify-center px-2 text-app-danger hover:text-app-danger"
                   disabled={deleteMutation.isPending}
                   title="删除"
                   variant="ghost"
@@ -471,9 +526,10 @@ export function TasksPage() {
   );
 
   const table = useReactTable({
-    data: query.data?.items ?? [],
+    data: filteredTasks,
     columns,
     getCoreRowModel: getCoreRowModel(),
+    getRowId: taskRowId,
     enableRowSelection: true,
     state: {
       columnVisibility,
@@ -588,6 +644,8 @@ export function TasksPage() {
           <LoadingState />
         ) : query.isError ? (
           <ErrorState error={query.error} action={<Button variant="secondary" onClick={() => query.refetch()}>重试</Button>} />
+        ) : table.getRowModel().rows.length === 0 && keyword.trim() ? (
+          <EmptyState title="未找到匹配实例" action={<Button variant="secondary" onClick={() => setKeyword("")}>清空搜索</Button>} />
         ) : table.getRowModel().rows.length === 0 ? (
           <EmptyState title="暂无任务实例" action={<Button onClick={openCreateTask}>新建任务</Button>} />
         ) : (

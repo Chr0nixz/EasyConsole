@@ -1,13 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { FolderOpen } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { ErrorState } from "../DataState";
+import { RemoteStoragePicker } from "../storage/RemoteStoragePicker";
 import { Button, Dialog, Input, Select } from "../ui";
 import { imageApi, instanceApi } from "../../lib/api";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../../lib/batch";
 import { useAuth } from "../../lib/use-auth";
 import { useToast } from "../../lib/use-toast";
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText } from "../../lib/format";
+import { normalizeStoragePath } from "../../lib/remote-storage";
 import type { CreateTaskPayload, ImageItem, Task } from "../../lib/types";
 
 const DEFAULT_PRICE = 1;
@@ -15,6 +18,8 @@ const DEFAULT_CPU = "4";
 const DEFAULT_GPU = "0";
 const DEFAULT_MEMORY = "16";
 const MAX_BATCH_COUNT = 50;
+
+type StoragePickerTarget = "storage" | "workDirectory" | "scriptPath";
 
 function getImageOptionLabel(image: ImageItem) {
   const name = image.name ?? image.image_name ?? String(image.id);
@@ -112,13 +117,17 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
   const [memory, setMemory] = useState(DEFAULT_MEMORY);
   const [releaseCondition, setReleaseCondition] = useState("1");
   const [releaseTime, setReleaseTime] = useState("");
+  const [storagePath, setStoragePath] = useState("");
+  const [mountPath, setMountPath] = useState("");
   const [workDirectory, setWorkDirectory] = useState("");
   const [scriptPath, setScriptPath] = useState("");
+  const [storagePickerTarget, setStoragePickerTarget] = useState<StoragePickerTarget | null>(null);
   const [batchCount, setBatchCount] = useState("1");
   const [formError, setFormError] = useState<string | null>(null);
 
   const imageOptions = useMemo(() => [...(images.data?.items ?? []), ...(systemImages.data?.items ?? [])], [images.data, systemImages.data]);
   const hasSelectedImageOption = imageOptions.some((image) => String(image.id) === imageId);
+  const username = auth.user?.username ?? "";
 
   useEffect(() => {
     if (open) {
@@ -129,22 +138,21 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       setMemory(String(initialTask?.memory ?? DEFAULT_MEMORY));
       setReleaseCondition(String(initialTask?.releace_conditions ?? initialTask?.release_condition ?? "1"));
       setReleaseTime(formatClonedReleaseTime(initialTask?.releace_time));
+      setStoragePath(initialTask?.storage_path || `/${username}`);
+      setMountPath(initialTask?.mount_path || `/home/ubuntu/${username}`);
       setWorkDirectory(initialTask?.work_directory ?? "");
       setScriptPath(initialTask?.script_path ?? "");
+      setStoragePickerTarget(null);
       setBatchCount("1");
       setFormError(null);
     }
-  }, [initialTask, open]);
+  }, [initialTask, open, username]);
 
   useEffect(() => {
     if (!open || imageId || imageOptions.length === 0) return;
     const latest = getLatestImage(imageOptions);
     if (latest) setImageId(String(latest.id));
   }, [imageId, imageOptions, open]);
-
-  const username = auth.user?.username ?? "";
-  const defaultStoragePath = initialTask?.storage_path || `/${username}`;
-  const defaultMountPath = initialTask?.mount_path || `/home/ubuntu/${username}`;
 
   function handleReleaseConditionChange(value: string) {
     setReleaseCondition(value);
@@ -221,6 +229,8 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       setFormError(`批量数量必须在 1-${MAX_BATCH_COUNT} 之间`);
       return;
     }
+    const selectedStoragePath = normalizeStoragePath(storagePath.trim() || `/${username}`);
+    const selectedMountPath = mountPath.trim() || `/home/ubuntu/${username}`;
 
     const sharedPayload = {
       ...getCloneCreateFields(initialTask),
@@ -229,8 +239,8 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       gpu: gpuValue > 0 ? gpuValue : undefined,
       memory: memoryValue,
       img: imageId ? normalizeId(imageId) : undefined,
-      storage_path: defaultStoragePath,
-      mount_path: defaultMountPath,
+      storage_path: selectedStoragePath,
+      mount_path: selectedMountPath,
       releace_conditions: releaceConditions,
       releace_time: releaceConditions === 2 ? formatDateTimeForApi(releaseTime) : undefined,
       work_directory: releaceConditions === 3 ? workDirectory.trim() : undefined,
@@ -244,6 +254,16 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       })),
     );
   }
+
+  const pickerMode = storagePickerTarget === "scriptPath" ? "file" : "directory";
+  const pickerInitialPath =
+    storagePickerTarget === "scriptPath"
+      ? workDirectory || storagePath || "/"
+      : storagePickerTarget === "workDirectory"
+        ? workDirectory || storagePath || "/"
+        : storagePath || "/";
+  const pickerTitle =
+    storagePickerTarget === "storage" ? "选择存储目录" : storagePickerTarget === "workDirectory" ? "选择工作目录" : "选择脚本文件";
 
   return (
     <Dialog open={open} title={initialTask ? "复制实例" : "新建任务"} onClose={onClose} width="max-w-4xl">
@@ -288,14 +308,26 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
           ) : null}
           {releaseCondition === "3" ? (
             <div className="grid gap-4 md:grid-cols-2">
-              <label className="block text-sm">
+              <div className="block text-sm">
                 <span className="mb-1 block text-app-muted">工作目录</span>
-                <Input className="w-full" value={workDirectory} onChange={(event) => setWorkDirectory(event.target.value)} required />
-              </label>
-              <label className="block text-sm">
+                <div className="flex gap-2">
+                  <Input className="w-full font-mono text-xs" value={workDirectory} onChange={(event) => setWorkDirectory(event.target.value)} required />
+                  <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("workDirectory")}>
+                    <FolderOpen className="h-4 w-4" />
+                    选择
+                  </Button>
+                </div>
+              </div>
+              <div className="block text-sm">
                 <span className="mb-1 block text-app-muted">脚本路径</span>
-                <Input className="w-full" value={scriptPath} onChange={(event) => setScriptPath(event.target.value)} required />
-              </label>
+                <div className="flex gap-2">
+                  <Input className="w-full font-mono text-xs" value={scriptPath} onChange={(event) => setScriptPath(event.target.value)} required />
+                  <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("scriptPath")}>
+                    <FolderOpen className="h-4 w-4" />
+                    选择
+                  </Button>
+                </div>
+              </div>
             </div>
           ) : null}
           <label className="block text-sm">
@@ -313,11 +345,17 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
           <div className="grid gap-4 text-sm md:grid-cols-2">
             <div>
               <span className="mb-1 block text-app-muted">存储路径</span>
-              <div className="rounded-md border border-app-border bg-app-panel px-3 py-2 font-mono text-xs text-app-text">{defaultStoragePath}</div>
+              <div className="flex gap-2">
+                <Input className="w-full font-mono text-xs" value={storagePath} onChange={(event) => setStoragePath(event.target.value)} />
+                <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
+                  <FolderOpen className="h-4 w-4" />
+                  选择
+                </Button>
+              </div>
             </div>
             <div>
               <span className="mb-1 block text-app-muted">挂载路径</span>
-              <div className="rounded-md border border-app-border bg-app-panel px-3 py-2 font-mono text-xs text-app-text">{defaultMountPath}</div>
+              <Input className="w-full font-mono text-xs" value={mountPath} onChange={(event) => setMountPath(event.target.value)} />
             </div>
           </div>
           <div className="grid gap-4 md:grid-cols-3">
@@ -344,6 +382,19 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
           </div>
         </div>
       </form>
+      <RemoteStoragePicker
+        initialPath={pickerInitialPath}
+        mode={pickerMode}
+        open={storagePickerTarget !== null}
+        title={pickerTitle}
+        onClose={() => setStoragePickerTarget(null)}
+        onSelect={(path) => {
+          if (storagePickerTarget === "storage") setStoragePath(path);
+          if (storagePickerTarget === "workDirectory") setWorkDirectory(path);
+          if (storagePickerTarget === "scriptPath") setScriptPath(path);
+          setStoragePickerTarget(null);
+        }}
+      />
     </Dialog>
   );
 }

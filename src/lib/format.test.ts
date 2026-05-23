@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName } from "./format";
+import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatSecondsDuration, formatTaskDefaultName } from "./format";
 
 describe("format helpers", () => {
   it("formats default task names as compact local time", () => {
@@ -18,5 +18,10 @@ describe("format helpers", () => {
 
   it("adds fractional hours for release-time defaults", () => {
     expect(formatDateTimeLocalInput(addHours(new Date(2026, 4, 23, 1, 9, 18), 12))).toBe("2026-05-23T13:09:18");
+  });
+
+  it("formats task use_time values as seconds-based durations", () => {
+    expect(formatSecondsDuration(90)).toBe("1 分钟");
+    expect(formatSecondsDuration(3660)).toBe("1 小时 1 分钟");
   });
 });
