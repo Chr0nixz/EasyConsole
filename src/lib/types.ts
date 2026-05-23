@@ -140,6 +140,10 @@ export type TaskQuery = {
   keyword?: string;
   name?: string;
   status?: string | number;
+  username?: string;
+  user_group?: string;
+  releace_conditions?: string | number;
+  is_delete?: string | boolean;
 };
 
 export type StorageQuery = {
@@ -182,6 +186,19 @@ export type UploadProgress = {
   loaded: number;
   total?: number;
   percent: number;
+};
+
+export type UploadQueueItemStatus = "queued" | "uploading" | "done" | "failed" | "skipped" | "cancelled";
+
+export type UploadQueueItem = {
+  id: string;
+  file: File;
+  remoteDirectory: string;
+  relativePath: string;
+  status: UploadQueueItemStatus;
+  progress: number;
+  error?: string;
+  skipReason?: string;
 };
 
 export type RuntimeStorage = {
@@ -234,6 +251,7 @@ export type RuntimeTransport = {
   closeSshSession(sessionId: string): Promise<void>;
   onSshSessionEvent(sessionId: string, handler: (event: SshSessionEvent) => void): Promise<() => void>;
   openSystemSshTerminal(request: SshConnectionRequest): Promise<void>;
+  openVscodeSsh(request: SshConnectionRequest): Promise<void>;
 };
 
 export type SshConnectionRequest = {

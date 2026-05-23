@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    name: Release Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify
+        run: |
+          npm run typecheck
+          npm run typecheck:tools
+          npm run lint
+          npm run test
+
+      - name: Build desktop bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}
+          releaseName: EasyConsole ${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}
+          releaseDraft: true
+          prerelease: false
+
+      - name: Upload sidecar artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: easy-console-sidecars-windows-x64
+          path: build/sidecars/*.exe
+
+      - name: Upload portable desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: easy-console-portable-windows-x64
+          path: |
+            src-tauri/target/release/EasyConsole.exe
+            build/sidecars/*.exe

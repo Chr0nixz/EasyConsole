@@ -1,0 +1,4 @@
+interface:
+  display_name: "EasyConsole AI"
+  short_description: "Use EasyConsole CLI and MCP tools safely."
+  default_prompt: "Use EasyConsole AI to inspect and manage EasyConsole tasks, storage, images, and monitor URLs."

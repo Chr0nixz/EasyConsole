@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { browserRuntime } from "../../lib/runtime";
@@ -53,17 +53,26 @@ describe("TerminalDialog", () => {
     expect(screen.getByText("ubuntu")).toBeInTheDocument();
     expect(screen.getByText("ssh -p 30222 ubuntu@10.0.0.8")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "应用内 SSH" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "VS Code" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "系统终端" })).not.toBeInTheDocument();
   });
 
-  it("shows both desktop SSH entry points in the desktop runtime", () => {
+  it("shows desktop SSH entry points in the desktop runtime", async () => {
     setDesktopRuntime(true);
     const openSystemSshTerminal = vi.spyOn(browserRuntime, "openSystemSshTerminal").mockResolvedValue(undefined);
+    const openVscodeSsh = vi.spyOn(browserRuntime, "openVscodeSsh").mockResolvedValue(undefined);
     renderDialog();
 
     expect(screen.getByRole("button", { name: "应用内 SSH" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "VS Code" }));
     fireEvent.click(screen.getByRole("button", { name: "系统终端" }));
 
+    await waitFor(() => {
+      expect(openVscodeSsh).toHaveBeenCalledWith(
+        expect.objectContaining({ taskId: "task-1", command: "ssh -p 30222 ubuntu@10.0.0.8" }),
+      );
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "VS Code" })).toBeEnabled());
     expect(openSystemSshTerminal).toHaveBeenCalledWith(
       expect.objectContaining({ taskId: "task-1", command: "ssh -p 30222 ubuntu@10.0.0.8" }),
     );

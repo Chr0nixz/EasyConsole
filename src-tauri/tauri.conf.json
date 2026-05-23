@@ -1,13 +1,14 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "EasyConsole",
+  "mainBinaryName": "EasyConsole",
   "version": "0.1.0",
   "identifier": "com.easyconsole.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:1420",
     "beforeDevCommand": "npm.cmd run dev:tauri",
-    "beforeBuildCommand": "npm.cmd run build:web"
+    "beforeBuildCommand": "npm.cmd run build:desktop"
   },
   "app": {
     "windows": [
@@ -22,12 +23,16 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost blob: data:; font-src 'self' data:; connect-src 'self' http://116.172.93.164:28080 http://116.172.93.164:33000 ws://116.172.93.164:28080 http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/easy-console",
+      "binaries/easy-console-mcp"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

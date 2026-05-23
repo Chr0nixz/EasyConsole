@@ -22,10 +22,11 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useSearchParams } from "react-router-dom";
 
-import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
+import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
 import { CreateTaskDialog } from "../components/tasks/CreateTaskDialog";
@@ -34,10 +35,19 @@ import { Button, Dialog, Input, Panel, Select } from "../components/ui";
 import { instanceApi } from "../lib/api";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { saveBlob } from "../lib/download";
-import { asJson, formatSecondsDuration, getTaskName } from "../lib/format";
+import { asJson, formatSecondsDuration, getTaskName, taskStatusText } from "../lib/format";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
 import { filterAndSortTasks } from "../lib/task-search";
+import {
+  parseTaskListQuery,
+  serializeTaskListQuery,
+  TASK_PAGE_SIZE_OPTIONS,
+  taskMatchesQuery,
+  toTaskApiQuery,
+  type TaskListQueryState,
+} from "../lib/task-list-query";
 import type { Task } from "../lib/types";
+import { useConfirmAction } from "../lib/use-confirm-action";
 import { useToast } from "../lib/use-toast";
 
 const columnHelper = createColumnHelper<Task>();
@@ -46,7 +56,6 @@ const COLUMN_VISIBILITY_KEY = "easy-console.tasks.columnVisibility";
 const AUTO_REFRESH_KEY = "easy-console.tasks.autoRefresh";
 const AUTO_REFRESH_INTERVAL_KEY = "easy-console.tasks.autoRefreshInterval";
 const DEFAULT_AUTO_REFRESH_INTERVAL = 10_000;
-const TASK_LIST_PAGE_SIZE = 500;
 const autoRefreshOptions = [
   { label: "5 秒", value: 5_000 },
   { label: "10 秒", value: 10_000 },
@@ -176,6 +185,16 @@ function loadNumberSetting(key: string, fallback: number) {
   }
 }
 
+function taskQueryKey(state: TaskListQueryState) {
+  return [
+    "tasks",
+    state.page,
+    state.pageSize,
+    state.keyword,
+    state.status,
+  ];
+}
+
 function MoreActionsMenu({
   task,
   onRaw,
@@ -287,7 +306,9 @@ function MoreActionsMenu({
 export function TasksPage() {
   const queryClient = useQueryClient();
   const toast = useToast();
-  const [keyword, setKeyword] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const queryState = useMemo(() => parseTaskListQuery(searchParams), [searchParams]);
+  const { confirm, confirmDialog } = useConfirmAction();
   const [createOpen, setCreateOpen] = useState(false);
   const [cloneTask, setCloneTask] = useState<Task | null>(null);
   const [logTask, setLogTask] = useState<Task | null>(null);
@@ -300,6 +321,12 @@ export function TasksPage() {
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(() =>
     loadNumberSetting(AUTO_REFRESH_INTERVAL_KEY, DEFAULT_AUTO_REFRESH_INTERVAL),
   );
+
+  const updateTaskQuery = useCallback((patch: Partial<TaskListQueryState>) => {
+    const next = { ...queryState, ...patch };
+    if (!("page" in patch)) next.page = 1;
+    setSearchParams(serializeTaskListQuery(next), { replace: true });
+  }, [queryState, setSearchParams]);
 
   const deleteMutation = useMutation({
     mutationFn: (task: Task) => instanceApi.deleteTask(task.id),
@@ -354,20 +381,26 @@ export function TasksPage() {
   const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending;
   const autoRefreshPaused = batchPending || createOpen || Boolean(logTask) || Boolean(terminalTask) || Boolean(rawTask) || columnSettingsOpen;
   const query = useQuery({
-    queryKey: ["tasks"],
-    queryFn: () => instanceApi.tasks({ page: 1, page_size: TASK_LIST_PAGE_SIZE }),
+    queryKey: taskQueryKey(queryState),
+    queryFn: () => instanceApi.tasks(toTaskApiQuery(queryState)),
     refetchInterval: autoRefresh && !autoRefreshPaused ? autoRefreshInterval : false,
     refetchIntervalInBackground: false,
   });
 
   const filteredTasks = useMemo(() => {
     const tasks = query.data?.items ?? [];
-    return filterAndSortTasks(tasks, keyword);
-  }, [keyword, query.data?.items]);
+    return filterAndSortTasks(tasks.filter((task) => taskMatchesQuery(task, queryState)), queryState.keyword);
+  }, [query.data?.items, queryState]);
 
-  const handleDownloadTask = (task: Task) => {
-    void instanceApi.downloadTask({ task_id: task.id }).then((blob) => saveBlob(blob, `${getTaskName(task)}.zip`));
-  };
+  const handleDownloadTask = useCallback((task: Task) => {
+    void instanceApi
+      .downloadTask({ task_id: task.id })
+      .then((blob) => saveBlob(blob, `${getTaskName(task)}.zip`))
+      .then(() => toast.success("任务文件已下载", getTaskName(task)))
+      .catch((error) => {
+        toast.error("任务下载失败", error instanceof Error ? error.message : "请稍后重试");
+      });
+  }, [toast]);
 
   const openCreateTask = () => {
     setCloneTask(null);
@@ -383,6 +416,46 @@ export function TasksPage() {
     setCreateOpen(false);
     setCloneTask(null);
   };
+
+  const confirmReleaseTask = useCallback((task: Task) => {
+    confirm({
+      title: "确认释放实例",
+      description: `将释放 ${getTaskName(task)}。释放后实例会停止运行，请确认当前任务状态。`,
+      confirmLabel: "释放",
+      tone: "danger",
+      run: () => releaseMutation.mutateAsync(task),
+    });
+  }, [confirm, releaseMutation]);
+
+  const confirmDeleteTask = useCallback((task: Task) => {
+    confirm({
+      title: "确认删除实例",
+      description: `将删除 ${getTaskName(task)}。此操作不可从 EasyConsole 撤销。`,
+      confirmLabel: "删除",
+      tone: "danger",
+      run: () => deleteMutation.mutateAsync(task),
+    });
+  }, [confirm, deleteMutation]);
+
+  const confirmBatchRelease = useCallback((tasks: Task[]) => {
+    confirm({
+      title: "确认批量释放",
+      description: `将按顺序释放 ${tasks.length} 个运行中实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms。`,
+      confirmLabel: "批量释放",
+      tone: "danger",
+      run: () => batchReleaseMutation.mutateAsync(tasks),
+    });
+  }, [batchReleaseMutation, confirm]);
+
+  const confirmBatchDelete = useCallback((tasks: Task[]) => {
+    confirm({
+      title: "确认批量删除",
+      description: `将按顺序删除 ${tasks.length} 个非运行实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms。`,
+      confirmLabel: "批量删除",
+      tone: "danger",
+      run: () => batchDeleteMutation.mutateAsync(tasks),
+    });
+  }, [batchDeleteMutation, confirm]);
 
   const columns = useMemo(
     () => [
@@ -499,7 +572,7 @@ export function TasksPage() {
                   disabled={releaseMutation.isPending}
                   title="释放"
                   variant="ghost"
-                  onClick={() => releaseMutation.mutate(task)}
+                  onClick={() => confirmReleaseTask(task)}
                 >
                   <Power className="h-4 w-4" />
                   释放
@@ -510,7 +583,7 @@ export function TasksPage() {
                   disabled={deleteMutation.isPending}
                   title="删除"
                   variant="ghost"
-                  onClick={() => deleteMutation.mutate(task)}
+                  onClick={() => confirmDeleteTask(task)}
                 >
                   <Trash2 className="h-4 w-4" />
                   删除
@@ -522,7 +595,7 @@ export function TasksPage() {
         },
       }),
     ],
-    [deleteMutation, releaseMutation],
+    [confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, releaseMutation.isPending],
   );
 
   const table = useReactTable({
@@ -555,6 +628,14 @@ export function TasksPage() {
   const selectedTasks = table.getSelectedRowModel().flatRows.map((row) => row.original);
   const selectedRunningTasks = selectedTasks.filter(isRunningTask);
   const selectedStoppedTasks = selectedTasks.filter((task) => !isRunningTask(task));
+  const total = query.data?.total;
+  const hasKnownTotal = typeof total === "number";
+  const totalPages = hasKnownTotal ? Math.max(1, Math.ceil(total / queryState.pageSize)) : undefined;
+  const hasNextPage = hasKnownTotal ? queryState.page < (totalPages ?? 1) : (query.data?.items.length ?? 0) >= queryState.pageSize;
+
+  useEffect(() => {
+    setRowSelection({});
+  }, [queryState.page, queryState.pageSize, queryState.keyword, queryState.status]);
 
   return (
     <div className="space-y-4">
@@ -562,8 +643,21 @@ export function TasksPage() {
         <div className="flex items-center gap-2">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" />
-            <Input className="w-72 pl-9" placeholder="搜索实例名称" value={keyword} onChange={(event) => setKeyword(event.target.value)} />
+            <Input
+              className="w-64 pl-9"
+              placeholder="搜索实例名称"
+              value={queryState.keyword}
+              onChange={(event) => updateTaskQuery({ keyword: event.target.value })}
+            />
           </div>
+          <Select className="w-32" value={queryState.status} onChange={(event) => updateTaskQuery({ status: event.target.value })}>
+            <option value="">全部状态</option>
+            {Object.entries(taskStatusText).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
           <Button variant="secondary" onClick={() => query.refetch()}>
             <RefreshCw className="h-4 w-4" />
             刷新
@@ -615,7 +709,7 @@ export function TasksPage() {
               <Button
                 disabled={batchPending}
                 variant="secondary"
-                onClick={() => batchReleaseMutation.mutate(selectedRunningTasks)}
+                onClick={() => confirmBatchRelease(selectedRunningTasks)}
               >
                 <Power className="h-4 w-4 text-app-warning" />
                 批量释放 {selectedRunningTasks.length}
@@ -626,7 +720,7 @@ export function TasksPage() {
                 className="border-app-danger text-app-danger hover:text-app-danger"
                 disabled={batchPending}
                 variant="secondary"
-                onClick={() => batchDeleteMutation.mutate(selectedStoppedTasks)}
+                onClick={() => confirmBatchDelete(selectedStoppedTasks)}
               >
                 <Trash2 className="h-4 w-4" />
                 批量删除 {selectedStoppedTasks.length}
@@ -641,11 +735,11 @@ export function TasksPage() {
 
       <Panel className="overflow-hidden">
         {query.isLoading ? (
-          <LoadingState />
+          <TableSkeleton columns={7} />
         ) : query.isError ? (
           <ErrorState error={query.error} action={<Button variant="secondary" onClick={() => query.refetch()}>重试</Button>} />
-        ) : table.getRowModel().rows.length === 0 && keyword.trim() ? (
-          <EmptyState title="未找到匹配实例" action={<Button variant="secondary" onClick={() => setKeyword("")}>清空搜索</Button>} />
+        ) : table.getRowModel().rows.length === 0 && queryState.keyword.trim() ? (
+          <EmptyState title="未找到匹配实例" action={<Button variant="secondary" onClick={() => updateTaskQuery({ keyword: "" })}>清空搜索</Button>} />
         ) : table.getRowModel().rows.length === 0 ? (
           <EmptyState title="暂无任务实例" action={<Button onClick={openCreateTask}>新建任务</Button>} />
         ) : (
@@ -694,6 +788,44 @@ export function TasksPage() {
         )}
       </Panel>
 
+      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-app-muted">
+        <div>
+          {hasKnownTotal
+            ? `共 ${total} 个实例，第 ${queryState.page} / ${totalPages} 页`
+            : `第 ${queryState.page} 页，当前返回 ${query.data?.items.length ?? 0} 个实例`}
+        </div>
+        <div className="flex items-center gap-2">
+          <span>每页</span>
+          <Select
+            className="w-24"
+            value={String(queryState.pageSize)}
+            onChange={(event) => updateTaskQuery({ pageSize: Number(event.target.value) })}
+          >
+            {TASK_PAGE_SIZE_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </Select>
+          <Button
+            disabled={queryState.page <= 1 || query.isFetching}
+            type="button"
+            variant="secondary"
+            onClick={() => updateTaskQuery({ page: Math.max(1, queryState.page - 1) })}
+          >
+            上一页
+          </Button>
+          <Button
+            disabled={!hasNextPage || query.isFetching}
+            type="button"
+            variant="secondary"
+            onClick={() => updateTaskQuery({ page: queryState.page + 1 })}
+          >
+            下一页
+          </Button>
+        </div>
+      </div>
+
       <CreateTaskDialog initialTask={cloneTask} open={createOpen} onClose={closeCreateTask} />
       <TaskLogDialog task={logTask} onClose={() => setLogTask(null)} />
       <Suspense fallback={null}>
@@ -730,6 +862,7 @@ export function TasksPage() {
           </div>
         </div>
       </Dialog>
+      {confirmDialog}
     </div>
   );
 }

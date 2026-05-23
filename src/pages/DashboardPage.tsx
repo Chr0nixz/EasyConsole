@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Clock, Coins, Server, type LucideIcon } from "lucide-react";
+import { Activity, Braces, Clock, Coins, Server, type LucideIcon } from "lucide-react";
+import { useState } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
-import { Panel } from "../components/ui";
+import { Button, Panel } from "../components/ui";
 import { instanceApi } from "../lib/api";
-import { formatCost, formatNumber, formatSecondsDuration, getTaskName } from "../lib/format";
+import { asJson, formatCost, formatNumber, formatSecondsDuration, getTaskName } from "../lib/format";
 import type { ConsoleSummary, Task } from "../lib/types";
 
 function StatTile({ label, value, icon: Icon }: { label: string; value: string; icon: LucideIcon }) {
@@ -33,6 +34,7 @@ function toTasks(raw: unknown): Task[] {
 }
 
 export function DashboardPage() {
+  const [rawOpen, setRawOpen] = useState(false);
   const consoleQuery = useQuery({ queryKey: ["console"], queryFn: instanceApi.console });
   const staticsQuery = useQuery({ queryKey: ["statics"], queryFn: () => instanceApi.statics({}) });
 
@@ -67,9 +69,18 @@ export function DashboardPage() {
       </div>
 
       <Panel>
-        <div className="border-b border-app-border px-4 py-3 text-sm font-semibold">最近任务</div>
+        <div className="flex items-center justify-between border-b border-app-border px-4 py-3">
+          <div className="text-sm font-semibold">最近任务</div>
+          {staticsQuery.isError ? (
+            <Button className="h-8" variant="secondary" onClick={() => staticsQuery.refetch()}>
+              重试
+            </Button>
+          ) : null}
+        </div>
         {staticsQuery.isLoading ? (
           <LoadingState label="正在加载任务" />
+        ) : staticsQuery.isError ? (
+          <ErrorState error={staticsQuery.error} action={<Button variant="secondary" onClick={() => staticsQuery.refetch()}>重试</Button>} />
         ) : recentTasks.length > 0 ? (
           <div className="overflow-auto">
             <table className="w-full min-w-[720px] text-sm">
@@ -104,6 +115,36 @@ export function DashboardPage() {
         ) : (
           <EmptyState title="暂无最近任务" />
         )}
+      </Panel>
+
+      <Panel>
+        <button
+          className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-semibold text-app-text hover:bg-app-panel"
+          type="button"
+          onClick={() => setRawOpen((value) => !value)}
+        >
+          <span className="inline-flex items-center gap-2">
+            <Braces className="h-4 w-4 text-app-accent" />
+            原始响应
+          </span>
+          <span className="text-xs font-normal text-app-muted">{rawOpen ? "收起" : "展开"}</span>
+        </button>
+        {rawOpen ? (
+          <div className="grid gap-3 border-t border-app-border p-4 lg:grid-cols-2">
+            <div>
+              <div className="mb-2 text-xs font-medium text-app-muted">/instance/console</div>
+              <pre className="max-h-96 overflow-auto rounded-md bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-100">
+                {asJson(consoleQuery.data)}
+              </pre>
+            </div>
+            <div>
+              <div className="mb-2 text-xs font-medium text-app-muted">/instance/statics</div>
+              <pre className="max-h-96 overflow-auto rounded-md bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-100">
+                {asJson(staticsQuery.data ?? null)}
+              </pre>
+            </div>
+          </div>
+        ) : null}
       </Panel>
     </div>
   );

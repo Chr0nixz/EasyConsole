@@ -1,6 +1,8 @@
 import { ApiError, type ApiEnvelope, type RuntimeTransport, type UnknownRecord } from "./types";
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://116.172.93.164:28080/api";
+export const DEFAULT_API_BASE_URL = "http://116.172.93.164:28080/api";
+export const API_BASE_URL =
+  ((import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL || DEFAULT_API_BASE_URL);
 export const TOKEN_STORAGE_KEY = "easy-console.token";
 export const UNAUTHORIZED_EVENT = "easy-console:unauthorized";
 

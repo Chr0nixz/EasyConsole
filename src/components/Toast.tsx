@@ -15,9 +15,9 @@ function iconFor(kind: ToastKind) {
 }
 
 function getToastClasses(kind: ToastKind) {
-  if (kind === "success") return "border-l-app-success";
-  if (kind === "error") return "border-l-app-danger";
-  return "border-l-app-accent";
+  if (kind === "success") return "border-app-success/40 bg-emerald-50";
+  if (kind === "error") return "border-app-danger/40 bg-red-50";
+  return "border-app-accent/35 bg-sky-50";
 }
 
 export function ToastProvider({ children }: { children: ReactNode }) {
@@ -54,7 +54,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           <div
             key={toast.id}
             className={cn(
-              "rounded-md border border-l-4 border-app-border bg-app-surface p-3 shadow-popover",
+              "rounded-md border p-3 shadow-popover",
               getToastClasses(toast.kind),
             )}
           >

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Eye, FileText, Folder, FolderOpen, FolderPlus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { useMemo, useRef, useState, type ChangeEvent } from "react";
 
-import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
+import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
 import { saveBlob } from "../lib/download";
 import { formatBytes } from "../lib/format";
@@ -16,7 +16,10 @@ import {
   joinStoragePath,
   remoteStorage,
 } from "../lib/remote-storage";
-import type { StorageEntry } from "../lib/types";
+import { createUploadQueueItems, summarizeUploadQueue } from "../lib/upload-queue";
+import type { StorageEntry, UploadQueueItem } from "../lib/types";
+import { useConfirmAction } from "../lib/use-confirm-action";
+import { useToast } from "../lib/use-toast";
 
 type StorageSortField = "name" | "size" | "modified" | "type";
 type StorageSortDirection = "asc" | "desc";
@@ -31,44 +34,28 @@ function getDirectoryDownloadName(entry: StorageEntry) {
 
 export function StoragePage() {
   const queryClient = useQueryClient();
+  const toast = useToast();
+  const { confirm, confirmDialog } = useConfirmAction();
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadCancelledRef = useRef(false);
   const [path, setPath] = useState("/");
   const [mkdirName, setMkdirName] = useState("");
   const [mkdirOpen, setMkdirOpen] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState("");
   const [sortField, setSortField] = useState<StorageSortField>("name");
   const [sortDirection, setSortDirection] = useState<StorageSortDirection>("asc");
-  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
-  const [uploadError, setUploadError] = useState<unknown | null>(null);
+  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [preview, setPreview] = useState<{ title: string; content: string } | null>(null);
+  const [directorySizes, setDirectorySizes] = useState<Record<string, { status: "done" | "loading" | "error"; size?: number; error?: string }>>({});
   const crumbs = useMemo(() => getStorageBreadcrumbs(path), [path]);
   const query = useQuery({ queryKey: ["storage", path], queryFn: () => remoteStorage.list({ path }) });
   const entries = useMemo(() => query.data?.items ?? [], [query.data?.items]);
-  const directoryEntries = useMemo(() => entries.filter((entry) => isStorageDirectory(entry, path)), [entries, path]);
-  const directorySizeQuery = useQuery({
-    queryKey: ["storage-directory-sizes", path, directoryEntries.map((entry) => getStorageEntryPath(entry, path)).join("|")],
-    queryFn: async () => {
-      const sizes: Record<string, number | null> = {};
-      for (const entry of directoryEntries) {
-        const entryPath = getStorageEntryPath(entry, path);
-        try {
-          sizes[entryPath] = await remoteStorage.getDirectorySize(entryPath);
-        } catch {
-          sizes[entryPath] = null;
-        }
-      }
-      return sizes;
-    },
-    enabled: directoryEntries.length > 0,
-    retry: 1,
-    staleTime: 30_000,
-  });
-  const directorySizeMap = useMemo(() => directorySizeQuery.data ?? {}, [directorySizeQuery.data]);
+  const uploadSummary = useMemo(() => summarizeUploadQueue(uploadQueue), [uploadQueue]);
   const visibleEntries = useMemo(() => {
     const normalizedKeyword = searchKeyword.trim().toLowerCase();
     const entrySizeForSort = (entry: StorageEntry) => {
       const entryPath = getStorageEntryPath(entry, path);
-      if (isStorageDirectory(entry, path)) return typeof directorySizeMap[entryPath] === "number" ? directorySizeMap[entryPath] : -1;
+      if (isStorageDirectory(entry, path)) return directorySizes[entryPath]?.size ?? getStorageEntrySize(entry) ?? -1;
       return getStorageEntrySize(entry) ?? -1;
     };
     return entries
@@ -88,7 +75,7 @@ export function StoragePage() {
         if (sortField === "modified") result = getStorageEntryModifiedTime(left) - getStorageEntryModifiedTime(right) || compareText(left.name, right.name);
         return sortDirection === "asc" ? result : -result;
       });
-  }, [directorySizeMap, entries, path, searchKeyword, sortDirection, sortField]);
+  }, [directorySizes, entries, path, searchKeyword, sortDirection, sortField]);
 
   const mkdirMutation = useMutation({
     mutationFn: () => remoteStorage.createDirectory(joinStoragePath(path, mkdirName)),
@@ -100,26 +87,77 @@ export function StoragePage() {
 
   const deleteMutation = useMutation({
     mutationFn: (entry: StorageEntry) => remoteStorage.remove(getStorageEntryPath(entry, path), isStorageDirectory(entry, path)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["storage"] }),
+    onSuccess: (_data, entry) => {
+      toast.success("远程文件已删除", entry.name);
+      queryClient.invalidateQueries({ queryKey: ["storage"] });
+    },
+    onError: (error, entry) => {
+      toast.error("远程删除失败", `${entry.name}：${error instanceof Error ? error.message : "请稍后重试"}`);
+    },
   });
 
   const previewMutation = useMutation({
     mutationFn: (entry: StorageEntry) => remoteStorage.readTextFile(getStorageEntryPath(entry, path)),
     onSuccess: (content, entry) => setPreview({ title: entry.name, content }),
+    onError: (error, entry) => {
+      toast.error("读取远程文件失败", `${entry.name}：${error instanceof Error ? error.message : "请稍后重试"}`);
+    },
   });
+
+  async function runUploadQueue(items: UploadQueueItem[]) {
+    uploadCancelledRef.current = false;
+    setUploadQueue(items);
+    try {
+      const directories = [...new Set(items.filter((item) => item.status !== "skipped").map((item) => item.remoteDirectory))]
+        .filter((directory) => directory !== "/")
+        .sort((left, right) => left.split("/").length - right.split("/").length);
+      for (const directory of directories) {
+        try {
+          await remoteStorage.createDirectory(directory);
+        } catch {
+          // Existing directories can be reused during recursive uploads.
+        }
+      }
+      for (const item of items) {
+        if (item.status === "skipped") continue;
+        if (uploadCancelledRef.current) {
+          setUploadQueue((current) =>
+            current.map((queueItem) => (queueItem.status === "queued" ? { ...queueItem, status: "cancelled" } : queueItem)),
+          );
+          break;
+        }
+        setUploadQueue((current) =>
+          current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "uploading", progress: 1, error: undefined } : queueItem)),
+        );
+        try {
+          await remoteStorage.uploadLocalFile(item.file, item.remoteDirectory, (progress) => {
+            setUploadQueue((current) =>
+              current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, progress: progress.percent } : queueItem)),
+            );
+          });
+          setUploadQueue((current) =>
+            current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "done", progress: 100 } : queueItem)),
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "上传失败";
+          setUploadQueue((current) =>
+            current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "failed", error: message } : queueItem)),
+          );
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: ["storage"] });
+      toast.success("上传队列已处理", `${items.length} 个文件`);
+    } finally {
+      uploadCancelledRef.current = false;
+    }
+  }
 
   async function upload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    setUploadError(null);
-    setUploadPercent(1);
     try {
-      await remoteStorage.uploadLocalFile(file, path, (progress) => setUploadPercent(progress.percent));
-      queryClient.invalidateQueries({ queryKey: ["storage"] });
-    } catch (error) {
-      setUploadError(error);
+      await runUploadQueue(createUploadQueueItems([file], path));
     } finally {
-      setUploadPercent(null);
       event.target.value = "";
     }
   }
@@ -128,17 +166,22 @@ export function StoragePage() {
     const files = Array.from(event.target.files ?? []);
     if (files.length === 0) return;
 
-    setUploadError(null);
-    setUploadPercent(1);
     try {
-      await remoteStorage.uploadLocalFiles(files, path, (progress) => setUploadPercent(progress.percent));
-      queryClient.invalidateQueries({ queryKey: ["storage"] });
-    } catch (error) {
-      setUploadError(error);
+      await runUploadQueue(createUploadQueueItems(files, path));
     } finally {
-      setUploadPercent(null);
       event.target.value = "";
     }
+  }
+
+  function retryFailedUploads() {
+    const failed = uploadQueue.filter((item) => item.status === "failed").map((item) => ({ ...item, status: "queued" as const, progress: 0, error: undefined }));
+    if (failed.length === 0) return;
+    void runUploadQueue(failed);
+  }
+
+  function cancelPendingUploads() {
+    uploadCancelledRef.current = true;
+    setUploadQueue((items) => items.map((item) => (item.status === "queued" ? { ...item, status: "cancelled" } : item)));
   }
 
   function openFolderUploadDialog() {
@@ -154,6 +197,44 @@ export function StoragePage() {
     mkdirMutation.mutate(undefined, {
       onSuccess: () => setMkdirOpen(false),
     });
+  }
+
+  function calculateDirectorySize(entryPath: string) {
+    setDirectorySizes((current) => ({ ...current, [entryPath]: { status: "loading" } }));
+    void remoteStorage
+      .getDirectorySize(entryPath)
+      .then((size) => {
+        setDirectorySizes((current) => ({ ...current, [entryPath]: { status: "done", size } }));
+      })
+      .catch((error) => {
+        setDirectorySizes((current) => ({
+          ...current,
+          [entryPath]: { status: "error", error: error instanceof Error ? error.message : "计算失败" },
+        }));
+      });
+  }
+
+  function confirmDeleteEntry(entry: StorageEntry) {
+    const entryPath = getStorageEntryPath(entry, path);
+    confirm({
+      title: "确认删除远程路径",
+      description: `将删除 ${entryPath}，此操作不可从 EasyConsole 撤销。`,
+      confirmLabel: "删除",
+      tone: "danger",
+      run: () => deleteMutation.mutateAsync(entry),
+    });
+  }
+
+  function downloadEntry(entry: StorageEntry, entryPath: string) {
+    const directory = isStorageDirectory(entry, path);
+    const download = directory ? remoteStorage.downloadRemotePath(entryPath) : remoteStorage.downloadRemoteFile(entryPath);
+    const filename = directory ? getDirectoryDownloadName(entry) : entry.name;
+    void download
+      .then((blob) => saveBlob(blob, filename))
+      .then(() => toast.success("远程文件已下载", filename))
+      .catch((error) => {
+        toast.error("远程下载失败", error instanceof Error ? error.message : "请稍后重试");
+      });
   }
 
   return (
@@ -209,15 +290,42 @@ export function StoragePage() {
         </div>
       </div>
 
-      {uploadPercent !== null ? (
-        <div className="rounded-md border border-app-border bg-app-surface px-3 py-2 text-sm text-app-muted">上传进度 {uploadPercent}%</div>
+      {uploadQueue.length > 0 ? (
+        <Panel className="space-y-3 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+            <div className="text-app-muted">
+              上传队列 {uploadSummary.completed}/{uploadSummary.total}，失败 {uploadSummary.failed}，跳过 {uploadSummary.skipped}
+              {uploadSummary.cancelled ? `，取消 ${uploadSummary.cancelled}` : ""}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button disabled={!uploadSummary.active} type="button" variant="secondary" onClick={cancelPendingUploads}>
+                取消后续
+              </Button>
+              <Button disabled={uploadSummary.failed === 0 || uploadSummary.active} type="button" variant="secondary" onClick={retryFailedUploads}>
+                重试失败
+              </Button>
+            </div>
+          </div>
+          <div className="h-2 overflow-hidden rounded bg-app-panel">
+            <div className="h-full bg-app-accent transition-all" style={{ width: `${uploadSummary.percent}%` }} />
+          </div>
+          <div className="max-h-40 overflow-auto rounded-md border border-app-border">
+            {uploadQueue.map((item) => (
+              <div key={item.id} className="grid gap-2 border-b border-app-border px-3 py-2 text-xs last:border-0 sm:grid-cols-[1fr_6rem_4rem]">
+                <span className="truncate font-mono text-app-text">{item.relativePath}</span>
+                <span className="text-app-muted">{item.status}</span>
+                <span className={item.status === "failed" ? "text-app-danger" : "text-app-muted"}>
+                  {item.error ?? item.skipReason ?? `${item.progress}%`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Panel>
       ) : null}
-
-      {uploadError ? <ErrorState error={uploadError} /> : null}
 
       <Panel className="overflow-hidden">
         {query.isLoading ? (
-          <LoadingState />
+          <TableSkeleton columns={5} />
         ) : query.isError ? (
           <ErrorState error={query.error} />
         ) : visibleEntries.length === 0 && searchKeyword.trim() ? (
@@ -240,14 +348,16 @@ export function StoragePage() {
                 const directory = isStorageDirectory(entry, path);
                 const entryPath = getStorageEntryPath(entry, path);
                 const directSize = getStorageEntrySize(entry);
-                const directorySize = directorySizeMap[entryPath];
-                const entrySize = directory ? directorySize : directSize;
+                const directorySize = directorySizes[entryPath];
+                const entrySize = directory ? directorySize?.size ?? directSize : directSize;
                 const entrySizeText =
-                  entrySize === undefined || entrySize === null
-                    ? directory && directorySizeQuery.isFetching
-                      ? "计算中"
-                      : "-"
-                    : formatBytes(entrySize);
+                  directory && directorySize?.status === "loading"
+                    ? "计算中"
+                    : directory && directorySize?.status === "error"
+                      ? "计算失败"
+                      : entrySize === null
+                        ? "-"
+                        : formatBytes(entrySize);
                 return (
                   <tr key={entryPath} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
                     <td className="px-3 py-2">
@@ -261,7 +371,22 @@ export function StoragePage() {
                       </button>
                     </td>
                     <td className="px-3 py-2 text-app-muted">{directory ? "目录" : "文件"}</td>
-                    <td className="px-3 py-2 text-app-muted">{entrySizeText}</td>
+                    <td className="px-3 py-2 text-app-muted">
+                      <div className="flex items-center gap-2">
+                        <span>{entrySizeText}</span>
+                        {directory ? (
+                          <Button
+                            className="h-7 px-2 text-xs"
+                            disabled={directorySize?.status === "loading"}
+                            type="button"
+                            variant="ghost"
+                            onClick={() => calculateDirectorySize(entryPath)}
+                          >
+                            {directorySize?.status === "error" ? "重试" : "计算"}
+                          </Button>
+                        ) : null}
+                      </div>
+                    </td>
                     <td className="px-3 py-2 text-app-muted">{getStorageEntryModified(entry)}</td>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap gap-1">
@@ -275,7 +400,7 @@ export function StoragePage() {
                               className="h-8 px-2"
                               variant="ghost"
                               title="整体下载远程文件夹"
-                              onClick={() => void remoteStorage.downloadRemotePath(entryPath).then((blob) => saveBlob(blob, getDirectoryDownloadName(entry)))}
+                              onClick={() => downloadEntry(entry, entryPath)}
                             >
                               <Download className="h-4 w-4" />
                               下载
@@ -287,7 +412,7 @@ export function StoragePage() {
                               className="h-8 px-2"
                               variant="ghost"
                               title="下载远程文件到本地"
-                              onClick={() => void remoteStorage.downloadRemoteFile(entryPath).then((blob) => saveBlob(blob, entry.name))}
+                              onClick={() => downloadEntry(entry, entryPath)}
                             >
                               <Download className="h-4 w-4" />
                               下载
@@ -298,7 +423,7 @@ export function StoragePage() {
                             </Button>
                           </>
                         )}
-                        <Button className="h-8 px-2" variant="ghost" title="删除远程文件或目录" onClick={() => deleteMutation.mutate(entry)}>
+                        <Button className="h-8 px-2" variant="ghost" title="删除远程文件或目录" onClick={() => confirmDeleteEntry(entry)}>
                           <Trash2 className="h-4 w-4 text-app-danger" />
                           删除
                         </Button>
@@ -343,6 +468,7 @@ export function StoragePage() {
           </div>
         </div>
       </Dialog>
+      {confirmDialog}
     </div>
   );
 }

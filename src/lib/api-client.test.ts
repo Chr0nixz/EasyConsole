@@ -52,6 +52,7 @@ function createRuntime() {
       return () => {};
     },
     async openSystemSshTerminal() {},
+    async openVscodeSsh() {},
   };
   return { runtime, calls };
 }

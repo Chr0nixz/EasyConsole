@@ -25,8 +25,10 @@ Thumbs.db
 .vscode/
 
 # Tauri/Rust build output
+build/
 src-tauri/target/
 src-tauri/gen/schemas/
+src-tauri/binaries/
 
 # Generated desktop installers
 *.msi

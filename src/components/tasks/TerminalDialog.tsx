@@ -1,4 +1,4 @@
-import { Copy, KeyRound, Server, Terminal } from "lucide-react";
+import { Code2, Copy, KeyRound, Server, Terminal } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { getTaskName } from "../../lib/format";
@@ -45,6 +45,7 @@ function InfoRow({
 export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: () => void }) {
   const toast = useToast();
   const [appSshRequest, setAppSshRequest] = useState<SshConnectionRequest | null>(null);
+  const [isOpeningVscode, setIsOpeningVscode] = useState(false);
   const sshInfo = useMemo(() => (task ? buildTaskSshInfo(task) : null), [task]);
   const canConnect = Boolean(sshInfo && sshInfo.host !== "-" && sshInfo.command !== "-");
 
@@ -73,6 +74,20 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
       });
   };
 
+  const openVscodeSsh = () => {
+    if (!sshInfo || !canConnect || isOpeningVscode) return;
+    const request = toSshConnectionRequest(sshInfo);
+    setIsOpeningVscode(true);
+    void browserRuntime
+      .openVscodeSsh(request)
+      .then(() => toast.success("已打开 VS Code", sshInfo.taskName))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "请确认已安装 VS Code 和 Remote - SSH 扩展";
+        toast.error("VS Code 打开失败", message);
+      })
+      .finally(() => setIsOpeningVscode(false));
+  };
+
   return (
     <>
       <Dialog
@@ -99,6 +114,10 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
                     <Terminal className="h-4 w-4" />
                     应用内 SSH
                   </Button>
+                  <Button disabled={!canConnect || isOpeningVscode} type="button" variant="secondary" onClick={openVscodeSsh}>
+                    <Code2 className="h-4 w-4" />
+                    {isOpeningVscode ? "配置中" : "VS Code"}
+                  </Button>
                   <Button disabled={!canConnect} type="button" onClick={openSystemSsh}>
                     <Terminal className="h-4 w-4" />
                     系统终端
@@ -123,7 +142,7 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
               <Terminal className="h-4 w-4 text-app-accent" />
               <p className="leading-5">
                 {browserRuntime.isDesktop
-                  ? "桌面端可选择应用内 SSH 自动登录，或打开系统终端后手动输入密码；网页端请复制 SSH 命令后在本机终端中执行。"
+                  ? "桌面端可选择应用内 SSH 自动登录、通过 VS Code Remote-SSH 打开，或打开系统终端后手动输入密码；网页端请复制 SSH 命令后在本机终端中执行。"
                   : "网页端不能直接建立 SSH 连接，请复制 SSH 命令后在本机终端中执行。"}
               </p>
             </div>

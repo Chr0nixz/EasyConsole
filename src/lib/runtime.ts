@@ -27,6 +27,33 @@ const localStorageAdapter: RuntimeStorage = {
   },
 };
 
+const tauriStorageAdapter: RuntimeStorage = {
+  async get(key) {
+    try {
+      return await invokeTauriCommand<string | null>("runtime_storage_get", { key });
+    } catch (error) {
+      console.warn("Tauri storage get failed, falling back to localStorage.", error);
+      return localStorageAdapter.get(key);
+    }
+  },
+  async set(key, value) {
+    try {
+      await invokeTauriCommand("runtime_storage_set", { key, value });
+    } catch (error) {
+      console.warn("Tauri storage set failed, falling back to localStorage.", error);
+      await localStorageAdapter.set(key, value);
+    }
+  },
+  async remove(key) {
+    try {
+      await invokeTauriCommand("runtime_storage_remove", { key });
+    } catch (error) {
+      console.warn("Tauri storage remove failed, falling back to localStorage.", error);
+      await localStorageAdapter.remove(key);
+    }
+  },
+};
+
 function buildUrl(url: string, query?: Record<string, unknown>) {
   const next = new URL(url, window.location.origin);
   Object.entries(query ?? {}).forEach(([key, value]) => {
@@ -179,7 +206,7 @@ function requireDesktopSsh(): never {
 
 export const browserRuntime: RuntimeTransport = {
   isDesktop: isTauri(),
-  storage: localStorageAdapter,
+  storage: isTauri() ? tauriStorageAdapter : localStorageAdapter,
   request: fetchRequest,
   async createWebSocket(url) {
     return isTauri() ? createTauriWebSocket(url) : createBrowserWebSocket(url);
@@ -188,6 +215,10 @@ export const browserRuntime: RuntimeTransport = {
     await window.navigator.clipboard.writeText(text);
   },
   openExternal(url) {
+    if (isTauri()) {
+      void invokeTauriCommand("open_external_url", { url });
+      return;
+    }
     window.open(url, "_blank", "noopener,noreferrer");
   },
   openSshSession(request) {
@@ -212,6 +243,9 @@ export const browserRuntime: RuntimeTransport = {
   },
   openSystemSshTerminal(request) {
     return invokeTauriCommand("open_system_ssh_terminal", { request });
+  },
+  openVscodeSsh(request) {
+    return invokeTauriCommand("open_vscode_ssh", { request });
   },
 };
 
