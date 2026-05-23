@@ -64,8 +64,16 @@ export class ApiClient {
 
   constructor(
     private readonly runtime: RuntimeTransport,
-    private readonly baseUrl = API_BASE_URL,
+    private baseUrl = API_BASE_URL,
   ) {}
+
+  setBaseUrl(baseUrl: string) {
+    this.baseUrl = baseUrl;
+  }
+
+  getBaseUrl() {
+    return this.baseUrl;
+  }
 
   setToken(token: string | null) {
     this.token = token;

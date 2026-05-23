@@ -9,7 +9,10 @@ import { ToastProvider } from "./components/Toast";
 const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })));
 const ImagesPage = lazy(() => import("./pages/ImagesPage").then((module) => ({ default: module.ImagesPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage").then((module) => ({ default: module.LoginPage })));
+const ScheduledTasksPage = lazy(() => import("./pages/ScheduledTasksPage").then((module) => ({ default: module.ScheduledTasksPage })));
+const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 const StoragePage = lazy(() => import("./pages/StoragePage").then((module) => ({ default: module.StoragePage })));
+const TaskTemplatesPage = lazy(() => import("./pages/TaskTemplatesPage").then((module) => ({ default: module.TaskTemplatesPage })));
 const TasksPage = lazy(() => import("./pages/TasksPage").then((module) => ({ default: module.TasksPage })));
 
 export function App() {
@@ -18,6 +21,7 @@ export function App() {
       <Suspense fallback={<LoadingState />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/login/settings" element={<SettingsPage standalone />} />
           <Route
             path="/"
             element={
@@ -29,8 +33,11 @@ export function App() {
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<DashboardPage />} />
             <Route path="tasks" element={<TasksPage />} />
+            <Route path="scheduled-tasks" element={<ScheduledTasksPage />} />
+            <Route path="task-templates" element={<TaskTemplatesPage />} />
             <Route path="storage" element={<StoragePage />} />
             <Route path="images" element={<ImagesPage />} />
+            <Route path="settings" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

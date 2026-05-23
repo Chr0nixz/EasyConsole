@@ -22,7 +22,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
@@ -195,7 +195,7 @@ function taskQueryKey(state: TaskListQueryState) {
   ];
 }
 
-function MoreActionsMenu({
+export function MoreActionsMenu({
   task,
   onRaw,
   onDownload,
@@ -204,10 +204,26 @@ function MoreActionsMenu({
   onRaw: (task: Task) => void;
   onDownload: (task: Task) => void;
 }) {
+  const menuId = useId();
   const [open, setOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
+  const triggerButtonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const menuItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const initialFocusIndexRef = useRef(0);
+
+  const closeMenu = useCallback((restoreFocus = false) => {
+    setOpen(false);
+    if (restoreFocus) window.setTimeout(() => triggerButtonRef.current?.focus(), 0);
+  }, []);
+
+  const focusMenuItem = useCallback((index: number) => {
+    const items = menuItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
+    if (items.length === 0) return;
+    const nextIndex = (index + items.length) % items.length;
+    items[nextIndex].focus();
+  }, []);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -229,12 +245,15 @@ function MoreActionsMenu({
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
-      setOpen(false);
+      closeMenu();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        closeMenu(true);
+      }
     };
-    const handleScroll = () => setOpen(false);
+    const handleScroll = () => closeMenu();
 
     updatePosition();
     document.addEventListener("pointerdown", handlePointerDown);
@@ -248,53 +267,122 @@ function MoreActionsMenu({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", handleScroll, true);
     };
-  }, [open]);
+  }, [closeMenu, open]);
+
+  useEffect(() => {
+    if (!open || !menuPosition) return;
+    window.setTimeout(() => focusMenuItem(initialFocusIndexRef.current), 0);
+  }, [focusMenuItem, menuPosition, open]);
+
+  const handleTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    initialFocusIndexRef.current = event.key === "ArrowUp" ? -1 : 0;
+    setOpen(true);
+  };
+
+  const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const items = menuItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
+    const currentIndex = items.findIndex((item) => item === document.activeElement);
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenu(true);
+      return;
+    }
+
+    if (event.key === "Tab") {
+      closeMenu();
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusMenuItem(currentIndex + 1);
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusMenuItem(currentIndex - 1);
+      return;
+    }
+
+    if (event.key === "Home") {
+      event.preventDefault();
+      focusMenuItem(0);
+      return;
+    }
+
+    if (event.key === "End") {
+      event.preventDefault();
+      focusMenuItem(items.length - 1);
+    }
+  };
 
   return (
     <div ref={triggerRef} className="relative z-30">
       <Button
+        ref={triggerButtonRef}
+        aria-controls={open ? menuId : undefined}
         aria-expanded={open}
         aria-haspopup="menu"
+        aria-label={`更多操作 ${getTaskName(task)}`}
         className="h-8 w-8 px-0"
         title="更多"
         type="button"
         variant="ghost"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          initialFocusIndexRef.current = 0;
+          setOpen((value) => !value);
+        }}
+        onKeyDown={handleTriggerKeyDown}
       >
         <MoreHorizontal className="h-4 w-4" />
       </Button>
       {open && menuPosition
         ? createPortal(
-        <div
+          <div
+            id={menuId}
             ref={menuRef}
             className="fixed z-[100] w-36 rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
-          role="menu"
+            role="menu"
+            aria-label={`实例操作 ${getTaskName(task)}`}
             style={{ left: menuPosition.left, top: menuPosition.top }}
-        >
-          <button
-            className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
-            role="menuitem"
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              onDownload(task);
-            }}
+            onKeyDown={handleMenuKeyDown}
           >
-            <Download className="h-4 w-4 text-app-muted" />
-            下载
-          </button>
-          <button
-            className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
-            role="menuitem"
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              onRaw(task);
-            }}
-          >
-            <Braces className="h-4 w-4 text-app-muted" />
-            原始 JSON
-          </button>
+            <button
+              ref={(element) => {
+                menuItemRefs.current[0] = element;
+              }}
+              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
+              role="menuitem"
+              tabIndex={-1}
+              type="button"
+              onClick={() => {
+                closeMenu();
+                onDownload(task);
+              }}
+            >
+              <Download className="h-4 w-4 text-app-muted" />
+              下载
+            </button>
+            <button
+              ref={(element) => {
+                menuItemRefs.current[1] = element;
+              }}
+              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
+              role="menuitem"
+              tabIndex={-1}
+              type="button"
+              onClick={() => {
+                closeMenu();
+                onRaw(task);
+              }}
+            >
+              <Braces className="h-4 w-4 text-app-muted" />
+              原始 JSON
+            </button>
           </div>,
           document.body,
         )
@@ -554,16 +642,16 @@ export function TasksPage() {
           const release = isRunningTask(task);
           return (
             <div className={ACTION_GRID_CLASS}>
-              <Button className="h-8 w-8 px-0" variant="ghost" title="监控" onClick={() => openMonitorDashboard(task)}>
+              <Button aria-label={`打开 ${getTaskName(task)} 的监控`} className="h-8 w-8 px-0" variant="ghost" title="监控" onClick={() => openMonitorDashboard(task)}>
                 <ActivitySquare className="h-4 w-4" />
               </Button>
-              <Button className="h-8 w-8 px-0" variant="ghost" title="日志" onClick={() => setLogTask(task)}>
+              <Button aria-label={`查看 ${getTaskName(task)} 的日志`} className="h-8 w-8 px-0" variant="ghost" title="日志" onClick={() => setLogTask(task)}>
                 <FileText className="h-4 w-4" />
               </Button>
-              <Button className="h-8 w-8 px-0" variant="ghost" title="终端" onClick={() => setTerminalTask(task)}>
+              <Button aria-label={`打开 ${getTaskName(task)} 的终端`} className="h-8 w-8 px-0" variant="ghost" title="终端" onClick={() => setTerminalTask(task)}>
                 <Terminal className="h-4 w-4" />
               </Button>
-              <Button className="h-8 w-8 px-0" variant="ghost" title="复制" onClick={() => openCloneTask(task)}>
+              <Button aria-label={`复制 ${getTaskName(task)} 的配置`} className="h-8 w-8 px-0" variant="ghost" title="复制" onClick={() => openCloneTask(task)}>
                 <Copy className="h-4 w-4" />
               </Button>
               {release ? (
@@ -640,11 +728,11 @@ export function TasksPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <div className="relative">
+        <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
+          <div className="relative w-full sm:w-auto">
             <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" />
             <Input
-              className="w-64 pl-9"
+              className="w-full pl-9 sm:w-64"
               placeholder="搜索实例名称"
               value={queryState.keyword}
               onChange={(event) => updateTaskQuery({ keyword: event.target.value })}
@@ -662,7 +750,7 @@ export function TasksPage() {
             <RefreshCw className="h-4 w-4" />
             刷新
           </Button>
-          <div className="flex h-9 items-center gap-2 rounded-md border border-app-border bg-app-surface px-3 text-sm">
+          <div className="flex min-h-9 items-center gap-2 rounded-md border border-app-border bg-app-surface px-3 text-sm [@media(pointer:coarse)]:min-h-11">
             <label className="flex cursor-pointer items-center gap-2 text-app-text">
               <input
                 type="checkbox"
@@ -691,7 +779,7 @@ export function TasksPage() {
             列设置
           </Button>
         </div>
-        <Button onClick={openCreateTask}>
+        <Button className="w-full sm:w-auto" onClick={openCreateTask}>
           <Plus className="h-4 w-4" />
           新建任务
         </Button>
@@ -794,7 +882,7 @@ export function TasksPage() {
             ? `共 ${total} 个实例，第 ${queryState.page} / ${totalPages} 页`
             : `第 ${queryState.page} 页，当前返回 ${query.data?.items.length ?? 0} 个实例`}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span>每页</span>
           <Select
             className="w-24"
@@ -832,13 +920,13 @@ export function TasksPage() {
         <TerminalDialog task={terminalTask} onClose={() => setTerminalTask(null)} />
       </Suspense>
       <Dialog open={Boolean(rawTask)} title={`实例原始 JSON ${rawTask ? getTaskName(rawTask) : ""}`} onClose={() => setRawTask(null)} width="max-w-4xl">
-        <pre className="max-h-[70vh] overflow-auto bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100">
+        <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
           {asJson(rawTask)}
         </pre>
       </Dialog>
       <Dialog open={columnSettingsOpen} title="列设置" onClose={() => setColumnSettingsOpen(false)} width="max-w-md">
         <div className="space-y-3 p-4">
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {configurableColumns.map((column) => (
               <label
                 key={column.id}

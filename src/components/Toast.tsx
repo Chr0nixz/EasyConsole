@@ -15,9 +15,9 @@ function iconFor(kind: ToastKind) {
 }
 
 function getToastClasses(kind: ToastKind) {
-  if (kind === "success") return "border-app-success/40 bg-emerald-50";
-  if (kind === "error") return "border-app-danger/40 bg-red-50";
-  return "border-app-accent/35 bg-sky-50";
+  if (kind === "success") return "border-app-successRing bg-app-successSoft";
+  if (kind === "error") return "border-app-dangerRing bg-app-dangerSoft";
+  return "border-app-infoRing bg-app-infoSoft";
 }
 
 export function ToastProvider({ children }: { children: ReactNode }) {
@@ -54,7 +54,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           <div
             key={toast.id}
             className={cn(
-              "rounded-md border p-3 shadow-popover",
+              "app-toast-enter rounded-md border p-3 shadow-popover",
               getToastClasses(toast.kind),
             )}
           >
@@ -65,7 +65,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 {toast.description ? <div className="mt-1 text-xs leading-5 text-app-muted">{toast.description}</div> : null}
               </div>
               <button
-                className="rounded p-1 text-app-muted hover:bg-app-panel hover:text-app-text"
+                className="app-interactive rounded p-1 text-app-muted hover:bg-app-panel hover:text-app-text"
                 type="button"
                 onClick={() => remove(toast.id)}
               >

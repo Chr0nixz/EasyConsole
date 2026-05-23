@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -33,15 +33,14 @@ describe("DashboardPage", () => {
     mocks.statics.mockResolvedValue({ items: [{ id: 1, name: "demo", status: 2, cpu: 4, gpu: 1, memory: 16 }] });
   });
 
-  it("shows raw responses in a collapsible panel", async () => {
+  it("shows dashboard summary and recent tasks without raw responses", async () => {
     renderDashboard();
 
     await waitFor(() => expect(screen.getByText("demo")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /原始响应/ }));
 
-    expect(screen.getByText("/instance/console")).toBeInTheDocument();
-    expect(screen.getByText("/instance/statics")).toBeInTheDocument();
-    expect(screen.getByText(/run_task_count/)).toBeInTheDocument();
+    expect(screen.queryByText("/instance/console")).not.toBeInTheDocument();
+    expect(screen.queryByText("/instance/statics")).not.toBeInTheDocument();
+    expect(screen.queryByText(/run_task_count/)).not.toBeInTheDocument();
   });
 
   it("shows statics errors instead of an empty state", async () => {

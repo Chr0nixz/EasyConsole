@@ -118,7 +118,7 @@ export function RemoteStoragePicker({
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Select className="h-8 w-28 text-xs" value={sortField} onChange={(event) => setSortField(event.target.value as StoragePickerSortField)}>
               <option value="name">按名称</option>
               <option value="size">按大小</option>
@@ -175,7 +175,7 @@ export function RemoteStoragePicker({
                       key={entryPath}
                       className={cn(
                         "cursor-pointer border-b border-app-border last:border-0 hover:bg-app-panel/60",
-                        selected && "bg-sky-50",
+                        selected && "bg-app-infoSoft",
                       )}
                       onClick={() => selectEntry(entry)}
                     >

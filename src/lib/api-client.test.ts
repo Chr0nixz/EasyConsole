@@ -86,4 +86,15 @@ describe("api client", () => {
     await client.get("/demo");
     expect(calls[0]).toMatchObject({ headers: { Authorization: "token-1" } });
   });
+
+  it("uses updated base url for later requests", async () => {
+    const { runtime, calls } = createRuntime();
+    const client = new ApiClient(runtime, "http://old-host/api");
+    client.setBaseUrl("http://new-host/api");
+
+    await client.get("/demo");
+
+    expect(client.getBaseUrl()).toBe("http://new-host/api");
+    expect(calls[0]).toMatchObject({ url: "http://new-host/api/demo" });
+  });
 });

@@ -9,10 +9,10 @@ export function ReleaseConditionBadge({ condition }: { condition?: number }) {
     <span
       className={cn(
         "inline-flex min-w-20 items-center justify-center rounded-md px-2 py-1 text-xs font-medium",
-        tone === "manual" && "bg-sky-50 text-sky-700 ring-1 ring-sky-200",
-        tone === "timed" && "bg-violet-50 text-violet-700 ring-1 ring-violet-200",
-        tone === "finished" && "bg-teal-50 text-teal-700 ring-1 ring-teal-200",
-        tone === "neutral" && "bg-slate-100 text-slate-600 ring-1 ring-slate-200",
+        tone === "manual" && "bg-app-infoSoft text-app-info ring-1 ring-app-infoRing",
+        tone === "timed" && "bg-app-releaseTimedSoft text-app-releaseTimed ring-1 ring-app-releaseTimedRing",
+        tone === "finished" && "bg-app-releaseFinishedSoft text-app-releaseFinished ring-1 ring-app-releaseFinishedRing",
+        tone === "neutral" && "bg-app-neutralSoft text-app-muted ring-1 ring-app-neutralRing",
       )}
     >
       {getReleaseConditionText(condition)}

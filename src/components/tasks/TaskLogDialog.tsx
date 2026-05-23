@@ -20,7 +20,7 @@ export function TaskLogDialog({ task, onClose }: { task: Task | null; onClose: (
       ) : query.isError ? (
         <ErrorState error={query.error} />
       ) : (
-        <pre className="max-h-[70vh] overflow-auto bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100">
+        <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
           {query.data || "暂无日志输出"}
         </pre>
       )}

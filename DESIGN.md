@@ -19,6 +19,8 @@ Use restrained, slightly warm neutrals with one blue accent for primary actions 
 - Warning: `oklch(0.72 0.13 78)`
 - Danger: `oklch(0.58 0.18 25)`
 
+Semantic surfaces use paired soft backgrounds and ring colors, exposed as `app.*Soft` and `app.*Ring` tokens for badges, toasts, validation, selected rows, and API failure states. Code and terminal surfaces use `app.code*` and `app.terminal*` tokens so dark inspection panels remain intentional without leaking generic slate/sky palette classes into product UI.
+
 ## Typography
 
 Use `Inter`, `-apple-system`, `BlinkMacSystemFont`, `"Segoe UI"`, `system-ui`, and `sans-serif`. UI text uses fixed rem sizes with compact line-height. Monospace surfaces use `"JetBrains Mono"`, `"SFMono-Regular"`, Consolas, and monospace.

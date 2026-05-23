@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { apiClient, authApi } from "./api";
+import { APP_SETTINGS_STORAGE_KEY, parseAppSettings, setRuntimeSettings } from "./app-settings";
 import { AuthContext } from "./auth-state";
 import { TOKEN_STORAGE_KEY, UNAUTHORIZED_EVENT } from "./api-client";
 import { browserRuntime } from "./runtime";
@@ -23,8 +24,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const savedAccountsRef = useRef<SavedLoginAccount[]>([]);
 
   useEffect(() => {
-    Promise.all([browserRuntime.storage.get(TOKEN_STORAGE_KEY), browserRuntime.storage.get(SAVED_ACCOUNTS_STORAGE_KEY)]).then(
-      ([savedToken, savedAccountData]) => {
+    Promise.all([
+      browserRuntime.storage.get(APP_SETTINGS_STORAGE_KEY),
+      browserRuntime.storage.get(TOKEN_STORAGE_KEY),
+      browserRuntime.storage.get(SAVED_ACCOUNTS_STORAGE_KEY),
+    ]).then(
+      ([settingsData, savedToken, savedAccountData]) => {
+        const settings = parseAppSettings(settingsData);
+        setRuntimeSettings(settings);
+        apiClient.setBaseUrl(settings.apiBaseUrl);
         const parsedAccounts = parseSavedAccounts(savedAccountData);
         savedAccountsRef.current = parsedAccounts;
         setSavedAccounts(parsedAccounts);

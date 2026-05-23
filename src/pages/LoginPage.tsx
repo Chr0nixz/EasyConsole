@@ -1,6 +1,6 @@
 import { LockKeyhole, Server, Trash2, UserCheck, UserRoundPlus } from "lucide-react";
 import { FormEvent, useState } from "react";
-import { Navigate, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { LoadingState } from "../components/DataState";
 import { Button, Input } from "../components/ui";
@@ -64,7 +64,7 @@ export function LoginPage() {
   }
 
   return (
-    <main className="grid min-h-screen grid-cols-1 bg-app-bg text-app-text lg:grid-cols-[1fr_460px]">
+    <main className="grid min-h-screen min-w-0 grid-cols-[minmax(0,1fr)] overflow-x-hidden bg-app-bg text-app-text lg:grid-cols-[minmax(0,1fr)_460px]">
       <section className="hidden flex-col justify-between border-r border-app-border bg-app-surface p-10 lg:flex">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-md bg-app-accent text-white">
@@ -77,15 +77,23 @@ export function LoginPage() {
         </div>
         <div className="max-w-xl">
           <p className="text-sm leading-6 text-app-muted">
-            面向远端控制面板 API 的轻量替代界面。首版聚焦日常任务管理，并保留后续 Tauri 打包所需的运行时边界。
+            用一个工作台接管任务启动、日志终端、文件传输和镜像查看，登录后即可继续日常操作。
           </p>
         </div>
       </section>
-      <section className="flex items-center justify-center px-6 py-10">
-        <div className="w-full max-w-sm rounded-lg border border-app-border bg-app-surface p-6 shadow-shell">
+      <section className="flex min-w-0 items-center justify-center overflow-x-hidden px-4 py-10 sm:px-6">
+        <div className="app-surface-enter box-border w-full min-w-0 max-w-[320px] rounded-lg border border-app-border bg-app-surface p-6 shadow-shell sm:max-w-sm">
           <div className="mb-6">
-            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-md bg-app-accentSoft text-app-accent">
-              {showSavedAccounts ? <UserCheck className="h-5 w-5" /> : <LockKeyhole className="h-5 w-5" />}
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-md bg-app-accentSoft text-app-accent">
+                {showSavedAccounts ? <UserCheck className="h-5 w-5" /> : <LockKeyhole className="h-5 w-5" />}
+              </div>
+              <Link
+                className="app-interactive rounded-md px-2 py-1 text-xs text-app-muted hover:bg-app-panel hover:text-app-text"
+                to="/login/settings"
+              >
+                设置
+              </Link>
             </div>
             <h2 className="text-lg font-semibold">{showSavedAccounts ? "选择账号登录" : "登录控制台"}</h2>
             <p className="mt-1 text-sm text-app-muted">
@@ -127,7 +135,7 @@ export function LoginPage() {
                   </div>
                 ))}
               </div>
-              {error ? <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+              {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
               <Button
                 className="w-full"
                 onClick={() => {
@@ -167,7 +175,7 @@ export function LoginPage() {
                   value={password}
                 />
               </label>
-              {error ? <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+              {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
               <div className="flex flex-col gap-2">
                 <Button className="w-full" disabled={loading}>
                   {loading ? "正在登录" : "登录"}

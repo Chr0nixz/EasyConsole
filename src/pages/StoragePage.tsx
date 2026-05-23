@@ -248,10 +248,10 @@ export function StoragePage() {
             </button>
           ))}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative">
+        <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
+          <div className="relative w-full sm:w-auto">
             <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" />
-            <Input className="w-52 pl-9" placeholder="搜索文件或文件夹" value={searchKeyword} onChange={(event) => setSearchKeyword(event.target.value)} />
+            <Input className="w-full pl-9 sm:w-52" placeholder="搜索文件或文件夹" value={searchKeyword} onChange={(event) => setSearchKeyword(event.target.value)} />
           </div>
           <Select className="w-32" value={sortField} onChange={(event) => setSortField(event.target.value as StorageSortField)}>
             <option value="name">按名称</option>
@@ -267,7 +267,7 @@ export function StoragePage() {
             <FolderPlus className="h-4 w-4" />
             新建
           </Button>
-          <label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md bg-app-accent px-3 text-sm font-medium text-white hover:brightness-95">
+          <label className="app-interactive inline-flex h-9 cursor-pointer items-center gap-2 rounded-md bg-app-accent px-3 text-sm font-medium text-white hover:brightness-95 [@media(pointer:coarse)]:min-h-11">
             <Upload className="h-4 w-4" />
             上传到远程
             <input className="sr-only" type="file" onChange={(event) => void upload(event)} />
@@ -333,18 +333,19 @@ export function StoragePage() {
         ) : visibleEntries.length === 0 ? (
           <EmptyState title="当前目录为空" />
         ) : (
-          <table className="w-full min-w-[760px] border-collapse text-sm">
-            <thead className="bg-app-panel text-left text-xs text-app-muted">
-              <tr>
-                <th className="border-b border-app-border px-3 py-2 font-medium">名称</th>
-                <th className="border-b border-app-border px-3 py-2 font-medium">类型</th>
-                <th className="border-b border-app-border px-3 py-2 font-medium">大小</th>
-                <th className="border-b border-app-border px-3 py-2 font-medium">更新时间</th>
-                <th className="border-b border-app-border px-3 py-2 font-medium">远程操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleEntries.map((entry) => {
+          <div className="overflow-auto">
+            <table className="w-full min-w-[760px] border-collapse text-sm">
+              <thead className="bg-app-panel text-left text-xs text-app-muted">
+                <tr>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">名称</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">类型</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">大小</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">更新时间</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">远程操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleEntries.map((entry) => {
                 const directory = isStorageDirectory(entry, path);
                 const entryPath = getStorageEntryPath(entry, path);
                 const directSize = getStorageEntrySize(entry);
@@ -358,8 +359,8 @@ export function StoragePage() {
                       : entrySize === null
                         ? "-"
                         : formatBytes(entrySize);
-                return (
-                  <tr key={entryPath} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
+                  return (
+                    <tr key={entryPath} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
                     <td className="px-3 py-2">
                       <button
                         className="inline-flex items-center gap-2 font-medium text-app-text hover:text-app-accent disabled:cursor-default disabled:text-app-text"
@@ -429,16 +430,17 @@ export function StoragePage() {
                         </Button>
                       </div>
                     </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </Panel>
 
       <Dialog open={Boolean(preview)} title={`远程文件 ${preview?.title ?? ""}`} onClose={() => setPreview(null)} width="max-w-5xl">
-        <pre className="max-h-[70vh] overflow-auto bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100">
+        <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
           {preview?.content || "文件为空"}
         </pre>
       </Dialog>

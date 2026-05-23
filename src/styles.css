@@ -5,6 +5,10 @@
 :root {
   color: oklch(0.23 0.018 255);
   background: oklch(0.982 0.006 95);
+  --app-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --app-ease-smooth: cubic-bezier(0.25, 1, 0.5, 1);
+  --app-motion-fast: 120ms;
+  --app-motion-standard: 170ms;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -36,6 +40,171 @@ select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid oklch(0.54 0.145 250);
   outline-offset: 2px;
+}
+
+input,
+select,
+textarea {
+  transition:
+    border-color var(--app-motion-fast) var(--app-ease-out),
+    box-shadow var(--app-motion-fast) var(--app-ease-out),
+    background-color var(--app-motion-fast) var(--app-ease-out);
+}
+
+tbody tr {
+  transition:
+    background-color var(--app-motion-fast) var(--app-ease-out),
+    color var(--app-motion-fast) var(--app-ease-out);
+}
+
+@media (pointer: coarse) {
+  button,
+  a,
+  select,
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  textarea,
+  label:has(input[type="file"]) {
+    min-height: 44px;
+  }
+
+  button,
+  a,
+  label:has(input[type="file"]) {
+    min-width: 44px;
+  }
+
+  input[type="checkbox"],
+  input[type="radio"] {
+    min-height: 18px;
+    min-width: 18px;
+  }
+}
+
+.app-page-enter {
+  animation: app-page-in 180ms var(--app-ease-out);
+}
+
+.app-surface-enter {
+  animation: app-surface-in 170ms var(--app-ease-out);
+}
+
+.app-toast-enter {
+  animation: app-toast-in 180ms var(--app-ease-out);
+  transform-origin: bottom right;
+}
+
+.app-interactive {
+  transition:
+    background-color var(--app-motion-fast) var(--app-ease-out),
+    border-color var(--app-motion-fast) var(--app-ease-out),
+    color var(--app-motion-fast) var(--app-ease-out),
+    box-shadow var(--app-motion-fast) var(--app-ease-out),
+    filter var(--app-motion-fast) var(--app-ease-out),
+    transform var(--app-motion-fast) var(--app-ease-out),
+    opacity var(--app-motion-fast) var(--app-ease-out);
+}
+
+.app-interactive:active:not(:disabled) {
+  transform: translateY(1px) scale(0.99);
+}
+
+.app-modal-overlay {
+  background: oklch(0.19 0.025 255 / 0.42);
+  animation: app-modal-overlay-in 150ms var(--app-ease-out);
+}
+
+.app-modal-panel {
+  border: 1px solid oklch(0.78 0.014 95);
+  box-shadow:
+    0 24px 64px oklch(0.19 0.025 255 / 0.22),
+    0 2px 0 oklch(0.995 0.004 95 / 0.7) inset;
+  animation: app-modal-panel-in 160ms var(--app-ease-out);
+  transform-origin: top center;
+}
+
+.app-terminal-modal-panel {
+  border: 1px solid oklch(0.34 0.035 255);
+  box-shadow: 0 24px 64px oklch(0.19 0.025 255 / 0.34);
+  animation: app-modal-panel-in 160ms var(--app-ease-out);
+  transform-origin: top center;
+}
+
+@keyframes app-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes app-surface-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes app-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes app-modal-overlay-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes app-modal-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .app-page-enter,
+  .app-surface-enter,
+  .app-toast-enter,
+  .app-modal-overlay,
+  .app-modal-panel,
+  .app-terminal-modal-panel {
+    animation: none;
+  }
 }
 
 .xterm {

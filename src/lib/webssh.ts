@@ -1,6 +1,6 @@
-import { API_BASE_URL } from "./api-client";
+import { getRuntimeSettings } from "./app-settings";
 
-export function deriveWebsshUrl(taskId: string | number, cols: number, rows: number, apiBase = API_BASE_URL) {
+export function deriveWebsshUrl(taskId: string | number, cols: number, rows: number, apiBase = getRuntimeSettings().apiBaseUrl) {
   const apiUrl = new URL(apiBase, window.location.origin);
   const protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({

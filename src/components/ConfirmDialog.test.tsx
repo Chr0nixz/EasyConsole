@@ -52,4 +52,26 @@ describe("Dialog", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(trigger).toHaveFocus();
   });
+
+  it("keeps Tab focus inside the dialog", async () => {
+    render(
+      <Dialog open title="焦点测试" onClose={vi.fn()}>
+        <button type="button">第一个</button>
+        <button type="button">最后一个</button>
+      </Dialog>,
+    );
+
+    const close = screen.getByRole("button", { name: "关闭" });
+    const last = screen.getByRole("button", { name: "最后一个" });
+
+    await waitFor(() => expect(close).toHaveFocus());
+
+    last.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(close).toHaveFocus();
+
+    close.focus();
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(last).toHaveFocus();
+  });
 });

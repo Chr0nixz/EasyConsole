@@ -1,12 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Braces, Clock, Coins, Server, type LucideIcon } from "lucide-react";
-import { useState } from "react";
+import { Activity, Clock, Coins, Server, type LucideIcon } from "lucide-react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
 import { Button, Panel } from "../components/ui";
 import { instanceApi } from "../lib/api";
-import { asJson, formatCost, formatNumber, formatSecondsDuration, getTaskName } from "../lib/format";
+import { formatCost, formatNumber, formatSecondsDuration, getTaskName } from "../lib/format";
 import type { ConsoleSummary, Task } from "../lib/types";
 
 function StatTile({ label, value, icon: Icon }: { label: string; value: string; icon: LucideIcon }) {
@@ -34,7 +33,6 @@ function toTasks(raw: unknown): Task[] {
 }
 
 export function DashboardPage() {
-  const [rawOpen, setRawOpen] = useState(false);
   const consoleQuery = useQuery({ queryKey: ["console"], queryFn: instanceApi.console });
   const staticsQuery = useQuery({ queryKey: ["statics"], queryFn: () => instanceApi.statics({}) });
 
@@ -115,36 +113,6 @@ export function DashboardPage() {
         ) : (
           <EmptyState title="暂无最近任务" />
         )}
-      </Panel>
-
-      <Panel>
-        <button
-          className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-semibold text-app-text hover:bg-app-panel"
-          type="button"
-          onClick={() => setRawOpen((value) => !value)}
-        >
-          <span className="inline-flex items-center gap-2">
-            <Braces className="h-4 w-4 text-app-accent" />
-            原始响应
-          </span>
-          <span className="text-xs font-normal text-app-muted">{rawOpen ? "收起" : "展开"}</span>
-        </button>
-        {rawOpen ? (
-          <div className="grid gap-3 border-t border-app-border p-4 lg:grid-cols-2">
-            <div>
-              <div className="mb-2 text-xs font-medium text-app-muted">/instance/console</div>
-              <pre className="max-h-96 overflow-auto rounded-md bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-100">
-                {asJson(consoleQuery.data)}
-              </pre>
-            </div>
-            <div>
-              <div className="mb-2 text-xs font-medium text-app-muted">/instance/statics</div>
-              <pre className="max-h-96 overflow-auto rounded-md bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-100">
-                {asJson(staticsQuery.data ?? null)}
-              </pre>
-            </div>
-          </div>
-        ) : null}
       </Panel>
     </div>
   );

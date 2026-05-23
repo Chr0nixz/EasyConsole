@@ -165,6 +165,41 @@ export type CreateTaskPayload = UnknownRecord & {
   script_path?: string;
 };
 
+export type ScheduledTaskStatus = "pending" | "running" | "done" | "failed" | "paused";
+
+export type ScheduledTask = {
+  id: string;
+  name: string;
+  description?: string;
+  scheduleTime: string;
+  status: ScheduledTaskStatus;
+  payload: CreateTaskPayload;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt?: string;
+  lastError?: string;
+};
+
+export type TaskTemplate = {
+  id: string;
+  name: string;
+  description?: string;
+  taskNamePrefix: string;
+  batchCount: number;
+  imageId: string;
+  cpu: number;
+  gpu: number;
+  memory: number;
+  storagePath: string;
+  mountPath: string;
+  releaseCondition: 1 | 2 | 3;
+  releaseAfterHours?: number;
+  workDirectory?: string;
+  scriptPath?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type LoginPayload = {
   username: string;
   password: string;

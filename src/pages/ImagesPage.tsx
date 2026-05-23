@@ -50,6 +50,7 @@ export function ImagesPage() {
     <div className="space-y-4">
       <div className="flex justify-end">
         <Button
+          className="w-full sm:w-auto"
           variant="secondary"
           onClick={refetchImages}
         >
@@ -65,35 +66,37 @@ export function ImagesPage() {
         ) : images.length === 0 ? (
           <EmptyState title="暂无镜像" />
         ) : (
-          <table className="w-full min-w-[760px] border-collapse text-sm">
-            <thead className="bg-app-panel text-left text-xs text-app-muted">
-              <tr>
-                <th className="border-b border-app-border px-3 py-2 font-medium">名称</th>
-                <th className="border-b border-app-border px-3 py-2 font-medium">标签</th>
-                <th className="border-b border-app-border px-3 py-2 font-medium">说明</th>
-                <th className="border-b border-app-border px-3 py-2 font-medium">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {images.map((image) => (
-                <tr key={String(image.id)} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
-                  <td className="px-3 py-2 font-medium">{imageName(image)}</td>
-                  <td className="px-3 py-2 text-app-muted">{image.tag ?? "-"}</td>
-                  <td className="max-w-xl truncate px-3 py-2 text-app-muted">{image.description ?? "-"}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex gap-1">
-                      <Button variant="ghost" title="设为默认" onClick={() => setDefaultImage(image)}>
-                        <Star className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" title="下载" onClick={() => downloadImage(image)}>
-                        <Download className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </td>
+          <div className="overflow-auto">
+            <table className="w-full min-w-[760px] border-collapse text-sm">
+              <thead className="bg-app-panel text-left text-xs text-app-muted">
+                <tr>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">名称</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">标签</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">说明</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">操作</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {images.map((image) => (
+                  <tr key={String(image.id)} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
+                    <td className="px-3 py-2 font-medium">{imageName(image)}</td>
+                    <td className="px-3 py-2 text-app-muted">{image.tag ?? "-"}</td>
+                    <td className="max-w-xl truncate px-3 py-2 text-app-muted">{image.description ?? "-"}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex gap-1">
+                        <Button aria-label={`将 ${imageName(image)} 设为默认镜像`} variant="ghost" title="设为默认" onClick={() => setDefaultImage(image)}>
+                          <Star className="h-4 w-4" />
+                        </Button>
+                        <Button aria-label={`下载镜像 ${imageName(image)}`} variant="ghost" title="下载" onClick={() => downloadImage(image)}>
+                          <Download className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Panel>
       {confirmDialog}

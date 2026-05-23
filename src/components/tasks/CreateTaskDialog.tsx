@@ -372,7 +372,7 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
               <Input className="w-full" type="number" min="1" step="1" value={memory} onChange={(event) => setMemory(event.target.value)} required />
             </label>
           </div>
-          {formError ? <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{formError}</div> : null}
+          {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
           {mutation.isError ? <ErrorState error={mutation.error} /> : null}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={onClose}>

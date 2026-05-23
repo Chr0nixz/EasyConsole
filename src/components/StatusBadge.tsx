@@ -9,11 +9,11 @@ export function StatusBadge({ status }: { status?: TaskStatus }) {
     <span
       className={cn(
         "inline-flex min-w-16 items-center justify-center rounded-md px-2 py-1 text-xs font-medium",
-        tone === "running" && "bg-sky-50 text-sky-700 ring-1 ring-sky-200",
-        tone === "success" && "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200",
-        tone === "danger" && "bg-red-50 text-red-700 ring-1 ring-red-200",
-        tone === "warning" && "bg-amber-50 text-amber-700 ring-1 ring-amber-200",
-        tone === "neutral" && "bg-slate-100 text-slate-600 ring-1 ring-slate-200",
+        tone === "running" && "bg-app-infoSoft text-app-info ring-1 ring-app-infoRing",
+        tone === "success" && "bg-app-successSoft text-app-success ring-1 ring-app-successRing",
+        tone === "danger" && "bg-app-dangerSoft text-app-danger ring-1 ring-app-dangerRing",
+        tone === "warning" && "bg-app-warningSoft text-app-warning ring-1 ring-app-warningRing",
+        tone === "neutral" && "bg-app-neutralSoft text-app-muted ring-1 ring-app-neutralRing",
       )}
     >
       {getStatusText(status)}
