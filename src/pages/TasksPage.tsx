@@ -36,6 +36,7 @@ import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { saveBlob } from "../lib/download";
 import { asJson, formatSecondsDuration, getTaskName } from "../lib/format";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
+import { filterAndSortTasks } from "../lib/task-search";
 import type { Task } from "../lib/types";
 import { useToast } from "../lib/use-toast";
 
@@ -104,23 +105,6 @@ function ownerText(task: Task) {
 function groupText(task: Task) {
   const user = userRecord(task);
   return displayText(task.user_group ?? task.user_group_name ?? task.group_name ?? user?.user_group ?? user?.group_name);
-}
-
-function taskSearchText(task: Task) {
-  return [
-    getTaskName(task),
-    task.name,
-    task.task_name,
-    task.description,
-    task.id,
-    task.task_id,
-    task.ip,
-    task.node_name,
-    ownerText(task),
-    groupText(task),
-  ]
-    .map((value) => displayText(value).toLowerCase())
-    .join(" ");
 }
 
 function taskRowId(task: Task) {
@@ -378,9 +362,7 @@ export function TasksPage() {
 
   const filteredTasks = useMemo(() => {
     const tasks = query.data?.items ?? [];
-    const normalizedKeyword = keyword.trim().toLowerCase();
-    if (!normalizedKeyword) return tasks;
-    return tasks.filter((task) => taskSearchText(task).includes(normalizedKeyword));
+    return filterAndSortTasks(tasks, keyword);
   }, [keyword, query.data?.items]);
 
   const handleDownloadTask = (task: Task) => {

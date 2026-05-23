@@ -1,5 +1,6 @@
 import { ApiClient, extractToken, normalizeToken } from "./api-client";
 import { sha256Hex } from "./crypto";
+import { md5Blob } from "./md5";
 import { browserRuntime } from "./runtime";
 import type {
   CreateTaskPayload,
@@ -23,6 +24,13 @@ const UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024;
 
 export function formatContentRange(range: UploadChunkRange) {
   return `bytes ${range.start}-${range.end}/${range.total}`;
+}
+
+function extractUploadId(raw: unknown) {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as UnknownRecord;
+  const value = record.upload_id ?? record.uploadId ?? record.id;
+  return value === undefined || value === null || value === "" ? null : String(value);
 }
 
 function extractList<T>(raw: unknown): ListResult<T> {
@@ -150,31 +158,39 @@ export const storageApi = {
       raw: asBlob,
     });
   },
-  async uploadChunk(file: File, range: UploadChunkRange, onProgress?: (progress: UploadProgress) => void) {
+  async uploadChunk(file: File, range: UploadChunkRange, path: string, uploadId?: string, onProgress?: (progress: UploadProgress) => void) {
     const chunk = file.slice(range.start, range.end + 1);
     const formData = new FormData();
-    formData.append("file", chunk, file.name);
-    formData.append("filename", file.name);
+    formData.append("the_file", chunk, file.name);
+    formData.append("path", path);
+    if (uploadId) {
+      formData.append("upload_id", uploadId);
+      formData.append("offset", String(range.start));
+    }
     const result = await apiClient.post<unknown>("/storage/chunked_upload", formData, {
       headers: {
         "Content-Range": formatContentRange(range),
       },
-      timeoutMs: 0,
+      timeoutMs: 300_000,
     });
     onProgress?.({ loaded: range.end + 1, total: range.total, percent: Math.round(((range.end + 1) / range.total) * 100) });
     return result;
   },
   async uploadFile(file: File, path: string, onProgress?: (progress: UploadProgress) => void) {
+    let uploadId: string | null = null;
     for (let start = 0; start < file.size; start += UPLOAD_CHUNK_SIZE) {
       const end = Math.min(start + UPLOAD_CHUNK_SIZE, file.size) - 1;
-      await storageApi.uploadChunk(file, { start, end, total: file.size }, onProgress);
+      const result = await storageApi.uploadChunk(file, { start, end, total: file.size }, path, uploadId ?? undefined, onProgress);
+      uploadId ??= extractUploadId(result);
     }
+    if (!uploadId) throw new Error("上传服务未返回 upload_id");
     const params = new URLSearchParams();
-    params.set("filename", file.name);
+    params.set("upload_id", uploadId);
+    params.set("md5", await md5Blob(file));
     params.set("path", path);
-    return storageApi.uploadComplete(params);
+    return storageApi.uploadComplete(params.toString());
   },
-  uploadComplete(payload: URLSearchParams) {
+  uploadComplete(payload: URLSearchParams | string) {
     return apiClient.post<unknown>("/storage/chunked_upload_complete", payload, {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
     });
