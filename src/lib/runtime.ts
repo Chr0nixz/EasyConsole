@@ -6,7 +6,7 @@ import type {
   RuntimeStorage,
   RuntimeTransport,
   RuntimeWebSocket,
-  SshConnectionRequest,
+  SshSessionEvent,
   UploadProgress,
 } from "./types";
 
@@ -167,10 +167,14 @@ async function createTauriWebSocket(url: string): Promise<RuntimeWebSocket> {
   return wrapper;
 }
 
-async function invokeTauriCommand(command: string, request: SshConnectionRequest) {
+async function invokeTauriCommand<T = void>(command: string, args: Record<string, unknown>) {
   if (!isTauri()) throw new Error("当前环境不是桌面端");
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke(command, { request });
+  return invoke<T>(command, args);
+}
+
+function requireDesktopSsh(): never {
+  throw new Error("当前环境不是桌面端，无法使用应用内 SSH");
 }
 
 export const browserRuntime: RuntimeTransport = {
@@ -187,10 +191,27 @@ export const browserRuntime: RuntimeTransport = {
     window.open(url, "_blank", "noopener,noreferrer");
   },
   openSshSession(request) {
-    return invokeTauriCommand("open_ssh_session", request);
+    return invokeTauriCommand<string>("open_ssh_session", { request });
+  },
+  writeSshSession(sessionId, data) {
+    return invokeTauriCommand("ssh_write", { sessionId, data });
+  },
+  resizeSshSession(sessionId, cols, rows) {
+    return invokeTauriCommand("ssh_resize", { sessionId, cols, rows });
+  },
+  closeSshSession(sessionId) {
+    return invokeTauriCommand("ssh_close", { sessionId });
+  },
+  async onSshSessionEvent(sessionId, handler) {
+    if (!isTauri()) requireDesktopSsh();
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<SshSessionEvent>("ssh-session-event", (event) => {
+      if (event.payload.sessionId !== sessionId) return;
+      handler(event.payload);
+    });
   },
   openSystemSshTerminal(request) {
-    return invokeTauriCommand("open_system_ssh_terminal", request);
+    return invokeTauriCommand("open_system_ssh_terminal", { request });
   },
 };
 

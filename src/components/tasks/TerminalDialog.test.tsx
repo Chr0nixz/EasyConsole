@@ -58,14 +58,12 @@ describe("TerminalDialog", () => {
 
   it("shows both desktop SSH entry points in the desktop runtime", () => {
     setDesktopRuntime(true);
-    const openSshSession = vi.spyOn(browserRuntime, "openSshSession").mockResolvedValue(undefined);
     const openSystemSshTerminal = vi.spyOn(browserRuntime, "openSystemSshTerminal").mockResolvedValue(undefined);
     renderDialog();
 
-    fireEvent.click(screen.getByRole("button", { name: "应用内 SSH" }));
+    expect(screen.getByRole("button", { name: "应用内 SSH" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "系统终端" }));
 
-    expect(openSshSession).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task-1", command: "ssh -p 30222 ubuntu@10.0.0.8" }));
     expect(openSystemSshTerminal).toHaveBeenCalledWith(
       expect.objectContaining({ taskId: "task-1", command: "ssh -p 30222 ubuntu@10.0.0.8" }),
     );

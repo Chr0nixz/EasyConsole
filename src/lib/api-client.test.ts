@@ -42,7 +42,15 @@ function createRuntime() {
     },
     async copyText() {},
     openExternal() {},
-    async openSshSession() {},
+    async openSshSession() {
+      return "session-1";
+    },
+    async writeSshSession() {},
+    async resizeSshSession() {},
+    async closeSshSession() {},
+    async onSshSessionEvent() {
+      return () => {};
+    },
     async openSystemSshTerminal() {},
   };
   return { runtime, calls };

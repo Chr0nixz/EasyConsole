@@ -224,7 +224,11 @@ export type RuntimeTransport = {
   createWebSocket(url: string): Promise<RuntimeWebSocket>;
   copyText(text: string): Promise<void>;
   openExternal(url: string): void;
-  openSshSession(request: SshConnectionRequest): Promise<void>;
+  openSshSession(request: SshConnectionRequest): Promise<string>;
+  writeSshSession(sessionId: string, data: string): Promise<void>;
+  resizeSshSession(sessionId: string, cols: number, rows: number): Promise<void>;
+  closeSshSession(sessionId: string): Promise<void>;
+  onSshSessionEvent(sessionId: string, handler: (event: SshSessionEvent) => void): Promise<() => void>;
   openSystemSshTerminal(request: SshConnectionRequest): Promise<void>;
 };
 
@@ -236,4 +240,13 @@ export type SshConnectionRequest = {
   command: string;
   taskId?: string;
   taskName?: string;
+  cols?: number;
+  rows?: number;
+};
+
+export type SshSessionEvent = {
+  sessionId: string;
+  kind: "status" | "output" | "error" | "closed";
+  data?: string;
+  message?: string;
 };
