@@ -5,7 +5,7 @@ import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
 import { Panel } from "../components/ui";
 import { instanceApi } from "../lib/api";
-import { formatCost, formatHours, formatNumber, formatSecondsDuration, getTaskName } from "../lib/format";
+import { formatCost, formatNumber, formatSecondsDuration, getTaskName } from "../lib/format";
 import type { ConsoleSummary, Task } from "../lib/types";
 
 function StatTile({ label, value, icon: Icon }: { label: string; value: string; icon: LucideIcon }) {
@@ -94,7 +94,7 @@ export function DashboardPage() {
                     </td>
                     <td className="px-3 py-2 text-app-muted">{task.node_name || "-"}</td>
                     <td className="px-3 py-2 text-app-muted">
-                      {formatCost(task.cost)} ({formatHours(task.use_time)})
+                      {formatCost(task.cost)} ({formatSecondsDuration(task.use_time)})
                     </td>
                   </tr>
                 ))}

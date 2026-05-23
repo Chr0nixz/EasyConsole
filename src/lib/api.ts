@@ -95,8 +95,11 @@ export const instanceApi = {
   deleteTasks(ids: Array<string | number>) {
     return apiClient.delete<unknown>("/instance/task", { body: ids });
   },
-  taskLog(taskId: string | number) {
-    return apiClient.get<unknown>(`/instance/task_log?task_id=${encodeURIComponent(String(taskId))}`);
+  taskLog(task: Pick<Task, "id" | "task_id">) {
+    return apiClient.get<string>("/instance/task_log", {
+      query: { task_id: task.task_id ?? task.id },
+      responseType: "text",
+    });
   },
   monitorIndex(query?: UnknownRecord) {
     return apiClient.get<unknown>("/instance/monitor_index", { query });
