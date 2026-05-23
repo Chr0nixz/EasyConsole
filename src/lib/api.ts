@@ -26,11 +26,47 @@ export function formatContentRange(range: UploadChunkRange) {
   return `bytes ${range.start}-${range.end}/${range.total}`;
 }
 
-function extractUploadId(raw: unknown) {
+function extractUploadId(raw: unknown): string | null {
   if (!raw || typeof raw !== "object") return null;
   const record = raw as UnknownRecord;
   const value = record.upload_id ?? record.uploadId ?? record.id;
-  return value === undefined || value === null || value === "" ? null : String(value);
+  if (value !== undefined && value !== null && value !== "") return String(value);
+
+  for (const nested of [record.data, record.result, record.file]) {
+    const nestedUploadId: string | null = extractUploadId(nested);
+    if (nestedUploadId) return nestedUploadId;
+  }
+  return null;
+}
+
+function assertUploadResponse(raw: unknown) {
+  if (typeof raw === "string") {
+    if (!raw.trim()) return null;
+    try {
+      return assertUploadResponse(JSON.parse(raw));
+    } catch {
+      return raw;
+    }
+  }
+  if (!raw || typeof raw !== "object" || !("code" in raw)) return raw;
+  const record = raw as UnknownRecord;
+  if (record.code !== 0) {
+    throw new Error(String(record.msg ?? record.message ?? "上传失败"));
+  }
+  return record.data ?? record;
+}
+
+function isZeroSizeEntry(entry: StorageEntry, filename: string) {
+  const size = Number(entry.size ?? entry.file_size ?? entry.filesize ?? entry.fileSize ?? entry.bytes ?? 0);
+  return entry.name === filename && Number.isFinite(size) && size === 0;
+}
+
+function getMkdirPayload(path: string) {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  const name = parts.pop() ?? "";
+  const parent = parts.length ? `/${parts.join("/")}` : "/";
+  return { path: parent, name };
 }
 
 function extractList<T>(raw: unknown): ListResult<T> {
@@ -143,10 +179,12 @@ export const storageApi = {
     return extractList<StorageEntry>(raw);
   },
   mkdir(path: string) {
-    return apiClient.post<unknown>("/storage/ls", { path });
+    return apiClient.post<unknown>("/storage/ls", getMkdirPayload(path));
   },
-  delete(path: string) {
-    return apiClient.delete<unknown>("/storage/ls", { body: { path } });
+  delete(path: string, isDirectory?: boolean) {
+    return apiClient.delete<unknown>("/storage/ls", {
+      body: { path, ...(isDirectory === undefined ? {} : { is_directory: isDirectory }) },
+    });
   },
   info() {
     return apiClient.get<unknown>("/storage/info");
@@ -172,11 +210,42 @@ export const storageApi = {
         "Content-Range": formatContentRange(range),
       },
       timeoutMs: 300_000,
+      raw: true,
     });
     onProgress?.({ loaded: range.end + 1, total: range.total, percent: Math.round(((range.end + 1) / range.total) * 100) });
-    return result;
+    return assertUploadResponse(result);
+  },
+  async uploadEmptyFile(file: File, path: string, onProgress?: (progress: UploadProgress) => void) {
+    const formData = new FormData();
+    formData.append("the_file", file.slice(0, 0), file.name);
+    formData.append("path", path);
+    const result = assertUploadResponse(
+      await apiClient.post<unknown>("/storage/chunked_upload", formData, {
+        timeoutMs: 300_000,
+        raw: true,
+      }),
+    );
+    const uploadId = extractUploadId(result);
+    if (uploadId) {
+      const params = new URLSearchParams();
+      params.set("upload_id", uploadId);
+      params.set("md5", await md5Blob(file));
+      params.set("path", path);
+      const completed = await storageApi.uploadComplete(params.toString());
+      onProgress?.({ loaded: 0, total: 0, percent: 100 });
+      return completed;
+    }
+
+    const list = await storageApi.list({ path });
+    if (list.items.some((entry) => isZeroSizeEntry(entry, file.name))) {
+      onProgress?.({ loaded: 0, total: 0, percent: 100 });
+      return result;
+    }
+    throw new Error("0B 空文件上传后服务端未创建文件");
   },
   async uploadFile(file: File, path: string, onProgress?: (progress: UploadProgress) => void) {
+    if (file.size === 0) return storageApi.uploadEmptyFile(file, path, onProgress);
+
     let uploadId: string | null = null;
     for (let start = 0; start < file.size; start += UPLOAD_CHUNK_SIZE) {
       const end = Math.min(start + UPLOAD_CHUNK_SIZE, file.size) - 1;
@@ -190,10 +259,13 @@ export const storageApi = {
     params.set("path", path);
     return storageApi.uploadComplete(params.toString());
   },
-  uploadComplete(payload: URLSearchParams | string) {
-    return apiClient.post<unknown>("/storage/chunked_upload_complete", payload, {
+  async uploadComplete(payload: URLSearchParams | string) {
+    const result = await apiClient.post<unknown>("/storage/chunked_upload_complete", payload, {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      responseType: "text",
+      raw: true,
     });
+    return assertUploadResponse(result);
   },
 };
 

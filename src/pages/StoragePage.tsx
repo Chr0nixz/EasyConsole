@@ -48,26 +48,27 @@ export function StoragePage() {
   const directorySizeQuery = useQuery({
     queryKey: ["storage-directory-sizes", path, directoryEntries.map((entry) => getStorageEntryPath(entry, path)).join("|")],
     queryFn: async () => {
-      const pairs = await Promise.all(
-        directoryEntries.map(async (entry) => {
-          const entryPath = getStorageEntryPath(entry, path);
-          try {
-            return [entryPath, await remoteStorage.getDirectorySize(entryPath)] as const;
-          } catch {
-            return [entryPath, getStorageEntrySize(entry) ?? null] as const;
-          }
-        }),
-      );
-      return Object.fromEntries(pairs) as Record<string, number | null>;
+      const sizes: Record<string, number | null> = {};
+      for (const entry of directoryEntries) {
+        const entryPath = getStorageEntryPath(entry, path);
+        try {
+          sizes[entryPath] = await remoteStorage.getDirectorySize(entryPath);
+        } catch {
+          sizes[entryPath] = null;
+        }
+      }
+      return sizes;
     },
     enabled: directoryEntries.length > 0,
+    retry: 1,
+    staleTime: 30_000,
   });
   const directorySizeMap = useMemo(() => directorySizeQuery.data ?? {}, [directorySizeQuery.data]);
   const visibleEntries = useMemo(() => {
     const normalizedKeyword = searchKeyword.trim().toLowerCase();
     const entrySizeForSort = (entry: StorageEntry) => {
       const entryPath = getStorageEntryPath(entry, path);
-      if (isStorageDirectory(entry, path)) return directorySizeMap[entryPath] ?? getStorageEntrySize(entry) ?? -1;
+      if (isStorageDirectory(entry, path)) return typeof directorySizeMap[entryPath] === "number" ? directorySizeMap[entryPath] : -1;
       return getStorageEntrySize(entry) ?? -1;
     };
     return entries
@@ -98,7 +99,7 @@ export function StoragePage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (entry: StorageEntry) => remoteStorage.remove(getStorageEntryPath(entry, path)),
+    mutationFn: (entry: StorageEntry) => remoteStorage.remove(getStorageEntryPath(entry, path), isStorageDirectory(entry, path)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["storage"] }),
   });
 
@@ -239,8 +240,14 @@ export function StoragePage() {
                 const directory = isStorageDirectory(entry, path);
                 const entryPath = getStorageEntryPath(entry, path);
                 const directSize = getStorageEntrySize(entry);
-                const entrySize = directory ? directorySizeMap[entryPath] ?? directSize : directSize;
-                const entrySizeText = entrySize === null ? (directory && directorySizeQuery.isFetching ? "计算中" : "-") : formatBytes(entrySize);
+                const directorySize = directorySizeMap[entryPath];
+                const entrySize = directory ? directorySize : directSize;
+                const entrySizeText =
+                  entrySize === undefined || entrySize === null
+                    ? directory && directorySizeQuery.isFetching
+                      ? "计算中"
+                      : "-"
+                    : formatBytes(entrySize);
                 return (
                   <tr key={entryPath} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
                     <td className="px-3 py-2">

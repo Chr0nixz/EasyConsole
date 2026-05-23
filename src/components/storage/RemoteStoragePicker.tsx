@@ -3,11 +3,13 @@ import { ChevronLeft, FileText, Folder, FolderOpen, RefreshCw } from "lucide-rea
 import { useEffect, useMemo, useState } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../DataState";
-import { Button, Dialog } from "../ui";
+import { Button, Dialog, Select } from "../ui";
 import { formatBytes } from "../../lib/format";
 import {
   getStorageBreadcrumbs,
+  getStorageEntryModifiedTime,
   getStorageEntryPath,
+  getStorageEntrySize,
   getStorageParentPath,
   isStorageDirectory,
   normalizeStoragePath,
@@ -26,6 +28,13 @@ type RemoteStoragePickerProps = {
   onSelect: (path: string) => void;
 };
 
+type StoragePickerSortField = "name" | "size" | "modified" | "type";
+type StoragePickerSortDirection = "asc" | "desc";
+
+function compareText(left: string, right: string) {
+  return left.localeCompare(right, "zh-CN", { numeric: true, sensitivity: "base" });
+}
+
 function defaultTitle(mode: RemoteStoragePickMode) {
   return mode === "directory" ? "选择远程文件夹" : "选择远程文件";
 }
@@ -40,13 +49,29 @@ export function RemoteStoragePicker({
 }: RemoteStoragePickerProps) {
   const [path, setPath] = useState(() => normalizeStoragePath(initialPath));
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [sortField, setSortField] = useState<StoragePickerSortField>("name");
+  const [sortDirection, setSortDirection] = useState<StoragePickerSortDirection>("asc");
   const crumbs = useMemo(() => getStorageBreadcrumbs(path), [path]);
   const query = useQuery({
     queryKey: ["remote-storage-picker", path],
     queryFn: () => remoteStorage.list({ path }),
     enabled: open,
   });
-  const entries = query.data?.items ?? [];
+  const entries = useMemo(() => query.data?.items ?? [], [query.data?.items]);
+  const visibleEntries = useMemo(() => {
+    return [...entries].sort((left, right) => {
+      const leftDirectory = isStorageDirectory(left, path);
+      const rightDirectory = isStorageDirectory(right, path);
+      if (leftDirectory !== rightDirectory) return leftDirectory ? -1 : 1;
+
+      let result = 0;
+      if (sortField === "name") result = compareText(left.name, right.name);
+      if (sortField === "type") result = compareText(leftDirectory ? "directory" : "file", rightDirectory ? "directory" : "file") || compareText(left.name, right.name);
+      if (sortField === "size") result = (getStorageEntrySize(left) ?? -1) - (getStorageEntrySize(right) ?? -1) || compareText(left.name, right.name);
+      if (sortField === "modified") result = getStorageEntryModifiedTime(left) - getStorageEntryModifiedTime(right) || compareText(left.name, right.name);
+      return sortDirection === "asc" ? result : -result;
+    });
+  }, [entries, path, sortDirection, sortField]);
 
   useEffect(() => {
     if (!open) return;
@@ -94,6 +119,16 @@ export function RemoteStoragePicker({
             ))}
           </div>
           <div className="flex items-center gap-2">
+            <Select className="h-8 w-28 text-xs" value={sortField} onChange={(event) => setSortField(event.target.value as StoragePickerSortField)}>
+              <option value="name">按名称</option>
+              <option value="size">按大小</option>
+              <option value="modified">按时间</option>
+              <option value="type">按类型</option>
+            </Select>
+            <Select className="h-8 w-24 text-xs" value={sortDirection} onChange={(event) => setSortDirection(event.target.value as StoragePickerSortDirection)}>
+              <option value="asc">升序</option>
+              <option value="desc">降序</option>
+            </Select>
             <Button
               className="h-8 px-2"
               disabled={path === "/"}
@@ -119,7 +154,7 @@ export function RemoteStoragePicker({
             <LoadingState />
           ) : query.isError ? (
             <ErrorState error={query.error} />
-          ) : entries.length === 0 ? (
+          ) : visibleEntries.length === 0 ? (
             <EmptyState title="当前目录为空" />
           ) : (
             <table className="w-full min-w-[560px] border-collapse text-sm">
@@ -131,7 +166,7 @@ export function RemoteStoragePicker({
                 </tr>
               </thead>
               <tbody>
-                {entries.map((entry) => {
+                {visibleEntries.map((entry) => {
                   const entryPath = getStorageEntryPath(entry, path);
                   const directory = isStorageDirectory(entry, path);
                   const selected = selectedFile === entryPath;
@@ -151,7 +186,7 @@ export function RemoteStoragePicker({
                         </div>
                       </td>
                       <td className="px-3 py-2 text-app-muted">{directory ? "目录" : "文件"}</td>
-                      <td className="px-3 py-2 text-app-muted">{directory ? "-" : formatBytes(entry.size)}</td>
+                      <td className="px-3 py-2 text-app-muted">{directory ? "-" : formatBytes(getStorageEntrySize(entry) ?? undefined)}</td>
                     </tr>
                   );
                 })}
