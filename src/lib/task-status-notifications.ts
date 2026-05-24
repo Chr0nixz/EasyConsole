@@ -1,5 +1,5 @@
 import { getStatusText, getTaskName } from "./format";
-import { i18nText } from "./i18n";
+import { i18nText } from "./i18n-text";
 import type { ImportantNotificationEvent } from "./app-settings";
 import type { Task, TaskStatus } from "./types";
 

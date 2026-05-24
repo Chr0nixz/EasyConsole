@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 
-import { i18nText } from "./i18n";
+import { i18nText } from "./i18n-text";
 import type { RunLogInput } from "./run-logs";
 
 export type RunLoggerContextValue = {

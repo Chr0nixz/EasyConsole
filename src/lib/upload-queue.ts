@@ -1,5 +1,5 @@
 import { getLocalFileRelativePath, joinStoragePath, normalizeStoragePath } from "./remote-storage";
-import { i18nText } from "./i18n";
+import { i18nText } from "./i18n-text";
 import type { UploadQueueItem } from "./types";
 
 function queueId(file: File, index: number) {

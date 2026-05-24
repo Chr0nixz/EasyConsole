@@ -1,6 +1,6 @@
 import { isTauri } from "@tauri-apps/api/core";
 
-import { i18nText } from "./i18n";
+import { i18nText } from "./i18n-text";
 import type {
   RuntimeHttpRequest,
   RuntimeHttpResponse,

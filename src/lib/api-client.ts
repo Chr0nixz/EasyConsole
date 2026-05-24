@@ -1,5 +1,5 @@
 import { ApiError, type ApiEnvelope, type RuntimeTransport, type UnknownRecord } from "./types";
-import { i18nText } from "./i18n";
+import { i18nText } from "./i18n-text";
 
 export const DEFAULT_API_BASE_URL = "http://116.172.93.164:28080/api";
 export const API_BASE_URL =

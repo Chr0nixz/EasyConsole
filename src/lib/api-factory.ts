@@ -1,6 +1,6 @@
 import { type ApiClient, extractToken, normalizeToken } from "./api-client";
 import { sha256Hex } from "./crypto";
-import { i18nText } from "./i18n";
+import { i18nText } from "./i18n-text";
 import { md5Blob } from "./md5";
 import type {
   CreateTaskPayload,

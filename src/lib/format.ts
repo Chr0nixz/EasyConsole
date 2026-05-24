@@ -1,5 +1,5 @@
 import type { TaskStatus } from "./types";
-import type { Locale } from "./i18n";
+import type { Locale } from "./i18n-text";
 
 function pad2(value: number) {
   return String(value).padStart(2, "0");

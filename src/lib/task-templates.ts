@@ -1,5 +1,5 @@
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName } from "./format";
-import { i18nText } from "./i18n";
+import { i18nText } from "./i18n-text";
 import { normalizeStoragePath } from "./remote-storage";
 import type { CreateTaskPayload, RuntimeStorage, Task, TaskTemplate, UnknownRecord } from "./types";
 

@@ -15,7 +15,8 @@ import {
   type RunLogSource,
 } from "../lib/run-logs";
 import { browserRuntime } from "../lib/runtime";
-import { useI18n, type Locale } from "../lib/i18n";
+import { useI18n } from "../lib/i18n";
+import type { Locale } from "../lib/i18n-text";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useToast } from "../lib/use-toast";
 

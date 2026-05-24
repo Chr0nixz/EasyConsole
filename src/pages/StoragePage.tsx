@@ -6,7 +6,8 @@ import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
 import { saveBlob } from "../lib/download";
 import { formatBytes } from "../lib/format";
-import { useI18n, type Locale } from "../lib/i18n";
+import { useI18n } from "../lib/i18n";
+import type { Locale } from "../lib/i18n-text";
 import {
   getStorageBreadcrumbs,
   getStorageEntryPath,

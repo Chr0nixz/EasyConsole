@@ -1,5 +1,5 @@
 import { storageApi } from "./api";
-import { i18nText } from "./i18n";
+import { i18nText } from "./i18n-text";
 import type { StorageEntry, StorageQuery, UploadProgress } from "./types";
 
 export type RemoteStoragePickMode = "directory" | "file";

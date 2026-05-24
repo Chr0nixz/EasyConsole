@@ -1,12 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { browserRuntime } from "./runtime";
+import { normalizeLocale, setActiveLocale, type Locale } from "./i18n-text";
+export type { Locale } from "./i18n-text";
 
 export const I18N_STORAGE_KEY = "easy-console-language";
 
-// eslint-disable-next-line react-refresh/only-export-components
-export const supportedLocales = ["zh-CN", "en-US"] as const;
-export type Locale = (typeof supportedLocales)[number];
 export type TranslationKey = keyof typeof zhCN;
 
 const zhCN = {
@@ -176,27 +175,12 @@ const dictionaries: Record<Locale, Record<TranslationKey, string>> = {
   "en-US": enUS,
 };
 
-let activeLocale: Locale = "zh-CN";
-
-// eslint-disable-next-line react-refresh/only-export-components
-export function i18nText(zh: string, en: string) {
-  return activeLocale === "en-US" ? en : zh;
-}
-
 type I18nContextValue = {
   locale: Locale;
   setLocale: (locale: Locale) => void;
   text: (zh: string, en: string) => string;
   t: (key: TranslationKey, values?: Record<string, string | number>) => string;
 };
-
-function normalizeLocale(value: string | null | undefined): Locale | null {
-  if (!value) return null;
-  const normalized = value.toLowerCase();
-  if (normalized.startsWith("en")) return "en-US";
-  if (normalized.startsWith("zh")) return "zh-CN";
-  return null;
-}
 
 function detectInitialLocale(): Locale {
   if (typeof window === "undefined") return "zh-CN";
@@ -233,7 +217,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    activeLocale = locale;
+    setActiveLocale(locale);
     document.documentElement.lang = locale;
   }, [locale]);
 

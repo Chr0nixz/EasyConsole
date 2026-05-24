@@ -1,6 +1,7 @@
 import { Languages } from "lucide-react";
 
-import { supportedLocales, useI18n, type Locale } from "../lib/i18n";
+import { useI18n } from "../lib/i18n";
+import { supportedLocales, type Locale } from "../lib/i18n-text";
 import { cn } from "../lib/utils";
 
 export function LanguageSwitch({ compact = false }: { compact?: boolean }) {

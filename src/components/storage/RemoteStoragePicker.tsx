@@ -5,7 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { EmptyState, ErrorState, LoadingState } from "../DataState";
 import { Button, Dialog, Select } from "../ui";
 import { formatBytes } from "../../lib/format";
-import { useI18n, type Locale } from "../../lib/i18n";
+import { useI18n } from "../../lib/i18n";
+import type { Locale } from "../../lib/i18n-text";
 import {
   getStorageBreadcrumbs,
   getStorageEntryModifiedTime,

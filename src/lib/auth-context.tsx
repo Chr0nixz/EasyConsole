@@ -4,7 +4,7 @@ import { apiClient, authApi } from "./api";
 import { APP_SETTINGS_STORAGE_KEY, parseAppSettings, setRuntimeSettings } from "./app-settings";
 import { AuthContext } from "./auth-state";
 import { TOKEN_STORAGE_KEY, UNAUTHORIZED_EVENT } from "./api-client";
-import { i18nText } from "./i18n";
+import { i18nText } from "./i18n-text";
 import { browserRuntime } from "./runtime";
 import { appendRunLog, type RunLogInput } from "./run-logs";
 import {
