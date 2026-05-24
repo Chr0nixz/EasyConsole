@@ -30,7 +30,7 @@
     "active": true,
     "targets": "all",
     "externalBin": [
-      "binaries/easy-console",
+      "binaries/easy-console-cli",
       "binaries/easy-console-mcp"
     ],
     "icon": [

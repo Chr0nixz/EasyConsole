@@ -12,7 +12,7 @@ const pkgBin = join(root, "node_modules", "@yao-pkg", "pkg", "lib-es5", "bin.js"
 
 const entries = [
   {
-    name: "easy-console",
+    name: "easy-console-cli",
     entry: join(root, "tools", "easy-console", "cli-entry.ts"),
   },
   {

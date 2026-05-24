@@ -1,5 +1,9 @@
 # EasyConsole
 
+<p align="center">
+  <img src="public/favicon.svg" alt="EasyConsole icon" width="96" height="96" />
+</p>
+
 React + Tauri control panel for the existing web console API at `http://116.172.93.164:28080/`, with companion CLI and MCP tools for scripted and AI-assisted operations.
 
 ## Current Scope
@@ -152,11 +156,11 @@ Desktop packaging produces the GUI app plus two AI/script sidecar executables:
 
 ```text
 EasyConsole / EasyConsole.exe
-easy-console / easy-console.exe
+easy-console-cli / easy-console-cli.exe
 easy-console-mcp / easy-console-mcp.exe
 ```
 
-The sidecars are built from `tools/easy-console/` and copied into `src-tauri/binaries/` using Tauri's target-triple naming convention before the desktop bundle is created. The Tauri main binary is named `EasyConsole` / `EasyConsole.exe` so it does not collide with the CLI sidecar.
+The sidecars are built from `tools/easy-console/` and copied into `src-tauri/binaries/` using Tauri's target-triple naming convention before the desktop bundle is created. The CLI sidecar is packaged as `easy-console-cli` so it does not collide with the Cargo package name `easy-console`.
 
 On Windows PowerShell, use `npm.cmd`. On macOS/Linux shells, use `npm`.
 
@@ -175,14 +179,14 @@ npm.cmd run build:desktop
 The generated standalone tools are written to:
 
 ```text
-build/sidecars/easy-console[.exe]
+build/sidecars/easy-console-cli[.exe]
 build/sidecars/easy-console-mcp[.exe]
 ```
 
 The Tauri-ready sidecar binaries are written to:
 
 ```text
-src-tauri/binaries/easy-console-{target-triple}[.exe]
+src-tauri/binaries/easy-console-cli-{target-triple}[.exe]
 src-tauri/binaries/easy-console-mcp-{target-triple}[.exe]
 ```
 
