@@ -2,7 +2,23 @@
 import { describe, expect, it } from "vitest";
 
 import type { EasyConsoleContext } from "./context";
+import type { RuntimeStorage } from "../../src/lib/types";
 import { createMcpToolDefinitions, invokeMcpToolDefinition, toMcpJsonError, toMcpJsonResult } from "./mcp-tools";
+
+function memoryStorage(): RuntimeStorage {
+  const values = new Map<string, string>();
+  return {
+    async get(key) {
+      return values.get(key) ?? null;
+    },
+    async set(key, value) {
+      values.set(key, value);
+    },
+    async remove(key) {
+      values.delete(key);
+    },
+  };
+}
 
 function getTool(name: string) {
   const tool = createMcpToolDefinitions().find((definition) => definition.name === name);
@@ -48,6 +64,8 @@ function createFakeContext(overrides: Record<string, unknown> = {}) {
       configPath: "config.json",
       env: { apiBaseUrl: false, token: false },
     },
+    runLogPath: "run-logs.json",
+    runLogStorage: memoryStorage(),
   } as unknown as EasyConsoleContext;
 }
 
@@ -109,5 +127,11 @@ describe("easy-console MCP tools", () => {
       data: null,
       error: { message: "boom" },
     });
+  });
+
+  it("exposes run log tools", () => {
+    expect(getTool("easyconsole_run_log_list")).toBeTruthy();
+    expect(getTool("easyconsole_run_log_export")).toBeTruthy();
+    expect(getTool("easyconsole_run_log_clear")).toBeTruthy();
   });
 });

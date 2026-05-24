@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, HashRouter } from "react-router-dom";
 
 import { App } from "./App";
+import { RunLoggerProvider } from "./components/RunLoggerProvider";
 import { AuthProvider } from "./lib/auth-context";
 
 const queryClient = new QueryClient({
@@ -24,9 +25,11 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <Router>
-          <App />
-        </Router>
+        <RunLoggerProvider>
+          <Router>
+            <App />
+          </Router>
+        </RunLoggerProvider>
       </AuthProvider>
     </QueryClientProvider>
   </StrictMode>,

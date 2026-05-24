@@ -9,6 +9,7 @@ import { ToastProvider } from "./components/Toast";
 const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })));
 const ImagesPage = lazy(() => import("./pages/ImagesPage").then((module) => ({ default: module.ImagesPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage").then((module) => ({ default: module.LoginPage })));
+const RunLogsPage = lazy(() => import("./pages/RunLogsPage").then((module) => ({ default: module.RunLogsPage })));
 const ScheduledTasksPage = lazy(() => import("./pages/ScheduledTasksPage").then((module) => ({ default: module.ScheduledTasksPage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 const StoragePage = lazy(() => import("./pages/StoragePage").then((module) => ({ default: module.StoragePage })));
@@ -37,6 +38,7 @@ export function App() {
             <Route path="task-templates" element={<TaskTemplatesPage />} />
             <Route path="storage" element={<StoragePage />} />
             <Route path="images" element={<ImagesPage />} />
+            <Route path="run-logs" element={<RunLogsPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

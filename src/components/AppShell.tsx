@@ -1,4 +1,4 @@
-import { CalendarClock, Database, Image, LayoutDashboard, LogOut, Server, Settings, SquareStack, TerminalSquare } from "lucide-react";
+import { CalendarClock, Database, Image, LayoutDashboard, LogOut, ScrollText, Server, Settings, SquareStack, TerminalSquare } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { Button } from "./ui";
@@ -12,6 +12,7 @@ const navItems = [
   { to: "/task-templates", label: "实例模板", icon: SquareStack },
   { to: "/storage", label: "文件存储", icon: Database },
   { to: "/images", label: "镜像", icon: Image },
+  { to: "/run-logs", label: "运行日志", icon: ScrollText },
   { to: "/settings", label: "设置", icon: Settings },
 ];
 
@@ -22,6 +23,7 @@ const titles: Record<string, string> = {
   "/task-templates": "实例模板",
   "/storage": "文件存储",
   "/images": "镜像管理",
+  "/run-logs": "运行日志",
   "/settings": "系统设置",
 };
 
@@ -80,17 +82,14 @@ export function AppShell() {
           </div>
         </main>
       </div>
-      <nav
-        className="fixed inset-x-0 bottom-0 z-40 grid border-t border-app-border bg-app-surface md:hidden"
-        style={{ gridTemplateColumns: `repeat(${navItems.length}, minmax(0, 1fr))` }}
-      >
+      <nav className="fixed inset-x-0 bottom-0 z-40 flex overflow-x-auto border-t border-app-border bg-app-surface md:hidden">
         {navItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             className={({ isActive }) =>
               cn(
-                "app-interactive flex h-16 flex-col items-center justify-center gap-1 text-xs text-app-muted",
+                "app-interactive flex h-16 min-w-20 flex-col items-center justify-center gap-1 text-xs text-app-muted",
                 isActive && "bg-app-accentSoft text-app-accent",
               )
             }

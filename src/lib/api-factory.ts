@@ -3,6 +3,7 @@ import { sha256Hex } from "./crypto";
 import { md5Blob } from "./md5";
 import type {
   CreateTaskPayload,
+  ImageCommitPayload,
   ImageItem,
   ListResult,
   LoginPayload,
@@ -166,6 +167,9 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
     },
     download(id: string | number) {
       return apiClient.get<Blob>(`/image/image/download/${id}`, { responseType: "blob" });
+    },
+    commitImage(payload: ImageCommitPayload) {
+      return apiClient.post<unknown>("/image/image_commit", payload);
     },
     setDefault(id: string | number) {
       return apiClient.post<unknown>(`/image/default/${id}`);

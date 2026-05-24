@@ -28,6 +28,12 @@ function createRuntime(responseData: unknown) {
       throw new Error("not implemented");
     },
     async copyText() {},
+    async requestSystemNotificationPermission() {
+      return "unsupported";
+    },
+    async notifySystem() {
+      return "unsupported";
+    },
     openExternal() {},
     async openSshSession() {
       return "session";
@@ -64,5 +70,19 @@ describe("api factory", () => {
     expect(apiClient).toBeInstanceOf(ApiClient);
     expect(typeof authApi.login).toBe("function");
     expect(typeof instanceApi.tasks).toBe("function");
+  });
+
+  it("posts image commit requests using the original console endpoint", async () => {
+    const { runtime, calls } = createRuntime({ code: 0, data: {} });
+    const client = new ApiClient(runtime, "http://host/api");
+    const api = createEasyConsoleApi(client);
+
+    await api.imageApi.commitImage({ user: { username: "xutian" }, pod_name: "common-o7mt1awm" });
+
+    expect(calls[0]).toMatchObject({
+      method: "POST",
+      url: "http://host/api/image/image_commit",
+      body: { user: { username: "xutian" }, pod_name: "common-o7mt1awm" },
+    });
   });
 });

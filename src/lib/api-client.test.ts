@@ -41,6 +41,12 @@ function createRuntime() {
       };
     },
     async copyText() {},
+    async requestSystemNotificationPermission() {
+      return "unsupported";
+    },
+    async notifySystem() {
+      return "unsupported";
+    },
     openExternal() {},
     async openSshSession() {
       return "session-1";

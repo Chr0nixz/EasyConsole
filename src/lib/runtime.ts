@@ -4,6 +4,9 @@ import type {
   RuntimeHttpRequest,
   RuntimeHttpResponse,
   RuntimeStorage,
+  RuntimeSystemNotification,
+  RuntimeSystemNotificationPermission,
+  RuntimeSystemNotificationResult,
   RuntimeTransport,
   RuntimeWebSocket,
   SshSessionEvent,
@@ -200,6 +203,66 @@ async function invokeTauriCommand<T = void>(command: string, args: Record<string
   return invoke<T>(command, args);
 }
 
+function getSystemNotificationPermission(): RuntimeSystemNotificationPermission {
+  if (!("Notification" in window)) return "unsupported";
+  return Notification.permission;
+}
+
+async function requestSystemNotificationPermission(): Promise<RuntimeSystemNotificationPermission> {
+  if (isTauri()) {
+    try {
+      const { isPermissionGranted, requestPermission } = await import("@tauri-apps/plugin-notification");
+      if (await isPermissionGranted()) return "granted";
+      const permission = await requestPermission();
+      return permission === "granted" ? "granted" : permission === "denied" ? "denied" : "default";
+    } catch (error) {
+      console.warn("Tauri notification permission request failed.", error);
+      return "unsupported";
+    }
+  }
+
+  const permission = getSystemNotificationPermission();
+  if (permission !== "default") return permission;
+
+  try {
+    return await Notification.requestPermission();
+  } catch {
+    return "denied";
+  }
+}
+
+async function notifySystem(notification: RuntimeSystemNotification): Promise<RuntimeSystemNotificationResult> {
+  const permission = await requestSystemNotificationPermission();
+  if (permission === "unsupported") return "unsupported";
+  if (permission !== "granted") return "permission-denied";
+
+  if (isTauri()) {
+    try {
+      const { sendNotification } = await import("@tauri-apps/plugin-notification");
+      sendNotification({
+        title: notification.title,
+        body: notification.body,
+        silent: notification.silent,
+      });
+      return "shown";
+    } catch (error) {
+      console.warn("Tauri notification send failed.", error);
+      return "unsupported";
+    }
+  }
+
+  try {
+    new Notification(notification.title, {
+      body: notification.body,
+      tag: notification.tag,
+      silent: notification.silent,
+    });
+    return "shown";
+  } catch {
+    return "unsupported";
+  }
+}
+
 function requireDesktopSsh(): never {
   throw new Error("当前环境不是桌面端，无法使用应用内 SSH");
 }
@@ -214,6 +277,8 @@ export const browserRuntime: RuntimeTransport = {
   async copyText(text) {
     await window.navigator.clipboard.writeText(text);
   },
+  requestSystemNotificationPermission,
+  notifySystem,
   openExternal(url) {
     if (isTauri()) {
       void invokeTauriCommand("open_external_url", { url });

@@ -3,6 +3,22 @@ import { describe, expect, it } from "vitest";
 
 import type { EasyConsoleContext } from "./context";
 import { runCli } from "./cli";
+import type { RuntimeStorage } from "../../src/lib/types";
+
+function memoryStorage(): RuntimeStorage {
+  const values = new Map<string, string>();
+  return {
+    async get(key) {
+      return values.get(key) ?? null;
+    },
+    async set(key, value) {
+      values.set(key, value);
+    },
+    async remove(key) {
+      values.delete(key);
+    },
+  };
+}
 
 function createFakeContext(overrides: Record<string, unknown> = {}) {
   const api = {
@@ -45,6 +61,8 @@ function createFakeContext(overrides: Record<string, unknown> = {}) {
       configPath: "config.json",
       env: { apiBaseUrl: false, token: false },
     },
+    runLogPath: "run-logs.json",
+    runLogStorage: memoryStorage(),
   } as unknown as EasyConsoleContext;
 }
 
@@ -99,5 +117,21 @@ describe("easy-console cli", () => {
       data: null,
       error: { message: "missing token" },
     });
+  });
+
+  it("lists local run logs", async () => {
+    const context = createFakeContext();
+    const result = await runCli(["--json", "whoami"], {
+      createContext: async () => context,
+    });
+    expect(result.exitCode).toBe(0);
+
+    const logs = await runCli(["--json", "run-log", "list", "--limit", "10"], {
+      createContext: async () => context,
+    });
+
+    expect(logs.exitCode).toBe(0);
+    const payload = JSON.parse(logs.stdout) as { data: Array<{ action: string; channel: string }> };
+    expect(payload.data[0]).toMatchObject({ action: "whoami", channel: "cli" });
   });
 });

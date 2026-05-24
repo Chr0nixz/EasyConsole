@@ -19,6 +19,7 @@ import {
 import { createUploadQueueItems, summarizeUploadQueue } from "../lib/upload-queue";
 import type { StorageEntry, UploadQueueItem } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
+import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
 type StorageSortField = "name" | "size" | "modified" | "type";
@@ -35,6 +36,7 @@ function getDirectoryDownloadName(entry: StorageEntry) {
 export function StoragePage() {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const runLogger = useRunLogger();
   const { confirm, confirmDialog } = useConfirmAction();
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const uploadCancelledRef = useRef(false);
@@ -81,6 +83,14 @@ export function StoragePage() {
     mutationFn: () => remoteStorage.createDirectory(joinStoragePath(path, mkdirName)),
     onSuccess: () => {
       setMkdirName("");
+      void runLogger.log({
+        source: "storage",
+        level: "info",
+        action: "storage.mkdir",
+        result: "success",
+        title: "远程文件夹已创建",
+        targetName: joinStoragePath(path, mkdirName),
+      });
       queryClient.invalidateQueries({ queryKey: ["storage"] });
     },
   });
@@ -89,10 +99,27 @@ export function StoragePage() {
     mutationFn: (entry: StorageEntry) => remoteStorage.remove(getStorageEntryPath(entry, path), isStorageDirectory(entry, path)),
     onSuccess: (_data, entry) => {
       toast.success("远程文件已删除", entry.name);
+      void runLogger.log({
+        source: "storage",
+        level: "info",
+        action: "storage.delete",
+        result: "success",
+        title: "远程文件已删除",
+        targetName: getStorageEntryPath(entry, path),
+      });
       queryClient.invalidateQueries({ queryKey: ["storage"] });
     },
     onError: (error, entry) => {
       toast.error("远程删除失败", `${entry.name}：${error instanceof Error ? error.message : "请稍后重试"}`);
+      void runLogger.log({
+        source: "storage",
+        level: "error",
+        action: "storage.delete",
+        result: "failure",
+        title: "远程删除失败",
+        targetName: getStorageEntryPath(entry, path),
+        error: errorMessage(error, "远程删除失败"),
+      });
     },
   });
 
@@ -101,6 +128,15 @@ export function StoragePage() {
     onSuccess: (content, entry) => setPreview({ title: entry.name, content }),
     onError: (error, entry) => {
       toast.error("读取远程文件失败", `${entry.name}：${error instanceof Error ? error.message : "请稍后重试"}`);
+      void runLogger.log({
+        source: "storage",
+        level: "error",
+        action: "storage.preview",
+        result: "failure",
+        title: "读取远程文件失败",
+        targetName: getStorageEntryPath(entry, path),
+        error: errorMessage(error, "读取远程文件失败"),
+      });
     },
   });
 
@@ -147,6 +183,14 @@ export function StoragePage() {
       }
       queryClient.invalidateQueries({ queryKey: ["storage"] });
       toast.success("上传队列已处理", `${items.length} 个文件`);
+      void runLogger.log({
+        source: "storage",
+        level: "info",
+        action: "storage.upload",
+        result: "success",
+        title: "上传队列已处理",
+        metadata: { count: items.length, failed: items.filter((item) => item.status === "failed").length, path },
+      });
     } finally {
       uploadCancelledRef.current = false;
     }
@@ -231,9 +275,28 @@ export function StoragePage() {
     const filename = directory ? getDirectoryDownloadName(entry) : entry.name;
     void download
       .then((blob) => saveBlob(blob, filename))
-      .then(() => toast.success("远程文件已下载", filename))
+      .then(() => {
+        toast.success("远程文件已下载", filename);
+        void runLogger.log({
+          source: "storage",
+          level: "info",
+          action: "storage.download",
+          result: "success",
+          title: "远程文件已下载",
+          targetName: entryPath,
+        });
+      })
       .catch((error) => {
         toast.error("远程下载失败", error instanceof Error ? error.message : "请稍后重试");
+        void runLogger.log({
+          source: "storage",
+          level: "error",
+          action: "storage.download",
+          result: "failure",
+          title: "远程下载失败",
+          targetName: entryPath,
+          error: errorMessage(error, "远程下载失败"),
+        });
       });
   }
 

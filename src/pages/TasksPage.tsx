@@ -21,6 +21,7 @@ import {
   Settings2,
   Terminal,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
@@ -32,11 +33,12 @@ import { StatusBadge } from "../components/StatusBadge";
 import { CreateTaskDialog } from "../components/tasks/CreateTaskDialog";
 import { TaskLogDialog } from "../components/tasks/TaskLogDialog";
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
-import { instanceApi } from "../lib/api";
+import { imageApi, instanceApi } from "../lib/api";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { saveBlob } from "../lib/download";
 import { asJson, formatSecondsDuration, getTaskName, taskStatusText } from "../lib/format";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
+import { browserRuntime } from "../lib/runtime";
 import { filterAndSortTasks } from "../lib/task-search";
 import {
   parseTaskListQuery,
@@ -46,8 +48,10 @@ import {
   toTaskApiQuery,
   type TaskListQueryState,
 } from "../lib/task-list-query";
-import type { Task } from "../lib/types";
+import { getImportantTaskStatusNotification, getTaskNotificationId } from "../lib/task-status-notifications";
+import type { Task, TaskStatus } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
+import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
 const columnHelper = createColumnHelper<Task>();
@@ -86,6 +90,7 @@ const columnLabels: Record<string, string> = {
   deleted: "删除状态",
 };
 const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_2rem_2rem_5rem_2rem] items-center gap-1";
+const commitPodFields = ["description", "pod_name", "podName", "pod", "k8s_pod_name", "k8sPodName"];
 
 function resourceText(task: Task) {
   return `${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`;
@@ -100,6 +105,31 @@ function displayText(value: unknown) {
   if (value === undefined || value === null || value === "") return "-";
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
   return "-";
+}
+
+function firstText(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return "";
+}
+
+function getTaskCommitPodName(task: Task) {
+  return firstText(...commitPodFields.map((field) => task[field]));
+}
+
+function getTaskCommitUser(task: Task) {
+  if (task.user && typeof task.user === "object") return task.user;
+  return firstText(task.username, task.ssh_username, task.ssh_user, task.login_user);
+}
+
+function buildTaskCommitPayload(task: Task) {
+  const podName = getTaskCommitPodName(task);
+  if (!podName) throw new Error("后端未返回 pod 标识，无法 Commit。请刷新实例列表或查看原始 JSON。");
+  const user = getTaskCommitUser(task);
+  if (!user) throw new Error("后端未返回用户信息，无法 Commit。请刷新实例列表或查看原始 JSON。");
+  return { user, pod_name: podName };
 }
 
 function userRecord(task: Task) {
@@ -199,10 +229,12 @@ export function MoreActionsMenu({
   task,
   onRaw,
   onDownload,
+  onCommit,
 }: {
   task: Task;
   onRaw: (task: Task) => void;
   onDownload: (task: Task) => void;
+  onCommit: (task: Task) => void;
 }) {
   const menuId = useId();
   const [open, setOpen] = useState(false);
@@ -371,6 +403,24 @@ export function MoreActionsMenu({
               ref={(element) => {
                 menuItemRefs.current[1] = element;
               }}
+              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!isRunningTask(task)}
+              role="menuitem"
+              tabIndex={-1}
+              title={isRunningTask(task) ? "Commit" : "仅运行中实例可 Commit"}
+              type="button"
+              onClick={() => {
+                closeMenu();
+                onCommit(task);
+              }}
+            >
+              <Upload className="h-4 w-4 text-app-muted" />
+              Commit
+            </button>
+            <button
+              ref={(element) => {
+                menuItemRefs.current[2] = element;
+              }}
               className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
               role="menuitem"
               tabIndex={-1}
@@ -394,6 +444,7 @@ export function MoreActionsMenu({
 export function TasksPage() {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const runLogger = useRunLogger();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryState = useMemo(() => parseTaskListQuery(searchParams), [searchParams]);
   const { confirm, confirmDialog } = useConfirmAction();
@@ -409,6 +460,7 @@ export function TasksPage() {
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(() =>
     loadNumberSetting(AUTO_REFRESH_INTERVAL_KEY, DEFAULT_AUTO_REFRESH_INTERVAL),
   );
+  const taskStatusSnapshotRef = useRef<Map<string, TaskStatus | undefined>>(new Map());
 
   const updateTaskQuery = useCallback((patch: Partial<TaskListQueryState>) => {
     const next = { ...queryState, ...patch };
@@ -420,10 +472,29 @@ export function TasksPage() {
     mutationFn: (task: Task) => instanceApi.deleteTask(task.id),
     onSuccess: (_data, task) => {
       toast.success("实例删除已提交", getTaskName(task));
+      void runLogger.log({
+        source: "task",
+        level: "info",
+        action: "task.delete",
+        result: "success",
+        title: "实例删除已提交",
+        targetName: getTaskName(task),
+        targetId: task.id,
+      });
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
     onError: (error, task) => {
       toast.error("实例删除失败", `${getTaskName(task)}：${error instanceof Error ? error.message : "请稍后重试"}`);
+      void runLogger.log({
+        source: "task",
+        level: "error",
+        action: "task.delete",
+        result: "failure",
+        title: "实例删除失败",
+        targetName: getTaskName(task),
+        targetId: task.id,
+        error: errorMessage(error, "实例删除失败"),
+      });
     },
   });
 
@@ -431,10 +502,59 @@ export function TasksPage() {
     mutationFn: (task: Task) => instanceApi.operateTask(task.id),
     onSuccess: (_data, task) => {
       toast.success("实例释放已提交", getTaskName(task));
+      void runLogger.log({
+        source: "task",
+        level: "info",
+        action: "task.release",
+        result: "success",
+        title: "实例释放已提交",
+        targetName: getTaskName(task),
+        targetId: task.id,
+      });
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
     onError: (error, task) => {
       toast.error("实例释放失败", `${getTaskName(task)}：${error instanceof Error ? error.message : "请稍后重试"}`);
+      void runLogger.log({
+        source: "task",
+        level: "error",
+        action: "task.release",
+        result: "failure",
+        title: "实例释放失败",
+        targetName: getTaskName(task),
+        targetId: task.id,
+        error: errorMessage(error, "实例释放失败"),
+      });
+    },
+  });
+
+  const commitMutation = useMutation({
+    mutationFn: (task: Task) => imageApi.commitImage(buildTaskCommitPayload(task)),
+    onSuccess: (_data, task) => {
+      toast.success("Commit 已提交", getTaskName(task));
+      void runLogger.log({
+        source: "image",
+        level: "info",
+        action: "image.commit",
+        result: "success",
+        title: "Commit 已提交",
+        targetName: getTaskName(task),
+        targetId: task.id,
+      });
+      queryClient.invalidateQueries({ queryKey: ["images"] });
+    },
+    onError: (error, task) => {
+      toast.error("Commit 失败", `${getTaskName(task)}：${error instanceof Error ? error.message : "请稍后重试"}`);
+      void runLogger.log({
+        source: "image",
+        level: "error",
+        action: "image.commit",
+        result: "failure",
+        title: "Commit 失败",
+        targetName: getTaskName(task),
+        targetId: task.id,
+        error: errorMessage(error, "Commit 失败"),
+      });
     },
   });
 
@@ -444,11 +564,27 @@ export function TasksPage() {
     },
     onSuccess: (_data, tasks) => {
       toast.success("批量删除已提交", `${tasks.length} 个非运行实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`);
+      void runLogger.log({
+        source: "task",
+        level: "info",
+        action: "task.batchDelete",
+        result: "success",
+        title: "批量删除已提交",
+        metadata: { count: tasks.length, ids: tasks.map((task) => task.id) },
+      });
       setRowSelection({});
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
     onError: (error) => {
       toast.error("批量删除失败", error instanceof Error ? error.message : "请稍后重试");
+      void runLogger.log({
+        source: "task",
+        level: "error",
+        action: "task.batchDelete",
+        result: "failure",
+        title: "批量删除失败",
+        error: errorMessage(error, "批量删除失败"),
+      });
     },
   });
 
@@ -458,15 +594,31 @@ export function TasksPage() {
     },
     onSuccess: (_data, tasks) => {
       toast.success("批量释放已提交", `${tasks.length} 个运行中实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`);
+      void runLogger.log({
+        source: "task",
+        level: "info",
+        action: "task.batchRelease",
+        result: "success",
+        title: "批量释放已提交",
+        metadata: { count: tasks.length, ids: tasks.map((task) => task.id) },
+      });
       setRowSelection({});
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
     onError: (error) => {
       toast.error("批量释放失败", error instanceof Error ? error.message : "请稍后重试");
+      void runLogger.log({
+        source: "task",
+        level: "error",
+        action: "task.batchRelease",
+        result: "failure",
+        title: "批量释放失败",
+        error: errorMessage(error, "批量释放失败"),
+      });
     },
   });
 
-  const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending;
+  const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending || commitMutation.isPending;
   const autoRefreshPaused = batchPending || createOpen || Boolean(logTask) || Boolean(terminalTask) || Boolean(rawTask) || columnSettingsOpen;
   const query = useQuery({
     queryKey: taskQueryKey(queryState),
@@ -475,20 +627,77 @@ export function TasksPage() {
     refetchIntervalInBackground: false,
   });
 
+  useEffect(() => {
+    const tasks = query.data?.items;
+    if (!tasks) return;
+
+    const nextSnapshot = new Map(taskStatusSnapshotRef.current);
+    for (const task of tasks) {
+      const taskId = getTaskNotificationId(task);
+      const previousStatus = taskStatusSnapshotRef.current.get(taskId);
+      const notification = getImportantTaskStatusNotification(task, previousStatus);
+
+      if (notification) {
+        void browserRuntime.notifySystem({
+          title: notification.title,
+          body: notification.body,
+          tag: notification.tag,
+        });
+      }
+
+      nextSnapshot.set(taskId, task.status);
+    }
+    taskStatusSnapshotRef.current = nextSnapshot;
+  }, [query.data?.items]);
+
   const filteredTasks = useMemo(() => {
     const tasks = query.data?.items ?? [];
     return filterAndSortTasks(tasks.filter((task) => taskMatchesQuery(task, queryState)), queryState.keyword);
   }, [query.data?.items, queryState]);
 
+  const handleAutoRefreshChange = useCallback((enabled: boolean) => {
+    setAutoRefresh(enabled);
+    if (!enabled) return;
+
+    void browserRuntime.requestSystemNotificationPermission().then((permission) => {
+      if (permission === "denied") {
+        toast.info("系统通知未开启", "浏览器已拒绝通知权限，实例成功或失败时不会弹出系统通知。");
+      } else if (permission === "unsupported") {
+        toast.info("当前环境不支持系统通知");
+      }
+    });
+  }, [toast]);
+
   const handleDownloadTask = useCallback((task: Task) => {
     void instanceApi
       .downloadTask({ task_id: task.id })
       .then((blob) => saveBlob(blob, `${getTaskName(task)}.zip`))
-      .then(() => toast.success("任务文件已下载", getTaskName(task)))
+      .then(() => {
+        toast.success("任务文件已下载", getTaskName(task));
+        void runLogger.log({
+          source: "task",
+          level: "info",
+          action: "task.download",
+          result: "success",
+          title: "任务文件已下载",
+          targetName: getTaskName(task),
+          targetId: task.id,
+        });
+      })
       .catch((error) => {
         toast.error("任务下载失败", error instanceof Error ? error.message : "请稍后重试");
+        void runLogger.log({
+          source: "task",
+          level: "error",
+          action: "task.download",
+          result: "failure",
+          title: "任务下载失败",
+          targetName: getTaskName(task),
+          targetId: task.id,
+          error: errorMessage(error, "任务下载失败"),
+        });
       });
-  }, [toast]);
+  }, [runLogger, toast]);
 
   const openCreateTask = () => {
     setCloneTask(null);
@@ -524,6 +733,15 @@ export function TasksPage() {
       run: () => deleteMutation.mutateAsync(task),
     });
   }, [confirm, deleteMutation]);
+
+  const confirmCommitTask = useCallback((task: Task) => {
+    confirm({
+      title: "确认 Commit 实例",
+      description: `将把 ${getTaskName(task)} 的当前运行环境提交为镜像。此操作可能需要一段时间，请确认实例内文件状态已经稳定。`,
+      confirmLabel: "Commit",
+      run: () => commitMutation.mutateAsync(task),
+    });
+  }, [commitMutation, confirm]);
 
   const confirmBatchRelease = useCallback((tasks: Task[]) => {
     confirm({
@@ -677,13 +895,13 @@ export function TasksPage() {
                   删除
                 </Button>
               )}
-              <MoreActionsMenu task={task} onDownload={handleDownloadTask} onRaw={setRawTask} />
+              <MoreActionsMenu task={task} onCommit={confirmCommitTask} onDownload={handleDownloadTask} onRaw={setRawTask} />
             </div>
           );
         },
       }),
     ],
-    [confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, releaseMutation.isPending],
+    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, releaseMutation.isPending],
   );
 
   const table = useReactTable({
@@ -756,7 +974,7 @@ export function TasksPage() {
                 type="checkbox"
                 className="h-4 w-4 accent-app-accent"
                 checked={autoRefresh}
-                onChange={(event) => setAutoRefresh(event.target.checked)}
+                onChange={(event) => handleAutoRefreshChange(event.target.checked)}
               />
               自动刷新
             </label>

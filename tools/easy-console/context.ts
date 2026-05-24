@@ -3,15 +3,19 @@ import { createEasyConsoleApi, type EasyConsoleApi } from "../../src/lib/api-fac
 import type { RuntimeTransport } from "../../src/lib/types";
 import { loadEasyConsoleConfig, type EasyConsoleConfig, type EasyConsoleConfigOverrides } from "./config";
 import { createNodeRuntime } from "./node-runtime";
+import { createFileRunLogStorage, getDefaultRunLogPath } from "./run-log-store";
 
 export type EasyConsoleContext = {
   api: EasyConsoleApi;
   client: ApiClient;
   config: EasyConsoleConfig;
+  runLogStorage: RuntimeTransport["storage"];
+  runLogPath: string;
 };
 
 export type EasyConsoleContextOptions = EasyConsoleConfigOverrides & {
   runtime?: RuntimeTransport;
+  runLogPath?: string;
 };
 
 export async function createEasyConsoleContext(options: EasyConsoleContextOptions = {}): Promise<EasyConsoleContext> {
@@ -22,5 +26,7 @@ export async function createEasyConsoleContext(options: EasyConsoleContextOption
     api: createEasyConsoleApi(client),
     client,
     config,
+    runLogPath: options.runLogPath ?? getDefaultRunLogPath(config.configPath),
+    runLogStorage: createFileRunLogStorage(options.runLogPath ?? getDefaultRunLogPath(config.configPath)),
   };
 }

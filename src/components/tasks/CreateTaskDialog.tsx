@@ -12,6 +12,7 @@ import { useToast } from "../../lib/use-toast";
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText } from "../../lib/format";
 import { normalizeStoragePath } from "../../lib/remote-storage";
 import type { CreateTaskPayload, ImageItem, Task } from "../../lib/types";
+import { errorMessage, useRunLogger } from "../../lib/use-run-logger";
 
 const DEFAULT_PRICE = 1;
 const DEFAULT_CPU = "4";
@@ -107,6 +108,7 @@ function formatBatchTaskName(baseName: string, index: number, total: number) {
 export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean; onClose: () => void; initialTask?: Task | null }) {
   const auth = useAuth();
   const toast = useToast();
+  const runLogger = useRunLogger();
   const queryClient = useQueryClient();
   const images = useQuery({ queryKey: ["images", "task-create"], queryFn: () => imageApi.list({ page: 1, page_size: 100 }), enabled: open });
   const systemImages = useQuery({ queryKey: ["images", "system", "task-create"], queryFn: () => imageApi.system({}), enabled: open });
@@ -179,11 +181,29 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       const delayText = payloads.length > 1 ? `，间隔 ${BATCH_REQUEST_DELAY_MS}ms` : "";
       const description = payloads.length > 1 ? `${firstName} 等 ${payloads.length} 个实例${delayText}` : firstName;
       toast.success(initialTask ? "复制创建已提交" : "实例创建已提交", description);
+      void runLogger.log({
+        source: "task",
+        level: "info",
+        action: initialTask ? "task.cloneCreate" : "task.create",
+        result: "success",
+        title: initialTask ? "复制创建已提交" : "实例创建已提交",
+        targetName: firstName,
+        metadata: { count: payloads.length, names: payloads.map((payload) => payload.name) },
+      });
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       onClose();
     },
     onError: (error) => {
       toast.error("实例创建失败", error instanceof Error ? error.message : "请检查表单或稍后重试");
+      void runLogger.log({
+        source: "task",
+        level: "error",
+        action: initialTask ? "task.cloneCreate" : "task.create",
+        result: "failure",
+        title: "实例创建失败",
+        targetName: name.trim(),
+        error: errorMessage(error, "实例创建失败"),
+      });
     },
   });
 

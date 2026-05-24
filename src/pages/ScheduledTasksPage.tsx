@@ -20,6 +20,7 @@ import {
 import type { CreateTaskPayload, ImageItem, ScheduledTask, ScheduledTaskStatus } from "../lib/types";
 import { useAuth } from "../lib/use-auth";
 import { useConfirmAction } from "../lib/use-confirm-action";
+import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
 const DEFAULT_PRICE = 1;
@@ -81,6 +82,7 @@ function formatScheduleTime(value: string) {
 export function ScheduledTasksPage() {
   const auth = useAuth();
   const toast = useToast();
+  const runLogger = useRunLogger();
   const queryClient = useQueryClient();
   const { confirm, confirmDialog } = useConfirmAction();
   const username = auth.user?.username ?? "";
@@ -216,11 +218,32 @@ export function ScheduledTasksPage() {
     onSuccess: (scheduled) => {
       if (!scheduled) return;
       toast.success("定时任务已保存", `${scheduled.name}，${formatScheduleTime(scheduled.scheduleTime)} 执行`);
+      void runLogger.log({
+        source: "scheduled-task",
+        level: "info",
+        action: "scheduledTask.save",
+        result: "success",
+        title: "定时任务已保存",
+        targetName: scheduled.name,
+        targetId: scheduled.id,
+        metadata: { scheduleTime: scheduled.scheduleTime },
+      });
       setName(formatTaskDefaultName());
       setDescription("");
       setScheduleTime(formatDateTimeLocalInput(addHours(new Date(), 1)).slice(0, 16));
     },
-    onError: (error) => toast.error("定时任务保存失败", error instanceof Error ? error.message : "请稍后重试"),
+    onError: (error) => {
+      toast.error("定时任务保存失败", error instanceof Error ? error.message : "请稍后重试");
+      void runLogger.log({
+        source: "scheduled-task",
+        level: "error",
+        action: "scheduledTask.save",
+        result: "failure",
+        title: "定时任务保存失败",
+        targetName: name.trim(),
+        error: errorMessage(error, "定时任务保存失败"),
+      });
+    },
   });
 
   async function executeTargets(targets: ScheduledTask[]) {
@@ -237,6 +260,15 @@ export function ScheduledTasksPage() {
           await persist(next);
           queryClient.invalidateQueries({ queryKey: ["tasks"] });
           toast.success("定时任务已执行", target.name);
+          void runLogger.log({
+            source: "scheduled-task",
+            level: "info",
+            action: "scheduledTask.execute",
+            result: "success",
+            title: "定时任务已执行",
+            targetName: target.name,
+            targetId: target.id,
+          });
         } catch (error) {
           next = updateScheduledTask(next, {
             ...target,
@@ -246,6 +278,16 @@ export function ScheduledTasksPage() {
           });
           await persist(next);
           toast.error("定时任务执行失败", `${target.name}：${error instanceof Error ? error.message : "请稍后重试"}`);
+          void runLogger.log({
+            source: "scheduled-task",
+            level: "error",
+            action: "scheduledTask.execute",
+            result: "failure",
+            title: "定时任务执行失败",
+            targetName: target.name,
+            targetId: target.id,
+            error: errorMessage(error, "定时任务执行失败"),
+          });
         }
       }
     } finally {

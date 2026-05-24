@@ -110,6 +110,11 @@ export type ImageItem = UnknownRecord & {
   description?: string;
 };
 
+export type ImageCommitPayload = UnknownRecord & {
+  user: UnknownRecord | string;
+  pod_name: string;
+};
+
 export type StorageEntry = UnknownRecord & {
   name: string;
   path?: string;
@@ -196,6 +201,8 @@ export type TaskTemplate = {
   releaseAfterHours?: number;
   workDirectory?: string;
   scriptPath?: string;
+  usageCount: number;
+  lastUsedAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -273,12 +280,25 @@ export type RuntimeWebSocket = {
   close(): void | Promise<void>;
 };
 
+export type RuntimeSystemNotification = {
+  title: string;
+  body?: string;
+  tag?: string;
+  silent?: boolean;
+};
+
+export type RuntimeSystemNotificationPermission = "granted" | "denied" | "default" | "unsupported";
+
+export type RuntimeSystemNotificationResult = "shown" | "permission-denied" | "unsupported";
+
 export type RuntimeTransport = {
   isDesktop: boolean;
   storage: RuntimeStorage;
   request<T = unknown>(request: RuntimeHttpRequest): Promise<RuntimeHttpResponse<T>>;
   createWebSocket(url: string): Promise<RuntimeWebSocket>;
   copyText(text: string): Promise<void>;
+  requestSystemNotificationPermission(): Promise<RuntimeSystemNotificationPermission>;
+  notifySystem(notification: RuntimeSystemNotification): Promise<RuntimeSystemNotificationResult>;
   openExternal(url: string): void;
   openSshSession(request: SshConnectionRequest): Promise<string>;
   writeSshSession(sessionId: string, data: string): Promise<void>;

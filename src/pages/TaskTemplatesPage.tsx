@@ -1,5 +1,5 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CopyPlus, Edit2, FolderOpen, Plus, Rocket, Trash2 } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CopyPlus, Edit2, FolderOpen, Plus, RefreshCw, Rocket, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
@@ -14,14 +14,17 @@ import {
   createTaskTemplate,
   loadTaskTemplates,
   MAX_TEMPLATE_BATCH_COUNT,
+  recordTaskTemplateUsage,
   saveTaskTemplates,
+  taskMatchesTemplate,
   taskTemplateToPayloads,
   updateTaskTemplate,
   type EditableTaskTemplate,
 } from "../lib/task-templates";
-import type { ImageItem, TaskTemplate } from "../lib/types";
+import type { ImageItem, Task, TaskTemplate } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useAuth } from "../lib/use-auth";
+import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
 type StoragePickerTarget = "storage" | "workDirectory" | "scriptPath";
@@ -29,6 +32,9 @@ type StoragePickerTarget = "storage" | "workDirectory" | "scriptPath";
 const DEFAULT_CPU = 4;
 const DEFAULT_GPU = 0;
 const DEFAULT_MEMORY = 16;
+const RUNNING_TASK_STATUS = 2;
+const RUNNING_TASK_PAGE_SIZE = 200;
+const MAX_RUNNING_TASK_PAGES = 20;
 
 function getImageOptionLabel(image: ImageItem) {
   const name = image.name ?? image.image_name ?? String(image.id);
@@ -66,6 +72,17 @@ function formatResource(template: TaskTemplate) {
 function parseFormNumber(value: string, fallback: number) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+async function fetchRunningTasks() {
+  const tasks: Task[] = [];
+  for (let page = 1; page <= MAX_RUNNING_TASK_PAGES; page += 1) {
+    const result = await instanceApi.tasks({ page, page_size: RUNNING_TASK_PAGE_SIZE, status: RUNNING_TASK_STATUS });
+    tasks.push(...result.items);
+    if (typeof result.total === "number" && tasks.length >= result.total) break;
+    if (result.items.length < RUNNING_TASK_PAGE_SIZE) break;
+  }
+  return tasks;
 }
 
 function TemplateDialog({
@@ -308,6 +325,7 @@ function TemplateDialog({
 export function TaskTemplatesPage() {
   const auth = useAuth();
   const toast = useToast();
+  const runLogger = useRunLogger();
   const queryClient = useQueryClient();
   const { confirm, confirmDialog } = useConfirmAction();
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
@@ -324,6 +342,22 @@ export function TaskTemplatesPage() {
     },
   });
   const imageOptions = useMemo(() => imageQuery.data ?? [], [imageQuery.data]);
+  const runningTasksQuery = useQuery({
+    queryKey: ["task-template-running-counts"],
+    queryFn: fetchRunningTasks,
+    enabled: !loading,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+  });
+  const runningCountByTemplateId = useMemo(() => {
+    const runningTasks = runningTasksQuery.data ?? [];
+    return Object.fromEntries(
+      templates.map((template) => [
+        template.id,
+        runningTasks.filter((task) => Number(task.status) === RUNNING_TASK_STATUS && taskMatchesTemplate(task, template)).length,
+      ]),
+    );
+  }, [runningTasksQuery.data, templates]);
 
   useEffect(() => {
     void loadTaskTemplates(browserRuntime.storage)
@@ -363,17 +397,62 @@ export function TaskTemplatesPage() {
     onSuccess: (payloads, template) => {
       const description = payloads.length > 1 ? `${payloads[0]?.name} 等 ${payloads.length} 个实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms` : String(payloads[0]?.name ?? "");
       toast.success(`已按模板创建：${template.name}`, description);
+      void runLogger.log({
+        source: "task-template",
+        level: "info",
+        action: "taskTemplate.execute",
+        result: "success",
+        title: `已按模板创建：${template.name}`,
+        targetName: template.name,
+        targetId: template.id,
+        metadata: { count: payloads.length, names: payloads.map((payload) => payload.name) },
+      });
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["task-template-running-counts"] });
+      setTemplates((current) => {
+        const next = current.map((item) => (item.id === template.id ? recordTaskTemplateUsage(item) : item));
+        void saveTaskTemplates(browserRuntime.storage, next);
+        return next;
+      });
     },
     onError: (error, template) => {
       toast.error(`模板创建失败：${template.name}`, error instanceof Error ? error.message : "请检查模板配置或稍后重试");
+      void runLogger.log({
+        source: "task-template",
+        level: "error",
+        action: "taskTemplate.execute",
+        result: "failure",
+        title: `模板创建失败：${template.name}`,
+        targetName: template.name,
+        targetId: template.id,
+        error: errorMessage(error, "模板创建失败"),
+      });
     },
   });
 
   const storageMutation = useMutation({
     mutationFn: persist,
-    onSuccess: () => toast.success("模板已保存"),
-    onError: (error) => toast.error("模板保存失败", error instanceof Error ? error.message : "请稍后重试"),
+    onSuccess: () => {
+      toast.success("模板已保存");
+      void runLogger.log({
+        source: "task-template",
+        level: "info",
+        action: "taskTemplate.save",
+        result: "success",
+        title: "模板已保存",
+      });
+    },
+    onError: (error) => {
+      toast.error("模板保存失败", error instanceof Error ? error.message : "请稍后重试");
+      void runLogger.log({
+        source: "task-template",
+        level: "error",
+        action: "taskTemplate.save",
+        result: "failure",
+        title: "模板保存失败",
+        error: errorMessage(error, "模板保存失败"),
+      });
+    },
   });
 
   function saveTemplate(value: EditableTaskTemplate) {
@@ -391,7 +470,18 @@ export function TaskTemplatesPage() {
       description: `将删除模板 ${template.name}。已创建的实例不受影响。`,
       confirmLabel: "删除",
       tone: "danger",
-      run: async () => persist(templates.filter((item) => item.id !== template.id)),
+      run: async () => {
+        await persist(templates.filter((item) => item.id !== template.id));
+        void runLogger.log({
+          source: "task-template",
+          level: "info",
+          action: "taskTemplate.delete",
+          result: "success",
+          title: "模板已删除",
+          targetName: template.name,
+          targetId: template.id,
+        });
+      },
     });
   }
 
@@ -404,14 +494,21 @@ export function TaskTemplatesPage() {
           <h2 className="text-base font-semibold">实例模板</h2>
           <p className="mt-1 text-sm text-app-muted">保存常用资源、镜像和路径配置，从模板直接提交新实例。</p>
         </div>
-        <Button className="w-full sm:w-auto" onClick={openCreateDialog}>
-          <Plus className="h-4 w-4" />
-          新建模板
-        </Button>
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+          <Button className="flex-1 sm:flex-none" variant="secondary" onClick={() => runningTasksQuery.refetch()}>
+            <RefreshCw className="h-4 w-4" />
+            刷新统计
+          </Button>
+          <Button className="flex-1 sm:flex-none" onClick={openCreateDialog}>
+            <Plus className="h-4 w-4" />
+            新建模板
+          </Button>
+        </div>
       </div>
 
       {loadError ? <ErrorState error={loadError} action={<Button variant="secondary" onClick={() => window.location.reload()}>重新加载</Button>} /> : null}
       {imageQuery.isError ? <ErrorState error={imageQuery.error} action={<Button variant="secondary" onClick={() => imageQuery.mutate()}>重试镜像列表</Button>} /> : null}
+      {runningTasksQuery.isError ? <ErrorState error={runningTasksQuery.error} action={<Button variant="secondary" onClick={() => runningTasksQuery.refetch()}>重试运行统计</Button>} /> : null}
 
       {templates.length === 0 ? (
         <Panel>
@@ -429,6 +526,8 @@ export function TaskTemplatesPage() {
                   <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">模板</th>
                   <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">镜像</th>
                   <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">资源</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">使用次数</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">运行中</th>
                   <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">路径</th>
                   <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">释放</th>
                   <th className="sticky right-0 z-20 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 text-center font-medium shadow-[-10px_0_16px_-16px_rgb(15_23_42_/_0.45)]">
@@ -447,6 +546,15 @@ export function TaskTemplatesPage() {
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{getImageName(imageOptions, template.imageId)}</td>
                     <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{formatResource(template)}</td>
+                    <td className="whitespace-nowrap px-3 py-2 align-middle">
+                      <div className="font-medium text-app-text">{template.usageCount}</div>
+                      {template.lastUsedAt ? <div className="mt-0.5 text-xs text-app-muted">{template.lastUsedAt.slice(0, 19).replace("T", " ")}</div> : null}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 align-middle">
+                      <span className="inline-flex min-w-10 justify-center rounded-md border border-app-border bg-app-panel px-2 py-1 text-xs font-medium text-app-text">
+                        {runningTasksQuery.isLoading ? "-" : (runningCountByTemplateId[template.id] ?? 0)}
+                      </span>
+                    </td>
                     <td className="px-3 py-2 align-middle">
                       <div className="max-w-72 truncate font-mono text-xs text-app-muted">{template.storagePath}</div>
                       <div className="mt-1 max-w-72 truncate font-mono text-xs text-app-muted">{template.mountPath}</div>
@@ -480,6 +588,8 @@ export function TaskTemplatesPage() {
                               ...template,
                               id: "",
                               name: `${template.name} 副本`,
+                              usageCount: 0,
+                              lastUsedAt: undefined,
                               createdAt: "",
                               updatedAt: "",
                             });

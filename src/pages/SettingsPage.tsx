@@ -16,6 +16,7 @@ import {
 } from "../lib/app-settings";
 import { deriveWebsshUrl } from "../lib/webssh";
 import { browserRuntime } from "../lib/runtime";
+import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
 function isHttpUrl(value: string) {
@@ -40,6 +41,7 @@ function applySettings(settings: AppSettings) {
 
 export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const toast = useToast();
+  const runLogger = useRunLogger();
   const queryClient = useQueryClient();
   const [form, setForm] = useState<AppSettings>(() => getRuntimeSettings());
   const [error, setError] = useState<string | null>(null);
@@ -67,8 +69,24 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       queryClient.clear();
       setForm(nextSettings);
       toast.success(successTitle, "后续请求会使用新的运行时配置");
+      void runLogger.log({
+        source: "settings",
+        level: "info",
+        action: "settings.save",
+        result: "success",
+        title: successTitle,
+        metadata: nextSettings,
+      });
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "保存设置失败");
+      void runLogger.log({
+        source: "settings",
+        level: "error",
+        action: "settings.save",
+        result: "failure",
+        title: "保存设置失败",
+        error: errorMessage(saveError, "保存设置失败"),
+      });
     } finally {
       setSaving(false);
     }
@@ -89,8 +107,23 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         setForm(DEFAULT_APP_SETTINGS);
         setError(null);
         toast.success("设置已恢复默认", "当前使用环境变量或内置默认地址");
+        void runLogger.log({
+          source: "settings",
+          level: "info",
+          action: "settings.reset",
+          result: "success",
+          title: "设置已恢复默认",
+        });
       } catch (resetError) {
         setError(resetError instanceof Error ? resetError.message : "恢复默认失败");
+        void runLogger.log({
+          source: "settings",
+          level: "error",
+          action: "settings.reset",
+          result: "failure",
+          title: "恢复默认失败",
+          error: errorMessage(resetError, "恢复默认失败"),
+        });
       } finally {
         setSaving(false);
       }

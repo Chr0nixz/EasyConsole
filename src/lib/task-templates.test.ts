@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { loadTaskTemplates, saveTaskTemplates, taskTemplateToPayloads } from "./task-templates";
+import {
+  getTaskTemplateMarker,
+  loadTaskTemplates,
+  recordTaskTemplateUsage,
+  saveTaskTemplates,
+  taskMatchesTemplate,
+  taskTemplateToPayloads,
+} from "./task-templates";
 import type { RuntimeStorage, TaskTemplate } from "./types";
 
 function memoryStorage(): RuntimeStorage {
@@ -31,6 +38,7 @@ const baseTemplate: TaskTemplate = {
   mountPath: "/home/ubuntu/alice",
   releaseCondition: 2,
   releaseAfterHours: 3,
+  usageCount: 0,
   createdAt: "2026-05-23T00:00:00.000Z",
   updatedAt: "2026-05-23T00:00:00.000Z",
 };
@@ -44,12 +52,20 @@ describe("task templates", () => {
     await expect(loadTaskTemplates(storage)).resolves.toEqual([baseTemplate]);
   });
 
+  it("loads legacy templates with zero usage count", async () => {
+    const storage = memoryStorage();
+    await storage.set("easy-console.taskTemplates", JSON.stringify([{ ...baseTemplate, usageCount: undefined }]));
+
+    await expect(loadTaskTemplates(storage)).resolves.toEqual([baseTemplate]);
+  });
+
   it("builds batch create payloads with generated names and release time", () => {
     const payloads = taskTemplateToPayloads(baseTemplate, new Date("2026-05-23T08:00:00"));
+    const marker = getTaskTemplateMarker(baseTemplate);
 
     expect(payloads).toHaveLength(2);
     expect(payloads[0]).toMatchObject({
-      name: "dev-202605230800-1",
+      name: `dev-${marker}-202605230800-1`,
       price: 1,
       cpu: 4,
       gpu: 1,
@@ -60,7 +76,22 @@ describe("task templates", () => {
       releace_conditions: 2,
       releace_time: "2026-05-23 11:00:00",
     });
-    expect(payloads[1]?.name).toBe("dev-202605230800-2");
+    expect(payloads[1]?.name).toBe(`dev-${marker}-202605230800-2`);
+  });
+
+  it("matches running tasks created from a template marker", () => {
+    const marker = getTaskTemplateMarker(baseTemplate);
+
+    expect(taskMatchesTemplate({ name: `dev-${marker}-202605230800-1` }, baseTemplate)).toBe(true);
+    expect(taskMatchesTemplate({ name: "dev-202605230800-1" }, baseTemplate)).toBe(false);
+  });
+
+  it("records successful template usage", () => {
+    const used = recordTaskTemplateUsage(baseTemplate, new Date("2026-05-23T12:00:00.000Z"));
+
+    expect(used.usageCount).toBe(1);
+    expect(used.lastUsedAt).toBe("2026-05-23T12:00:00.000Z");
+    expect(used.updatedAt).toBe("2026-05-23T12:00:00.000Z");
   });
 
   it("keeps task-end release script fields only for task-end templates", () => {

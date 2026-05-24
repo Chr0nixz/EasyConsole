@@ -1,11 +1,11 @@
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName } from "./format";
 import { normalizeStoragePath } from "./remote-storage";
-import type { CreateTaskPayload, RuntimeStorage, TaskTemplate, UnknownRecord } from "./types";
+import type { CreateTaskPayload, RuntimeStorage, Task, TaskTemplate, UnknownRecord } from "./types";
 
 export const TASK_TEMPLATES_STORAGE_KEY = "easy-console.taskTemplates";
 export const MAX_TEMPLATE_BATCH_COUNT = 50;
 
-export type EditableTaskTemplate = Omit<TaskTemplate, "id" | "createdAt" | "updatedAt">;
+export type EditableTaskTemplate = Omit<TaskTemplate, "id" | "usageCount" | "lastUsedAt" | "createdAt" | "updatedAt">;
 
 function isRecord(value: unknown): value is UnknownRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -63,6 +63,8 @@ function normalizeTemplate(raw: unknown): TaskTemplate | null {
     releaseAfterHours: condition === 2 ? positiveNumber(raw.releaseAfterHours, 24) : undefined,
     workDirectory: condition === 3 ? stringValue(raw.workDirectory).trim() : undefined,
     scriptPath: condition === 3 ? stringValue(raw.scriptPath).trim() : undefined,
+    usageCount: nonNegativeInteger(raw.usageCount, 0),
+    lastUsedAt: stringValue(raw.lastUsedAt).trim() || undefined,
     createdAt: stringValue(raw.createdAt, new Date().toISOString()),
     updatedAt: stringValue(raw.updatedAt, new Date().toISOString()),
   };
@@ -89,6 +91,7 @@ export function createTaskTemplate(input: EditableTaskTemplate, date = new Date(
   return {
     ...input,
     id: `${date.getTime()}-${Math.random().toString(36).slice(2, 10)}`,
+    usageCount: 0,
     createdAt: now,
     updatedAt: now,
   };
@@ -102,10 +105,30 @@ export function updateTaskTemplate(existing: TaskTemplate, input: EditableTaskTe
   };
 }
 
-export function formatTemplateTaskName(prefix: string, index: number, total: number, date = new Date()) {
-  const baseName = `${prefix.trim() || "task"}-${formatTaskDefaultName(date)}`;
+export function recordTaskTemplateUsage(template: TaskTemplate, date = new Date()): TaskTemplate {
+  return {
+    ...template,
+    usageCount: template.usageCount + 1,
+    lastUsedAt: date.toISOString(),
+    updatedAt: date.toISOString(),
+  };
+}
+
+export function getTaskTemplateMarker(template: Pick<TaskTemplate, "id">) {
+  const normalized = template.id.replace(/[^a-zA-Z0-9]/g, "");
+  return `tpl${(normalized || template.id).slice(-10)}`;
+}
+
+export function formatTemplateTaskName(template: Pick<TaskTemplate, "id" | "taskNamePrefix">, index: number, total: number, date = new Date()) {
+  const prefix = template.taskNamePrefix.trim() || "task";
+  const baseName = `${prefix}-${getTaskTemplateMarker(template)}-${formatTaskDefaultName(date)}`;
   if (total === 1) return baseName;
   return `${baseName}-${String(index + 1).padStart(String(total).length, "0")}`;
+}
+
+export function taskMatchesTemplate(task: Pick<Task, "name" | "task_name">, template: Pick<TaskTemplate, "id">) {
+  const marker = getTaskTemplateMarker(template);
+  return [task.name, task.task_name].some((value) => typeof value === "string" && value.includes(`-${marker}-`));
 }
 
 function normalizeId(value: string) {
@@ -118,7 +141,7 @@ export function taskTemplateToPayloads(template: TaskTemplate, date = new Date()
     : undefined;
 
   return Array.from({ length: template.batchCount }, (_, index) => ({
-    name: formatTemplateTaskName(template.taskNamePrefix, index, template.batchCount, date),
+    name: formatTemplateTaskName(template, index, template.batchCount, date),
     price: 1,
     cpu: template.cpu,
     gpu: template.gpu > 0 ? template.gpu : undefined,

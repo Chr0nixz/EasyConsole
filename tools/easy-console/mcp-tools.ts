@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 
 import type { UnknownRecord } from "../../src/lib/types";
+import { appendRunLog, clearRunLogs, filterRunLogs, formatRunLogExport, loadRunLogs, type RunLogChannel, type RunLogResult, type RunLogSource } from "../../src/lib/run-logs";
 import { createEasyConsoleContext, type EasyConsoleContext, type EasyConsoleContextOptions } from "./context";
 import {
   buildCreateTaskPayload,
@@ -60,6 +61,18 @@ function asConfirm(value: unknown) {
 function asRecord(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as UnknownRecord;
+}
+
+function sourceForTool(name: string): RunLogSource {
+  if (name.includes("_task_")) return "task";
+  if (name.includes("_storage_")) return "storage";
+  if (name.includes("_image_")) return "image";
+  if (name.includes("_user_")) return "auth";
+  return "system";
+}
+
+function shouldLogTool(name: string) {
+  return !name.includes("_run_log_");
 }
 
 export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
@@ -237,6 +250,47 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
         return monitorUrl(context.api, asId(input.taskId));
       },
     },
+    {
+      name: "easyconsole_run_log_list",
+      description: "List local EasyConsole run logs for CLI/MCP operations.",
+      inputSchema: {
+        limit: z.number().int().positive().optional(),
+        source: z.string().optional(),
+        channel: z.string().optional(),
+        result: z.string().optional(),
+        keyword: z.string().optional(),
+      },
+      async handler(context, input) {
+        const logs = await loadRunLogs(context.runLogStorage);
+        return filterRunLogs(logs, {
+          limit: asOptionalNumber(input.limit),
+          source: asOptionalString(input.source) as RunLogSource | undefined,
+          channel: asOptionalString(input.channel) as RunLogChannel | undefined,
+          result: asOptionalString(input.result) as RunLogResult | undefined,
+          keyword: asOptionalString(input.keyword),
+        });
+      },
+    },
+    {
+      name: "easyconsole_run_log_export",
+      description: "Export local EasyConsole run logs for CLI/MCP operations.",
+      inputSchema: {},
+      async handler(context) {
+        return JSON.parse(formatRunLogExport(await loadRunLogs(context.runLogStorage)));
+      },
+    },
+    {
+      name: "easyconsole_run_log_clear",
+      description: "Clear local EasyConsole run logs. Requires confirm=true to execute.",
+      inputSchema: {
+        confirm: z.boolean().optional(),
+      },
+      async handler(context, input) {
+        if (!asConfirm(input.confirm)) return { dryRun: true, action: "run-log.clear", message: "Pass confirm=true to clear local run logs." };
+        await clearRunLogs(context.runLogStorage);
+        return { dryRun: false, action: "run-log.clear", cleared: true };
+      },
+    },
   ];
 }
 
@@ -295,10 +349,38 @@ export function registerEasyConsoleTools(server: McpServer, deps: EasyConsoleMcp
         inputSchema: definition.inputSchema,
       },
       async (input) => {
+        const startedAt = Date.now();
+        let context: EasyConsoleContext | null = null;
         try {
-          const context = await createContext();
-          return toMcpJsonResult(await definition.handler(context, input as Record<string, unknown>));
+          context = await createContext();
+          const data = await definition.handler(context, input as Record<string, unknown>);
+          if (shouldLogTool(definition.name)) {
+            await appendRunLog(context.runLogStorage, {
+              channel: "mcp",
+              source: sourceForTool(definition.name),
+              level: "info",
+              action: definition.name,
+              result: "success",
+              title: `MCP ${definition.name} 成功`,
+              durationMs: Date.now() - startedAt,
+              metadata: { input },
+            });
+          }
+          return toMcpJsonResult(data);
         } catch (error) {
+          if (context && shouldLogTool(definition.name)) {
+            await appendRunLog(context.runLogStorage, {
+              channel: "mcp",
+              source: sourceForTool(definition.name),
+              level: "error",
+              action: definition.name,
+              result: "failure",
+              title: `MCP ${definition.name} 失败`,
+              durationMs: Date.now() - startedAt,
+              error: error instanceof Error ? error.message : String(error),
+              metadata: { input },
+            });
+          }
           return toMcpJsonError(error);
         }
       },

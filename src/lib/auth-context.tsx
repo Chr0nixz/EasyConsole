@@ -5,6 +5,7 @@ import { APP_SETTINGS_STORAGE_KEY, parseAppSettings, setRuntimeSettings } from "
 import { AuthContext } from "./auth-state";
 import { TOKEN_STORAGE_KEY, UNAUTHORIZED_EVENT } from "./api-client";
 import { browserRuntime } from "./runtime";
+import { appendRunLog, type RunLogInput } from "./run-logs";
 import {
   createSavedLoginAccount,
   parseSavedAccounts,
@@ -15,6 +16,14 @@ import {
   upsertSavedAccount,
 } from "./saved-accounts";
 import type { UserInfo } from "./types";
+
+function writeAuthLog(input: Omit<RunLogInput, "channel" | "source">) {
+  void appendRunLog(browserRuntime.storage, {
+    ...input,
+    channel: browserRuntime.isDesktop ? "tauri" : "web",
+    source: "auth",
+  }).catch((error) => console.warn("Failed to write auth run log.", error));
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
@@ -67,6 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
+    const startedAt = Date.now();
     const result = await authApi.login({ username, password });
     if (!result.token) throw new Error("登录响应未包含 token");
     apiClient.setToken(result.token);
@@ -77,14 +87,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await persistSavedAccounts(upsertSavedAccount(savedAccountsRef.current, nextAccount));
       setToken(result.token);
       setUser(next);
+      writeAuthLog({
+        level: "info",
+        action: "auth.login",
+        result: "success",
+        title: "登录成功",
+        userName: username,
+        durationMs: Date.now() - startedAt,
+      });
     } catch (error) {
       apiClient.setToken(null);
       await browserRuntime.storage.remove(TOKEN_STORAGE_KEY);
+      writeAuthLog({
+        level: "error",
+        action: "auth.login",
+        result: "failure",
+        title: "登录失败",
+        userName: username,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : "登录失败",
+      });
       throw error;
     }
   }, [persistSavedAccounts]);
 
   const loginSaved = useCallback(async (accountId: string) => {
+    const startedAt = Date.now();
     const account = savedAccountsRef.current.find((item) => item.id === accountId);
     if (!account) throw new Error("保存的账号不存在");
 
@@ -96,11 +124,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await persistSavedAccounts(upsertSavedAccount(savedAccountsRef.current, nextAccount));
       setToken(account.token);
       setUser(next);
+      writeAuthLog({
+        level: "info",
+        action: "auth.loginSaved",
+        result: "success",
+        title: "保存账号登录成功",
+        userName: account.username,
+        durationMs: Date.now() - startedAt,
+      });
     } catch (error) {
       apiClient.setToken(null);
       await browserRuntime.storage.remove(TOKEN_STORAGE_KEY);
       setToken(null);
       setUser(null);
+      writeAuthLog({
+        level: "error",
+        action: "auth.loginSaved",
+        result: "failure",
+        title: "保存账号登录失败",
+        userName: account.username,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : "保存账号登录失败",
+      });
       throw new Error(error instanceof Error ? `保存的登录已失效：${error.message}` : "保存的登录已失效，请重新输入密码");
     }
   }, [persistSavedAccounts]);
@@ -110,11 +155,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [persistSavedAccounts]);
 
   const logout = useCallback(async () => {
+    const userName = user?.username ?? user?.name;
     apiClient.setToken(null);
     await browserRuntime.storage.remove(TOKEN_STORAGE_KEY);
     setToken(null);
     setUser(null);
-  }, []);
+    writeAuthLog({
+      level: "info",
+      action: "auth.logout",
+      result: "success",
+      title: "退出登录",
+      userName,
+    });
+  }, [user]);
 
   useEffect(() => {
     const handler = () => {

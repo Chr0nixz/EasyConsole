@@ -1,6 +1,7 @@
 import { Command, CommanderError } from "commander";
 
 import type { CreateTaskPayload, TaskQuery, UnknownRecord } from "../../src/lib/types";
+import { appendRunLog, clearRunLogs, filterRunLogs, formatRunLogExport, loadRunLogs, type RunLogChannel, type RunLogResult, type RunLogSource } from "../../src/lib/run-logs";
 import { saveEasyConsoleConfig } from "./config";
 import { createEasyConsoleContext, type EasyConsoleContext, type EasyConsoleContextOptions } from "./context";
 import {
@@ -38,6 +39,7 @@ type GlobalCliOptions = {
   apiBaseUrl?: string;
   token?: string;
   config?: string;
+  runLogPath?: string;
   json?: boolean;
 };
 
@@ -82,6 +84,29 @@ function compactRecord(record: UnknownRecord) {
   return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined && value !== null && value !== ""));
 }
 
+function commandPath(command: Command) {
+  const names: string[] = [];
+  let current: Command | null = command;
+  while (current) {
+    names.unshift(current.name());
+    current = current.parent ?? null;
+  }
+  return names.filter((name) => name !== "easy-console").join(".");
+}
+
+function sourceForCommand(action: string): RunLogSource {
+  if (action.startsWith("login") || action.startsWith("whoami")) return "auth";
+  if (action.startsWith("task.")) return "task";
+  if (action.startsWith("storage.")) return "storage";
+  if (action.startsWith("image.")) return "image";
+  if (action.startsWith("resource.") || action.startsWith("price.") || action.startsWith("monitor-url")) return "system";
+  return "system";
+}
+
+function shouldLogCommand(action: string) {
+  return !action.startsWith("run-log.");
+}
+
 function buildPayloadFromOptions(options: UnknownRecord): CreateTaskPayload {
   if (typeof options.payloadJson === "string") return buildCreateTaskPayload(parseJsonRecord(options.payloadJson));
   return buildCreateTaskPayload(
@@ -124,6 +149,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     .option("--api-base-url <url>", "API base URL")
     .option("--token <token>", "Bearer token or raw token")
     .option("--config <path>", "Config file path")
+    .option("--run-log-path <path>", "Run log file path")
     .option("--json", "Print { ok, data, error } JSON envelopes");
 
   program.exitOverride();
@@ -154,14 +180,45 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       apiBaseUrl: options.apiBaseUrl,
       token: options.token,
       configPath: options.config,
+      runLogPath: options.runLogPath,
     });
   }
 
   function run(command: Command, handler: (context: EasyConsoleContext) => Promise<unknown>) {
     return async () => {
+      const startedAt = Date.now();
+      const action = commandPath(command);
+      let context: EasyConsoleContext | null = null;
       try {
-        emitSuccess(command, await handler(await getContext(command)));
+        context = await getContext(command);
+        const data = await handler(context);
+        if (shouldLogCommand(action)) {
+          await appendRunLog(context.runLogStorage, {
+            channel: "cli",
+            source: sourceForCommand(action),
+            level: "info",
+            action,
+            result: "success",
+            title: `CLI ${action} 成功`,
+            durationMs: Date.now() - startedAt,
+            metadata: { options: command.opts() },
+          });
+        }
+        emitSuccess(command, data);
       } catch (error) {
+        if (context && shouldLogCommand(action)) {
+          await appendRunLog(context.runLogStorage, {
+            channel: "cli",
+            source: sourceForCommand(action),
+            level: "error",
+            action,
+            result: "failure",
+            title: `CLI ${action} 失败`,
+            durationMs: Date.now() - startedAt,
+            error: error instanceof Error ? error.message : String(error),
+            metadata: { options: command.opts() },
+          });
+        }
         emitFailure(command, error);
       }
     };
@@ -177,6 +234,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       const password = options.passwordStdin ? (await readStdin()).trimEnd() : options.password;
       if (!password) throw new Error("Provide --password or --password-stdin.");
       const context = await getContext(login);
+      const startedAt = Date.now();
       const result = await context.api.authApi.login({ username: options.username, password });
       if (!result.token) throw new Error("Login response did not include a token.");
       await saveEasyConsoleConfig({ apiBaseUrl: context.config.apiBaseUrl, token: result.token }, context.config.configPath);
@@ -192,6 +250,16 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
         configPath: context.config.configPath,
         tokenSaved: true,
         user: currentUser,
+      });
+      await appendRunLog(context.runLogStorage, {
+        channel: "cli",
+        source: "auth",
+        level: "info",
+        action: "login",
+        result: "success",
+        title: "CLI 登录成功",
+        userName: options.username,
+        durationMs: Date.now() - startedAt,
       });
     } catch (error) {
       emitFailure(login, error);
@@ -343,6 +411,41 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   const monitor = program.command("monitor-url").description("Build a monitor dashboard URL for a task");
   monitor.argument("<taskId>", "Task id");
   monitor.action((taskId: string) => run(monitor, (context) => monitorUrl(context.api, parseId(taskId)))());
+
+  const runLog = program.command("run-log").description("Local EasyConsole run log operations");
+  const runLogList = runLog.command("list").description("List local run logs");
+  runLogList.option("--limit <number>", "Maximum entries", "100");
+  runLogList.option("--source <source>", "Filter by source");
+  runLogList.option("--channel <channel>", "Filter by channel");
+  runLogList.option("--result <result>", "Filter by result");
+  runLogList.option("--keyword <keyword>", "Keyword filter");
+  runLogList.action(
+    run(runLogList, async (context) => {
+      const options = runLogList.opts<{ limit?: string; source?: RunLogSource; channel?: RunLogChannel; result?: RunLogResult; keyword?: string }>();
+      const logs = await loadRunLogs(context.runLogStorage);
+      return filterRunLogs(logs, {
+        limit: parseInteger(options.limit),
+        source: options.source,
+        channel: options.channel,
+        result: options.result,
+        keyword: options.keyword,
+      });
+    }),
+  );
+
+  const runLogExport = runLog.command("export").description("Export local run logs as JSON text");
+  runLogExport.action(run(runLogExport, async (context) => JSON.parse(formatRunLogExport(await loadRunLogs(context.runLogStorage)))));
+
+  const runLogClear = runLog.command("clear").description("Clear local run logs");
+  runLogClear.option("--yes", "Execute instead of dry-run");
+  runLogClear.action(
+    run(runLogClear, async (context) => {
+      const options = runLogClear.opts<{ yes?: boolean }>();
+      if (!options.yes) return { dryRun: true, action: "run-log.clear", message: "Pass --yes to clear local run logs." };
+      await clearRunLogs(context.runLogStorage);
+      return { dryRun: false, action: "run-log.clear", cleared: true };
+    }),
+  );
 
   try {
     await program.parseAsync(argv, { from: "user" });

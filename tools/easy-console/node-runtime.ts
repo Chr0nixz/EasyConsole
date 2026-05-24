@@ -93,6 +93,12 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     async copyText() {
       return unsupported("Clipboard");
     },
+    async requestSystemNotificationPermission() {
+      return "unsupported";
+    },
+    async notifySystem() {
+      return "unsupported";
+    },
     openExternal() {
       return unsupported("External URL opening");
     },
