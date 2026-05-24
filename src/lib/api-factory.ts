@@ -206,6 +206,7 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       path: string,
       uploadId?: string,
       onProgress?: (progress: UploadProgress) => void,
+      signal?: AbortSignal,
     ) {
       const chunk = file.slice(range.start, range.end + 1);
       const formData = new FormData();
@@ -220,6 +221,7 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
           "Content-Range": formatContentRange(range),
         },
         timeoutMs: 300_000,
+        signal,
         raw: true,
       });
       onProgress?.({
@@ -229,13 +231,14 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       });
       return assertUploadResponse(result);
     },
-    async uploadEmptyFile(file: File, path: string, onProgress?: (progress: UploadProgress) => void) {
+    async uploadEmptyFile(file: File, path: string, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal) {
       const formData = new FormData();
       formData.append("the_file", file.slice(0, 0), file.name);
       formData.append("path", path);
       const result = assertUploadResponse(
         await apiClient.post<unknown>("/storage/chunked_upload", formData, {
           timeoutMs: 300_000,
+          signal,
           raw: true,
         }),
       );
@@ -245,7 +248,7 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
         params.set("upload_id", uploadId);
         params.set("md5", await md5Blob(file));
         params.set("path", path);
-        const completed = await storageApi.uploadComplete(params.toString());
+        const completed = await storageApi.uploadComplete(params.toString(), signal);
         onProgress?.({ loaded: 0, total: 0, percent: 100 });
         return completed;
       }
@@ -257,13 +260,14 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       }
       throw new Error(i18nText("0B 空文件上传后服务端未创建文件", "The server did not create a file after uploading a 0B empty file"));
     },
-    async uploadFile(file: File, path: string, onProgress?: (progress: UploadProgress) => void) {
-      if (file.size === 0) return storageApi.uploadEmptyFile(file, path, onProgress);
+    async uploadFile(file: File, path: string, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal) {
+      if (file.size === 0) return storageApi.uploadEmptyFile(file, path, onProgress, signal);
 
       let uploadId: string | null = null;
       for (let start = 0; start < file.size; start += UPLOAD_CHUNK_SIZE) {
+        signal?.throwIfAborted();
         const end = Math.min(start + UPLOAD_CHUNK_SIZE, file.size) - 1;
-        const result = await storageApi.uploadChunk(file, { start, end, total: file.size }, path, uploadId ?? undefined, onProgress);
+        const result = await storageApi.uploadChunk(file, { start, end, total: file.size }, path, uploadId ?? undefined, onProgress, signal);
         uploadId ??= extractUploadId(result);
       }
       if (!uploadId) throw new Error(i18nText("上传服务未返回 upload_id", "Upload service did not return upload_id"));
@@ -271,12 +275,13 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       params.set("upload_id", uploadId);
       params.set("md5", await md5Blob(file));
       params.set("path", path);
-      return storageApi.uploadComplete(params.toString());
+      return storageApi.uploadComplete(params.toString(), signal);
     },
-    async uploadComplete(payload: URLSearchParams | string) {
+    async uploadComplete(payload: URLSearchParams | string, signal?: AbortSignal) {
       const result = await apiClient.post<unknown>("/storage/chunked_upload_complete", payload, {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         responseType: "text",
+        signal,
         raw: true,
       });
       return assertUploadResponse(result);

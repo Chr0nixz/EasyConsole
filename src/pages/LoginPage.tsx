@@ -70,7 +70,7 @@ export function LoginPage() {
     <main className="grid min-h-screen min-w-0 grid-cols-[minmax(0,1fr)] overflow-x-hidden bg-app-bg text-app-text lg:grid-cols-[minmax(0,1fr)_460px]">
       <section className="hidden flex-col justify-between border-r border-app-border bg-app-surface p-10 lg:flex">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-app-accent text-white">
+          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-app-accent text-app-onAccent">
             <Server className="h-5 w-5" />
           </div>
           <div>

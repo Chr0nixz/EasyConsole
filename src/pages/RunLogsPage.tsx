@@ -2,7 +2,7 @@ import { Download, Eye, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
-import { Button, Dialog, Input, Panel, Select } from "../components/ui";
+import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
 import { saveBlob } from "../lib/download";
 import {
   clearRunLogs,
@@ -196,19 +196,19 @@ export function RunLogsPage() {
         ) : visibleLogs.length === 0 ? (
           <EmptyState title={text("还没有匹配的运行日志。关键操作完成后会自动记录。", "No matching run logs yet. Key operations are recorded automatically after completion.")} />
         ) : (
-          <div className="overflow-auto">
+          <TableRegion label={text("运行日志表格", "Run logs table")}>
             <table className="w-max min-w-full table-auto border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("时间", "Time")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("级别", "Level")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("模块", "Module")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("来源", "Channel")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("结果", "Result")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("摘要", "Summary")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("对象", "Target")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("耗时", "Duration")}</th>
-                  <th className="sticky right-0 z-20 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 font-medium">{text("操作", "Actions")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("时间", "Time")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("级别", "Level")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("模块", "Module")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("来源", "Channel")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("结果", "Result")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("摘要", "Summary")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("对象", "Target")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("耗时", "Duration")}</th>
+                  <th className="sticky right-0 z-20 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 font-medium" scope="col">{text("操作", "Actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -230,7 +230,13 @@ export function RunLogsPage() {
                     <td className="whitespace-nowrap px-3 py-2 text-app-muted">{item.targetName ?? item.targetId ?? "-"}</td>
                     <td className="whitespace-nowrap px-3 py-2 text-app-muted">{item.durationMs === undefined ? "-" : `${item.durationMs}ms`}</td>
                     <td className="sticky right-0 z-10 bg-app-surface px-3 py-2">
-                      <Button className="h-8 w-8 px-0" title={text("详情", "Details")} variant="ghost" onClick={() => setSelected(item)}>
+                      <Button
+                        aria-label={text(`查看运行日志 ${item.title}`, `View run log ${item.title}`)}
+                        className="h-8 w-8 px-0"
+                        title={text("详情", "Details")}
+                        variant="ghost"
+                        onClick={() => setSelected(item)}
+                      >
                         <Eye className="h-4 w-4" />
                       </Button>
                     </td>
@@ -238,7 +244,7 @@ export function RunLogsPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableRegion>
         )}
       </Panel>
 

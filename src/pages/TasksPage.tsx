@@ -33,7 +33,7 @@ import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
 import { CreateTaskDialog } from "../components/tasks/CreateTaskDialog";
 import { TaskLogDialog } from "../components/tasks/TaskLogDialog";
-import { Button, Dialog, Input, Panel, Select } from "../components/ui";
+import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { saveBlob } from "../lib/download";
@@ -1081,7 +1081,89 @@ export function TasksPage() {
         ) : table.getRowModel().rows.length === 0 ? (
           <EmptyState title={text("暂无任务实例", "No task instances")} action={<Button onClick={openCreateTask}>{text("新建任务", "New task")}</Button>} />
         ) : (
-          <div className="overflow-auto">
+          <>
+          <div className="divide-y divide-app-border sm:hidden">
+            {table.getRowModel().rows.map((row) => {
+              const task = row.original;
+              const release = isRunningTask(task);
+              const taskName = getTaskName(task);
+              return (
+                <article key={row.id} className="space-y-3 px-3 py-3" aria-labelledby={`task-card-${row.id}`}>
+                  <div className="flex items-start gap-3">
+                    <input
+                      aria-label={text(`选择 ${taskName}`, `Select ${taskName}`)}
+                      className="mt-1 h-4 w-4 shrink-0 accent-app-accent"
+                      type="checkbox"
+                      checked={row.getIsSelected()}
+                      onChange={row.getToggleSelectedHandler()}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 id={`task-card-${row.id}`} className="truncate text-sm font-semibold text-app-text">{taskName}</h3>
+                        <StatusBadge status={task.status} />
+                      </div>
+                      <div className="mt-1 font-mono text-xs text-app-muted">#{task.id}</div>
+                    </div>
+                  </div>
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                    <div>
+                      <dt className="text-app-muted">{text("资源", "Resources")}</dt>
+                      <dd className="mt-0.5 text-app-text">{resourceText(task)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-app-muted">{text("入口", "Endpoint")}</dt>
+                      <dd className="mt-0.5 truncate font-mono text-app-text">{endpointText(task)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-app-muted">{text("用户", "User")}</dt>
+                      <dd className="mt-0.5 truncate text-app-text">{ownerText(task)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-app-muted">{text("时长", "Duration")}</dt>
+                      <dd className="mt-0.5 text-app-text">{formatSecondsDuration(task.use_time, locale)}</dd>
+                    </div>
+                    <div className="col-span-2">
+                      <dt className="text-app-muted">{text("释放条件", "Release condition")}</dt>
+                      <dd className="mt-1"><ReleaseConditionBadge condition={task.releace_conditions ?? task.release_condition} /></dd>
+                    </div>
+                  </dl>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button aria-label={text(`打开 ${taskName} 的监控`, `Open monitor for ${taskName}`)} className="h-9 px-2" variant="ghost" title={text("监控", "Monitor")} onClick={() => openMonitorDashboard(task)}>
+                      <ActivitySquare className="h-4 w-4" />
+                      {text("监控", "Monitor")}
+                    </Button>
+                    <Button aria-label={text(`查看 ${taskName} 的日志`, `View logs for ${taskName}`)} className="h-9 px-2" variant="ghost" title={text("日志", "Logs")} onClick={() => setLogTask(task)}>
+                      <FileText className="h-4 w-4" />
+                      {text("日志", "Logs")}
+                    </Button>
+                    <Button aria-label={text(`打开 ${taskName} 的终端`, `Open terminal for ${taskName}`)} className="h-9 px-2" variant="ghost" title={text("终端", "Terminal")} onClick={() => setTerminalTask(task)}>
+                      <Terminal className="h-4 w-4" />
+                      {text("终端", "Terminal")}
+                    </Button>
+                    {release ? (
+                      <Button className="h-9 px-2 text-app-warning hover:text-app-warning" disabled={releaseMutation.isPending} title={text("释放", "Release")} variant="ghost" onClick={() => confirmReleaseTask(task)}>
+                        <Power className="h-4 w-4" />
+                        {text("释放", "Release")}
+                      </Button>
+                    ) : (
+                      <Button className="h-9 px-2 text-app-danger hover:text-app-danger" disabled={deleteMutation.isPending} title={text("删除", "Delete")} variant="ghost" onClick={() => confirmDeleteTask(task)}>
+                        <Trash2 className="h-4 w-4" />
+                        {text("删除", "Delete")}
+                      </Button>
+                    )}
+                    <MoreActionsMenu
+                      task={task}
+                      onCommit={confirmCommitTask}
+                      onDownload={handleDownloadTask}
+                      onRaw={setRawTask}
+                      onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
+                    />
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+          <TableRegion className="hidden sm:block" label={text("任务实例表格", "Task instances table")}>
             <table className="w-max min-w-full table-auto border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 {table.getHeaderGroups().map((headerGroup) => (
@@ -1089,10 +1171,11 @@ export function TasksPage() {
                     {headerGroup.headers.map((header) => (
                       <th
                         key={header.id}
+                        scope="col"
                         className={[
                           "whitespace-nowrap border-b border-app-border px-3 py-2 font-medium",
                           isActionsColumn(header.column.id)
-                            ? "sticky right-0 z-20 bg-app-panel shadow-[-10px_0_16px_-16px_rgb(15_23_42_/_0.45)]"
+                            ? "sticky right-0 z-20 bg-app-panel shadow-stickyColumn"
                             : "",
                         ].join(" ")}
                       >
@@ -1111,7 +1194,7 @@ export function TasksPage() {
                         className={[
                           "whitespace-nowrap px-3 py-2 align-middle",
                           isActionsColumn(cell.column.id)
-                            ? "sticky right-0 z-30 bg-app-surface shadow-[-10px_0_16px_-16px_rgb(15_23_42_/_0.45)]"
+                            ? "sticky right-0 z-30 bg-app-surface shadow-stickyColumn"
                             : "",
                         ].join(" ")}
                       >
@@ -1122,7 +1205,8 @@ export function TasksPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableRegion>
+          </>
         )}
       </Panel>
 

@@ -6,11 +6,12 @@ import { cn } from "../lib/utils";
 
 export function LoadingState({ label }: { label?: string }) {
   const { t } = useI18n();
+  const loadingLabel = label ?? t("common.loading");
 
   return (
-    <div className="flex min-h-32 items-center justify-center gap-2 text-sm text-app-muted">
-      <Loader2 className="h-4 w-4 animate-spin" />
-      {label ?? t("common.loading")}
+    <div className="flex min-h-32 items-center justify-center gap-2 text-sm text-app-muted" role="status" aria-live="polite" aria-busy="true" aria-atomic="true" aria-label={loadingLabel}>
+      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+      {loadingLabel}
     </div>
   );
 }
@@ -19,7 +20,7 @@ export function TableSkeleton({ rows = 6, columns = 5, className }: { rows?: num
   const { t } = useI18n();
 
   return (
-    <div className={cn("space-y-2 p-3", className)} aria-label={t("common.loadingTable")}>
+    <div className={cn("space-y-2 p-3", className)} role="status" aria-live="polite" aria-busy="true" aria-atomic="true" aria-label={t("common.loadingTable")}>
       {Array.from({ length: rows }, (_, rowIndex) => (
         <div key={rowIndex} className="grid gap-3" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
           {Array.from({ length: columns }, (_, columnIndex) => (
@@ -51,8 +52,8 @@ export function ErrorState({ error, action }: { error: unknown; action?: ReactNo
   const { t } = useI18n();
   const message = error instanceof Error ? error.message : t("common.requestFailed");
   return (
-    <div className="flex min-h-32 flex-col items-center justify-center gap-3 text-center text-sm text-app-danger">
-      <AlertCircle className="h-5 w-5" />
+    <div className="flex min-h-32 flex-col items-center justify-center gap-3 text-center text-sm text-app-danger" role="alert" aria-live="assertive" aria-atomic="true">
+      <AlertCircle className="h-5 w-5" aria-hidden="true" />
       <span>{message}</span>
       {action}
     </div>

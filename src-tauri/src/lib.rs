@@ -8,11 +8,15 @@ use std::time::Duration;
 use russh::keys::ssh_key::{self, HashAlg};
 use russh::{client, ChannelMsg};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::menu::MenuBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 const SSH_SESSION_EVENT: &str = "ssh-session-event";
+const DESKTOP_RUN_DUE_EVENT: &str = "desktop-run-due-scheduled-tasks";
+const APP_SETTINGS_STORAGE_KEY: &str = "easy-console.settings";
 const DEFAULT_COLS: u32 = 120;
 const DEFAULT_ROWS: u32 = 32;
 const VSCODE_KEY_NAME: &str = "easyconsole_vscode_ed25519";
@@ -48,6 +52,12 @@ enum SshCommand {
 #[derive(Default)]
 struct SshSessionState {
     sessions: Mutex<HashMap<String, mpsc::UnboundedSender<SshCommand>>>,
+}
+
+#[derive(Default)]
+struct DesktopRuntimeState {
+    close_to_tray: Mutex<bool>,
+    quit_requested: Mutex<bool>,
 }
 
 #[derive(Clone)]
@@ -828,6 +838,105 @@ fn runtime_storage_remove(app: AppHandle, key: String) -> Result<(), String> {
     write_string_map(&path, &data)
 }
 
+fn read_close_to_tray_setting(app: &AppHandle) -> bool {
+    let Ok(path) = runtime_storage_path(app) else {
+        return false;
+    };
+    let Ok(data) = load_string_map(&path) else {
+        return false;
+    };
+    let Some(raw) = data.get(APP_SETTINGS_STORAGE_KEY) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("desktopCloseToTray").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false)
+}
+
+fn set_close_to_tray_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> Result<(), String> {
+    let mut close_to_tray = state
+        .close_to_tray
+        .lock()
+        .map_err(|_| "桌面运行状态已损坏".to_string())?;
+    *close_to_tray = enabled;
+    Ok(())
+}
+
+fn get_close_to_tray_state(state: &Arc<DesktopRuntimeState>) -> bool {
+    state
+        .close_to_tray
+        .lock()
+        .map(|value| *value)
+        .unwrap_or(false)
+}
+
+fn set_quit_requested(state: &Arc<DesktopRuntimeState>, requested: bool) {
+    if let Ok(mut value) = state.quit_requested.lock() {
+        *value = requested;
+    }
+}
+
+fn is_quit_requested(state: &Arc<DesktopRuntimeState>) -> bool {
+    state.quit_requested.lock().map(|value| *value).unwrap_or(false)
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn hide_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+}
+
+fn setup_tray(app: &mut tauri::App, state: Arc<DesktopRuntimeState>) -> tauri::Result<()> {
+    let menu = MenuBuilder::new(app)
+        .text("show", "显示 EasyConsole")
+        .text("hide", "隐藏窗口")
+        .text("run_due", "执行到期计划")
+        .separator()
+        .text("quit", "退出")
+        .build()?;
+    let mut tray = TrayIconBuilder::with_id("main").menu(&menu).show_menu_on_left_click(false);
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+    tray.build(app)?;
+
+    let handle = app.handle().clone();
+    app.on_menu_event(move |app, event| match event.id().as_ref() {
+        "show" => show_main_window(app),
+        "hide" => hide_main_window(app),
+        "run_due" => {
+            let _ = app.emit(DESKTOP_RUN_DUE_EVENT, ());
+        }
+        "quit" => {
+            set_quit_requested(&state, true);
+            app.exit(0);
+        }
+        _ => {}
+    });
+    app.on_tray_icon_event(move |_app, event| match event {
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        }
+        | TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        } => show_main_window(&handle),
+        _ => {}
+    });
+    Ok(())
+}
+
 #[tauri::command]
 fn ssh_write(
     state: State<'_, Arc<SshSessionState>>,
@@ -869,21 +978,38 @@ fn open_external_url(url: String) -> Result<(), String> {
     open_url_in_browser(&url)
 }
 
+#[tauri::command]
+fn set_desktop_close_to_tray(
+    state: State<'_, Arc<DesktopRuntimeState>>,
+    enabled: bool,
+) -> Result<(), String> {
+    set_close_to_tray_state(&state, enabled)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let desktop_state = Arc::new(DesktopRuntimeState::default());
     tauri::Builder::default()
         .manage(Arc::new(SshSessionState::default()))
+        .manage(Arc::clone(&desktop_state))
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_websocket::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_http::init())
-        .setup(|app| {
+        .setup({
+            let desktop_state = Arc::clone(&desktop_state);
+            move |app| {
             if let Some(icon) = app.default_window_icon().cloned() {
                 for window in app.webview_windows().values() {
                     window.set_icon(icon.clone())?;
                 }
             }
+            let close_to_tray = read_close_to_tray_setting(app.handle());
+            if let Err(error) = set_close_to_tray_state(&desktop_state, close_to_tray) {
+                log::warn!("failed to initialize close-to-tray state: {error}");
+            }
+            setup_tray(app, Arc::clone(&desktop_state))?;
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -892,7 +1018,7 @@ pub fn run() {
                 )?;
             }
             Ok(())
-        })
+        }})
         .invoke_handler(tauri::generate_handler![
             open_ssh_session,
             ssh_write,
@@ -901,12 +1027,28 @@ pub fn run() {
             open_system_ssh_terminal,
             open_vscode_ssh,
             open_external_url,
+            set_desktop_close_to_tray,
             runtime_storage_get,
             runtime_storage_set,
             runtime_storage_remove
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(move |app, event| match event {
+            RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::CloseRequested { api, .. },
+                ..
+            } if label == "main" && get_close_to_tray_state(&desktop_state) && !is_quit_requested(&desktop_state) => {
+                api.prevent_close();
+                hide_main_window(app);
+            }
+            RunEvent::ExitRequested { api, .. } if get_close_to_tray_state(&desktop_state) && !is_quit_requested(&desktop_state) => {
+                api.prevent_exit();
+                hide_main_window(app);
+            }
+            _ => {}
+        });
 }
 
 #[cfg(test)]

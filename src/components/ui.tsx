@@ -42,10 +42,10 @@ export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLBut
       ref={ref}
       className={cn(
         "app-interactive inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11",
-        variant === "primary" && "bg-app-accent text-white hover:brightness-95 active:brightness-90",
+        variant === "primary" && "bg-app-accent text-app-onAccent hover:brightness-95 active:brightness-90",
         variant === "secondary" && "border border-app-border bg-app-surface text-app-text hover:bg-app-panel",
         variant === "ghost" && "text-app-muted hover:bg-app-panel hover:text-app-text",
-        variant === "danger" && "bg-app-danger text-white hover:brightness-95",
+        variant === "danger" && "bg-app-danger text-app-onAccent hover:brightness-95",
         className,
       )}
       {...props}
@@ -88,6 +88,14 @@ export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
 
 export function Panel({ children, className }: { children: ReactNode; className?: string }) {
   return <section className={cn("app-surface-enter rounded-lg border border-app-border bg-app-surface shadow-shell", className)}>{children}</section>;
+}
+
+export function TableRegion({ children, label, className }: { children: ReactNode; label: string; className?: string }) {
+  return (
+    <div className={cn("app-table-region overflow-auto", className)} role="region" aria-label={label} tabIndex={0}>
+      {children}
+    </div>
+  );
 }
 
 export function Dialog({

@@ -82,6 +82,8 @@ async function fetchRequest<T = unknown>(request: RuntimeHttpRequest): Promise<R
   const controller = new AbortController();
   const timeoutMs = request.timeoutMs ?? 20_000;
   const timeout = timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  const abortFromCaller = () => controller.abort();
+  request.signal?.addEventListener("abort", abortFromCaller, { once: true });
   const headers = { ...(request.headers ?? {}) };
   const body = normalizeBody(request.body, headers);
   const requestUrl = buildUrl(request.url, request.query);
@@ -113,6 +115,7 @@ async function fetchRequest<T = unknown>(request: RuntimeHttpRequest): Promise<R
       data: data as T,
     };
   } finally {
+    request.signal?.removeEventListener("abort", abortFromCaller);
     if (timeout) window.clearTimeout(timeout);
   }
 }
@@ -312,6 +315,15 @@ export const browserRuntime: RuntimeTransport = {
   },
   openVscodeSsh(request) {
     return invokeTauriCommand("open_vscode_ssh", { request });
+  },
+  setDesktopCloseToTray(enabled) {
+    if (!isTauri()) return Promise.resolve();
+    return invokeTauriCommand("set_desktop_close_to_tray", { enabled });
+  },
+  async onDesktopRunDueScheduledTasks(handler) {
+    if (!isTauri()) return () => undefined;
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen("desktop-run-due-scheduled-tasks", handler);
   },
 };
 

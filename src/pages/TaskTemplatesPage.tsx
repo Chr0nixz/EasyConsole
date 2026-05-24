@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
-import { Button, Dialog, Input, Panel, Select, Textarea } from "../components/ui";
+import { Button, Dialog, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { getReleaseConditionText } from "../lib/format";
@@ -523,18 +523,18 @@ export function TaskTemplatesPage() {
         </Panel>
       ) : (
         <Panel className="overflow-hidden">
-          <div className="overflow-auto">
+          <TableRegion label={text("实例模板表格", "Instance templates table")}>
             <table className="w-max min-w-full table-auto border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("模板", "Template")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("镜像", "Image")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("资源", "Resources")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("使用次数", "Uses")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("运行中", "Running")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("路径", "Paths")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("释放", "Release")}</th>
-                  <th className="sticky right-0 z-20 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 text-center font-medium shadow-[-10px_0_16px_-16px_rgb(15_23_42_/_0.45)]">
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("模板", "Template")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("镜像", "Image")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("资源", "Resources")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("使用次数", "Uses")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("运行中", "Running")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("路径", "Paths")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("释放", "Release")}</th>
+                  <th className="sticky right-0 z-20 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 text-center font-medium shadow-stickyColumn" scope="col">
                     {text("操作", "Actions")}
                   </th>
                 </tr>
@@ -567,7 +567,7 @@ export function TaskTemplatesPage() {
                       {getReleaseConditionText(template.releaseCondition, locale)}
                       {template.releaseCondition === 2 ? text(`，${template.releaseAfterHours ?? 24} 小时后`, `, after ${template.releaseAfterHours ?? 24} hours`) : ""}
                     </td>
-                    <td className="sticky right-0 z-10 bg-app-surface px-3 py-2 align-middle shadow-[-10px_0_16px_-16px_rgb(15_23_42_/_0.45)]">
+                    <td className="sticky right-0 z-10 bg-app-surface px-3 py-2 align-middle shadow-stickyColumn">
                       <div className="flex justify-end gap-1">
                         <Button
                           className="h-8 px-2"
@@ -578,11 +578,19 @@ export function TaskTemplatesPage() {
                           <Rocket className="h-4 w-4" />
                           {text("新建", "New")}
                         </Button>
-                        <Button className="h-8 w-8 px-0" title={text("编辑", "Edit")} type="button" variant="ghost" onClick={() => openEditDialog(template)}>
+                        <Button
+                          aria-label={text(`编辑模板 ${template.name}`, `Edit template ${template.name}`)}
+                          className="h-8 w-8 px-0"
+                          title={text("编辑", "Edit")}
+                          type="button"
+                          variant="ghost"
+                          onClick={() => openEditDialog(template)}
+                        >
                           <Edit2 className="h-4 w-4" />
                           <span className="sr-only">{text("编辑", "Edit")}</span>
                         </Button>
                         <Button
+                          aria-label={text(`复制模板 ${template.name}`, `Copy template ${template.name}`)}
                           className="h-8 w-8 px-0"
                           title={text("复制模板", "Copy template")}
                           type="button"
@@ -603,7 +611,14 @@ export function TaskTemplatesPage() {
                           <CopyPlus className="h-4 w-4" />
                           <span className="sr-only">{text("复制模板", "Copy template")}</span>
                         </Button>
-                        <Button className="h-8 w-8 px-0 text-app-danger hover:text-app-danger" title={text("删除", "Delete")} type="button" variant="ghost" onClick={() => deleteTemplate(template)}>
+                        <Button
+                          aria-label={text(`删除模板 ${template.name}`, `Delete template ${template.name}`)}
+                          className="h-8 w-8 px-0 text-app-danger hover:text-app-danger"
+                          title={text("删除", "Delete")}
+                          type="button"
+                          variant="ghost"
+                          onClick={() => deleteTemplate(template)}
+                        >
                           <Trash2 className="h-4 w-4" />
                           <span className="sr-only">{text("删除", "Delete")}</span>
                         </Button>
@@ -613,7 +628,7 @@ export function TaskTemplatesPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableRegion>
         </Panel>
       )}
 

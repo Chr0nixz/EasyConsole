@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
-import { Button, Input, Panel, Select, Textarea } from "../components/ui";
+import { Button, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
@@ -297,23 +297,6 @@ export function ScheduledTasksPage() {
     }
   }
 
-  useEffect(() => {
-    if (loading || isExecuting) return undefined;
-    const timer = window.setInterval(() => {
-      const due = items.filter((item) => isScheduleDue(item));
-      if (due.length > 0) void executeTargets(due);
-    }, 30_000);
-    return () => window.clearInterval(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isExecuting, items, loading]);
-
-  useEffect(() => {
-    if (loading || isExecuting) return;
-    const due = items.filter((item) => isScheduleDue(item));
-    if (due.length > 0) void executeTargets(due);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading]);
-
   function deleteItem(item: ScheduledTask) {
     confirm({
       title: text("删除定时任务", "Delete Scheduled Task"),
@@ -473,16 +456,16 @@ export function ScheduledTasksPage() {
         {items.length === 0 ? (
           <EmptyState title={text("还没有定时任务。设置计划时间后，EasyConsole 会在到期时提交实例创建请求。", "No scheduled tasks yet. After you set a schedule, EasyConsole submits the instance creation request when it is due.")} />
         ) : (
-          <div className="overflow-auto">
+          <TableRegion label={text("定时任务表格", "Scheduled tasks table")}>
             <table className="w-max min-w-full table-auto border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("计划", "Plan")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("执行时间", "Run time")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("资源", "Resources")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("状态", "Status")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium">{text("最近结果", "Latest result")}</th>
-                  <th className="sticky right-0 z-20 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 text-center font-medium shadow-[-10px_0_16px_-16px_rgb(15_23_42_/_0.45)]">
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("计划", "Plan")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("执行时间", "Run time")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("资源", "Resources")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("状态", "Status")}</th>
+                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("最近结果", "Latest result")}</th>
+                  <th className="sticky right-0 z-20 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 text-center font-medium shadow-stickyColumn" scope="col">
                     {text("操作", "Actions")}
                   </th>
                 </tr>
@@ -506,7 +489,7 @@ export function ScheduledTasksPage() {
                     <td className="max-w-96 px-3 py-2 align-middle text-app-muted">
                       {item.lastError ? <span className="text-app-danger">{item.lastError}</span> : item.lastRunAt ? formatScheduleTime(item.lastRunAt) : "-"}
                     </td>
-                    <td className="sticky right-0 z-10 bg-app-surface px-3 py-2 align-middle shadow-[-10px_0_16px_-16px_rgb(15_23_42_/_0.45)]">
+                    <td className="sticky right-0 z-10 bg-app-surface px-3 py-2 align-middle shadow-stickyColumn">
                       <div className="flex justify-end gap-1">
                         <Button
                           className="h-8 px-2"
@@ -519,7 +502,14 @@ export function ScheduledTasksPage() {
                           <Play className="h-4 w-4" />
                           {text("执行", "Run")}
                         </Button>
-                        <Button className="h-8 w-8 px-0 text-app-danger hover:text-app-danger" title={text("删除", "Delete")} type="button" variant="ghost" onClick={() => deleteItem(item)}>
+                        <Button
+                          aria-label={text(`删除定时任务 ${item.name}`, `Delete scheduled task ${item.name}`)}
+                          className="h-8 w-8 px-0 text-app-danger hover:text-app-danger"
+                          title={text("删除", "Delete")}
+                          type="button"
+                          variant="ghost"
+                          onClick={() => deleteItem(item)}
+                        >
                           <Trash2 className="h-4 w-4" />
                           <span className="sr-only">{text("删除", "Delete")}</span>
                         </Button>
@@ -529,7 +519,7 @@ export function ScheduledTasksPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableRegion>
         )}
       </Panel>
       <RemoteStoragePicker

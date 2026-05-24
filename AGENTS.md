@@ -4,9 +4,11 @@ Guidance for coding agents working in this repository.
 
 ## Project
 
-EasyConsole is a Vite + React + TypeScript control panel over the existing console at `http://116.172.93.164:28080/`, with a Tauri 2 desktop shell and Node-based CLI/MCP tools sharing the same API wrappers.
+EasyConsole is a Tauri-first desktop control panel over the existing console at `http://116.172.93.164:28080/`, implemented with Vite + React + TypeScript and supported by Node-based CLI/MCP sidecars that share the same API wrappers.
 
-The desktop shell is now scaffolded under `src-tauri/`. Keep browser, Tauri, and Node behavior behind adapters so HTTP transport, token storage, WebSocket, notifications, SSH, file download, and external URL behavior can be swapped per runtime without leaking platform calls into page code.
+Development priority is the packaged Tauri desktop app and its derived CLI/MCP tooling. The browser build is still maintained for renderer development, fast feedback, and portability, but product and architecture decisions should optimize for desktop workflows first.
+
+The desktop shell is scaffolded under `src-tauri/`. Keep browser, Tauri, and Node behavior behind adapters so HTTP transport, token storage, WebSocket, notifications, SSH, file download, and external URL behavior can be swapped per runtime without leaking platform calls into page code.
 
 Primary references:
 
@@ -50,7 +52,7 @@ npm.cmd run build:desktop
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-Use `npm.cmd run build` for the web-only production build. Use `npm.cmd run build:desktop` for Tauri build inputs; it builds sidecars, typechecks the app, and runs Vite. Use `npm.cmd run tauri:build` when an actual desktop bundle or installer is required.
+Use `npm.cmd run build` for the web-only production build. Use `npm.cmd run build:desktop` for Tauri build inputs; it builds sidecars, typechecks the app, and runs Vite. Use `npm.cmd run tauri:build` when an actual desktop bundle or installer is required. When time is limited, prioritize desktop input build and Tauri shell checks over web-only verification.
 
 The production build may warn about a large JS chunk; that is currently acceptable unless the task is specifically about bundle splitting.
 
@@ -108,7 +110,7 @@ Do not commit real account credentials, tokens, or live test secrets.
 - `tools/easy-console/*`: Node runtime, CLI, MCP server/tools, and sidecar build scripts.
 - `src-tauri/src/lib.rs`: Tauri commands for app storage, external links, system terminal SSH, VS Code Remote-SSH setup, and in-app SSH sessions.
 
-Avoid Node-only APIs in renderer code. If a feature needs platform behavior, add it to a runtime adapter or Tauri command rather than calling a browser, Tauri, or Node global directly from page code.
+Avoid Node-only APIs in renderer code. If a feature needs platform behavior, design the Tauri command/runtime boundary first, then add browser and Node fallbacks only when they are useful and clean. Do not call browser, Tauri, or Node globals directly from page code.
 
 ## API Rules
 
@@ -143,6 +145,7 @@ Avoid Node-only APIs in renderer code. If a feature needs platform behavior, add
 - Desktop SSH supports in-app SSH via `russh`, opening a system terminal, and VS Code Remote-SSH setup. The web app only exposes copyable SSH details and WebSSH.
 - Tauri storage is persisted in app data through `runtime-storage.json`, with browser localStorage fallback on command failures.
 - Tauri uses `HashRouter`; the web build uses `BrowserRouter`.
+- Desktop parity is more important than browser parity for new workflows. Browser behavior may be read-only, degraded, or hidden when there is no honest equivalent for a desktop capability.
 
 ## UI Guidelines
 
@@ -153,6 +156,7 @@ Avoid Node-only APIs in renderer code. If a feature needs platform behavior, add
 - Every loading, empty, error, unauthorized, permission-denied, upload, and disconnect state should be clear and actionable.
 - Keep keyboard focus visible and avoid color-only status communication.
 - Keep desktop-only actions hidden or clearly disabled in web runtime. Do not imply that web can open local SSH sessions directly.
+- Prefer UX copy and defaults that describe the desktop app as the main product; mention browser behavior only where it affects the current runtime.
 
 ## Testing Guidance
 

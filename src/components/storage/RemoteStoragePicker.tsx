@@ -3,7 +3,7 @@ import { ChevronLeft, FileText, Folder, FolderOpen, RefreshCw } from "lucide-rea
 import { useEffect, useMemo, useState } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../DataState";
-import { Button, Dialog, Select } from "../ui";
+import { Button, Dialog, Select, TableRegion } from "../ui";
 import { formatBytes } from "../../lib/format";
 import { useI18n } from "../../lib/i18n";
 import type { Locale } from "../../lib/i18n-text";
@@ -152,7 +152,7 @@ export function RemoteStoragePicker({
           </div>
         </div>
 
-        <div className="max-h-[50vh] overflow-auto rounded-md border border-app-border">
+        <TableRegion className="max-h-[50vh] rounded-md border border-app-border" label={text("远程存储选择表格", "Remote storage picker table")}>
           {query.isLoading ? (
             <LoadingState />
           ) : query.isError ? (
@@ -163,9 +163,9 @@ export function RemoteStoragePicker({
             <table className="w-full min-w-[560px] border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("名称", "Name")}</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("类型", "Type")}</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("大小", "Size")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("名称", "Name")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("类型", "Type")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("大小", "Size")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -196,7 +196,7 @@ export function RemoteStoragePicker({
               </tbody>
             </table>
           )}
-        </div>
+        </TableRegion>
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-app-border pt-3">
           <div className="flex min-w-0 items-center gap-2 text-sm text-app-muted">

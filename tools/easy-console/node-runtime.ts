@@ -57,6 +57,8 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
             controller.abort();
           }, timeoutMs)
         : undefined;
+    const abortFromCaller = () => controller.abort();
+    requestOptions.signal?.addEventListener("abort", abortFromCaller, { once: true });
     const headers = { ...(requestOptions.headers ?? {}) };
     const body = normalizeBody(requestOptions.body, headers);
 
@@ -79,6 +81,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
       }
       return { status: response.status, headers: response.headers, data: data as T };
     } finally {
+      requestOptions.signal?.removeEventListener("abort", abortFromCaller);
       if (timeout) clearTimeout(timeout);
     }
   }
@@ -122,6 +125,10 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     },
     async openVscodeSsh() {
       return unsupported("VS Code SSH");
+    },
+    async setDesktopCloseToTray() {},
+    async onDesktopRunDueScheduledTasks() {
+      return () => {};
     },
   };
 }

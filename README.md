@@ -4,7 +4,9 @@
   <img src="public/favicon.svg" alt="EasyConsole icon" width="96" height="96" />
 </p>
 
-React + Tauri control panel for the existing web console API at `http://116.172.93.164:28080/`, with companion CLI and MCP tools for scripted and AI-assisted operations.
+Tauri-first desktop control panel for the existing web console API at `http://116.172.93.164:28080/`, with companion CLI and MCP tools for scripted and AI-assisted operations.
+
+Development priority is the Tauri desktop app and the CLI/MCP sidecars derived from it. The web build remains useful for renderer development, fast debugging, and keeping the UI portable, but product decisions should optimize for the packaged desktop workflow first.
 
 ## Current Scope
 
@@ -19,6 +21,7 @@ React + Tauri control panel for the existing web console API at `http://116.172.
 - Run logs for web, Tauri, CLI, and MCP operations with filtering, export, clearing, retention, and sensitive metadata redaction.
 - Tauri desktop shell with runtime storage, notifications, external link opening, in-app SSH, system terminal SSH, and VS Code Remote-SSH setup.
 - Node CLI and MCP stdio server that reuse the same API wrappers as the React app.
+- Browser runtime remains supported as a development and fallback target, but desktop-only capabilities define the primary experience.
 
 ## Setup
 
@@ -142,13 +145,14 @@ Available MCP tools include task list/log/create/release/delete, storage list/re
 
 ## Desktop Runtime
 
-The desktop app is built with Tauri 2. Web code talks to `src/lib/runtime.ts`; Tauri-specific commands live in `src-tauri/src/lib.rs`.
+The desktop app is built with Tauri 2 and is the primary product target. Web code talks to `src/lib/runtime.ts`; Tauri-specific commands live in `src-tauri/src/lib.rs`.
 
 - Storage settings and saved tokens are persisted in the Tauri app data directory and fall back to browser storage if a command fails.
 - HTTP and WebSocket calls use Tauri plugins in desktop and browser APIs on the web.
 - System notifications use the Tauri notification plugin on desktop and the browser Notification API on the web.
 - Desktop task SSH actions include in-app SSH auto-login, opening a system terminal, and configuring/opening VS Code Remote-SSH. Web runtime only exposes copyable SSH details and WebSSH.
 - VS Code Remote-SSH setup creates an EasyConsole-managed key, installs the public key on the target host through password SSH, and writes an EasyConsole-marked block in the user's SSH config.
+- New platform behavior should be designed for Tauri first, then exposed through the browser runtime only when it has a clean equivalent.
 
 ## Packaging
 

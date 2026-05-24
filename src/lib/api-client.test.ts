@@ -59,6 +59,10 @@ function createRuntime() {
     },
     async openSystemSshTerminal() {},
     async openVscodeSsh() {},
+    async setDesktopCloseToTray() {},
+    async onDesktopRunDueScheduledTasks() {
+      return () => {};
+    },
   };
   return { runtime, calls };
 }

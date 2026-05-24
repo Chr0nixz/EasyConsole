@@ -3,7 +3,7 @@ import { Activity, Clock, Coins, Server, type LucideIcon } from "lucide-react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
-import { Button, Panel } from "../components/ui";
+import { Button, Panel, TableRegion } from "../components/ui";
 import { instanceApi } from "../lib/api";
 import { formatCost, formatNumber, formatSecondsDuration, getTaskName } from "../lib/format";
 import { useI18n } from "../lib/i18n";
@@ -82,15 +82,15 @@ export function DashboardPage() {
         ) : staticsQuery.isError ? (
           <ErrorState error={staticsQuery.error} action={<Button variant="secondary" onClick={() => staticsQuery.refetch()}>{text("重试", "Retry")}</Button>} />
         ) : recentTasks.length > 0 ? (
-          <div className="overflow-auto">
+          <TableRegion label={text("最近任务表格", "Recent tasks table")}>
             <table className="w-full min-w-[720px] text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
-                  <th className="px-3 py-2 font-medium">{text("名称", "Name")}</th>
-                  <th className="px-3 py-2 font-medium">{text("状态", "Status")}</th>
-                  <th className="px-3 py-2 font-medium">{text("资源", "Resources")}</th>
-                  <th className="px-3 py-2 font-medium">{text("节点", "Node")}</th>
-                  <th className="px-3 py-2 font-medium">{text("费用", "Cost")}</th>
+                  <th className="px-3 py-2 font-medium" scope="col">{text("名称", "Name")}</th>
+                  <th className="px-3 py-2 font-medium" scope="col">{text("状态", "Status")}</th>
+                  <th className="px-3 py-2 font-medium" scope="col">{text("资源", "Resources")}</th>
+                  <th className="px-3 py-2 font-medium" scope="col">{text("节点", "Node")}</th>
+                  <th className="px-3 py-2 font-medium" scope="col">{text("费用", "Cost")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -111,7 +111,7 @@ export function DashboardPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableRegion>
         ) : (
           <EmptyState title={text("暂无最近任务", "No recent tasks")} />
         )}

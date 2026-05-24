@@ -38,7 +38,7 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid oklch(0.54 0.145 250);
+  outline: 2px solid oklch(0.50 0.145 250);
   outline-offset: 2px;
 }
 
@@ -106,6 +106,21 @@ tbody tr {
 
 .app-interactive:active:not(:disabled) {
   transform: translateY(1px) scale(0.99);
+}
+
+.app-table-region {
+  scrollbar-gutter: stable;
+}
+
+.app-table-region:focus-visible {
+  outline: 2px solid oklch(0.50 0.145 250);
+  outline-offset: -2px;
+}
+
+@media (max-width: 767px) {
+  .app-table-region {
+    border-radius: 0;
+  }
 }
 
 .app-modal-overlay {

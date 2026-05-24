@@ -13,6 +13,7 @@ type RequestOptions = {
   headers?: Record<string, string>;
   responseType?: "json" | "blob" | "text";
   timeoutMs?: number;
+  signal?: AbortSignal;
   auth?: boolean;
   raw?: boolean;
 };
@@ -100,6 +101,7 @@ export class ApiClient {
         headers,
         responseType: options.responseType,
         timeoutMs: options.timeoutMs,
+        signal: options.signal,
       });
     } catch (error) {
       if (error instanceof ApiError) throw error;

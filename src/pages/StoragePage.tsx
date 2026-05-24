@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, Eye, FileText, Folder, FolderOpen, FolderPlus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
+import { Copy, Download, Eye, FileText, Folder, FolderOpen, FolderPlus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
-import { Button, Dialog, Input, Panel, Select } from "../components/ui";
+import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
 import { saveBlob } from "../lib/download";
 import { formatBytes } from "../lib/format";
 import { useI18n } from "../lib/i18n";
@@ -20,6 +20,7 @@ import {
 } from "../lib/remote-storage";
 import { createUploadQueueItems, summarizeUploadQueue } from "../lib/upload-queue";
 import type { StorageEntry, UploadQueueItem } from "../lib/types";
+import { browserRuntime } from "../lib/runtime";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
@@ -43,6 +44,7 @@ export function StoragePage() {
   const { confirm, confirmDialog } = useConfirmAction();
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const uploadCancelledRef = useRef(false);
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const [path, setPath] = useState("/");
   const [mkdirName, setMkdirName] = useState("");
   const [mkdirOpen, setMkdirOpen] = useState(false);
@@ -50,7 +52,7 @@ export function StoragePage() {
   const [sortField, setSortField] = useState<StorageSortField>("name");
   const [sortDirection, setSortDirection] = useState<StorageSortDirection>("asc");
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
-  const [preview, setPreview] = useState<{ title: string; content: string } | null>(null);
+  const [preview, setPreview] = useState<{ title: string; content: string; path: string; truncated: boolean; size: number; binary: boolean } | null>(null);
   const [directorySizes, setDirectorySizes] = useState<Record<string, { status: "done" | "loading" | "error"; size?: number; error?: string }>>({});
   const crumbs = useMemo(() => getStorageBreadcrumbs(path), [path]);
   const query = useQuery({ queryKey: ["storage", path], queryFn: () => remoteStorage.list({ path }) });
@@ -127,8 +129,14 @@ export function StoragePage() {
   });
 
   const previewMutation = useMutation({
-    mutationFn: (entry: StorageEntry) => remoteStorage.readTextFile(getStorageEntryPath(entry, path)),
-    onSuccess: (content, entry) => setPreview({ title: entry.name, content }),
+    mutationFn: (entry: StorageEntry) => remoteStorage.readTextFile(getStorageEntryPath(entry, path), { limitBytes: 1024 * 1024 }),
+    onSuccess: (result, entry) => {
+      const entryPath = getStorageEntryPath(entry, path);
+      setPreview({ title: entry.name, path: entryPath, ...result });
+      if (result.binary) {
+        toast.error(text("文件看起来是二进制内容", "This file appears to be binary"), text("请下载后在本地打开。", "Download it and open it locally."));
+      }
+    },
     onError: (error, entry) => {
       toast.error(text("读取远程文件失败", "Failed to read remote file"), `${entry.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
       void runLogger.log({
@@ -169,19 +177,23 @@ export function StoragePage() {
           current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "uploading", progress: 1, error: undefined } : queueItem)),
         );
         try {
+          const abortController = new AbortController();
+          uploadAbortRef.current = abortController;
           await remoteStorage.uploadLocalFile(item.file, item.remoteDirectory, (progress) => {
             setUploadQueue((current) =>
               current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, progress: progress.percent } : queueItem)),
             );
-          });
+          }, abortController.signal);
           setUploadQueue((current) =>
             current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "done", progress: 100 } : queueItem)),
           );
         } catch (error) {
           const message = error instanceof Error ? error.message : text("上传失败", "Upload failed");
           setUploadQueue((current) =>
-            current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "failed", error: message } : queueItem)),
+            current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: uploadCancelledRef.current ? "cancelled" : "failed", error: uploadCancelledRef.current ? text("已取消", "Cancelled") : message } : queueItem)),
           );
+        } finally {
+          uploadAbortRef.current = null;
         }
       }
       queryClient.invalidateQueries({ queryKey: ["storage"] });
@@ -228,7 +240,12 @@ export function StoragePage() {
 
   function cancelPendingUploads() {
     uploadCancelledRef.current = true;
+    uploadAbortRef.current?.abort();
     setUploadQueue((items) => items.map((item) => (item.status === "queued" ? { ...item, status: "cancelled" } : item)));
+  }
+
+  function copyPath(value: string) {
+    void browserRuntime.copyText(value).then(() => toast.success(text("路径已复制", "Path copied"), value));
   }
 
   function openFolderUploadDialog() {
@@ -315,6 +332,10 @@ export function StoragePage() {
           ))}
         </div>
         <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
+          <Button variant="secondary" onClick={() => copyPath(path)}>
+            <Copy className="h-4 w-4" />
+            {text("复制路径", "Copy path")}
+          </Button>
           <div className="relative w-full sm:w-auto">
             <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" />
             <Input className="w-full pl-9 sm:w-52" placeholder={text("搜索文件或文件夹", "Search files or folders")} value={searchKeyword} onChange={(event) => setSearchKeyword(event.target.value)} />
@@ -333,7 +354,7 @@ export function StoragePage() {
             <FolderPlus className="h-4 w-4" />
             {text("新建", "New")}
           </Button>
-          <label className="app-interactive inline-flex h-9 cursor-pointer items-center gap-2 rounded-md bg-app-accent px-3 text-sm font-medium text-white hover:brightness-95 [@media(pointer:coarse)]:min-h-11">
+          <label className="app-interactive inline-flex h-9 cursor-pointer items-center gap-2 rounded-md bg-app-accent px-3 text-sm font-medium text-app-onAccent hover:brightness-95 [@media(pointer:coarse)]:min-h-11">
             <Upload className="h-4 w-4" />
             {text("上传到远程", "Upload to remote")}
             <input className="sr-only" type="file" onChange={(event) => void upload(event)} />
@@ -402,15 +423,108 @@ export function StoragePage() {
         ) : visibleEntries.length === 0 ? (
           <EmptyState title={text("当前目录为空", "Current directory is empty")} />
         ) : (
-          <div className="overflow-auto">
+          <>
+          <div className="divide-y divide-app-border sm:hidden">
+            {visibleEntries.map((entry, index) => {
+              const directory = isStorageDirectory(entry, path);
+              const entryPath = getStorageEntryPath(entry, path);
+              const entryCardId = `storage-card-${index}`;
+              const directSize = getStorageEntrySize(entry);
+              const directorySize = directorySizes[entryPath];
+              const entrySize = directory ? directorySize?.size ?? directSize : directSize;
+              const entrySizeText =
+                directory && directorySize?.status === "loading"
+                  ? text("计算中", "Calculating")
+                  : directory && directorySize?.status === "error"
+                    ? text("计算失败", "Calculation failed")
+                    : entrySize === null
+                      ? "-"
+                      : formatBytes(entrySize);
+              return (
+                <article key={entryPath} className="space-y-3 px-3 py-3" aria-labelledby={entryCardId}>
+                  <div className="flex items-start gap-3">
+                    {directory ? <Folder className="mt-0.5 h-4 w-4 shrink-0 text-app-accent" /> : <FileText className="mt-0.5 h-4 w-4 shrink-0 text-app-muted" />}
+                    <div className="min-w-0 flex-1">
+                      <button
+                        id={entryCardId}
+                        className="block max-w-full truncate text-left text-sm font-semibold text-app-text hover:text-app-accent disabled:cursor-default disabled:text-app-text"
+                        disabled={!directory}
+                        onClick={() => setPath(entryPath)}
+                      >
+                        {entry.name}
+                      </button>
+                      <div className="mt-1 truncate font-mono text-xs text-app-muted">{entryPath}</div>
+                    </div>
+                    <Button
+                      aria-label={text(`复制远程路径 ${entryPath}`, `Copy remote path ${entryPath}`)}
+                      className="h-9 w-9 shrink-0 px-0"
+                      type="button"
+                      title={text("复制远程路径", "Copy remote path")}
+                      variant="ghost"
+                      onClick={() => copyPath(entryPath)}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                    <div>
+                      <dt className="text-app-muted">{text("类型", "Type")}</dt>
+                      <dd className="mt-0.5 text-app-text">{directory ? text("目录", "Directory") : text("文件", "File")}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-app-muted">{text("大小", "Size")}</dt>
+                      <dd className="mt-0.5 text-app-text">{entrySizeText}</dd>
+                    </div>
+                    <div className="col-span-2">
+                      <dt className="text-app-muted">{text("更新时间", "Updated")}</dt>
+                      <dd className="mt-0.5 text-app-text">{getStorageEntryModified(entry)}</dd>
+                    </div>
+                  </dl>
+                  <div className="flex flex-wrap gap-1.5">
+                    {directory ? (
+                      <>
+                        <Button className="h-9 px-2" variant="ghost" title={text("打开远程目录", "Open remote directory")} onClick={() => setPath(entryPath)}>
+                          <FolderOpen className="h-4 w-4" />
+                          {text("打开", "Open")}
+                        </Button>
+                        <Button className="h-9 px-2" variant="ghost" title={text("整体下载远程文件夹", "Download remote folder")} onClick={() => downloadEntry(entry, entryPath)}>
+                          <Download className="h-4 w-4" />
+                          {text("下载", "Download")}
+                        </Button>
+                        <Button className="h-9 px-2" disabled={directorySize?.status === "loading"} type="button" variant="ghost" onClick={() => calculateDirectorySize(entryPath)}>
+                          {directorySize?.status === "error" ? text("重试", "Retry") : text("计算", "Calculate")}
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button className="h-9 px-2" variant="ghost" title={text("下载远程文件到本地", "Download remote file locally")} onClick={() => downloadEntry(entry, entryPath)}>
+                          <Download className="h-4 w-4" />
+                          {text("下载", "Download")}
+                        </Button>
+                        <Button className="h-9 px-2" variant="ghost" title={text("读取远程文件内容", "Read remote file content")} onClick={() => previewMutation.mutate(entry)}>
+                          <Eye className="h-4 w-4" />
+                          {text("读取", "Read")}
+                        </Button>
+                      </>
+                    )}
+                    <Button className="h-9 px-2 text-app-danger hover:text-app-danger" variant="ghost" title={text("删除远程文件或目录", "Delete remote file or directory")} onClick={() => confirmDeleteEntry(entry)}>
+                      <Trash2 className="h-4 w-4" />
+                      {text("删除", "Delete")}
+                    </Button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+          <TableRegion className="hidden sm:block" label={text("远程文件表格", "Remote files table")}>
             <table className="w-full min-w-[760px] border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("名称", "Name")}</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("类型", "Type")}</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("大小", "Size")}</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("更新时间", "Updated")}</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("远程操作", "Remote actions")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("名称", "Name")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("类型", "Type")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("大小", "Size")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("更新时间", "Updated")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("远程操作", "Remote actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -438,6 +552,16 @@ export function StoragePage() {
                       >
                         {directory ? <Folder className="h-4 w-4 text-app-accent" /> : <FileText className="h-4 w-4 text-app-muted" />}
                         {entry.name}
+                      </button>
+                      <button
+                        aria-label={text(`复制远程路径 ${entryPath}`, `Copy remote path ${entryPath}`)}
+                        className="ml-2 inline-flex h-7 w-7 items-center justify-center rounded text-app-muted hover:bg-app-panel hover:text-app-text"
+                        type="button"
+                        title={text("复制远程路径", "Copy remote path")}
+                        onClick={() => copyPath(entryPath)}
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                        <span className="sr-only">{text("复制远程路径", "Copy remote path")}</span>
                       </button>
                     </td>
                     <td className="px-3 py-2 text-app-muted">{directory ? text("目录", "Directory") : text("文件", "File")}</td>
@@ -504,14 +628,26 @@ export function StoragePage() {
                 })}
               </tbody>
             </table>
-          </div>
+          </TableRegion>
+          </>
         )}
       </Panel>
 
       <Dialog open={Boolean(preview)} title={text(`远程文件 ${preview?.title ?? ""}`, `Remote File ${preview?.title ?? ""}`)} onClose={() => setPreview(null)} width="max-w-5xl">
-        <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
+        <div className="space-y-3 p-3">
+          {preview?.truncated ? <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">{text(`文件较大，仅显示前 1 MiB。大小：${formatBytes(preview.size)}`, `Large file. Showing the first 1 MiB only. Size: ${formatBytes(preview.size)}`)}</div> : null}
+          {preview?.binary ? <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">{text("二进制文件不支持文本预览，请下载后打开。", "Binary files cannot be previewed as text. Download to open locally.")}</div> : null}
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-app-muted">
+            <span className="font-mono">{preview?.path}</span>
+            <Button type="button" variant="secondary" onClick={() => preview?.path && copyPath(preview.path)}>
+              <Copy className="h-4 w-4" />
+              {text("复制路径", "Copy path")}
+            </Button>
+          </div>
+        <pre className="max-h-[60vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
           {preview?.content || text("文件为空", "File is empty")}
         </pre>
+        </div>
       </Dialog>
       <Dialog open={mkdirOpen} title={text("新建文件夹", "New Folder")} onClose={() => setMkdirOpen(false)} width="max-w-md">
         <div className="space-y-4 p-4">

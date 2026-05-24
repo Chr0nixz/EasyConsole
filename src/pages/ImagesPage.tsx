@@ -3,7 +3,7 @@ import { Download, RefreshCw, Search, Star } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
-import { Button, Input, Panel, Select } from "../components/ui";
+import { Button, Input, Panel, Select, TableRegion } from "../components/ui";
 import { imageApi } from "../lib/api";
 import { saveBlob } from "../lib/download";
 import { useI18n } from "../lib/i18n";
@@ -206,16 +206,16 @@ export function ImagesPage() {
         ) : filteredImages.length === 0 ? (
           <EmptyState title={text("没有匹配的镜像", "No matching images")} action={<Button variant="secondary" onClick={() => setKeyword("")}>{text("清空搜索", "Clear search")}</Button>} />
         ) : (
-          <div className="overflow-auto">
+          <TableRegion label={text("镜像表格", "Images table")}>
             <table className="w-full min-w-[980px] border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("名称", "Name")}</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("来源", "Source")}</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("标签", "Tag")}</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("说明", "Description")}</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("更新时间", "Updated")}</th>
-                  <th className="sticky right-0 border-b border-app-border bg-app-panel px-3 py-2 text-right font-medium">{text("操作", "Actions")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("名称", "Name")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("来源", "Source")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("标签", "Tag")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("说明", "Description")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium" scope="col">{text("更新时间", "Updated")}</th>
+                  <th className="sticky right-0 border-b border-app-border bg-app-panel px-3 py-2 text-right font-medium" scope="col">{text("操作", "Actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -245,7 +245,7 @@ export function ImagesPage() {
                       </div>
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{getImageUpdatedAt(image)}</td>
-                    <td className="sticky right-0 bg-app-surface px-3 py-2 align-middle shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.35)]">
+                    <td className="sticky right-0 bg-app-surface px-3 py-2 align-middle shadow-stickyColumnSubtle">
                       <div className="flex justify-end gap-1">
                         <Button aria-label={text(`将 ${imageName(image)} 设为默认镜像`, `Set ${imageName(image)} as default image`)} variant="ghost" title={text("设为默认", "Set default")} onClick={() => setDefaultImage(image)}>
                           <Star className="h-4 w-4" />
@@ -259,7 +259,7 @@ export function ImagesPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableRegion>
         )}
       </Panel>
       {confirmDialog}

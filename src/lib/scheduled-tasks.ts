@@ -1,6 +1,6 @@
 import type { CreateTaskPayload, RuntimeStorage, ScheduledTask } from "./types";
 
-const STORAGE_KEY = "easy-console.scheduledTasks";
+export const SCHEDULED_TASKS_STORAGE_KEY = "easy-console.scheduledTasks";
 
 function makeId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -39,7 +39,7 @@ function normalizeSchedule(raw: unknown): ScheduledTask | null {
 }
 
 export async function loadScheduledTasks(storage: RuntimeStorage) {
-  const raw = await storage.get(STORAGE_KEY);
+  const raw = await storage.get(SCHEDULED_TASKS_STORAGE_KEY);
   if (!raw) return [];
   const parsed = JSON.parse(raw) as unknown;
   if (!Array.isArray(parsed)) return [];
@@ -47,7 +47,7 @@ export async function loadScheduledTasks(storage: RuntimeStorage) {
 }
 
 export function saveScheduledTasks(storage: RuntimeStorage, items: ScheduledTask[]) {
-  return storage.set(STORAGE_KEY, JSON.stringify(items));
+  return storage.set(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(items));
 }
 
 export function createScheduledTask(input: {

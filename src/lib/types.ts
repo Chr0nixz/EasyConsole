@@ -257,6 +257,7 @@ export type RuntimeHttpRequest = {
   body?: unknown;
   responseType?: "json" | "blob" | "text";
   timeoutMs?: number;
+  signal?: AbortSignal;
   onUploadProgress?: (progress: UploadProgress) => void;
 };
 
@@ -307,6 +308,8 @@ export type RuntimeTransport = {
   onSshSessionEvent(sessionId: string, handler: (event: SshSessionEvent) => void): Promise<() => void>;
   openSystemSshTerminal(request: SshConnectionRequest): Promise<void>;
   openVscodeSsh(request: SshConnectionRequest): Promise<void>;
+  setDesktopCloseToTray(enabled: boolean): Promise<void>;
+  onDesktopRunDueScheduledTasks(handler: () => void): Promise<() => void>;
 };
 
 export type SshConnectionRequest = {

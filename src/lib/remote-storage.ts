@@ -8,12 +8,12 @@ export type RemoteStorageService = {
   list(query: StorageQuery): Promise<{ items: StorageEntry[]; total?: number; raw: unknown }>;
   createDirectory(path: string): Promise<unknown>;
   remove(path: string, isDirectory?: boolean): Promise<unknown>;
-  uploadLocalFile(file: File, remoteDirectory: string, onProgress?: (progress: UploadProgress) => void): Promise<unknown>;
+  uploadLocalFile(file: File, remoteDirectory: string, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal): Promise<unknown>;
   uploadLocalFiles(files: File[], remoteDirectory: string, onProgress?: (progress: UploadProgress) => void): Promise<unknown>;
   getDirectorySize(path: string): Promise<number>;
   downloadRemoteFile(path: string): Promise<Blob>;
   downloadRemotePath(path: string): Promise<Blob>;
-  readTextFile(path: string): Promise<string>;
+  readTextFile(path: string, options?: { limitBytes?: number }): Promise<{ content: string; truncated: boolean; size: number; binary: boolean }>;
 };
 
 function booleanLike(value: unknown) {
@@ -214,8 +214,8 @@ export const remoteStorage: RemoteStorageService = {
   remove(path, isDirectory) {
     return storageApi.delete(normalizeStoragePath(path), isDirectory);
   },
-  uploadLocalFile(file, remoteDirectory, onProgress) {
-    return storageApi.uploadFile(file, normalizeStoragePath(remoteDirectory), onProgress);
+  uploadLocalFile(file, remoteDirectory, onProgress, signal) {
+    return storageApi.uploadFile(file, normalizeStoragePath(remoteDirectory), onProgress, signal);
   },
   async uploadLocalFiles(files, remoteDirectory, onProgress) {
     const normalizedRemoteDirectory = normalizeStoragePath(remoteDirectory);
@@ -263,8 +263,18 @@ export const remoteStorage: RemoteStorageService = {
   downloadRemotePath(path) {
     return remoteStorage.downloadRemoteFile(path);
   },
-  async readTextFile(path) {
+  async readTextFile(path, options) {
     const blob = await remoteStorage.downloadRemoteFile(path);
-    return blob.text();
+    const limitBytes = options?.limitBytes ?? 1024 * 1024;
+    const sample = new Uint8Array(await blob.slice(0, Math.min(blob.size, 8192)).arrayBuffer());
+    const binary = sample.some((byte) => byte === 0 || (byte < 9 && byte !== 7) || (byte > 13 && byte < 32));
+    if (binary) return { content: "", truncated: blob.size > 0, size: blob.size, binary: true };
+    const sliced = blob.slice(0, Math.min(blob.size, limitBytes));
+    return {
+      content: await sliced.text(),
+      truncated: blob.size > limitBytes,
+      size: blob.size,
+      binary: false,
+    };
   },
 };

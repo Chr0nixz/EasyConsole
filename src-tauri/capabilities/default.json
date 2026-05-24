@@ -10,10 +10,8 @@
     {
       "identifier": "http:default",
       "allow": [
-        { "url": "http://116.172.93.164:28080/*" },
-        { "url": "http://116.172.93.164:33000/*" },
-        { "url": "http://127.0.0.1:*/*" },
-        { "url": "http://localhost:*/*" }
+        { "url": "http://*:*/*" },
+        { "url": "https://*:*/*" }
       ]
     },
     "websocket:default",
@@ -24,7 +22,9 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        "$DOWNLOAD/**"
+        "$DOWNLOAD/**",
+        "$DOCUMENT/**",
+        "$DESKTOP/**"
       ]
     }
   ]
