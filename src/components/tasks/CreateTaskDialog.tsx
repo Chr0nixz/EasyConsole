@@ -9,7 +9,8 @@ import { imageApi, instanceApi } from "../../lib/api";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../../lib/batch";
 import { useAuth } from "../../lib/use-auth";
 import { useToast } from "../../lib/use-toast";
-import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText } from "../../lib/format";
+import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../../lib/format";
+import { useI18n } from "../../lib/i18n";
 import { normalizeStoragePath } from "../../lib/remote-storage";
 import type { CreateTaskPayload, ImageItem, Task } from "../../lib/types";
 import { errorMessage, useRunLogger } from "../../lib/use-run-logger";
@@ -108,6 +109,7 @@ function formatBatchTaskName(baseName: string, index: number, total: number) {
 export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean; onClose: () => void; initialTask?: Task | null }) {
   const auth = useAuth();
   const toast = useToast();
+  const { locale, text } = useI18n();
   const runLogger = useRunLogger();
   const queryClient = useQueryClient();
   const images = useQuery({ queryKey: ["images", "task-create"], queryFn: () => imageApi.list({ page: 1, page_size: 100 }), enabled: open });
@@ -178,15 +180,16 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
     },
     onSuccess: (_data, payloads) => {
       const firstName = String(payloads[0]?.name ?? "");
-      const delayText = payloads.length > 1 ? `，间隔 ${BATCH_REQUEST_DELAY_MS}ms` : "";
-      const description = payloads.length > 1 ? `${firstName} 等 ${payloads.length} 个实例${delayText}` : firstName;
-      toast.success(initialTask ? "复制创建已提交" : "实例创建已提交", description);
+      const delayText = payloads.length > 1 ? text(`，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `, ${BATCH_REQUEST_DELAY_MS}ms apart`) : "";
+      const description = payloads.length > 1 ? text(`${firstName} 等 ${payloads.length} 个实例${delayText}`, `${firstName} and ${payloads.length - 1} more instances${delayText}`) : firstName;
+      const title = initialTask ? text("复制创建已提交", "Clone creation submitted") : text("实例创建已提交", "Instance creation submitted");
+      toast.success(title, description);
       void runLogger.log({
         source: "task",
         level: "info",
         action: initialTask ? "task.cloneCreate" : "task.create",
         result: "success",
-        title: initialTask ? "复制创建已提交" : "实例创建已提交",
+        title,
         targetName: firstName,
         metadata: { count: payloads.length, names: payloads.map((payload) => payload.name) },
       });
@@ -194,15 +197,15 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       onClose();
     },
     onError: (error) => {
-      toast.error("实例创建失败", error instanceof Error ? error.message : "请检查表单或稍后重试");
+      toast.error(text("实例创建失败", "Instance creation failed"), error instanceof Error ? error.message : text("请检查表单或稍后重试", "Check the form or try again later"));
       void runLogger.log({
         source: "task",
         level: "error",
         action: initialTask ? "task.cloneCreate" : "task.create",
         result: "failure",
-        title: "实例创建失败",
+        title: text("实例创建失败", "Instance creation failed"),
         targetName: name.trim(),
-        error: errorMessage(error, "实例创建失败"),
+        error: errorMessage(error, text("实例创建失败", "Instance creation failed")),
       });
     },
   });
@@ -212,41 +215,41 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
     setFormError(null);
     const taskName = name.trim();
     if (!taskName) {
-      setFormError("任务名称不能为空");
+      setFormError(text("任务名称不能为空", "Task name is required"));
       return;
     }
     if (!imageId) {
-      setFormError("请选择镜像");
+      setFormError(text("请选择镜像", "Select an image"));
       return;
     }
     const cpuValue = parsePositiveNumber(cpu);
     if (cpuValue === null) {
-      setFormError("CPU 必须大于 0");
+      setFormError(text("CPU 必须大于 0", "CPU must be greater than 0"));
       return;
     }
     const gpuValue = parseNonNegativeInteger(gpu);
     if (gpuValue === null) {
-      setFormError("GPU 必须是非负整数");
+      setFormError(text("GPU 必须是非负整数", "GPU must be a non-negative integer"));
       return;
     }
     const memoryValue = parsePositiveInteger(memory);
     if (memoryValue === null) {
-      setFormError("内存必须是正整数");
+      setFormError(text("内存必须是正整数", "Memory must be a positive integer"));
       return;
     }
     const releaceConditions = Number(releaseCondition);
     if (releaceConditions === 2 && !releaseTime) {
-      setFormError("请选择释放时间");
+      setFormError(text("请选择释放时间", "Select a release time"));
       return;
     }
     if (releaceConditions === 3 && (!workDirectory.trim() || !scriptPath.trim())) {
-      setFormError("请填写工作目录和脚本路径");
+      setFormError(text("请填写工作目录和脚本路径", "Enter the working directory and script path"));
       return;
     }
 
     const count = Number(batchCount);
     if (!Number.isInteger(count) || count < 1 || count > MAX_BATCH_COUNT) {
-      setFormError(`批量数量必须在 1-${MAX_BATCH_COUNT} 之间`);
+      setFormError(text(`批量数量必须在 1-${MAX_BATCH_COUNT} 之间`, `Batch count must be between 1 and ${MAX_BATCH_COUNT}`));
       return;
     }
     const selectedStoragePath = normalizeStoragePath(storagePath.trim() || `/${username}`);
@@ -283,19 +286,19 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
         ? workDirectory || storagePath || "/"
         : storagePath || "/";
   const pickerTitle =
-    storagePickerTarget === "storage" ? "选择存储目录" : storagePickerTarget === "workDirectory" ? "选择工作目录" : "选择脚本文件";
+    storagePickerTarget === "storage" ? text("选择存储目录", "Select storage directory") : storagePickerTarget === "workDirectory" ? text("选择工作目录", "Select working directory") : text("选择脚本文件", "Select script file");
 
   return (
-    <Dialog open={open} title={initialTask ? "复制实例" : "新建任务"} onClose={onClose} width="max-w-4xl">
+    <Dialog open={open} title={initialTask ? text("复制实例", "Clone Instance") : text("新建任务", "New Task")} onClose={onClose} width="max-w-4xl">
       <form className="p-4" onSubmit={submit}>
         <div className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
             <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">任务名称</span>
+              <span className="mb-1 block text-app-muted">{text("任务名称", "Task name")}</span>
               <Input className="w-full" value={name} onChange={(event) => setName(event.target.value)} required />
             </label>
             <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">创建数量</span>
+              <span className="mb-1 block text-app-muted">{text("创建数量", "Quantity")}</span>
               <Input
                 className="w-full"
                 type="number"
@@ -310,9 +313,9 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
           </div>
           <div className="grid gap-4 md:grid-cols-2">
             <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">释放条件</span>
+              <span className="mb-1 block text-app-muted">{text("释放条件", "Release condition")}</span>
               <Select className="w-full" value={releaseCondition} onChange={(event) => handleReleaseConditionChange(event.target.value)}>
-                {Object.entries(releaseConditionText).map(([value, label]) => (
+                {Object.entries(locale === "en-US" ? releaseConditionTextEn : releaseConditionText).map(([value, label]) => (
                   <option key={value} value={value}>
                     {label}
                   </option>
@@ -322,39 +325,39 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
           </div>
           {releaseCondition === "2" ? (
             <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">释放时间</span>
+              <span className="mb-1 block text-app-muted">{text("释放时间", "Release time")}</span>
               <Input className="w-full" type="datetime-local" value={releaseTime} onChange={(event) => setReleaseTime(event.target.value)} required />
             </label>
           ) : null}
           {releaseCondition === "3" ? (
             <div className="grid gap-4 md:grid-cols-2">
               <div className="block text-sm">
-                <span className="mb-1 block text-app-muted">工作目录</span>
+                <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
                 <div className="flex gap-2">
                   <Input className="w-full font-mono text-xs" value={workDirectory} onChange={(event) => setWorkDirectory(event.target.value)} required />
                   <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("workDirectory")}>
                     <FolderOpen className="h-4 w-4" />
-                    选择
+                    {text("选择", "Select")}
                   </Button>
                 </div>
               </div>
               <div className="block text-sm">
-                <span className="mb-1 block text-app-muted">脚本路径</span>
+                <span className="mb-1 block text-app-muted">{text("脚本路径", "Script path")}</span>
                 <div className="flex gap-2">
                   <Input className="w-full font-mono text-xs" value={scriptPath} onChange={(event) => setScriptPath(event.target.value)} required />
                   <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("scriptPath")}>
                     <FolderOpen className="h-4 w-4" />
-                    选择
+                    {text("选择", "Select")}
                   </Button>
                 </div>
               </div>
             </div>
           ) : null}
           <label className="block text-sm">
-            <span className="mb-1 block text-app-muted">镜像</span>
+            <span className="mb-1 block text-app-muted">{text("镜像", "Image")}</span>
             <Select className="w-full" value={imageId} onChange={(event) => setImageId(event.target.value)}>
-              <option value="">请选择镜像</option>
-              {imageId && !hasSelectedImageOption ? <option value={imageId}>原实例镜像 #{imageId}</option> : null}
+              <option value="">{text("请选择镜像", "Select an image")}</option>
+              {imageId && !hasSelectedImageOption ? <option value={imageId}>{text(`原实例镜像 #${imageId}`, `Original instance image #${imageId}`)}</option> : null}
               {imageOptions.map((image) => (
                 <option key={String(image.id)} value={String(image.id)}>
                   {getImageOptionLabel(image)}
@@ -364,17 +367,17 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
           </label>
           <div className="grid gap-4 text-sm md:grid-cols-2">
             <div>
-              <span className="mb-1 block text-app-muted">存储路径</span>
+              <span className="mb-1 block text-app-muted">{text("存储路径", "Storage path")}</span>
               <div className="flex gap-2">
                 <Input className="w-full font-mono text-xs" value={storagePath} onChange={(event) => setStoragePath(event.target.value)} />
                 <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
                   <FolderOpen className="h-4 w-4" />
-                  选择
+                  {text("选择", "Select")}
                 </Button>
               </div>
             </div>
             <div>
-              <span className="mb-1 block text-app-muted">挂载路径</span>
+              <span className="mb-1 block text-app-muted">{text("挂载路径", "Mount path")}</span>
               <Input className="w-full font-mono text-xs" value={mountPath} onChange={(event) => setMountPath(event.target.value)} />
             </div>
           </div>
@@ -388,7 +391,7 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
               <Input className="w-full" type="number" min="0" step="1" value={gpu} onChange={(event) => handleGpuChange(event.target.value)} required />
             </label>
             <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">内存 (GiB)</span>
+              <span className="mb-1 block text-app-muted">{text("内存 (GiB)", "Memory (GiB)")}</span>
               <Input className="w-full" type="number" min="1" step="1" value={memory} onChange={(event) => setMemory(event.target.value)} required />
             </label>
           </div>
@@ -396,9 +399,9 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
           {mutation.isError ? <ErrorState error={mutation.error} /> : null}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={onClose}>
-              取消
+              {text("取消", "Cancel")}
             </Button>
-            <Button disabled={mutation.isPending}>{mutation.isPending ? "正在创建" : "创建"}</Button>
+            <Button disabled={mutation.isPending}>{mutation.isPending ? text("正在创建", "Creating") : text("创建", "Create")}</Button>
           </div>
         </div>
       </form>

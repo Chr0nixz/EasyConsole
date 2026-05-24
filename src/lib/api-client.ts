@@ -1,4 +1,5 @@
 import { ApiError, type ApiEnvelope, type RuntimeTransport, type UnknownRecord } from "./types";
+import { i18nText } from "./i18n";
 
 export const DEFAULT_API_BASE_URL = "http://116.172.93.164:28080/api";
 export const API_BASE_URL =
@@ -25,12 +26,12 @@ export function joinUrl(base: string, path: string) {
 }
 
 export function getMessage(envelope: Partial<ApiEnvelope<unknown>>) {
-  return envelope.msg || envelope.message || "请求失败";
+  return envelope.msg || envelope.message || i18nText("请求失败", "Request failed");
 }
 
 export function unwrapEnvelope<T>(payload: unknown): T {
   if (!payload || typeof payload !== "object" || !("code" in payload)) {
-    throw new ApiError("响应格式无法识别", { kind: "parse" });
+    throw new ApiError(i18nText("响应格式无法识别", "Response format is not recognized"), { kind: "parse" });
   }
 
   const envelope = payload as ApiEnvelope<T>;
@@ -102,12 +103,12 @@ export class ApiClient {
       });
     } catch (error) {
       if (error instanceof ApiError) throw error;
-      throw new ApiError(error instanceof Error ? error.message : "网络请求失败", { kind: "network" });
+      throw new ApiError(error instanceof Error ? error.message : i18nText("网络请求失败", "Network request failed"), { kind: "network" });
     }
 
     if (response.status === 401) {
       emitUnauthorized();
-      throw new ApiError("登录已过期，请重新登录", { status: 401, code: 10000, kind: "http" });
+      throw new ApiError(i18nText("登录已过期，请重新登录", "Sign-in expired. Please sign in again."), { status: 401, code: 10000, kind: "http" });
     }
     if (response.status < 200 || response.status >= 300) {
       throw new ApiError(`HTTP ${response.status}`, { status: response.status, kind: "http" });

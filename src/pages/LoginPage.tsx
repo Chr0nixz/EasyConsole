@@ -3,12 +3,15 @@ import { FormEvent, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { LoadingState } from "../components/DataState";
+import { LanguageSwitch } from "../components/LanguageSwitch";
 import { Button, Input } from "../components/ui";
 import { getSavedAccountLabel } from "../lib/saved-accounts";
+import { useI18n } from "../lib/i18n";
 import { useAuth } from "../lib/use-auth";
 
 export function LoginPage() {
   const auth = useAuth();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
   const [username, setUsername] = useState("");
@@ -20,7 +23,7 @@ export function LoginPage() {
   const hasSavedAccounts = auth.savedAccounts.length > 0;
   const showSavedAccounts = hasSavedAccounts && !showPasswordForm;
 
-  if (!auth.ready) return <LoadingState label="正在恢复登录状态" />;
+  if (!auth.ready) return <LoadingState label={t("login.restoreSession")} />;
   if (auth.token) return <Navigate to="/dashboard" replace />;
 
   function navigateAfterLogin() {
@@ -36,7 +39,7 @@ export function LoginPage() {
       await auth.login(username, password);
       navigateAfterLogin();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "登录失败");
+      setError(nextError instanceof Error ? nextError.message : t("login.failed"));
     } finally {
       setLoading(false);
     }
@@ -49,7 +52,7 @@ export function LoginPage() {
       await auth.loginSaved(accountId);
       navigateAfterLogin();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "直接登录失败，请重新输入密码");
+      setError(nextError instanceof Error ? nextError.message : t("login.savedLoginFailed"));
       const account = auth.savedAccounts.find((item) => item.id === accountId);
       if (account) setUsername(account.username);
       setShowPasswordForm(true);
@@ -72,12 +75,12 @@ export function LoginPage() {
           </div>
           <div>
             <h1 className="text-lg font-semibold">EasyConsole</h1>
-            <p className="text-sm text-app-muted">任务、终端、文件和镜像的统一工作台</p>
+            <p className="text-sm text-app-muted">{t("login.tagline")}</p>
           </div>
         </div>
         <div className="max-w-xl">
           <p className="text-sm leading-6 text-app-muted">
-            用一个工作台接管任务启动、日志终端、文件传输和镜像查看，登录后即可继续日常操作。
+            {t("login.heroCopy")}
           </p>
         </div>
       </section>
@@ -92,12 +95,12 @@ export function LoginPage() {
                 className="app-interactive rounded-md px-2 py-1 text-xs text-app-muted hover:bg-app-panel hover:text-app-text"
                 to="/login/settings"
               >
-                设置
+                {t("common.settings")}
               </Link>
             </div>
-            <h2 className="text-lg font-semibold">{showSavedAccounts ? "选择账号登录" : "登录控制台"}</h2>
+            <h2 className="text-lg font-semibold">{showSavedAccounts ? t("login.chooseSavedTitle") : t("login.passwordTitle")}</h2>
             <p className="mt-1 text-sm text-app-muted">
-              {showSavedAccounts ? "使用上次登录保存的账号，或切换到其他账号。" : "使用原控制面板账号继续。"}
+              {showSavedAccounts ? t("login.chooseSavedDescription") : t("login.passwordDescription")}
             </p>
           </div>
 
@@ -120,10 +123,10 @@ export function LoginPage() {
                         onClick={() => void onSavedLogin(account.id)}
                         type="button"
                       >
-                        {savedLoginId === account.id ? "登录中" : "直接登录"}
+                        {savedLoginId === account.id ? t("login.signingIn") : t("login.savedSignIn")}
                       </Button>
                       <Button
-                        aria-label={`移除 ${getSavedAccountLabel(account)} 的保存记录`}
+                        aria-label={t("login.removeSavedAccount", { account: getSavedAccountLabel(account) })}
                         className="h-8 w-8 px-0"
                         onClick={() => void onForgetSavedAccount(account.id)}
                         type="button"
@@ -148,14 +151,14 @@ export function LoginPage() {
                 variant="secondary"
               >
                 <UserRoundPlus className="h-4 w-4" />
-                切换账号
+                {t("login.switchAccount")}
               </Button>
-              <p className="text-xs leading-5 text-app-muted">保存记录不包含密码。直接登录会复用本机保存的登录令牌。</p>
+              <p className="text-xs leading-5 text-app-muted">{t("login.savedAccountNote")}</p>
             </div>
           ) : (
             <form className="space-y-4" onSubmit={onSubmit}>
               <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">用户名</span>
+                <span className="mb-1 block text-app-muted">{t("login.username")}</span>
                 <Input
                   autoComplete="username"
                   className="w-full"
@@ -165,7 +168,7 @@ export function LoginPage() {
                 />
               </label>
               <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">密码</span>
+                <span className="mb-1 block text-app-muted">{t("login.password")}</span>
                 <Input
                   autoComplete="current-password"
                   className="w-full"
@@ -178,7 +181,7 @@ export function LoginPage() {
               {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
               <div className="flex flex-col gap-2">
                 <Button className="w-full" disabled={loading}>
-                  {loading ? "正在登录" : "登录"}
+                  {loading ? t("login.signingIn") : t("login.signIn")}
                 </Button>
                 {hasSavedAccounts ? (
                   <Button
@@ -190,12 +193,15 @@ export function LoginPage() {
                     type="button"
                     variant="ghost"
                   >
-                    返回保存账号
+                    {t("login.returnSavedAccounts")}
                   </Button>
                 ) : null}
               </div>
             </form>
           )}
+          <div className="mt-5 flex justify-center">
+            <LanguageSwitch compact />
+          </div>
         </div>
       </section>
     </main>

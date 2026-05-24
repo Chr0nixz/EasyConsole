@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { Button, Dialog } from "./ui";
+import { useI18n } from "../lib/i18n";
 
 export type ConfirmOptions = {
   title: string;
@@ -21,11 +22,13 @@ export function ConfirmDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <Dialog
       closeOnOverlayClick={!pending}
       open={Boolean(options)}
-      title={options?.title ?? "确认操作"}
+      title={options?.title ?? t("confirm.title")}
       width="max-w-md"
       onClose={pending ? () => {} : onCancel}
     >
@@ -33,10 +36,10 @@ export function ConfirmDialog({
         <div className="text-sm leading-6 text-app-muted">{options?.description}</div>
         <div className="flex justify-end gap-2 border-t border-app-border pt-3">
           <Button disabled={pending} type="button" variant="secondary" onClick={onCancel}>
-            取消
+            {t("common.cancel")}
           </Button>
           <Button disabled={pending} type="button" variant={options?.tone === "danger" ? "danger" : "primary"} onClick={onConfirm}>
-            {pending ? "处理中" : (options?.confirmLabel ?? "确认")}
+            {pending ? t("common.processing") : (options?.confirmLabel ?? t("common.confirm"))}
           </Button>
         </div>
       </div>

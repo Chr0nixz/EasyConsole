@@ -109,6 +109,7 @@ tbody tr {
 }
 
 .app-modal-overlay {
+  inset: -1px 0 0;
   background: oklch(0.19 0.025 255 / 0.42);
   animation: app-modal-overlay-in 150ms var(--app-ease-out);
 }

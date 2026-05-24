@@ -6,6 +6,7 @@ import {
   recordTaskTemplateUsage,
   saveTaskTemplates,
   taskMatchesTemplate,
+  taskToEditableTaskTemplate,
   taskTemplateToPayloads,
 } from "./task-templates";
 import type { RuntimeStorage, TaskTemplate } from "./types";
@@ -92,6 +93,37 @@ describe("task templates", () => {
     expect(used.usageCount).toBe(1);
     expect(used.lastUsedAt).toBe("2026-05-23T12:00:00.000Z");
     expect(used.updatedAt).toBe("2026-05-23T12:00:00.000Z");
+  });
+
+  it("builds an editable template from an existing task", () => {
+    const template = taskToEditableTaskTemplate({
+      id: "task-1",
+      name: "train job",
+      image_id: 12,
+      cpu: 8,
+      gpu: 2,
+      memory: 32,
+      storage_path: "/alice/data",
+      mount_path: "/workspace",
+      releace_conditions: 3,
+      work_directory: "/alice/data",
+      script_path: "/alice/data/run.sh",
+    }, "alice");
+
+    expect(template).toMatchObject({
+      name: "train job 模板",
+      taskNamePrefix: "train-job",
+      batchCount: 1,
+      imageId: "12",
+      cpu: 8,
+      gpu: 2,
+      memory: 32,
+      storagePath: "/alice/data",
+      mountPath: "/workspace",
+      releaseCondition: 3,
+      workDirectory: "/alice/data",
+      scriptPath: "/alice/data/run.sh",
+    });
   });
 
   it("keeps task-end release script fields only for task-end templates", () => {

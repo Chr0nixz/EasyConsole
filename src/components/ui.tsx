@@ -11,7 +11,9 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from "react";
+import { createPortal } from "react-dom";
 
+import { useI18n } from "../lib/i18n";
 import { cn } from "../lib/utils";
 
 const FOCUSABLE_SELECTOR = [
@@ -104,6 +106,7 @@ export function Dialog({
   closeOnOverlayClick?: boolean;
 }) {
   const titleId = useId();
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
@@ -159,7 +162,7 @@ export function Dialog({
     onClose();
   };
 
-  return (
+  return createPortal(
     <div
       className="app-modal-overlay fixed inset-0 z-50 flex items-start justify-center px-3 py-4 sm:px-4 sm:py-10"
       role="dialog"
@@ -175,11 +178,12 @@ export function Dialog({
           <h2 id={titleId} className="text-sm font-semibold text-app-text">{title}</h2>
           <button className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text" type="button" onClick={onClose}>
             <X className="h-4 w-4" />
-            <span className="sr-only">关闭</span>
+            <span className="sr-only">{t("common.close")}</span>
           </button>
         </div>
         <div className="max-h-[calc(100vh-8rem)] overflow-auto">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

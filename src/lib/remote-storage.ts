@@ -1,4 +1,5 @@
 import { storageApi } from "./api";
+import { i18nText } from "./i18n";
 import type { StorageEntry, StorageQuery, UploadProgress } from "./types";
 
 export type RemoteStoragePickMode = "directory" | "file";
@@ -39,7 +40,7 @@ function parseStorageSize(value: unknown) {
     b: 1,
     byte: 1,
     bytes: 1,
-    字节: 1,
+    [i18nText("字节", "bytes")]: 1,
     k: 1024,
     kb: 1024,
     kib: 1024,
@@ -179,7 +180,7 @@ export function getStorageParentPath(path: string) {
 export function getStorageBreadcrumbs(path: string) {
   const parts = normalizeStoragePath(path).split("/").filter(Boolean);
   return [
-    { label: "根目录", path: "/" },
+    { label: i18nText("根目录", "Root"), path: "/" },
     ...parts.map((part, index) => ({ label: part, path: `/${parts.slice(0, index + 1).join("/")}` })),
   ];
 }

@@ -6,6 +6,7 @@ import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
 import { saveBlob } from "../lib/download";
 import { formatBytes } from "../lib/format";
+import { useI18n, type Locale } from "../lib/i18n";
 import {
   getStorageBreadcrumbs,
   getStorageEntryPath,
@@ -25,8 +26,8 @@ import { useToast } from "../lib/use-toast";
 type StorageSortField = "name" | "size" | "modified" | "type";
 type StorageSortDirection = "asc" | "desc";
 
-function compareText(left: string, right: string) {
-  return left.localeCompare(right, "zh-CN", { numeric: true, sensitivity: "base" });
+function compareText(left: string, right: string, locale: Locale) {
+  return left.localeCompare(right, locale, { numeric: true, sensitivity: "base" });
 }
 
 function getDirectoryDownloadName(entry: StorageEntry) {
@@ -36,6 +37,7 @@ function getDirectoryDownloadName(entry: StorageEntry) {
 export function StoragePage() {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const { locale, text } = useI18n();
   const runLogger = useRunLogger();
   const { confirm, confirmDialog } = useConfirmAction();
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -71,13 +73,13 @@ export function StoragePage() {
         if (leftDirectory !== rightDirectory) return leftDirectory ? -1 : 1;
 
         let result = 0;
-        if (sortField === "name") result = compareText(left.name, right.name);
-        if (sortField === "type") result = compareText(leftDirectory ? "目录" : "文件", rightDirectory ? "目录" : "文件") || compareText(left.name, right.name);
-        if (sortField === "size") result = entrySizeForSort(left) - entrySizeForSort(right) || compareText(left.name, right.name);
-        if (sortField === "modified") result = getStorageEntryModifiedTime(left) - getStorageEntryModifiedTime(right) || compareText(left.name, right.name);
+        if (sortField === "name") result = compareText(left.name, right.name, locale);
+        if (sortField === "type") result = compareText(leftDirectory ? "directory" : "file", rightDirectory ? "directory" : "file", locale) || compareText(left.name, right.name, locale);
+        if (sortField === "size") result = entrySizeForSort(left) - entrySizeForSort(right) || compareText(left.name, right.name, locale);
+        if (sortField === "modified") result = getStorageEntryModifiedTime(left) - getStorageEntryModifiedTime(right) || compareText(left.name, right.name, locale);
         return sortDirection === "asc" ? result : -result;
       });
-  }, [directorySizes, entries, path, searchKeyword, sortDirection, sortField]);
+  }, [directorySizes, entries, locale, path, searchKeyword, sortDirection, sortField]);
 
   const mkdirMutation = useMutation({
     mutationFn: () => remoteStorage.createDirectory(joinStoragePath(path, mkdirName)),
@@ -88,7 +90,7 @@ export function StoragePage() {
         level: "info",
         action: "storage.mkdir",
         result: "success",
-        title: "远程文件夹已创建",
+        title: text("远程文件夹已创建", "Remote folder created"),
         targetName: joinStoragePath(path, mkdirName),
       });
       queryClient.invalidateQueries({ queryKey: ["storage"] });
@@ -98,27 +100,27 @@ export function StoragePage() {
   const deleteMutation = useMutation({
     mutationFn: (entry: StorageEntry) => remoteStorage.remove(getStorageEntryPath(entry, path), isStorageDirectory(entry, path)),
     onSuccess: (_data, entry) => {
-      toast.success("远程文件已删除", entry.name);
+      toast.success(text("远程文件已删除", "Remote file deleted"), entry.name);
       void runLogger.log({
         source: "storage",
         level: "info",
         action: "storage.delete",
         result: "success",
-        title: "远程文件已删除",
+        title: text("远程文件已删除", "Remote file deleted"),
         targetName: getStorageEntryPath(entry, path),
       });
       queryClient.invalidateQueries({ queryKey: ["storage"] });
     },
     onError: (error, entry) => {
-      toast.error("远程删除失败", `${entry.name}：${error instanceof Error ? error.message : "请稍后重试"}`);
+      toast.error(text("远程删除失败", "Remote delete failed"), `${entry.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
       void runLogger.log({
         source: "storage",
         level: "error",
         action: "storage.delete",
         result: "failure",
-        title: "远程删除失败",
+        title: text("远程删除失败", "Remote delete failed"),
         targetName: getStorageEntryPath(entry, path),
-        error: errorMessage(error, "远程删除失败"),
+        error: errorMessage(error, text("远程删除失败", "Remote delete failed")),
       });
     },
   });
@@ -127,15 +129,15 @@ export function StoragePage() {
     mutationFn: (entry: StorageEntry) => remoteStorage.readTextFile(getStorageEntryPath(entry, path)),
     onSuccess: (content, entry) => setPreview({ title: entry.name, content }),
     onError: (error, entry) => {
-      toast.error("读取远程文件失败", `${entry.name}：${error instanceof Error ? error.message : "请稍后重试"}`);
+      toast.error(text("读取远程文件失败", "Failed to read remote file"), `${entry.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
       void runLogger.log({
         source: "storage",
         level: "error",
         action: "storage.preview",
         result: "failure",
-        title: "读取远程文件失败",
+        title: text("读取远程文件失败", "Failed to read remote file"),
         targetName: getStorageEntryPath(entry, path),
-        error: errorMessage(error, "读取远程文件失败"),
+        error: errorMessage(error, text("读取远程文件失败", "Failed to read remote file")),
       });
     },
   });
@@ -175,20 +177,20 @@ export function StoragePage() {
             current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "done", progress: 100 } : queueItem)),
           );
         } catch (error) {
-          const message = error instanceof Error ? error.message : "上传失败";
+          const message = error instanceof Error ? error.message : text("上传失败", "Upload failed");
           setUploadQueue((current) =>
             current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "failed", error: message } : queueItem)),
           );
         }
       }
       queryClient.invalidateQueries({ queryKey: ["storage"] });
-      toast.success("上传队列已处理", `${items.length} 个文件`);
+      toast.success(text("上传队列已处理", "Upload queue processed"), text(`${items.length} 个文件`, `${items.length} files`));
       void runLogger.log({
         source: "storage",
         level: "info",
         action: "storage.upload",
         result: "success",
-        title: "上传队列已处理",
+        title: text("上传队列已处理", "Upload queue processed"),
         metadata: { count: items.length, failed: items.filter((item) => item.status === "failed").length, path },
       });
     } finally {
@@ -253,7 +255,7 @@ export function StoragePage() {
       .catch((error) => {
         setDirectorySizes((current) => ({
           ...current,
-          [entryPath]: { status: "error", error: error instanceof Error ? error.message : "计算失败" },
+          [entryPath]: { status: "error", error: error instanceof Error ? error.message : text("计算失败", "Calculation failed") },
         }));
       });
   }
@@ -261,9 +263,9 @@ export function StoragePage() {
   function confirmDeleteEntry(entry: StorageEntry) {
     const entryPath = getStorageEntryPath(entry, path);
     confirm({
-      title: "确认删除远程路径",
-      description: `将删除 ${entryPath}，此操作不可从 EasyConsole 撤销。`,
-      confirmLabel: "删除",
+      title: text("确认删除远程路径", "Confirm Remote Path Deletion"),
+      description: text(`将删除 ${entryPath}，此操作不可从 EasyConsole 撤销。`, `This will delete ${entryPath}. EasyConsole cannot undo this operation.`),
+      confirmLabel: text("删除", "Delete"),
       tone: "danger",
       run: () => deleteMutation.mutateAsync(entry),
     });
@@ -276,26 +278,26 @@ export function StoragePage() {
     void download
       .then((blob) => saveBlob(blob, filename))
       .then(() => {
-        toast.success("远程文件已下载", filename);
+        toast.success(text("远程文件已下载", "Remote file downloaded"), filename);
         void runLogger.log({
           source: "storage",
           level: "info",
           action: "storage.download",
           result: "success",
-          title: "远程文件已下载",
+          title: text("远程文件已下载", "Remote file downloaded"),
           targetName: entryPath,
         });
       })
       .catch((error) => {
-        toast.error("远程下载失败", error instanceof Error ? error.message : "请稍后重试");
+        toast.error(text("远程下载失败", "Remote download failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
         void runLogger.log({
           source: "storage",
           level: "error",
           action: "storage.download",
           result: "failure",
-          title: "远程下载失败",
+          title: text("远程下载失败", "Remote download failed"),
           targetName: entryPath,
-          error: errorMessage(error, "远程下载失败"),
+          error: errorMessage(error, text("远程下载失败", "Remote download failed")),
         });
       });
   }
@@ -314,30 +316,30 @@ export function StoragePage() {
         <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
           <div className="relative w-full sm:w-auto">
             <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" />
-            <Input className="w-full pl-9 sm:w-52" placeholder="搜索文件或文件夹" value={searchKeyword} onChange={(event) => setSearchKeyword(event.target.value)} />
+            <Input className="w-full pl-9 sm:w-52" placeholder={text("搜索文件或文件夹", "Search files or folders")} value={searchKeyword} onChange={(event) => setSearchKeyword(event.target.value)} />
           </div>
           <Select className="w-32" value={sortField} onChange={(event) => setSortField(event.target.value as StorageSortField)}>
-            <option value="name">按名称</option>
-            <option value="size">按大小</option>
-            <option value="modified">按时间</option>
-            <option value="type">按类型</option>
+            <option value="name">{text("按名称", "By name")}</option>
+            <option value="size">{text("按大小", "By size")}</option>
+            <option value="modified">{text("按时间", "By time")}</option>
+            <option value="type">{text("按类型", "By type")}</option>
           </Select>
           <Select className="w-28" value={sortDirection} onChange={(event) => setSortDirection(event.target.value as StorageSortDirection)}>
-            <option value="asc">升序</option>
-            <option value="desc">降序</option>
+            <option value="asc">{text("升序", "Ascending")}</option>
+            <option value="desc">{text("降序", "Descending")}</option>
           </Select>
           <Button variant="secondary" onClick={() => setMkdirOpen(true)}>
             <FolderPlus className="h-4 w-4" />
-            新建
+            {text("新建", "New")}
           </Button>
           <label className="app-interactive inline-flex h-9 cursor-pointer items-center gap-2 rounded-md bg-app-accent px-3 text-sm font-medium text-white hover:brightness-95 [@media(pointer:coarse)]:min-h-11">
             <Upload className="h-4 w-4" />
-            上传到远程
+            {text("上传到远程", "Upload to remote")}
             <input className="sr-only" type="file" onChange={(event) => void upload(event)} />
           </label>
           <Button type="button" variant="secondary" onClick={openFolderUploadDialog}>
             <FolderOpen className="h-4 w-4" />
-            上传文件夹
+            {text("上传文件夹", "Upload folder")}
           </Button>
           <input
             ref={folderInputRef}
@@ -348,7 +350,7 @@ export function StoragePage() {
           />
           <Button variant="secondary" onClick={() => query.refetch()}>
             <RefreshCw className="h-4 w-4" />
-            刷新
+            {text("刷新", "Refresh")}
           </Button>
         </div>
       </div>
@@ -357,15 +359,18 @@ export function StoragePage() {
         <Panel className="space-y-3 p-3">
           <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
             <div className="text-app-muted">
-              上传队列 {uploadSummary.completed}/{uploadSummary.total}，失败 {uploadSummary.failed}，跳过 {uploadSummary.skipped}
-              {uploadSummary.cancelled ? `，取消 ${uploadSummary.cancelled}` : ""}
+              {text(
+                `上传队列 ${uploadSummary.completed}/${uploadSummary.total}，失败 ${uploadSummary.failed}，跳过 ${uploadSummary.skipped}`,
+                `Upload queue ${uploadSummary.completed}/${uploadSummary.total}, failed ${uploadSummary.failed}, skipped ${uploadSummary.skipped}`,
+              )}
+              {uploadSummary.cancelled ? text(`，取消 ${uploadSummary.cancelled}`, `, cancelled ${uploadSummary.cancelled}`) : ""}
             </div>
             <div className="flex items-center gap-2">
               <Button disabled={!uploadSummary.active} type="button" variant="secondary" onClick={cancelPendingUploads}>
-                取消后续
+                {text("取消后续", "Cancel remaining")}
               </Button>
               <Button disabled={uploadSummary.failed === 0 || uploadSummary.active} type="button" variant="secondary" onClick={retryFailedUploads}>
-                重试失败
+                {text("重试失败", "Retry failed")}
               </Button>
             </div>
           </div>
@@ -392,19 +397,19 @@ export function StoragePage() {
         ) : query.isError ? (
           <ErrorState error={query.error} />
         ) : visibleEntries.length === 0 && searchKeyword.trim() ? (
-          <EmptyState title="未找到匹配文件" action={<Button variant="secondary" onClick={() => setSearchKeyword("")}>清空搜索</Button>} />
+          <EmptyState title={text("未找到匹配文件", "No matching files")} action={<Button variant="secondary" onClick={() => setSearchKeyword("")}>{text("清空搜索", "Clear search")}</Button>} />
         ) : visibleEntries.length === 0 ? (
-          <EmptyState title="当前目录为空" />
+          <EmptyState title={text("当前目录为空", "Current directory is empty")} />
         ) : (
           <div className="overflow-auto">
             <table className="w-full min-w-[760px] border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">名称</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">类型</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">大小</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">更新时间</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">远程操作</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("名称", "Name")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("类型", "Type")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("大小", "Size")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("更新时间", "Updated")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("远程操作", "Remote actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -416,9 +421,9 @@ export function StoragePage() {
                 const entrySize = directory ? directorySize?.size ?? directSize : directSize;
                 const entrySizeText =
                   directory && directorySize?.status === "loading"
-                    ? "计算中"
+                    ? text("计算中", "Calculating")
                     : directory && directorySize?.status === "error"
-                      ? "计算失败"
+                      ? text("计算失败", "Calculation failed")
                       : entrySize === null
                         ? "-"
                         : formatBytes(entrySize);
@@ -434,7 +439,7 @@ export function StoragePage() {
                         {entry.name}
                       </button>
                     </td>
-                    <td className="px-3 py-2 text-app-muted">{directory ? "目录" : "文件"}</td>
+                    <td className="px-3 py-2 text-app-muted">{directory ? text("目录", "Directory") : text("文件", "File")}</td>
                     <td className="px-3 py-2 text-app-muted">
                       <div className="flex items-center gap-2">
                         <span>{entrySizeText}</span>
@@ -446,7 +451,7 @@ export function StoragePage() {
                             variant="ghost"
                             onClick={() => calculateDirectorySize(entryPath)}
                           >
-                            {directorySize?.status === "error" ? "重试" : "计算"}
+                            {directorySize?.status === "error" ? text("重试", "Retry") : text("计算", "Calculate")}
                           </Button>
                         ) : null}
                       </div>
@@ -456,18 +461,18 @@ export function StoragePage() {
                       <div className="flex flex-wrap gap-1">
                         {directory ? (
                           <>
-                            <Button className="h-8 px-2" variant="ghost" title="打开远程目录" onClick={() => setPath(entryPath)}>
+                            <Button className="h-8 px-2" variant="ghost" title={text("打开远程目录", "Open remote directory")} onClick={() => setPath(entryPath)}>
                               <FolderOpen className="h-4 w-4" />
-                              打开
+                              {text("打开", "Open")}
                             </Button>
                             <Button
                               className="h-8 px-2"
                               variant="ghost"
-                              title="整体下载远程文件夹"
+                              title={text("整体下载远程文件夹", "Download remote folder")}
                               onClick={() => downloadEntry(entry, entryPath)}
                             >
                               <Download className="h-4 w-4" />
-                              下载
+                              {text("下载", "Download")}
                             </Button>
                           </>
                         ) : (
@@ -475,21 +480,21 @@ export function StoragePage() {
                             <Button
                               className="h-8 px-2"
                               variant="ghost"
-                              title="下载远程文件到本地"
+                              title={text("下载远程文件到本地", "Download remote file locally")}
                               onClick={() => downloadEntry(entry, entryPath)}
                             >
                               <Download className="h-4 w-4" />
-                              下载
+                              {text("下载", "Download")}
                             </Button>
-                            <Button className="h-8 px-2" variant="ghost" title="读取远程文件内容" onClick={() => previewMutation.mutate(entry)}>
+                            <Button className="h-8 px-2" variant="ghost" title={text("读取远程文件内容", "Read remote file content")} onClick={() => previewMutation.mutate(entry)}>
                               <Eye className="h-4 w-4" />
-                              读取
+                              {text("读取", "Read")}
                             </Button>
                           </>
                         )}
-                        <Button className="h-8 px-2" variant="ghost" title="删除远程文件或目录" onClick={() => confirmDeleteEntry(entry)}>
+                        <Button className="h-8 px-2" variant="ghost" title={text("删除远程文件或目录", "Delete remote file or directory")} onClick={() => confirmDeleteEntry(entry)}>
                           <Trash2 className="h-4 w-4 text-app-danger" />
-                          删除
+                          {text("删除", "Delete")}
                         </Button>
                       </div>
                     </td>
@@ -502,19 +507,19 @@ export function StoragePage() {
         )}
       </Panel>
 
-      <Dialog open={Boolean(preview)} title={`远程文件 ${preview?.title ?? ""}`} onClose={() => setPreview(null)} width="max-w-5xl">
+      <Dialog open={Boolean(preview)} title={text(`远程文件 ${preview?.title ?? ""}`, `Remote File ${preview?.title ?? ""}`)} onClose={() => setPreview(null)} width="max-w-5xl">
         <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
-          {preview?.content || "文件为空"}
+          {preview?.content || text("文件为空", "File is empty")}
         </pre>
       </Dialog>
-      <Dialog open={mkdirOpen} title="新建文件夹" onClose={() => setMkdirOpen(false)} width="max-w-md">
+      <Dialog open={mkdirOpen} title={text("新建文件夹", "New Folder")} onClose={() => setMkdirOpen(false)} width="max-w-md">
         <div className="space-y-4 p-4">
           <label className="block text-sm">
-            <span className="mb-1 block text-app-muted">文件夹名称</span>
+            <span className="mb-1 block text-app-muted">{text("文件夹名称", "Folder name")}</span>
             <Input
               autoFocus
               className="w-full"
-              placeholder="输入新文件夹名称"
+              placeholder={text("输入新文件夹名称", "Enter a new folder name")}
               value={mkdirName}
               onChange={(event) => setMkdirName(event.target.value)}
               onKeyDown={(event) => {
@@ -525,10 +530,10 @@ export function StoragePage() {
           {mkdirMutation.isError ? <ErrorState error={mkdirMutation.error} /> : null}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setMkdirOpen(false)}>
-              取消
+              {text("取消", "Cancel")}
             </Button>
             <Button disabled={!mkdirName.trim() || mkdirMutation.isPending} type="button" onClick={createDirectory}>
-              创建
+              {text("创建", "Create")}
             </Button>
           </div>
         </div>

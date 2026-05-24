@@ -1,4 +1,5 @@
 import type { TaskStatus } from "./types";
+import type { Locale } from "./i18n";
 
 function pad2(value: number) {
   return String(value).padStart(2, "0");
@@ -34,24 +35,44 @@ export const taskStatusText: Record<number, string> = {
   8: "异常",
 };
 
+export const taskStatusTextEn: Record<number, string> = {
+  0: "Initializing",
+  1: "Queued",
+  2: "Running",
+  3: "Paused",
+  4: "Released",
+  5: "Exhausted",
+  6: "Succeeded",
+  7: "Failed",
+  8: "Exception",
+};
+
 export const releaseConditionText: Record<number, string> = {
   1: "手动释放",
   2: "定时释放",
   3: "任务结束释放",
 };
 
+export const releaseConditionTextEn: Record<number, string> = {
+  1: "Manual release",
+  2: "Timed release",
+  3: "Release after task ends",
+};
+
 export function getTaskName(task: { name?: string; task_name?: string; id?: string | number }) {
   return task.name || task.task_name || `任务 ${task.id ?? ""}`.trim();
 }
 
-export function getStatusText(status?: TaskStatus) {
-  if (status === undefined || status === null) return "未知";
-  return taskStatusText[Number(status)] ?? `状态 ${status}`;
+export function getStatusText(status?: TaskStatus, locale: Locale = "zh-CN") {
+  if (status === undefined || status === null) return locale === "en-US" ? "Unknown" : "未知";
+  const map = locale === "en-US" ? taskStatusTextEn : taskStatusText;
+  return map[Number(status)] ?? (locale === "en-US" ? `Status ${status}` : `状态 ${status}`);
 }
 
-export function getReleaseConditionText(condition?: number) {
+export function getReleaseConditionText(condition?: number, locale: Locale = "zh-CN") {
   if (condition === undefined || condition === null) return "-";
-  return releaseConditionText[Number(condition)] ?? `释放条件 ${condition}`;
+  const map = locale === "en-US" ? releaseConditionTextEn : releaseConditionText;
+  return map[Number(condition)] ?? (locale === "en-US" ? `Release condition ${condition}` : `释放条件 ${condition}`);
 }
 
 export function formatBytes(value?: number) {
@@ -65,37 +86,42 @@ export function asJson(value: unknown) {
   return JSON.stringify(value, null, 2);
 }
 
-export function formatNumber(value: unknown, digits = 0) {
+export function formatNumber(value: unknown, digits = 0, locale: Locale = "zh-CN") {
   const number = Number(value);
   if (!Number.isFinite(number)) return "-";
-  return new Intl.NumberFormat("zh-CN", {
+  return new Intl.NumberFormat(locale, {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   }).format(number);
 }
 
-export function formatCost(value: unknown) {
+export function formatCost(value: unknown, locale: Locale = "zh-CN") {
   const number = Number(value);
   if (!Number.isFinite(number)) return "-";
-  return number.toLocaleString("zh-CN", {
+  return number.toLocaleString(locale, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
 }
 
-export function formatHours(value: unknown) {
+export function formatHours(value: unknown, locale: Locale = "zh-CN") {
   const number = Number(value);
   if (!Number.isFinite(number)) return "-";
-  if (number < 1) return `${Math.round(number * 60)} 分钟`;
-  return `${number.toFixed(1)} 小时`;
+  if (number < 1) return locale === "en-US" ? `${Math.round(number * 60)} min` : `${Math.round(number * 60)} 分钟`;
+  return locale === "en-US" ? `${number.toFixed(1)} hr` : `${number.toFixed(1)} 小时`;
 }
 
-export function formatSecondsDuration(value: unknown) {
+export function formatSecondsDuration(value: unknown, locale: Locale = "zh-CN") {
   const seconds = Number(value);
-  if (!Number.isFinite(seconds) || seconds <= 0) return "0 分钟";
+  if (!Number.isFinite(seconds) || seconds <= 0) return locale === "en-US" ? "0 min" : "0 分钟";
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
+  if (locale === "en-US") {
+    if (days > 0) return `${days} d ${hours} hr`;
+    if (hours > 0) return `${hours} hr ${minutes} min`;
+    return `${minutes} min`;
+  }
   if (days > 0) return `${days} 天 ${hours} 小时`;
   if (hours > 0) return `${hours} 小时 ${minutes} 分钟`;
   return `${minutes} 分钟`;

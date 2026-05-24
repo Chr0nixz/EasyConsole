@@ -1,7 +1,9 @@
 import { getReleaseConditionText } from "../lib/format";
+import { useI18n } from "../lib/i18n";
 import { cn } from "../lib/utils";
 
 export function ReleaseConditionBadge({ condition }: { condition?: number }) {
+  const { locale } = useI18n();
   const value = Number(condition);
   const tone = value === 1 ? "manual" : value === 2 ? "timed" : value === 3 ? "finished" : "neutral";
 
@@ -15,7 +17,7 @@ export function ReleaseConditionBadge({ condition }: { condition?: number }) {
         tone === "neutral" && "bg-app-neutralSoft text-app-muted ring-1 ring-app-neutralRing",
       )}
     >
-      {getReleaseConditionText(condition)}
+      {getReleaseConditionText(condition, locale)}
     </span>
   );
 }

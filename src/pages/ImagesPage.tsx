@@ -6,6 +6,7 @@ import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
 import { Button, Input, Panel, Select } from "../components/ui";
 import { imageApi } from "../lib/api";
 import { saveBlob } from "../lib/download";
+import { useI18n } from "../lib/i18n";
 import type { ImageItem } from "../lib/types";
 import { cn } from "../lib/utils";
 import { useConfirmAction } from "../lib/use-confirm-action";
@@ -46,6 +47,7 @@ function getImageKeyword(image: ImageItem) {
 
 export function ImagesPage() {
   const toast = useToast();
+  const { text } = useI18n();
   const runLogger = useRunLogger();
   const { confirm, confirmDialog } = useConfirmAction();
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
@@ -77,19 +79,19 @@ export function ImagesPage() {
 
   const setDefaultImage = (image: ImageRow) => {
     confirm({
-      title: "确认设置默认镜像",
-      description: `将 ${imageName(image)} 设置为默认镜像。新建任务选择镜像时会优先使用它。`,
-      confirmLabel: "设为默认",
+      title: text("确认设置默认镜像", "Confirm Default Image"),
+      description: text(`将 ${imageName(image)} 设置为默认镜像。新建任务选择镜像时会优先使用它。`, `Set ${imageName(image)} as the default image. It will be preferred when creating tasks.`),
+      confirmLabel: text("设为默认", "Set default"),
       run: async () => {
         try {
           await imageApi.setDefault(image.id);
-          toast.success("默认镜像已更新", imageName(image));
+          toast.success(text("默认镜像已更新", "Default image updated"), imageName(image));
           void runLogger.log({
             source: "image",
             level: "info",
             action: "image.setDefault",
             result: "success",
-            title: "默认镜像已更新",
+            title: text("默认镜像已更新", "Default image updated"),
             targetName: imageName(image),
             targetId: image.id,
           });
@@ -100,10 +102,10 @@ export function ImagesPage() {
             level: "error",
             action: "image.setDefault",
             result: "failure",
-            title: "默认镜像更新失败",
+            title: text("默认镜像更新失败", "Failed to update default image"),
             targetName: imageName(image),
             targetId: image.id,
-            error: errorMessage(error, "默认镜像更新失败"),
+            error: errorMessage(error, text("默认镜像更新失败", "Failed to update default image")),
           });
           throw error;
         }
@@ -117,28 +119,28 @@ export function ImagesPage() {
       .download(image.id)
       .then((blob) => saveBlob(blob, filename))
       .then(() => {
-        toast.success("镜像已下载", filename);
+        toast.success(text("镜像已下载", "Image downloaded"), filename);
         void runLogger.log({
           source: "image",
           level: "info",
           action: "image.download",
           result: "success",
-          title: "镜像已下载",
+          title: text("镜像已下载", "Image downloaded"),
           targetName: imageName(image),
           targetId: image.id,
         });
       })
       .catch((error) => {
-        toast.error("镜像下载失败", error instanceof Error ? error.message : "请稍后重试");
+        toast.error(text("镜像下载失败", "Image download failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
         void runLogger.log({
           source: "image",
           level: "error",
           action: "image.download",
           result: "failure",
-          title: "镜像下载失败",
+          title: text("镜像下载失败", "Image download failed"),
           targetName: imageName(image),
           targetId: image.id,
-          error: errorMessage(error, "镜像下载失败"),
+          error: errorMessage(error, text("镜像下载失败", "Image download failed")),
         });
       });
   };
@@ -155,15 +157,15 @@ export function ImagesPage() {
         <div className="border-b border-app-border bg-app-surface px-4 py-3">
           <div className="grid gap-3 sm:grid-cols-3">
             <div>
-              <div className="text-xs text-app-muted">自定义镜像</div>
+              <div className="text-xs text-app-muted">{text("自定义镜像", "Custom images")}</div>
               <div className="mt-1 text-xl font-semibold text-app-text">{customCount}</div>
             </div>
             <div>
-              <div className="text-xs text-app-muted">系统镜像</div>
+              <div className="text-xs text-app-muted">{text("系统镜像", "System images")}</div>
               <div className="mt-1 text-xl font-semibold text-app-text">{systemCount}</div>
             </div>
             <div>
-              <div className="text-xs text-app-muted">默认标记</div>
+              <div className="text-xs text-app-muted">{text("默认标记", "Default markers")}</div>
               <div className="mt-1 text-xl font-semibold text-app-text">{defaultCount}</div>
             </div>
           </div>
@@ -174,46 +176,46 @@ export function ImagesPage() {
             <label className="relative block">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
               <Input
-                aria-label="搜索镜像名称、标签或说明"
+                aria-label={text("搜索镜像名称、标签或说明", "Search image name, tag, or description")}
                 className="w-full pl-9"
-                placeholder="搜索名称、标签或说明"
+                placeholder={text("搜索名称、标签或说明", "Search name, tag, or description")}
                 value={keyword}
                 onChange={(event) => setKeyword(event.target.value)}
               />
             </label>
-            <Select aria-label="镜像来源" value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as SourceFilter)}>
-              <option value="all">全部来源</option>
-              <option value="custom">自定义镜像</option>
-              <option value="system">系统镜像</option>
+            <Select aria-label={text("镜像来源", "Image source")} value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as SourceFilter)}>
+              <option value="all">{text("全部来源", "All sources")}</option>
+              <option value="custom">{text("自定义镜像", "Custom images")}</option>
+              <option value="system">{text("系统镜像", "System images")}</option>
             </Select>
           </div>
           <Button className="w-full sm:w-auto" variant="secondary" onClick={refetchImages} disabled={isFetching}>
             <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
-            刷新
+            {text("刷新", "Refresh")}
           </Button>
         </div>
 
         {isLoading ? (
           <TableSkeleton columns={6} />
         ) : custom.isError ? (
-          <ErrorState error={custom.error} action={<Button variant="secondary" onClick={() => void custom.refetch()}>重试自定义镜像</Button>} />
+          <ErrorState error={custom.error} action={<Button variant="secondary" onClick={() => void custom.refetch()}>{text("重试自定义镜像", "Retry custom images")}</Button>} />
         ) : system.isError ? (
-          <ErrorState error={system.error} action={<Button variant="secondary" onClick={() => void system.refetch()}>重试系统镜像</Button>} />
+          <ErrorState error={system.error} action={<Button variant="secondary" onClick={() => void system.refetch()}>{text("重试系统镜像", "Retry system images")}</Button>} />
         ) : images.length === 0 ? (
-          <EmptyState title="暂无镜像" action={<Button variant="secondary" onClick={refetchImages}>重新加载</Button>} />
+          <EmptyState title={text("暂无镜像", "No images")} action={<Button variant="secondary" onClick={refetchImages}>{text("重新加载", "Reload")}</Button>} />
         ) : filteredImages.length === 0 ? (
-          <EmptyState title="没有匹配的镜像" action={<Button variant="secondary" onClick={() => setKeyword("")}>清空搜索</Button>} />
+          <EmptyState title={text("没有匹配的镜像", "No matching images")} action={<Button variant="secondary" onClick={() => setKeyword("")}>{text("清空搜索", "Clear search")}</Button>} />
         ) : (
           <div className="overflow-auto">
             <table className="w-full min-w-[980px] border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">名称</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">来源</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">标签</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">说明</th>
-                  <th className="border-b border-app-border px-3 py-2 font-medium">更新时间</th>
-                  <th className="sticky right-0 border-b border-app-border bg-app-panel px-3 py-2 text-right font-medium">操作</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("名称", "Name")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("来源", "Source")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("标签", "Tag")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("说明", "Description")}</th>
+                  <th className="border-b border-app-border px-3 py-2 font-medium">{text("更新时间", "Updated")}</th>
+                  <th className="sticky right-0 border-b border-app-border bg-app-panel px-3 py-2 text-right font-medium">{text("操作", "Actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -225,7 +227,7 @@ export function ImagesPage() {
                         {isDefaultImage(image) ? (
                           <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-app-success/30 bg-app-success/10 px-2 py-0.5 text-xs font-medium text-app-success">
                             <Star className="h-3 w-3" />
-                            默认
+                            {text("默认", "Default")}
                           </span>
                         ) : null}
                       </div>
@@ -233,7 +235,7 @@ export function ImagesPage() {
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 align-middle">
                       <span className="inline-flex rounded-md border border-app-border bg-app-surface px-2 py-0.5 text-xs text-app-muted">
-                        {image.source === "system" ? "系统镜像" : "自定义镜像"}
+                        {image.source === "system" ? text("系统镜像", "System image") : text("自定义镜像", "Custom image")}
                       </span>
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{imageVersion(image)}</td>
@@ -245,10 +247,10 @@ export function ImagesPage() {
                     <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{getImageUpdatedAt(image)}</td>
                     <td className="sticky right-0 bg-app-surface px-3 py-2 align-middle shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.35)]">
                       <div className="flex justify-end gap-1">
-                        <Button aria-label={`将 ${imageName(image)} 设为默认镜像`} variant="ghost" title="设为默认" onClick={() => setDefaultImage(image)}>
+                        <Button aria-label={text(`将 ${imageName(image)} 设为默认镜像`, `Set ${imageName(image)} as default image`)} variant="ghost" title={text("设为默认", "Set default")} onClick={() => setDefaultImage(image)}>
                           <Star className="h-4 w-4" />
                         </Button>
-                        <Button aria-label={`下载镜像 ${imageName(image)}`} variant="ghost" title="下载" onClick={() => downloadImage(image)}>
+                        <Button aria-label={text(`下载镜像 ${imageName(image)}`, `Download image ${imageName(image)}`)} variant="ghost" title={text("下载", "Download")} onClick={() => downloadImage(image)}>
                           <Download className="h-4 w-4" />
                         </Button>
                       </div>

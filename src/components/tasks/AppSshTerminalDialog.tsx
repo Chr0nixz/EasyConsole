@@ -4,8 +4,10 @@ import type { FitAddon as FitAddonInstance } from "@xterm/addon-fit";
 import type { IDisposable, Terminal as XTermInstance } from "@xterm/xterm";
 import { Maximize2, Minimize2, Terminal, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 
 import { browserRuntime } from "../../lib/runtime";
+import { useI18n } from "../../lib/i18n";
 import type { SshConnectionRequest } from "../../lib/types";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui";
@@ -25,6 +27,7 @@ const FOCUSABLE_SELECTOR = [
 ].join(",");
 
 export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogProps) {
+  const { text } = useI18n();
   const titleId = useId();
   const statusId = useId();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -32,7 +35,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
   const isMinimizedRef = useRef(false);
   const sessionIdRef = useRef<string | null>(null);
   const [isMinimized, setIsMinimized] = useState(false);
-  const [status, setStatus] = useState("准备连接");
+  const [status, setStatus] = useState(() => text("准备连接", "Ready to connect"));
 
   useEffect(() => {
     isMinimizedRef.current = isMinimized;
@@ -40,8 +43,8 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
 
   useEffect(() => {
     setIsMinimized(false);
-    setStatus("准备连接");
-  }, [request]);
+    setStatus(text("准备连接", "Ready to connect"));
+  }, [request, text]);
 
   useEffect(() => {
     if (!request || !containerRef.current) return;
@@ -83,7 +86,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       terminal.open(containerRef.current);
       fitAddon.fit();
       terminal.focus();
-      terminal.writeln("正在建立 SSH 连接...");
+      terminal.writeln(text("正在建立 SSH 连接...", "Establishing SSH connection..."));
 
       dataDisposable = terminal.onData((data) => {
         const sessionId = sessionIdRef.current;
@@ -110,17 +113,17 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
             return;
           }
           if (event.kind === "error") {
-            const message = event.message ?? "SSH 连接失败";
+            const message = event.message ?? text("SSH 连接失败", "SSH connection failed");
             setStatus(message);
             activeTerminal.writeln(`\r\n${message}`);
             return;
           }
           if (event.kind === "closed") {
-            setStatus(event.message ?? "SSH 会话已关闭");
+            setStatus(event.message ?? text("SSH 会话已关闭", "SSH session closed"));
           }
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "SSH 连接失败";
+        const message = error instanceof Error ? error.message : text("SSH 连接失败", "SSH connection failed");
         setStatus(message);
         terminal.writeln(`\r\n${message}`);
       }
@@ -136,7 +139,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       if (sessionId) void browserRuntime.closeSshSession(sessionId).catch(() => {});
       terminal?.dispose();
     };
-  }, [request]);
+  }, [request, text]);
 
   useEffect(() => {
     if (!request || isMinimized) return;
@@ -169,7 +172,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
     }
   };
 
-  return (
+  return createPortal(
     <>
       <div
         ref={dialogRef}
@@ -187,26 +190,26 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
           <div className="flex h-12 items-center justify-between border-b border-app-border bg-app-surface px-4">
             <div className="flex min-w-0 items-center gap-2 text-app-text">
               <Terminal className="h-4 w-4 shrink-0 text-app-accent" />
-              <h2 id={titleId} className="truncate text-sm font-semibold">应用内 SSH {request.taskName ?? ""}</h2>
+              <h2 id={titleId} className="truncate text-sm font-semibold">{text("应用内 SSH", "In-app SSH")} {request.taskName ?? ""}</h2>
             </div>
             <div className="flex items-center gap-1">
               <button
                 className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text"
                 type="button"
-                title="最小化"
+                title={text("最小化", "Minimize")}
                 onClick={() => setIsMinimized(true)}
               >
                 <Minimize2 className="h-4 w-4" />
-                <span className="sr-only">最小化</span>
+                <span className="sr-only">{text("最小化", "Minimize")}</span>
               </button>
               <button
                 className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text"
                 type="button"
-                title="关闭"
+                title={text("关闭", "Close")}
                 onClick={onClose}
               >
                 <X className="h-4 w-4" />
-                <span className="sr-only">关闭</span>
+                <span className="sr-only">{text("关闭", "Close")}</span>
               </button>
             </div>
           </div>
@@ -218,7 +221,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
             <div ref={containerRef} className="min-h-0 flex-1" />
             <div className="flex h-11 items-center justify-end border-t border-app-terminalBorder bg-app-terminalPanel px-3">
               <Button type="button" variant="secondary" onClick={onClose}>
-                关闭
+                {text("关闭", "Close")}
               </Button>
             </div>
           </div>
@@ -228,18 +231,19 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       {isMinimized ? (
         <button
           className="fixed bottom-4 right-4 z-50 flex max-w-[min(28rem,calc(100vw-2rem))] items-center gap-3 rounded-lg border border-app-terminalBorder bg-app-terminalBg px-4 py-3 text-left text-app-terminalText shadow-popover hover:bg-app-terminalPanel"
-          aria-label={`恢复应用内 SSH ${request.taskName ?? ""}`}
+          aria-label={text(`恢复应用内 SSH ${request.taskName ?? ""}`, `Restore in-app SSH ${request.taskName ?? ""}`)}
           type="button"
           onClick={() => setIsMinimized(false)}
         >
           <Terminal className="h-4 w-4 shrink-0 text-app-terminalAccent" />
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold">{request.taskName ?? "应用内 SSH"}</span>
+            <span className="block truncate text-sm font-semibold">{request.taskName ?? text("应用内 SSH", "In-app SSH")}</span>
             <span className="mt-1 block truncate text-xs text-app-terminalMuted">{status}</span>
           </span>
           <Maximize2 className="h-4 w-4 shrink-0 text-app-terminalMuted" />
         </button>
       ) : null}
-    </>
+    </>,
+    document.body,
   );
 }

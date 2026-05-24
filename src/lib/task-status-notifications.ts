@@ -1,8 +1,11 @@
 import { getStatusText, getTaskName } from "./format";
+import { i18nText } from "./i18n";
+import type { ImportantNotificationEvent } from "./app-settings";
 import type { Task, TaskStatus } from "./types";
 
 export type ImportantTaskStatusNotification = {
   kind: "success" | "failure";
+  event: ImportantNotificationEvent;
   taskId: string;
   title: string;
   body: string;
@@ -30,18 +33,21 @@ export function getImportantTaskStatusNotification(
   if (current === SUCCESS_STATUS) {
     return {
       kind: "success",
+      event: "task.success",
       taskId,
-      title: "实例运行成功",
+      title: i18nText("实例运行成功", "Instance succeeded"),
       body: `${getTaskName(task)}：${getStatusText(task.status)}`,
       tag: `easy-console-task-${taskId}-${current}`,
     };
   }
 
   if (FAILURE_STATUSES.has(current)) {
+    const abnormal = current === 8;
     return {
       kind: "failure",
+      event: abnormal ? "task.abnormal" : "task.failure",
       taskId,
-      title: "实例运行失败",
+      title: abnormal ? i18nText("实例运行异常", "Instance abnormal") : i18nText("实例运行失败", "Instance failed"),
       body: `${getTaskName(task)}：${getStatusText(task.status)}`,
       tag: `easy-console-task-${taskId}-${current}`,
     };

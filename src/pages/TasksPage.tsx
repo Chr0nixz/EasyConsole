@@ -17,6 +17,7 @@ import {
   Plus,
   Power,
   RefreshCw,
+  Save,
   Search,
   Settings2,
   Terminal,
@@ -36,10 +37,12 @@ import { Button, Dialog, Input, Panel, Select } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { saveBlob } from "../lib/download";
-import { asJson, formatSecondsDuration, getTaskName, taskStatusText } from "../lib/format";
+import { asJson, formatSecondsDuration, getTaskName, taskStatusText, taskStatusTextEn } from "../lib/format";
+import { i18nText, useI18n } from "../lib/i18n";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
 import { browserRuntime } from "../lib/runtime";
 import { filterAndSortTasks } from "../lib/task-search";
+import { createTaskTemplate, loadTaskTemplates, saveTaskTemplates, taskToEditableTaskTemplate } from "../lib/task-templates";
 import {
   parseTaskListQuery,
   serializeTaskListQuery,
@@ -48,9 +51,9 @@ import {
   toTaskApiQuery,
   type TaskListQueryState,
 } from "../lib/task-list-query";
-import { getImportantTaskStatusNotification, getTaskNotificationId } from "../lib/task-status-notifications";
-import type { Task, TaskStatus } from "../lib/types";
+import type { Task } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
+import { useAuth } from "../lib/use-auth";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
@@ -61,9 +64,9 @@ const AUTO_REFRESH_KEY = "easy-console.tasks.autoRefresh";
 const AUTO_REFRESH_INTERVAL_KEY = "easy-console.tasks.autoRefreshInterval";
 const DEFAULT_AUTO_REFRESH_INTERVAL = 10_000;
 const autoRefreshOptions = [
-  { label: "5 秒", value: 5_000 },
-  { label: "10 秒", value: 10_000 },
-  { label: "30 秒", value: 30_000 },
+  { zh: "5 秒", en: "5 sec", value: 5_000 },
+  { zh: "10 秒", en: "10 sec", value: 10_000 },
+  { zh: "30 秒", en: "30 sec", value: 30_000 },
 ];
 const ALWAYS_VISIBLE_COLUMNS = new Set(["select", "actions"]);
 const defaultColumnVisibility: VisibilityState = {
@@ -75,19 +78,19 @@ const defaultColumnVisibility: VisibilityState = {
   release: false,
   deleted: false,
 };
-const columnLabels: Record<string, string> = {
-  name: "实例名称",
-  status: "状态",
-  resource: "资源",
-  node: "节点",
-  endpoint: "入口",
-  owner: "用户",
-  group: "用户组",
-  duration: "时长",
-  created: "创建时间",
-  release: "释放时间",
-  releaseCondition: "释放条件",
-  deleted: "删除状态",
+const columnLabels: Record<string, { zh: string; en: string }> = {
+  name: { zh: "实例名称", en: "Instance name" },
+  status: { zh: "状态", en: "Status" },
+  resource: { zh: "资源", en: "Resources" },
+  node: { zh: "节点", en: "Node" },
+  endpoint: { zh: "入口", en: "Endpoint" },
+  owner: { zh: "用户", en: "User" },
+  group: { zh: "用户组", en: "User group" },
+  duration: { zh: "时长", en: "Duration" },
+  created: { zh: "创建时间", en: "Created" },
+  release: { zh: "释放时间", en: "Release time" },
+  releaseCondition: { zh: "释放条件", en: "Release condition" },
+  deleted: { zh: "删除状态", en: "Delete status" },
 };
 const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_2rem_2rem_5rem_2rem] items-center gap-1";
 const commitPodFields = ["description", "pod_name", "podName", "pod", "k8s_pod_name", "k8sPodName"];
@@ -126,9 +129,9 @@ function getTaskCommitUser(task: Task) {
 
 function buildTaskCommitPayload(task: Task) {
   const podName = getTaskCommitPodName(task);
-  if (!podName) throw new Error("后端未返回 pod 标识，无法 Commit。请刷新实例列表或查看原始 JSON。");
+  if (!podName) throw new Error(i18nText("后端未返回 pod 标识，无法 Commit。请刷新实例列表或查看原始 JSON。", "The backend did not return a pod identifier, so Commit cannot continue. Refresh the instance list or inspect the raw JSON."));
   const user = getTaskCommitUser(task);
-  if (!user) throw new Error("后端未返回用户信息，无法 Commit。请刷新实例列表或查看原始 JSON。");
+  if (!user) throw new Error(i18nText("后端未返回用户信息，无法 Commit。请刷新实例列表或查看原始 JSON。", "The backend did not return user information, so Commit cannot continue. Refresh the instance list or inspect the raw JSON."));
   return { user, pod_name: podName };
 }
 
@@ -159,14 +162,15 @@ function isActionsColumn(id: string) {
 }
 
 function ActionHeader() {
+  const { text } = useI18n();
   return (
     <div className={`${ACTION_GRID_CLASS} text-center text-xs text-app-muted`}>
-      <span>监控</span>
-      <span>日志</span>
-      <span>终端</span>
-      <span>复制</span>
-      <span>释放/删除</span>
-      <span>更多</span>
+      <span>{text("监控", "Monitor")}</span>
+      <span>{text("日志", "Logs")}</span>
+      <span>{text("终端", "Terminal")}</span>
+      <span>{text("复制", "Copy")}</span>
+      <span>{text("释放/删除", "Release/Delete")}</span>
+      <span>{text("更多", "More")}</span>
     </div>
   );
 }
@@ -230,12 +234,15 @@ export function MoreActionsMenu({
   onRaw,
   onDownload,
   onCommit,
+  onSaveTemplate,
 }: {
   task: Task;
   onRaw: (task: Task) => void;
   onDownload: (task: Task) => void;
   onCommit: (task: Task) => void;
+  onSaveTemplate: (task: Task) => void;
 }) {
+  const { text } = useI18n();
   const menuId = useId();
   const [open, setOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
@@ -264,8 +271,8 @@ export function MoreActionsMenu({
       const rect = triggerRef.current?.getBoundingClientRect();
       if (!rect) return;
 
-      const width = 144;
-      const estimatedHeight = 80;
+      const width = 160;
+      const estimatedHeight = 112;
       const margin = 8;
       const left = Math.min(Math.max(margin, rect.right - width), window.innerWidth - width - margin);
       const top =
@@ -359,9 +366,9 @@ export function MoreActionsMenu({
         aria-controls={open ? menuId : undefined}
         aria-expanded={open}
         aria-haspopup="menu"
-        aria-label={`更多操作 ${getTaskName(task)}`}
+        aria-label={text(`更多操作 ${getTaskName(task)}`, `More actions for ${getTaskName(task)}`)}
         className="h-8 w-8 px-0"
-        title="更多"
+        title={text("更多", "More")}
         type="button"
         variant="ghost"
         onClick={() => {
@@ -377,9 +384,9 @@ export function MoreActionsMenu({
           <div
             id={menuId}
             ref={menuRef}
-            className="fixed z-[100] w-36 rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
+            className="fixed z-[100] w-40 rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
             role="menu"
-            aria-label={`实例操作 ${getTaskName(task)}`}
+            aria-label={text(`实例操作 ${getTaskName(task)}`, `Instance actions for ${getTaskName(task)}`)}
             style={{ left: menuPosition.left, top: menuPosition.top }}
             onKeyDown={handleMenuKeyDown}
           >
@@ -397,7 +404,7 @@ export function MoreActionsMenu({
               }}
             >
               <Download className="h-4 w-4 text-app-muted" />
-              下载
+              {text("下载", "Download")}
             </button>
             <button
               ref={(element) => {
@@ -407,7 +414,7 @@ export function MoreActionsMenu({
               disabled={!isRunningTask(task)}
               role="menuitem"
               tabIndex={-1}
-              title={isRunningTask(task) ? "Commit" : "仅运行中实例可 Commit"}
+              title={isRunningTask(task) ? "Commit" : text("仅运行中实例可 Commit", "Only running instances can be committed")}
               type="button"
               onClick={() => {
                 closeMenu();
@@ -427,11 +434,27 @@ export function MoreActionsMenu({
               type="button"
               onClick={() => {
                 closeMenu();
+                onSaveTemplate(task);
+              }}
+            >
+              <Save className="h-4 w-4 text-app-muted" />
+              {text("存为模板", "Save as template")}
+            </button>
+            <button
+              ref={(element) => {
+                menuItemRefs.current[3] = element;
+              }}
+              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
+              role="menuitem"
+              tabIndex={-1}
+              type="button"
+              onClick={() => {
+                closeMenu();
                 onRaw(task);
               }}
             >
               <Braces className="h-4 w-4 text-app-muted" />
-              原始 JSON
+              {text("原始 JSON", "Raw JSON")}
             </button>
           </div>,
           document.body,
@@ -444,7 +467,9 @@ export function MoreActionsMenu({
 export function TasksPage() {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const { locale, text } = useI18n();
   const runLogger = useRunLogger();
+  const auth = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryState = useMemo(() => parseTaskListQuery(searchParams), [searchParams]);
   const { confirm, confirmDialog } = useConfirmAction();
@@ -460,7 +485,6 @@ export function TasksPage() {
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(() =>
     loadNumberSetting(AUTO_REFRESH_INTERVAL_KEY, DEFAULT_AUTO_REFRESH_INTERVAL),
   );
-  const taskStatusSnapshotRef = useRef<Map<string, TaskStatus | undefined>>(new Map());
 
   const updateTaskQuery = useCallback((patch: Partial<TaskListQueryState>) => {
     const next = { ...queryState, ...patch };
@@ -471,29 +495,29 @@ export function TasksPage() {
   const deleteMutation = useMutation({
     mutationFn: (task: Task) => instanceApi.deleteTask(task.id),
     onSuccess: (_data, task) => {
-      toast.success("实例删除已提交", getTaskName(task));
+      toast.success(text("实例删除已提交", "Instance deletion submitted"), getTaskName(task));
       void runLogger.log({
         source: "task",
         level: "info",
         action: "task.delete",
         result: "success",
-        title: "实例删除已提交",
+        title: text("实例删除已提交", "Instance deletion submitted"),
         targetName: getTaskName(task),
         targetId: task.id,
       });
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
     onError: (error, task) => {
-      toast.error("实例删除失败", `${getTaskName(task)}：${error instanceof Error ? error.message : "请稍后重试"}`);
+      toast.error(text("实例删除失败", "Instance deletion failed"), `${getTaskName(task)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
       void runLogger.log({
         source: "task",
         level: "error",
         action: "task.delete",
         result: "failure",
-        title: "实例删除失败",
+        title: text("实例删除失败", "Instance deletion failed"),
         targetName: getTaskName(task),
         targetId: task.id,
-        error: errorMessage(error, "实例删除失败"),
+        error: errorMessage(error, text("实例删除失败", "Instance deletion failed")),
       });
     },
   });
@@ -501,29 +525,29 @@ export function TasksPage() {
   const releaseMutation = useMutation({
     mutationFn: (task: Task) => instanceApi.operateTask(task.id),
     onSuccess: (_data, task) => {
-      toast.success("实例释放已提交", getTaskName(task));
+      toast.success(text("实例释放已提交", "Instance release submitted"), getTaskName(task));
       void runLogger.log({
         source: "task",
         level: "info",
         action: "task.release",
         result: "success",
-        title: "实例释放已提交",
+        title: text("实例释放已提交", "Instance release submitted"),
         targetName: getTaskName(task),
         targetId: task.id,
       });
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
     onError: (error, task) => {
-      toast.error("实例释放失败", `${getTaskName(task)}：${error instanceof Error ? error.message : "请稍后重试"}`);
+      toast.error(text("实例释放失败", "Instance release failed"), `${getTaskName(task)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
       void runLogger.log({
         source: "task",
         level: "error",
         action: "task.release",
         result: "failure",
-        title: "实例释放失败",
+        title: text("实例释放失败", "Instance release failed"),
         targetName: getTaskName(task),
         targetId: task.id,
-        error: errorMessage(error, "实例释放失败"),
+        error: errorMessage(error, text("实例释放失败", "Instance release failed")),
       });
     },
   });
@@ -531,29 +555,66 @@ export function TasksPage() {
   const commitMutation = useMutation({
     mutationFn: (task: Task) => imageApi.commitImage(buildTaskCommitPayload(task)),
     onSuccess: (_data, task) => {
-      toast.success("Commit 已提交", getTaskName(task));
+      toast.success(text("Commit 已提交", "Commit submitted"), getTaskName(task));
       void runLogger.log({
         source: "image",
         level: "info",
         action: "image.commit",
         result: "success",
-        title: "Commit 已提交",
+        title: text("Commit 已提交", "Commit submitted"),
         targetName: getTaskName(task),
         targetId: task.id,
       });
       queryClient.invalidateQueries({ queryKey: ["images"] });
     },
     onError: (error, task) => {
-      toast.error("Commit 失败", `${getTaskName(task)}：${error instanceof Error ? error.message : "请稍后重试"}`);
+      toast.error(text("Commit 失败", "Commit failed"), `${getTaskName(task)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
       void runLogger.log({
         source: "image",
         level: "error",
         action: "image.commit",
         result: "failure",
-        title: "Commit 失败",
+        title: text("Commit 失败", "Commit failed"),
         targetName: getTaskName(task),
         targetId: task.id,
-        error: errorMessage(error, "Commit 失败"),
+        error: errorMessage(error, text("Commit 失败", "Commit failed")),
+      });
+    },
+  });
+
+  const saveTemplateMutation = useMutation({
+    mutationFn: async (task: Task) => {
+      const editableTemplate = taskToEditableTaskTemplate(task, auth.user?.username ?? "");
+      if (!editableTemplate.imageId) throw new Error(text("实例缺少镜像字段，无法保存为模板。请查看原始 JSON 确认 image_id 或 img。", "The instance is missing an image field and cannot be saved as a template. Check raw JSON for image_id or img."));
+      const templates = await loadTaskTemplates(browserRuntime.storage);
+      const template = createTaskTemplate(editableTemplate);
+      await saveTaskTemplates(browserRuntime.storage, [template, ...templates]);
+      return template;
+    },
+    onSuccess: (template, task) => {
+      toast.success(text("已保存为实例模板", "Saved as instance template"), template.name);
+      void runLogger.log({
+        source: "task-template",
+        level: "info",
+        action: "taskTemplate.createFromTask",
+        result: "success",
+        title: text("已从实例保存模板", "Saved template from instance"),
+        targetName: getTaskName(task),
+        targetId: task.id,
+        metadata: { templateId: template.id, templateName: template.name },
+      });
+    },
+    onError: (error, task) => {
+      toast.error(text("保存模板失败", "Failed to save template"), `${getTaskName(task)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
+      void runLogger.log({
+        source: "task-template",
+        level: "error",
+        action: "taskTemplate.createFromTask",
+        result: "failure",
+        title: text("从实例保存模板失败", "Failed to save template from instance"),
+        targetName: getTaskName(task),
+        targetId: task.id,
+        error: errorMessage(error, text("保存模板失败", "Failed to save template")),
       });
     },
   });
@@ -563,27 +624,27 @@ export function TasksPage() {
       await runSequentiallyWithDelay(tasks, (task) => instanceApi.deleteTask(task.id));
     },
     onSuccess: (_data, tasks) => {
-      toast.success("批量删除已提交", `${tasks.length} 个非运行实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`);
+      toast.success(text("批量删除已提交", "Batch deletion submitted"), text(`${tasks.length} 个非运行实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `${tasks.length} non-running instances, ${BATCH_REQUEST_DELAY_MS}ms apart`));
       void runLogger.log({
         source: "task",
         level: "info",
         action: "task.batchDelete",
         result: "success",
-        title: "批量删除已提交",
+        title: text("批量删除已提交", "Batch deletion submitted"),
         metadata: { count: tasks.length, ids: tasks.map((task) => task.id) },
       });
       setRowSelection({});
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
     onError: (error) => {
-      toast.error("批量删除失败", error instanceof Error ? error.message : "请稍后重试");
+      toast.error(text("批量删除失败", "Batch deletion failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
       void runLogger.log({
         source: "task",
         level: "error",
         action: "task.batchDelete",
         result: "failure",
-        title: "批量删除失败",
-        error: errorMessage(error, "批量删除失败"),
+        title: text("批量删除失败", "Batch deletion failed"),
+        error: errorMessage(error, text("批量删除失败", "Batch deletion failed")),
       });
     },
   });
@@ -593,27 +654,27 @@ export function TasksPage() {
       await runSequentiallyWithDelay(tasks, (task) => instanceApi.operateTask(task.id));
     },
     onSuccess: (_data, tasks) => {
-      toast.success("批量释放已提交", `${tasks.length} 个运行中实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`);
+      toast.success(text("批量释放已提交", "Batch release submitted"), text(`${tasks.length} 个运行中实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `${tasks.length} running instances, ${BATCH_REQUEST_DELAY_MS}ms apart`));
       void runLogger.log({
         source: "task",
         level: "info",
         action: "task.batchRelease",
         result: "success",
-        title: "批量释放已提交",
+        title: text("批量释放已提交", "Batch release submitted"),
         metadata: { count: tasks.length, ids: tasks.map((task) => task.id) },
       });
       setRowSelection({});
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
     onError: (error) => {
-      toast.error("批量释放失败", error instanceof Error ? error.message : "请稍后重试");
+      toast.error(text("批量释放失败", "Batch release failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
       void runLogger.log({
         source: "task",
         level: "error",
         action: "task.batchRelease",
         result: "failure",
-        title: "批量释放失败",
-        error: errorMessage(error, "批量释放失败"),
+        title: text("批量释放失败", "Batch release failed"),
+        error: errorMessage(error, text("批量释放失败", "Batch release failed")),
       });
     },
   });
@@ -627,77 +688,41 @@ export function TasksPage() {
     refetchIntervalInBackground: false,
   });
 
-  useEffect(() => {
-    const tasks = query.data?.items;
-    if (!tasks) return;
-
-    const nextSnapshot = new Map(taskStatusSnapshotRef.current);
-    for (const task of tasks) {
-      const taskId = getTaskNotificationId(task);
-      const previousStatus = taskStatusSnapshotRef.current.get(taskId);
-      const notification = getImportantTaskStatusNotification(task, previousStatus);
-
-      if (notification) {
-        void browserRuntime.notifySystem({
-          title: notification.title,
-          body: notification.body,
-          tag: notification.tag,
-        });
-      }
-
-      nextSnapshot.set(taskId, task.status);
-    }
-    taskStatusSnapshotRef.current = nextSnapshot;
-  }, [query.data?.items]);
-
   const filteredTasks = useMemo(() => {
     const tasks = query.data?.items ?? [];
     return filterAndSortTasks(tasks.filter((task) => taskMatchesQuery(task, queryState)), queryState.keyword);
   }, [query.data?.items, queryState]);
-
-  const handleAutoRefreshChange = useCallback((enabled: boolean) => {
-    setAutoRefresh(enabled);
-    if (!enabled) return;
-
-    void browserRuntime.requestSystemNotificationPermission().then((permission) => {
-      if (permission === "denied") {
-        toast.info("系统通知未开启", "浏览器已拒绝通知权限，实例成功或失败时不会弹出系统通知。");
-      } else if (permission === "unsupported") {
-        toast.info("当前环境不支持系统通知");
-      }
-    });
-  }, [toast]);
 
   const handleDownloadTask = useCallback((task: Task) => {
     void instanceApi
       .downloadTask({ task_id: task.id })
       .then((blob) => saveBlob(blob, `${getTaskName(task)}.zip`))
       .then(() => {
-        toast.success("任务文件已下载", getTaskName(task));
+        toast.success(text("任务文件已下载", "Task files downloaded"), getTaskName(task));
         void runLogger.log({
           source: "task",
           level: "info",
           action: "task.download",
           result: "success",
-          title: "任务文件已下载",
+          title: text("任务文件已下载", "Task files downloaded"),
           targetName: getTaskName(task),
           targetId: task.id,
         });
       })
       .catch((error) => {
-        toast.error("任务下载失败", error instanceof Error ? error.message : "请稍后重试");
+        toast.error(text("任务下载失败", "Task download failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
         void runLogger.log({
           source: "task",
           level: "error",
           action: "task.download",
           result: "failure",
-          title: "任务下载失败",
+          title: text("任务下载失败", "Task download failed"),
           targetName: getTaskName(task),
           targetId: task.id,
-          error: errorMessage(error, "任务下载失败"),
+          error: errorMessage(error, text("任务下载失败", "Task download failed")),
         });
       });
-  }, [runLogger, toast]);
+  }, [runLogger, text, toast]);
 
   const openCreateTask = () => {
     setCloneTask(null);
@@ -716,52 +741,52 @@ export function TasksPage() {
 
   const confirmReleaseTask = useCallback((task: Task) => {
     confirm({
-      title: "确认释放实例",
-      description: `将释放 ${getTaskName(task)}。释放后实例会停止运行，请确认当前任务状态。`,
-      confirmLabel: "释放",
+      title: text("确认释放实例", "Confirm Instance Release"),
+      description: text(`将释放 ${getTaskName(task)}。释放后实例会停止运行，请确认当前任务状态。`, `Release ${getTaskName(task)}. The instance will stop running after release. Confirm the current task state.`),
+      confirmLabel: text("释放", "Release"),
       tone: "danger",
       run: () => releaseMutation.mutateAsync(task),
     });
-  }, [confirm, releaseMutation]);
+  }, [confirm, releaseMutation, text]);
 
   const confirmDeleteTask = useCallback((task: Task) => {
     confirm({
-      title: "确认删除实例",
-      description: `将删除 ${getTaskName(task)}。此操作不可从 EasyConsole 撤销。`,
-      confirmLabel: "删除",
+      title: text("确认删除实例", "Confirm Instance Deletion"),
+      description: text(`将删除 ${getTaskName(task)}。此操作不可从 EasyConsole 撤销。`, `Delete ${getTaskName(task)}. EasyConsole cannot undo this operation.`),
+      confirmLabel: text("删除", "Delete"),
       tone: "danger",
       run: () => deleteMutation.mutateAsync(task),
     });
-  }, [confirm, deleteMutation]);
+  }, [confirm, deleteMutation, text]);
 
   const confirmCommitTask = useCallback((task: Task) => {
     confirm({
-      title: "确认 Commit 实例",
-      description: `将把 ${getTaskName(task)} 的当前运行环境提交为镜像。此操作可能需要一段时间，请确认实例内文件状态已经稳定。`,
+      title: text("确认 Commit 实例", "Confirm Instance Commit"),
+      description: text(`将把 ${getTaskName(task)} 的当前运行环境提交为镜像。此操作可能需要一段时间，请确认实例内文件状态已经稳定。`, `Commit the current runtime environment of ${getTaskName(task)} as an image. This may take some time; confirm files inside the instance are stable.`),
       confirmLabel: "Commit",
       run: () => commitMutation.mutateAsync(task),
     });
-  }, [commitMutation, confirm]);
+  }, [commitMutation, confirm, text]);
 
   const confirmBatchRelease = useCallback((tasks: Task[]) => {
     confirm({
-      title: "确认批量释放",
-      description: `将按顺序释放 ${tasks.length} 个运行中实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms。`,
-      confirmLabel: "批量释放",
+      title: text("确认批量释放", "Confirm Batch Release"),
+      description: text(`将按顺序释放 ${tasks.length} 个运行中实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms。`, `Release ${tasks.length} running instances in order, ${BATCH_REQUEST_DELAY_MS}ms apart.`),
+      confirmLabel: text("批量释放", "Batch release"),
       tone: "danger",
       run: () => batchReleaseMutation.mutateAsync(tasks),
     });
-  }, [batchReleaseMutation, confirm]);
+  }, [batchReleaseMutation, confirm, text]);
 
   const confirmBatchDelete = useCallback((tasks: Task[]) => {
     confirm({
-      title: "确认批量删除",
-      description: `将按顺序删除 ${tasks.length} 个非运行实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms。`,
-      confirmLabel: "批量删除",
+      title: text("确认批量删除", "Confirm Batch Deletion"),
+      description: text(`将按顺序删除 ${tasks.length} 个非运行实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms。`, `Delete ${tasks.length} non-running instances in order, ${BATCH_REQUEST_DELAY_MS}ms apart.`),
+      confirmLabel: text("批量删除", "Batch delete"),
       tone: "danger",
       run: () => batchDeleteMutation.mutateAsync(tasks),
     });
-  }, [batchDeleteMutation, confirm]);
+  }, [batchDeleteMutation, confirm, text]);
 
   const columns = useMemo(
     () => [
@@ -769,7 +794,7 @@ export function TasksPage() {
         id: "select",
         header: ({ table }) => (
           <input
-            aria-label="选择当前页实例"
+            aria-label={text("选择当前页实例", "Select current page instances")}
             className="h-4 w-4 accent-app-accent"
             type="checkbox"
             checked={table.getIsAllPageRowsSelected()}
@@ -778,7 +803,7 @@ export function TasksPage() {
         ),
         cell: ({ row }) => (
           <input
-            aria-label={`选择实例 ${getTaskName(row.original)}`}
+            aria-label={text(`选择实例 ${getTaskName(row.original)}`, `Select instance ${getTaskName(row.original)}`)}
             className="h-4 w-4 accent-app-accent"
             type="checkbox"
             checked={row.getIsSelected()}
@@ -788,7 +813,7 @@ export function TasksPage() {
       }),
       columnHelper.accessor((row) => getTaskName(row), {
         id: "name",
-        header: "实例名称",
+        header: text("实例名称", "Instance name"),
         cell: ({ row, getValue }) => (
           <div className="whitespace-nowrap">
             <div className="font-medium">{getValue()}</div>
@@ -797,59 +822,59 @@ export function TasksPage() {
         ),
       }),
       columnHelper.accessor("status", {
-        header: "状态",
+        header: text("状态", "Status"),
         cell: (info) => <StatusBadge status={info.getValue()} />,
       }),
       columnHelper.accessor((row) => resourceText(row), {
         id: "resource",
-        header: "资源",
+        header: text("资源", "Resources"),
         cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.node_name || "-", {
         id: "node",
-        header: "节点",
+        header: text("节点", "Node"),
         cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => endpointText(row), {
         id: "endpoint",
-        header: "入口",
+        header: text("入口", "Endpoint"),
         cell: (info) => <span className="whitespace-nowrap font-mono text-xs text-app-muted">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => ownerText(row), {
         id: "owner",
-        header: "用户",
+        header: text("用户", "User"),
         cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => groupText(row), {
         id: "group",
-        header: "用户组",
+        header: text("用户组", "User group"),
         cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.use_time, {
         id: "duration",
-        header: "时长",
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{formatSecondsDuration(info.getValue())}</span>,
+        header: text("时长", "Duration"),
+        cell: (info) => <span className="whitespace-nowrap text-app-muted">{formatSecondsDuration(info.getValue(), locale)}</span>,
       }),
       columnHelper.accessor((row) => row.create_time ?? row.created_at ?? "-", {
         id: "created",
-        header: "创建时间",
+        header: text("创建时间", "Created"),
         cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.releace_time ?? "-", {
         id: "release",
-        header: "释放时间",
+        header: text("释放时间", "Release time"),
         cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.releace_conditions ?? row.release_condition, {
         id: "releaseCondition",
-        header: "释放条件",
+        header: text("释放条件", "Release condition"),
         cell: (info) => <ReleaseConditionBadge condition={info.getValue()} />,
       }),
-      columnHelper.accessor((row) => (row.is_delete ? "已删除" : "正常"), {
+      columnHelper.accessor((row) => (row.is_delete ? text("已删除", "Deleted") : text("正常", "Normal")), {
         id: "deleted",
-        header: "删除状态",
+        header: text("删除状态", "Delete status"),
         cell: (info) => (
-          <span className={info.getValue() === "已删除" ? "text-app-danger" : "text-app-muted"}>{info.getValue()}</span>
+          <span className={info.getValue() === text("已删除", "Deleted") ? "text-app-danger" : "text-app-muted"}>{info.getValue()}</span>
         ),
       }),
       columnHelper.display({
@@ -860,48 +885,54 @@ export function TasksPage() {
           const release = isRunningTask(task);
           return (
             <div className={ACTION_GRID_CLASS}>
-              <Button aria-label={`打开 ${getTaskName(task)} 的监控`} className="h-8 w-8 px-0" variant="ghost" title="监控" onClick={() => openMonitorDashboard(task)}>
+              <Button aria-label={text(`打开 ${getTaskName(task)} 的监控`, `Open monitor for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("监控", "Monitor")} onClick={() => openMonitorDashboard(task)}>
                 <ActivitySquare className="h-4 w-4" />
               </Button>
-              <Button aria-label={`查看 ${getTaskName(task)} 的日志`} className="h-8 w-8 px-0" variant="ghost" title="日志" onClick={() => setLogTask(task)}>
+              <Button aria-label={text(`查看 ${getTaskName(task)} 的日志`, `View logs for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("日志", "Logs")} onClick={() => setLogTask(task)}>
                 <FileText className="h-4 w-4" />
               </Button>
-              <Button aria-label={`打开 ${getTaskName(task)} 的终端`} className="h-8 w-8 px-0" variant="ghost" title="终端" onClick={() => setTerminalTask(task)}>
+              <Button aria-label={text(`打开 ${getTaskName(task)} 的终端`, `Open terminal for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("终端", "Terminal")} onClick={() => setTerminalTask(task)}>
                 <Terminal className="h-4 w-4" />
               </Button>
-              <Button aria-label={`复制 ${getTaskName(task)} 的配置`} className="h-8 w-8 px-0" variant="ghost" title="复制" onClick={() => openCloneTask(task)}>
+              <Button aria-label={text(`复制 ${getTaskName(task)} 的配置`, `Copy configuration for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("复制", "Copy")} onClick={() => openCloneTask(task)}>
                 <Copy className="h-4 w-4" />
               </Button>
               {release ? (
                 <Button
                   className="h-8 w-20 justify-center px-2 text-app-warning hover:text-app-warning"
                   disabled={releaseMutation.isPending}
-                  title="释放"
+                  title={text("释放", "Release")}
                   variant="ghost"
                   onClick={() => confirmReleaseTask(task)}
                 >
                   <Power className="h-4 w-4" />
-                  释放
+                  {text("释放", "Release")}
                 </Button>
               ) : (
                 <Button
                   className="h-8 w-20 justify-center px-2 text-app-danger hover:text-app-danger"
                   disabled={deleteMutation.isPending}
-                  title="删除"
+                  title={text("删除", "Delete")}
                   variant="ghost"
                   onClick={() => confirmDeleteTask(task)}
                 >
                   <Trash2 className="h-4 w-4" />
-                  删除
+                  {text("删除", "Delete")}
                 </Button>
               )}
-              <MoreActionsMenu task={task} onCommit={confirmCommitTask} onDownload={handleDownloadTask} onRaw={setRawTask} />
+              <MoreActionsMenu
+                task={task}
+                onCommit={confirmCommitTask}
+                onDownload={handleDownloadTask}
+                onRaw={setRawTask}
+                onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
+              />
             </div>
           );
         },
       }),
     ],
-    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, releaseMutation.isPending],
+    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, locale, releaseMutation.isPending, saveTemplateMutation, text],
   );
 
   const table = useReactTable({
@@ -951,14 +982,14 @@ export function TasksPage() {
             <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" />
             <Input
               className="w-full pl-9 sm:w-64"
-              placeholder="搜索实例名称"
+              placeholder={text("搜索实例名称", "Search instance name")}
               value={queryState.keyword}
               onChange={(event) => updateTaskQuery({ keyword: event.target.value })}
             />
           </div>
           <Select className="w-32" value={queryState.status} onChange={(event) => updateTaskQuery({ status: event.target.value })}>
-            <option value="">全部状态</option>
-            {Object.entries(taskStatusText).map(([value, label]) => (
+            <option value="">{text("全部状态", "All statuses")}</option>
+            {Object.entries(locale === "en-US" ? taskStatusTextEn : taskStatusText).map(([value, label]) => (
               <option key={value} value={value}>
                 {label}
               </option>
@@ -966,7 +997,7 @@ export function TasksPage() {
           </Select>
           <Button variant="secondary" onClick={() => query.refetch()}>
             <RefreshCw className="h-4 w-4" />
-            刷新
+            {text("刷新", "Refresh")}
           </Button>
           <div className="flex min-h-9 items-center gap-2 rounded-md border border-app-border bg-app-surface px-3 text-sm [@media(pointer:coarse)]:min-h-11">
             <label className="flex cursor-pointer items-center gap-2 text-app-text">
@@ -974,9 +1005,9 @@ export function TasksPage() {
                 type="checkbox"
                 className="h-4 w-4 accent-app-accent"
                 checked={autoRefresh}
-                onChange={(event) => handleAutoRefreshChange(event.target.checked)}
+                onChange={(event) => setAutoRefresh(event.target.checked)}
               />
-              自动刷新
+              {text("自动刷新", "Auto refresh")}
             </label>
             <Select
               className="h-7 border-0 bg-app-panel px-2 text-xs"
@@ -986,29 +1017,29 @@ export function TasksPage() {
             >
               {autoRefreshOptions.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {option.label}
+                  {locale === "en-US" ? option.en : option.zh}
                 </option>
               ))}
             </Select>
-            {autoRefresh && autoRefreshPaused ? <span className="text-xs text-app-warning">已暂停</span> : null}
+            {autoRefresh && autoRefreshPaused ? <span className="text-xs text-app-warning">{text("已暂停", "Paused")}</span> : null}
           </div>
           <Button variant="secondary" onClick={() => setColumnSettingsOpen(true)}>
             <Settings2 className="h-4 w-4" />
-            列设置
+            {text("列设置", "Columns")}
           </Button>
         </div>
         <Button className="w-full sm:w-auto" onClick={openCreateTask}>
           <Plus className="h-4 w-4" />
-          新建任务
+          {text("新建任务", "New task")}
         </Button>
       </div>
 
       {selectedTasks.length > 0 ? (
         <Panel className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
           <div className="text-sm text-app-muted">
-            已选 <span className="font-medium text-app-text">{selectedTasks.length}</span> 个实例
-            {selectedRunningTasks.length > 0 ? `，运行中 ${selectedRunningTasks.length} 个` : ""}
-            {selectedStoppedTasks.length > 0 ? `，非运行 ${selectedStoppedTasks.length} 个` : ""}
+            {text("已选", "Selected")} <span className="font-medium text-app-text">{selectedTasks.length}</span> {text("个实例", "instances")}
+            {selectedRunningTasks.length > 0 ? text(`，运行中 ${selectedRunningTasks.length} 个`, `, running ${selectedRunningTasks.length}`) : ""}
+            {selectedStoppedTasks.length > 0 ? text(`，非运行 ${selectedStoppedTasks.length} 个`, `, non-running ${selectedStoppedTasks.length}`) : ""}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {selectedRunningTasks.length > 0 ? (
@@ -1018,7 +1049,7 @@ export function TasksPage() {
                 onClick={() => confirmBatchRelease(selectedRunningTasks)}
               >
                 <Power className="h-4 w-4 text-app-warning" />
-                批量释放 {selectedRunningTasks.length}
+                {text("批量释放", "Batch release")} {selectedRunningTasks.length}
               </Button>
             ) : null}
             {selectedStoppedTasks.length > 0 ? (
@@ -1029,11 +1060,11 @@ export function TasksPage() {
                 onClick={() => confirmBatchDelete(selectedStoppedTasks)}
               >
                 <Trash2 className="h-4 w-4" />
-                批量删除 {selectedStoppedTasks.length}
+                {text("批量删除", "Batch delete")} {selectedStoppedTasks.length}
               </Button>
             ) : null}
             <Button disabled={batchPending} variant="ghost" onClick={() => setRowSelection({})}>
-              取消选择
+              {text("取消选择", "Clear selection")}
             </Button>
           </div>
         </Panel>
@@ -1043,11 +1074,11 @@ export function TasksPage() {
         {query.isLoading ? (
           <TableSkeleton columns={7} />
         ) : query.isError ? (
-          <ErrorState error={query.error} action={<Button variant="secondary" onClick={() => query.refetch()}>重试</Button>} />
+          <ErrorState error={query.error} action={<Button variant="secondary" onClick={() => query.refetch()}>{text("重试", "Retry")}</Button>} />
         ) : table.getRowModel().rows.length === 0 && queryState.keyword.trim() ? (
-          <EmptyState title="未找到匹配实例" action={<Button variant="secondary" onClick={() => updateTaskQuery({ keyword: "" })}>清空搜索</Button>} />
+          <EmptyState title={text("未找到匹配实例", "No matching instances")} action={<Button variant="secondary" onClick={() => updateTaskQuery({ keyword: "" })}>{text("清空搜索", "Clear search")}</Button>} />
         ) : table.getRowModel().rows.length === 0 ? (
-          <EmptyState title="暂无任务实例" action={<Button onClick={openCreateTask}>新建任务</Button>} />
+          <EmptyState title={text("暂无任务实例", "No task instances")} action={<Button onClick={openCreateTask}>{text("新建任务", "New task")}</Button>} />
         ) : (
           <div className="overflow-auto">
             <table className="w-max min-w-full table-auto border-collapse text-sm">
@@ -1097,11 +1128,11 @@ export function TasksPage() {
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-app-muted">
         <div>
           {hasKnownTotal
-            ? `共 ${total} 个实例，第 ${queryState.page} / ${totalPages} 页`
-            : `第 ${queryState.page} 页，当前返回 ${query.data?.items.length ?? 0} 个实例`}
+            ? text(`共 ${total} 个实例，第 ${queryState.page} / ${totalPages} 页`, `${total} instances, page ${queryState.page} / ${totalPages}`)
+            : text(`第 ${queryState.page} 页，当前返回 ${query.data?.items.length ?? 0} 个实例`, `Page ${queryState.page}, ${query.data?.items.length ?? 0} instances returned`)}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <span>每页</span>
+          <span>{text("每页", "Per page")}</span>
           <Select
             className="w-24"
             value={String(queryState.pageSize)}
@@ -1119,7 +1150,7 @@ export function TasksPage() {
             variant="secondary"
             onClick={() => updateTaskQuery({ page: Math.max(1, queryState.page - 1) })}
           >
-            上一页
+            {text("上一页", "Previous")}
           </Button>
           <Button
             disabled={!hasNextPage || query.isFetching}
@@ -1127,7 +1158,7 @@ export function TasksPage() {
             variant="secondary"
             onClick={() => updateTaskQuery({ page: queryState.page + 1 })}
           >
-            下一页
+            {text("下一页", "Next")}
           </Button>
         </div>
       </div>
@@ -1137,12 +1168,12 @@ export function TasksPage() {
       <Suspense fallback={null}>
         <TerminalDialog task={terminalTask} onClose={() => setTerminalTask(null)} />
       </Suspense>
-      <Dialog open={Boolean(rawTask)} title={`实例原始 JSON ${rawTask ? getTaskName(rawTask) : ""}`} onClose={() => setRawTask(null)} width="max-w-4xl">
+      <Dialog open={Boolean(rawTask)} title={text(`实例原始 JSON ${rawTask ? getTaskName(rawTask) : ""}`, `Instance Raw JSON ${rawTask ? getTaskName(rawTask) : ""}`)} onClose={() => setRawTask(null)} width="max-w-4xl">
         <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
           {asJson(rawTask)}
         </pre>
       </Dialog>
-      <Dialog open={columnSettingsOpen} title="列设置" onClose={() => setColumnSettingsOpen(false)} width="max-w-md">
+      <Dialog open={columnSettingsOpen} title={text("列设置", "Columns")} onClose={() => setColumnSettingsOpen(false)} width="max-w-md">
         <div className="space-y-3 p-4">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {configurableColumns.map((column) => (
@@ -1156,15 +1187,15 @@ export function TasksPage() {
                   checked={column.getIsVisible()}
                   onChange={column.getToggleVisibilityHandler()}
                 />
-                <span>{columnLabels[column.id] ?? column.id}</span>
+                <span>{columnLabels[column.id] ? (locale === "en-US" ? columnLabels[column.id].en : columnLabels[column.id].zh) : column.id}</span>
               </label>
             ))}
           </div>
           <div className="flex justify-end gap-2 border-t border-app-border pt-3">
             <Button variant="secondary" onClick={() => setColumnVisibility(defaultColumnVisibility)}>
-              恢复默认
+              {text("恢复默认", "Restore defaults")}
             </Button>
-            <Button onClick={() => setColumnSettingsOpen(false)}>完成</Button>
+            <Button onClick={() => setColumnSettingsOpen(false)}>{text("完成", "Done")}</Button>
           </div>
         </div>
       </Dialog>

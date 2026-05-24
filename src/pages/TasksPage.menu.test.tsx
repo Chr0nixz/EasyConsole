@@ -6,15 +6,21 @@ import { MoreActionsMenu } from "./TasksPage";
 
 describe("MoreActionsMenu", () => {
   const task = { id: 1, name: "长任务", status: 2 } as Task;
+  const defaultProps = {
+    onCommit: vi.fn(),
+    onDownload: vi.fn(),
+    onRaw: vi.fn(),
+    onSaveTemplate: vi.fn(),
+  };
 
   it("supports keyboard navigation and restores focus on Escape", async () => {
-    render(<MoreActionsMenu task={task} onCommit={vi.fn()} onDownload={vi.fn()} onRaw={vi.fn()} />);
+    render(<MoreActionsMenu task={task} {...defaultProps} />);
 
     const trigger = screen.getByRole("button");
     fireEvent.click(trigger);
 
     const items = await screen.findAllByRole("menuitem");
-    const [download, commit, raw] = items;
+    const [download, commit, saveTemplate, raw] = items;
 
     await waitFor(() => expect(download).toHaveFocus());
 
@@ -22,10 +28,13 @@ describe("MoreActionsMenu", () => {
     expect(commit).toHaveFocus();
 
     fireEvent.keyDown(screen.getByRole("menu"), { key: "ArrowDown" });
+    expect(saveTemplate).toHaveFocus();
+
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "ArrowDown" });
     expect(raw).toHaveFocus();
 
     fireEvent.keyDown(screen.getByRole("menu"), { key: "ArrowUp" });
-    expect(commit).toHaveFocus();
+    expect(saveTemplate).toHaveFocus();
 
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
 
@@ -34,19 +43,19 @@ describe("MoreActionsMenu", () => {
   });
 
   it("opens from keyboard and focuses the last item on ArrowUp", async () => {
-    render(<MoreActionsMenu task={task} onCommit={vi.fn()} onDownload={vi.fn()} onRaw={vi.fn()} />);
+    render(<MoreActionsMenu task={task} {...defaultProps} />);
 
     const trigger = screen.getByRole("button");
     fireEvent.keyDown(trigger, { key: "ArrowUp" });
 
     const items = await screen.findAllByRole("menuitem");
-    const raw = items[2];
+    const raw = items[3];
     await waitFor(() => expect(raw).toHaveFocus());
   });
 
   it("calls commit for running tasks and disables it otherwise", async () => {
     const onCommit = vi.fn();
-    const { rerender } = render(<MoreActionsMenu task={task} onCommit={onCommit} onDownload={vi.fn()} onRaw={vi.fn()} />);
+    const { rerender } = render(<MoreActionsMenu task={task} {...defaultProps} onCommit={onCommit} />);
 
     fireEvent.click(screen.getByRole("button"));
     let items = await screen.findAllByRole("menuitem");
@@ -54,7 +63,7 @@ describe("MoreActionsMenu", () => {
     expect(onCommit).toHaveBeenCalledWith(task);
 
     const stoppedTask = { ...task, status: 6 };
-    rerender(<MoreActionsMenu task={stoppedTask} onCommit={onCommit} onDownload={vi.fn()} onRaw={vi.fn()} />);
+    rerender(<MoreActionsMenu task={stoppedTask} {...defaultProps} onCommit={onCommit} />);
     fireEvent.click(screen.getByRole("button"));
     items = await screen.findAllByRole("menuitem");
     expect(items[1]).toBeDisabled();

@@ -15,6 +15,7 @@ describe("task status notifications", () => {
 
     expect(getImportantTaskStatusNotification(task, 2)).toMatchObject({
       kind: "success",
+      event: "task.success",
       taskId: "task-1",
       title: "实例运行成功",
       body: "train：成功",
@@ -25,12 +26,14 @@ describe("task status notifications", () => {
   it("notifies when a task enters failure or abnormal states", () => {
     expect(getImportantTaskStatusNotification({ id: 1, name: "train", status: 7 } as Task, 2)).toMatchObject({
       kind: "failure",
+      event: "task.failure",
       title: "实例运行失败",
       body: "train：失败",
     });
     expect(getImportantTaskStatusNotification({ id: 2, name: "dev", status: 8 } as Task, 2)).toMatchObject({
       kind: "failure",
-      title: "实例运行失败",
+      event: "task.abnormal",
+      title: "实例运行异常",
       body: "dev：异常",
     });
   });

@@ -1,5 +1,6 @@
 import { type ApiClient, extractToken, normalizeToken } from "./api-client";
 import { sha256Hex } from "./crypto";
+import { i18nText } from "./i18n";
 import { md5Blob } from "./md5";
 import type {
   CreateTaskPayload,
@@ -50,7 +51,7 @@ function assertUploadResponse(raw: unknown) {
   if (!raw || typeof raw !== "object" || !("code" in raw)) return raw;
   const record = raw as UnknownRecord;
   if (record.code !== 0) {
-    throw new Error(String(record.msg ?? record.message ?? "上传失败"));
+    throw new Error(String(record.msg ?? record.message ?? i18nText("上传失败", "Upload failed")));
   }
   return record.data ?? record;
 }
@@ -254,7 +255,7 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
         onProgress?.({ loaded: 0, total: 0, percent: 100 });
         return result;
       }
-      throw new Error("0B 空文件上传后服务端未创建文件");
+      throw new Error(i18nText("0B 空文件上传后服务端未创建文件", "The server did not create a file after uploading a 0B empty file"));
     },
     async uploadFile(file: File, path: string, onProgress?: (progress: UploadProgress) => void) {
       if (file.size === 0) return storageApi.uploadEmptyFile(file, path, onProgress);
@@ -265,7 +266,7 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
         const result = await storageApi.uploadChunk(file, { start, end, total: file.size }, path, uploadId ?? undefined, onProgress);
         uploadId ??= extractUploadId(result);
       }
-      if (!uploadId) throw new Error("上传服务未返回 upload_id");
+      if (!uploadId) throw new Error(i18nText("上传服务未返回 upload_id", "Upload service did not return upload_id"));
       const params = new URLSearchParams();
       params.set("upload_id", uploadId);
       params.set("md5", await md5Blob(file));

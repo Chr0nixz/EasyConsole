@@ -4,6 +4,7 @@ import { apiClient, authApi } from "./api";
 import { APP_SETTINGS_STORAGE_KEY, parseAppSettings, setRuntimeSettings } from "./app-settings";
 import { AuthContext } from "./auth-state";
 import { TOKEN_STORAGE_KEY, UNAUTHORIZED_EVENT } from "./api-client";
+import { i18nText } from "./i18n";
 import { browserRuntime } from "./runtime";
 import { appendRunLog, type RunLogInput } from "./run-logs";
 import {
@@ -78,7 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (username: string, password: string) => {
     const startedAt = Date.now();
     const result = await authApi.login({ username, password });
-    if (!result.token) throw new Error("登录响应未包含 token");
+    if (!result.token) throw new Error(i18nText("登录响应未包含 token", "Sign-in response did not include a token"));
     apiClient.setToken(result.token);
     await browserRuntime.storage.set(TOKEN_STORAGE_KEY, result.token);
     try {
@@ -91,7 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         level: "info",
         action: "auth.login",
         result: "success",
-        title: "登录成功",
+        title: i18nText("登录成功", "Signed in"),
         userName: username,
         durationMs: Date.now() - startedAt,
       });
@@ -102,10 +103,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         level: "error",
         action: "auth.login",
         result: "failure",
-        title: "登录失败",
+        title: i18nText("登录失败", "Sign-in failed"),
         userName: username,
         durationMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : "登录失败",
+        error: error instanceof Error ? error.message : i18nText("登录失败", "Sign-in failed"),
       });
       throw error;
     }
@@ -114,7 +115,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginSaved = useCallback(async (accountId: string) => {
     const startedAt = Date.now();
     const account = savedAccountsRef.current.find((item) => item.id === accountId);
-    if (!account) throw new Error("保存的账号不存在");
+    if (!account) throw new Error(i18nText("保存的账号不存在", "Saved account does not exist"));
 
     apiClient.setToken(account.token);
     await browserRuntime.storage.set(TOKEN_STORAGE_KEY, account.token);
@@ -128,7 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         level: "info",
         action: "auth.loginSaved",
         result: "success",
-        title: "保存账号登录成功",
+        title: i18nText("保存账号登录成功", "Saved account signed in"),
         userName: account.username,
         durationMs: Date.now() - startedAt,
       });
@@ -141,12 +142,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         level: "error",
         action: "auth.loginSaved",
         result: "failure",
-        title: "保存账号登录失败",
+        title: i18nText("保存账号登录失败", "Saved account sign-in failed"),
         userName: account.username,
         durationMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : "保存账号登录失败",
+        error: error instanceof Error ? error.message : i18nText("保存账号登录失败", "Saved account sign-in failed"),
       });
-      throw new Error(error instanceof Error ? `保存的登录已失效：${error.message}` : "保存的登录已失效，请重新输入密码");
+      throw new Error(error instanceof Error ? i18nText(`保存的登录已失效：${error.message}`, `Saved sign-in expired: ${error.message}`) : i18nText("保存的登录已失效，请重新输入密码", "Saved sign-in expired. Enter the password again."));
     }
   }, [persistSavedAccounts]);
 
@@ -164,7 +165,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       level: "info",
       action: "auth.logout",
       result: "success",
-      title: "退出登录",
+      title: i18nText("退出登录", "Signed out"),
       userName,
     });
   }, [user]);

@@ -2,6 +2,7 @@ import { Code2, Copy, KeyRound, Server, Terminal } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { getTaskName } from "../../lib/format";
+import { useI18n } from "../../lib/i18n";
 import { browserRuntime } from "../../lib/runtime";
 import { buildTaskSshInfo, toSshConnectionRequest } from "../../lib/ssh-info";
 import type { SshConnectionRequest, Task } from "../../lib/types";
@@ -20,6 +21,7 @@ function InfoRow({
   sensitive?: boolean;
   onCopy: (value: string, label: string) => void;
 }) {
+  const { text } = useI18n();
   const hasValue = value && value !== "-";
 
   return (
@@ -36,7 +38,7 @@ function InfoRow({
         onClick={() => onCopy(value, label)}
       >
         <Copy className="h-4 w-4" />
-        复制
+        {text("复制", "Copy")}
       </Button>
     </div>
   );
@@ -44,6 +46,7 @@ function InfoRow({
 
 export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: () => void }) {
   const toast = useToast();
+  const { text } = useI18n();
   const [appSshRequest, setAppSshRequest] = useState<SshConnectionRequest | null>(null);
   const [isOpeningVscode, setIsOpeningVscode] = useState(false);
   const sshInfo = useMemo(() => (task ? buildTaskSshInfo(task) : null), [task]);
@@ -53,8 +56,8 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
     if (!value || value === "-") return;
     void browserRuntime
       .copyText(value)
-      .then(() => toast.success("已复制", label))
-      .catch(() => toast.error("复制失败", "当前浏览器不允许写入剪贴板"));
+      .then(() => toast.success(text("已复制", "Copied"), label))
+      .catch(() => toast.error(text("复制失败", "Copy failed"), text("当前浏览器不允许写入剪贴板", "The current browser does not allow clipboard writes")));
   };
 
   const openAppSsh = () => {
@@ -67,10 +70,10 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
     const request = toSshConnectionRequest(sshInfo);
     void browserRuntime
       .openSystemSshTerminal(request)
-      .then(() => toast.success("已打开系统终端", sshInfo.taskName))
+      .then(() => toast.success(text("已打开系统终端", "System terminal opened"), sshInfo.taskName))
       .catch((error) => {
-        const message = error instanceof Error ? error.message : "请确认桌面端 SSH 能力已配置";
-        toast.error("系统终端打开失败", message);
+        const message = error instanceof Error ? error.message : text("请确认桌面端 SSH 能力已配置", "Confirm desktop SSH support is configured");
+        toast.error(text("系统终端打开失败", "Failed to open system terminal"), message);
       });
   };
 
@@ -80,10 +83,10 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
     setIsOpeningVscode(true);
     void browserRuntime
       .openVscodeSsh(request)
-      .then(() => toast.success("已打开 VS Code", sshInfo.taskName))
+      .then(() => toast.success(text("已打开 VS Code", "VS Code opened"), sshInfo.taskName))
       .catch((error) => {
-        const message = error instanceof Error ? error.message : "请确认已安装 VS Code 和 Remote - SSH 扩展";
-        toast.error("VS Code 打开失败", message);
+        const message = error instanceof Error ? error.message : text("请确认已安装 VS Code 和 Remote - SSH 扩展", "Confirm VS Code and the Remote - SSH extension are installed");
+        toast.error(text("VS Code 打开失败", "Failed to open VS Code"), message);
       })
       .finally(() => setIsOpeningVscode(false));
   };
@@ -92,7 +95,7 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
     <>
       <Dialog
         open={Boolean(task)}
-        title={`SSH 连接信息 ${task ? getTaskName(task) : ""}`}
+        title={text(`SSH 连接信息 ${task ? getTaskName(task) : ""}`, `SSH Connection ${task ? getTaskName(task) : ""}`)}
         onClose={onClose}
         width="max-w-3xl"
       >
@@ -112,15 +115,15 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
                 <div className="flex flex-wrap items-center gap-2">
                   <Button disabled={!canConnect} type="button" variant="secondary" onClick={openAppSsh}>
                     <Terminal className="h-4 w-4" />
-                    应用内 SSH
+                    {text("应用内 SSH", "In-app SSH")}
                   </Button>
                   <Button disabled={!canConnect || isOpeningVscode} type="button" variant="secondary" onClick={openVscodeSsh}>
                     <Code2 className="h-4 w-4" />
-                    {isOpeningVscode ? "配置中" : "VS Code"}
+                    {isOpeningVscode ? text("配置中", "Configuring") : "VS Code"}
                   </Button>
                   <Button disabled={!canConnect} type="button" onClick={openSystemSsh}>
                     <Terminal className="h-4 w-4" />
-                    系统终端
+                    {text("系统终端", "System terminal")}
                   </Button>
                 </div>
               ) : null}
@@ -131,19 +134,19 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
               <InfoRow label="Port" value={sshInfo.port} onCopy={copyValue} />
               <InfoRow label="Username" value={sshInfo.username} onCopy={copyValue} />
               <InfoRow label="Password" value={sshInfo.password} sensitive onCopy={copyValue} />
-              <InfoRow label="SSH 命令" value={sshInfo.command} onCopy={copyValue} />
+              <InfoRow label={text("SSH 命令", "SSH Command")} value={sshInfo.command} onCopy={copyValue} />
             </div>
 
             <div className="grid gap-3 rounded-lg border border-app-border bg-app-panel p-3 text-sm text-app-muted sm:grid-cols-[auto_1fr]">
               <KeyRound className="h-4 w-4 text-app-warning" />
               <p className="leading-5">
-                SSH 信息来自实例列表返回字段。若 Host、Port 或密码为空，请刷新实例列表或查看原始 JSON 确认后端是否返回该字段。
+                {text("SSH 信息来自实例列表返回字段。若 Host、Port 或密码为空，请刷新实例列表或查看原始 JSON 确认后端是否返回该字段。", "SSH information comes from fields returned by the instance list. If Host, Port, or password is empty, refresh the instance list or inspect the raw JSON to confirm the backend returned the field.")}
               </p>
               <Terminal className="h-4 w-4 text-app-accent" />
               <p className="leading-5">
                 {browserRuntime.isDesktop
-                  ? "桌面端可选择应用内 SSH 自动登录、通过 VS Code Remote-SSH 打开，或打开系统终端后手动输入密码；网页端请复制 SSH 命令后在本机终端中执行。"
-                  : "网页端不能直接建立 SSH 连接，请复制 SSH 命令后在本机终端中执行。"}
+                  ? text("桌面端可选择应用内 SSH 自动登录、通过 VS Code Remote-SSH 打开，或打开系统终端后手动输入密码；网页端请复制 SSH 命令后在本机终端中执行。", "On desktop, use in-app SSH auto sign-in, open through VS Code Remote-SSH, or open a system terminal and enter the password manually. On web, copy the SSH command and run it in your local terminal.")
+                  : text("网页端不能直接建立 SSH 连接，请复制 SSH 命令后在本机终端中执行。", "The web app cannot establish SSH directly. Copy the SSH command and run it in your local terminal.")}
               </p>
             </div>
           </div>

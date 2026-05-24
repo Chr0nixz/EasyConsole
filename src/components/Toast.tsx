@@ -2,6 +2,7 @@ import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 
 import { ToastContext, type ToastInput, type ToastItem, type ToastKind, type ToastContextValue } from "../lib/use-toast";
+import { useI18n } from "../lib/i18n";
 import { cn } from "../lib/utils";
 
 function createToastId() {
@@ -21,6 +22,7 @@ function getToastClasses(kind: ToastKind) {
 }
 
 export function ToastProvider({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
   const remove = useCallback((id: string) => {
@@ -70,7 +72,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 onClick={() => remove(toast.id)}
               >
                 <X className="h-3.5 w-3.5" />
-                <span className="sr-only">关闭提示</span>
+                <span className="sr-only">{t("common.closeToast")}</span>
               </button>
             </div>
           </div>

@@ -1,4 +1,5 @@
 import { getLocalFileRelativePath, joinStoragePath, normalizeStoragePath } from "./remote-storage";
+import { i18nText } from "./i18n";
 import type { UploadQueueItem } from "./types";
 
 function queueId(file: File, index: number) {
@@ -19,7 +20,7 @@ export function createUploadQueueItems(files: File[], remoteDirectory: string): 
       relativePath,
       status: file.size === 0 ? "skipped" : "queued",
       progress: file.size === 0 ? 100 : 0,
-      skipReason: file.size === 0 ? "不支持上传空文件" : undefined,
+      skipReason: file.size === 0 ? i18nText("不支持上传空文件", "Uploading empty files is not supported") : undefined,
     };
   });
 }

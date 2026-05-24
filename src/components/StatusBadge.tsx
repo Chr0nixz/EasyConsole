@@ -1,8 +1,10 @@
 import { cn } from "../lib/utils";
 import { getStatusText } from "../lib/format";
+import { useI18n } from "../lib/i18n";
 import type { TaskStatus } from "../lib/types";
 
 export function StatusBadge({ status }: { status?: TaskStatus }) {
+  const { locale } = useI18n();
   const value = Number(status);
   const tone = value === 2 ? "running" : value === 6 ? "success" : value === 7 || value === 8 ? "danger" : value === 1 || value === 3 ? "warning" : "neutral";
   return (
@@ -16,7 +18,7 @@ export function StatusBadge({ status }: { status?: TaskStatus }) {
         tone === "neutral" && "bg-app-neutralSoft text-app-muted ring-1 ring-app-neutralRing",
       )}
     >
-      {getStatusText(status)}
+      {getStatusText(status, locale)}
     </span>
   );
 }

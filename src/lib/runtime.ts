@@ -1,5 +1,6 @@
 import { isTauri } from "@tauri-apps/api/core";
 
+import { i18nText } from "./i18n";
 import type {
   RuntimeHttpRequest,
   RuntimeHttpResponse,
@@ -198,7 +199,7 @@ async function createTauriWebSocket(url: string): Promise<RuntimeWebSocket> {
 }
 
 async function invokeTauriCommand<T = void>(command: string, args: Record<string, unknown>) {
-  if (!isTauri()) throw new Error("当前环境不是桌面端");
+  if (!isTauri()) throw new Error(i18nText("当前环境不是桌面端", "The current environment is not the desktop app"));
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(command, args);
 }
@@ -264,7 +265,7 @@ async function notifySystem(notification: RuntimeSystemNotification): Promise<Ru
 }
 
 function requireDesktopSsh(): never {
-  throw new Error("当前环境不是桌面端，无法使用应用内 SSH");
+  throw new Error(i18nText("当前环境不是桌面端，无法使用应用内 SSH", "The current environment is not the desktop app, so in-app SSH is unavailable"));
 }
 
 export const browserRuntime: RuntimeTransport = {

@@ -22,6 +22,11 @@ const entries = [
 ];
 
 function targetTriple() {
+  const tauriTargetTriple = process.env.TAURI_ENV_TARGET_TRIPLE?.trim();
+  if (tauriTargetTriple) {
+    return tauriTargetTriple;
+  }
+
   try {
     return execFileSync("rustc", ["--print", "host-tuple"], { encoding: "utf8" }).trim();
   } catch {
@@ -33,11 +38,46 @@ function targetTriple() {
   }
 }
 
-function pkgTarget() {
-  if (process.platform !== "win32" || process.arch !== "x64") {
-    throw new Error("Sidecar exe packaging currently supports Windows x64 only.");
+function targetPlatform(triple) {
+  const platform = process.env.TAURI_ENV_PLATFORM?.trim() || process.platform;
+  if (platform === "windows") return "win32";
+  if (platform === process.platform && triple.includes("windows")) return "win32";
+  if (platform === process.platform && triple.includes("apple-darwin")) return "darwin";
+  if (platform === process.platform && triple.includes("linux")) return "linux";
+  return platform;
+}
+
+function targetArch(triple) {
+  const arch = process.env.TAURI_ENV_ARCH?.trim() || process.arch;
+  if (arch === "x86_64") return "x64";
+  if (arch === "aarch64") return "arm64";
+  if (arch === process.arch && triple.startsWith("x86_64-")) return "x64";
+  if (arch === process.arch && triple.startsWith("aarch64-")) return "arm64";
+  return arch;
+}
+
+function executableExtension(platform) {
+  return platform === "win32" ? ".exe" : "";
+}
+
+function pkgTarget(platform, arch) {
+  const pkgPlatform = {
+    darwin: "macos",
+    linux: "linux",
+    win32: "win",
+  }[platform];
+  const pkgArch = {
+    arm64: "arm64",
+    x64: "x64",
+  }[arch];
+
+  if (!pkgPlatform || !pkgArch) {
+    throw new Error(
+      `Unsupported sidecar packaging target: ${platform}/${arch}.`,
+    );
   }
-  return "node22-win-x64";
+
+  return `node22-${pkgPlatform}-${pkgArch}`;
 }
 
 async function bundle(entry, outfile) {
@@ -60,7 +100,7 @@ async function bundle(entry, outfile) {
 async function packageExe(input, output) {
   execFileSync(
     process.execPath,
-    [pkgBin, "--targets", pkgTarget(), "--output", output, "--public-packages", "*", input],
+    [pkgBin, "--targets", pkgTarget(platform, arch), "--output", output, "--public-packages", "*", input],
     { stdio: "inherit", cwd: root },
   );
 }
@@ -72,13 +112,16 @@ await mkdir(sidecarDistDir, { recursive: true });
 await mkdir(tauriBinaryDir, { recursive: true });
 
 const triple = targetTriple();
+const platform = targetPlatform(triple);
+const arch = targetArch(triple);
+const extension = executableExtension(platform);
 for (const item of entries) {
   const bundlePath = join(bundleDir, `${item.name}.mjs`);
-  const exePath = join(sidecarDistDir, `${item.name}.exe`);
-  const tauriSidecarPath = join(tauriBinaryDir, `${item.name}-${triple}.exe`);
+  const executablePath = join(sidecarDistDir, `${item.name}${extension}`);
+  const tauriSidecarPath = join(tauriBinaryDir, `${item.name}-${triple}${extension}`);
 
   await bundle(item.entry, bundlePath);
-  await packageExe(bundlePath, exePath);
-  await copyFile(exePath, tauriSidecarPath);
+  await packageExe(bundlePath, executablePath);
+  await copyFile(executablePath, tauriSidecarPath);
   console.log(`Created ${tauriSidecarPath}`);
 }

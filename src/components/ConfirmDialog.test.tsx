@@ -74,4 +74,18 @@ describe("Dialog", () => {
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
     expect(last).toHaveFocus();
   });
+
+  it("renders outside animated page containers so the overlay covers the viewport", () => {
+    const { container } = render(
+      <div className="app-page-enter" data-testid="page-shell">
+        <Dialog open title="Portal" onClose={vi.fn()}>
+          <button type="button">Inside</button>
+        </Dialog>
+      </div>,
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(container).not.toContainElement(dialog);
+    expect(document.body).toContainElement(dialog);
+  });
 });

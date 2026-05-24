@@ -6,6 +6,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { Button, Panel } from "../components/ui";
 import { instanceApi } from "../lib/api";
 import { formatCost, formatNumber, formatSecondsDuration, getTaskName } from "../lib/format";
+import { useI18n } from "../lib/i18n";
 import type { ConsoleSummary, Task } from "../lib/types";
 
 function StatTile({ label, value, icon: Icon }: { label: string; value: string; icon: LucideIcon }) {
@@ -33,6 +34,7 @@ function toTasks(raw: unknown): Task[] {
 }
 
 export function DashboardPage() {
+  const { locale, text } = useI18n();
   const consoleQuery = useQuery({ queryKey: ["console"], queryFn: instanceApi.console });
   const staticsQuery = useQuery({ queryKey: ["statics"], queryFn: () => instanceApi.statics({}) });
 
@@ -45,50 +47,50 @@ export function DashboardPage() {
   return (
     <div className="space-y-5">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatTile label="运行中任务" value={formatNumber(summary.run_task_count)} icon={Activity} />
-        <StatTile label="排队中任务" value={formatNumber(summary.pending_task_count)} icon={Server} />
-        <StatTile label="本周运行时长" value={formatSecondsDuration(summary.run_time?.week)} icon={Clock} />
-        <StatTile label="本月费用" value={formatCost(summary.cost_map?.month)} icon={Coins} />
+        <StatTile label={text("运行中任务", "Running tasks")} value={formatNumber(summary.run_task_count, 0, locale)} icon={Activity} />
+        <StatTile label={text("排队中任务", "Queued tasks")} value={formatNumber(summary.pending_task_count, 0, locale)} icon={Server} />
+        <StatTile label={text("本周运行时长", "Runtime this week")} value={formatSecondsDuration(summary.run_time?.week, locale)} icon={Clock} />
+        <StatTile label={text("本月费用", "Cost this month")} value={formatCost(summary.cost_map?.month, locale)} icon={Coins} />
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
         <Panel className="p-4">
-          <div className="text-sm text-app-muted">今日运行时长</div>
-          <div className="mt-2 text-xl font-semibold">{formatSecondsDuration(summary.run_time?.day)}</div>
+          <div className="text-sm text-app-muted">{text("今日运行时长", "Runtime today")}</div>
+          <div className="mt-2 text-xl font-semibold">{formatSecondsDuration(summary.run_time?.day, locale)}</div>
         </Panel>
         <Panel className="p-4">
-          <div className="text-sm text-app-muted">本月运行时长</div>
-          <div className="mt-2 text-xl font-semibold">{formatSecondsDuration(summary.run_time?.month)}</div>
+          <div className="text-sm text-app-muted">{text("本月运行时长", "Runtime this month")}</div>
+          <div className="mt-2 text-xl font-semibold">{formatSecondsDuration(summary.run_time?.month, locale)}</div>
         </Panel>
         <Panel className="p-4">
-          <div className="text-sm text-app-muted">本周费用</div>
-          <div className="mt-2 text-xl font-semibold">{formatCost(summary.cost_map?.week)}</div>
+          <div className="text-sm text-app-muted">{text("本周费用", "Cost this week")}</div>
+          <div className="mt-2 text-xl font-semibold">{formatCost(summary.cost_map?.week, locale)}</div>
         </Panel>
       </div>
 
       <Panel>
         <div className="flex items-center justify-between border-b border-app-border px-4 py-3">
-          <div className="text-sm font-semibold">最近任务</div>
+          <div className="text-sm font-semibold">{text("最近任务", "Recent tasks")}</div>
           {staticsQuery.isError ? (
             <Button className="h-8" variant="secondary" onClick={() => staticsQuery.refetch()}>
-              重试
+              {text("重试", "Retry")}
             </Button>
           ) : null}
         </div>
         {staticsQuery.isLoading ? (
-          <LoadingState label="正在加载任务" />
+          <LoadingState label={text("正在加载任务", "Loading tasks")} />
         ) : staticsQuery.isError ? (
-          <ErrorState error={staticsQuery.error} action={<Button variant="secondary" onClick={() => staticsQuery.refetch()}>重试</Button>} />
+          <ErrorState error={staticsQuery.error} action={<Button variant="secondary" onClick={() => staticsQuery.refetch()}>{text("重试", "Retry")}</Button>} />
         ) : recentTasks.length > 0 ? (
           <div className="overflow-auto">
             <table className="w-full min-w-[720px] text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
-                  <th className="px-3 py-2 font-medium">名称</th>
-                  <th className="px-3 py-2 font-medium">状态</th>
-                  <th className="px-3 py-2 font-medium">资源</th>
-                  <th className="px-3 py-2 font-medium">节点</th>
-                  <th className="px-3 py-2 font-medium">费用</th>
+                  <th className="px-3 py-2 font-medium">{text("名称", "Name")}</th>
+                  <th className="px-3 py-2 font-medium">{text("状态", "Status")}</th>
+                  <th className="px-3 py-2 font-medium">{text("资源", "Resources")}</th>
+                  <th className="px-3 py-2 font-medium">{text("节点", "Node")}</th>
+                  <th className="px-3 py-2 font-medium">{text("费用", "Cost")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -103,7 +105,7 @@ export function DashboardPage() {
                     </td>
                     <td className="px-3 py-2 text-app-muted">{task.node_name || "-"}</td>
                     <td className="px-3 py-2 text-app-muted">
-                      {formatCost(task.cost)} ({formatSecondsDuration(task.use_time)})
+                      {formatCost(task.cost, locale)} ({formatSecondsDuration(task.use_time, locale)})
                     </td>
                   </tr>
                 ))}
@@ -111,7 +113,7 @@ export function DashboardPage() {
             </table>
           </div>
         ) : (
-          <EmptyState title="暂无最近任务" />
+          <EmptyState title={text("暂无最近任务", "No recent tasks")} />
         )}
       </Panel>
     </div>

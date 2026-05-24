@@ -29,9 +29,17 @@ Use `Inter`, `-apple-system`, `BlinkMacSystemFont`, `"Segoe UI"`, `system-ui`, a
 
 Controls use 8px or smaller radii, visible focus rings, restrained hover states, and consistent icon sizing. Use dense data tables, side navigation, top account/status bar, drawers for detail work, and inline empty/error states instead of decorative cards.
 
+Dialog and popover interactions must be keyboard-accessible, restore focus when closed, and keep destructive or long-running actions behind explicit confirmation. Desktop-only actions such as in-app SSH, system terminal, and VS Code should appear only when the runtime supports them.
+
 ## Layout
 
 Default app shell is a fixed-width left navigation with a flexible content area. Pages use full-width work surfaces, compact toolbars, and table-first layouts. Avoid nested cards and avoid wrapping every section in floating panels.
+
+The mobile shell uses bottom navigation with the same primary routes. Dense tables should degrade through wrapping, horizontal scrolling, or compact controls rather than hiding required actions.
+
+## Language
+
+Chinese is the primary interface language, with English available through the language switch. New text should be added through the i18n dictionary or `text(zh, en)` helper so the shell, dialogs, toasts, empty states, and settings remain bilingual.
 
 ## Motion
 

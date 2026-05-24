@@ -13,10 +13,20 @@ describe("app settings", () => {
       normalizeAppSettings({
         apiBaseUrl: " http://example.com/api/ ",
         monitorDashboardUrl: " http://example.com/d/test/ ",
+        notificationPreferences: {
+          "task.success": "app",
+          "task.failure": "off",
+          "task.abnormal": "system",
+        },
       }),
     ).toEqual({
       apiBaseUrl: "http://example.com/api",
       monitorDashboardUrl: "http://example.com/d/test",
+      notificationPreferences: {
+        "task.success": "app",
+        "task.failure": "off",
+        "task.abnormal": "system",
+      },
     });
   });
 
@@ -24,6 +34,21 @@ describe("app settings", () => {
     expect(JSON.parse(stringifyAppSettings({ apiBaseUrl: "http://a/api/", monitorDashboardUrl: "http://b/d/" }))).toEqual({
       apiBaseUrl: "http://a/api",
       monitorDashboardUrl: "http://b/d",
+      notificationPreferences: {
+        "task.success": "system",
+        "task.failure": "system",
+        "task.abnormal": "system",
+      },
+    });
+  });
+
+  it("fills notification preference defaults for older stored settings", () => {
+    expect(parseAppSettings(JSON.stringify({ apiBaseUrl: "http://a/api", monitorDashboardUrl: "http://b/d" }))).toMatchObject({
+      notificationPreferences: {
+        "task.success": "system",
+        "task.failure": "system",
+        "task.abnormal": "system",
+      },
     });
   });
 });

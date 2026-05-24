@@ -7,8 +7,8 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeDevCommand": "npm.cmd run dev:tauri",
-    "beforeBuildCommand": "npm.cmd run build:desktop"
+    "beforeDevCommand": "node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 1420 --strictPort",
+    "beforeBuildCommand": "node tools/easy-console/build-desktop.mjs"
   },
   "app": {
     "windows": [

@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "dev:tauri": "vite --host 127.0.0.1 --port 1420 --strictPort",
     "build": "tsc -b && vite build",
-    "build:desktop": "npm.cmd run build:sidecars && npm.cmd run build:web",
+    "build:desktop": "node tools/easy-console/build-desktop.mjs",
     "build:sidecars": "node tools/easy-console/build-sidecars.mjs",
     "build:web": "tsc -b && vite build",
     "ec": "tsx tools/easy-console/cli-entry.ts",

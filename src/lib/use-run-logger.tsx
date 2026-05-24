@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 
+import { i18nText } from "./i18n";
 import type { RunLogInput } from "./run-logs";
 
 export type RunLoggerContextValue = {
@@ -14,6 +15,6 @@ export function useRunLogger() {
   return context;
 }
 
-export function errorMessage(error: unknown, fallback = "操作失败") {
-  return error instanceof Error ? error.message : fallback;
+export function errorMessage(error: unknown, fallback?: string) {
+  return error instanceof Error ? error.message : (fallback ?? i18nText("操作失败", "Operation failed"));
 }

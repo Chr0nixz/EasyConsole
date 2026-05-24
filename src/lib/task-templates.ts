@@ -1,4 +1,5 @@
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName } from "./format";
+import { i18nText } from "./i18n";
 import { normalizeStoragePath } from "./remote-storage";
 import type { CreateTaskPayload, RuntimeStorage, Task, TaskTemplate, UnknownRecord } from "./types";
 
@@ -31,7 +32,7 @@ function boundedBatchCount(value: unknown) {
   return Math.min(Math.max(count, 1), MAX_TEMPLATE_BATCH_COUNT);
 }
 
-function releaseCondition(value: unknown): 1 | 2 | 3 {
+function normalizeReleaseCondition(value: unknown): 1 | 2 | 3 {
   return value === 2 || value === 3 ? value : 1;
 }
 
@@ -46,7 +47,7 @@ function normalizeTemplate(raw: unknown): TaskTemplate | null {
   const imageId = stringValue(raw.imageId).trim();
   if (!id || !name || !imageId) return null;
 
-  const condition = releaseCondition(raw.releaseCondition);
+  const condition = normalizeReleaseCondition(raw.releaseCondition);
   return {
     id,
     name,
@@ -111,6 +112,47 @@ export function recordTaskTemplateUsage(template: TaskTemplate, date = new Date(
     usageCount: template.usageCount + 1,
     lastUsedAt: date.toISOString(),
     updatedAt: date.toISOString(),
+  };
+}
+
+function getTaskNameForTemplate(task: Pick<Task, "id" | "name" | "task_name">) {
+  return task.name || task.task_name || i18nText(`任务 ${task.id ?? ""}`, `Task ${task.id ?? ""}`).trim();
+}
+
+function sanitizeTaskNamePrefix(value: string) {
+  const normalized = value
+    .trim()
+    .replace(/-tpl[a-zA-Z0-9]{1,10}-\d{12}(?:-\d+)?$/, "")
+    .replace(/\s+/g, "-")
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "");
+  return normalized || "task";
+}
+
+function getTaskImageId(task: Task) {
+  const value = task.image_id ?? task.img;
+  return value === undefined || value === null || value === "" ? "" : String(value);
+}
+
+export function taskToEditableTaskTemplate(task: Task, username = ""): EditableTaskTemplate {
+  const taskName = getTaskNameForTemplate(task);
+  const releaseCondition = normalizeReleaseCondition(task.releace_conditions ?? task.release_condition);
+  return {
+    name: i18nText(`${taskName} 模板`, `${taskName} template`),
+    description: i18nText(`从实例 ${taskName} 保存`, `Saved from instance ${taskName}`),
+    taskNamePrefix: sanitizeTaskNamePrefix(taskName),
+    batchCount: 1,
+    imageId: getTaskImageId(task),
+    cpu: positiveNumber(task.cpu, 4),
+    gpu: nonNegativeInteger(task.gpu, 0),
+    memory: positiveInteger(task.memory, 16),
+    storagePath: normalizeStoragePath(stringValue(task.storage_path, username ? `/${username}` : "/")),
+    mountPath: stringValue(task.mount_path, username ? `/home/ubuntu/${username}` : "/home/ubuntu"),
+    releaseCondition,
+    releaseAfterHours: releaseCondition === 2 ? 24 : undefined,
+    workDirectory: releaseCondition === 3 ? stringValue(task.work_directory).trim() : undefined,
+    scriptPath: releaseCondition === 3 ? stringValue(task.script_path).trim() : undefined,
   };
 }
 
