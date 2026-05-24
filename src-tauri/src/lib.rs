@@ -879,6 +879,11 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_http::init())
         .setup(|app| {
+            if let Some(icon) = app.default_window_icon().cloned() {
+                for window in app.webview_windows().values() {
+                    window.set_icon(icon.clone())?;
+                }
+            }
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()

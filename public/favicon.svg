@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">EasyConsole</title>
+  <desc id="desc">A compact terminal window mark for EasyConsole.</desc>
+  <defs>
+    <linearGradient id="bg" x1="146" x2="878" y1="118" y2="906" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="0.52" stop-color="#1d4ed8"/>
+      <stop offset="1" stop-color="#0f766e"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="234" x2="790" y1="252" y2="726" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#dbeafe"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="252" x2="772" y1="372" y2="690" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#172033"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <filter id="shadow" x="140" y="202" width="744" height="604" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="34" flood-color="#0f172a" flood-opacity="0.26" stdDeviation="32"/>
+    </filter>
+    <clipPath id="shell">
+      <rect x="64" y="64" width="896" height="896" rx="216"/>
+    </clipPath>
+  </defs>
+
+  <rect x="64" y="64" width="896" height="896" rx="216" fill="url(#bg)"/>
+  <g clip-path="url(#shell)" opacity="0.18">
+    <path fill="#ffffff" d="M146 756h732v76H146z"/>
+    <path fill="#ffffff" d="M140 218h744v48H140z"/>
+    <path fill="#ffffff" d="M808 116h72v794h-72z"/>
+  </g>
+  <g clip-path="url(#shell)">
+    <path fill="#e0f2fe" opacity="0.9" d="M252 706c-86 0-156-69-156-154 0-74 53-136 123-150 34-101 129-174 242-174 92 0 172 49 217 123 24-10 51-16 79-16 98 0 178 79 178 177 0 107-87 194-195 194H252z"/>
+    <path fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round" stroke-width="26" opacity="0.65" d="M252 706c-86 0-156-69-156-154 0-74 53-136 123-150 34-101 129-174 242-174 92 0 172 49 217 123 24-10 51-16 79-16 98 0 178 79 178 177"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="190" y="244" width="644" height="492" rx="72" fill="url(#panel)"/>
+    <path fill="#e8f0fb" d="M190 316c0-39.765 32.235-72 72-72h500c39.765 0 72 32.235 72 72v70H190z"/>
+    <circle cx="282" cy="318" r="22" fill="#ef4444"/>
+    <circle cx="348" cy="318" r="22" fill="#f59e0b"/>
+    <circle cx="414" cy="318" r="22" fill="#22c55e"/>
+    <rect x="230" y="382" width="564" height="314" rx="42" fill="url(#screen)"/>
+    <path d="m332 486 82 66-82 66" fill="none" stroke="#38bdf8" stroke-linecap="round" stroke-linejoin="round" stroke-width="58"/>
+    <rect x="480" y="489" width="214" height="44" rx="22" fill="#94a3b8" opacity="0.85"/>
+    <rect x="480" y="592" width="166" height="48" rx="24" fill="#34d399"/>
+  </g>
+
+  <circle cx="748" cy="688" r="72" fill="#ffffff"/>
+  <circle cx="748" cy="688" r="46" fill="#22c55e"/>
+  <path d="m728 687 15 16 30-34" fill="none" stroke="#ecfdf5" stroke-linecap="round" stroke-linejoin="round" stroke-width="18"/>
+</svg>
