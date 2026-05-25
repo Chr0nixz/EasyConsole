@@ -1,6 +1,6 @@
 [package]
 name = "easy-console"
-version = "0.1.0"
+version = "0.1.1"
 description = "EasyConsole desktop shell"
 authors = ["EasyConsole"]
 license = ""
@@ -28,6 +28,8 @@ tauri-plugin-http = "2"
 tauri-plugin-websocket = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
-tokio = { version = "1.48.0", features = ["macros", "sync"] }
+tokio = { version = "1.48.0", features = ["macros", "sync", "time"] }
 uuid = { version = "1.18.1", features = ["v4"] }
 tauri-plugin-notification = "2"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"

@@ -27,7 +27,9 @@ describe("app settings", () => {
         "task.failure": "off",
         "task.abnormal": "system",
       },
+      autoCheckUpdates: true,
       desktopCloseToTray: false,
+      desktopClosePrompt: true,
     });
   });
 
@@ -40,13 +42,17 @@ describe("app settings", () => {
         "task.failure": "system",
         "task.abnormal": "system",
       },
+      autoCheckUpdates: true,
       desktopCloseToTray: false,
+      desktopClosePrompt: true,
     });
   });
 
   it("fills notification preference defaults for older stored settings", () => {
     expect(parseAppSettings(JSON.stringify({ apiBaseUrl: "http://a/api", monitorDashboardUrl: "http://b/d" }))).toMatchObject({
+      autoCheckUpdates: true,
       desktopCloseToTray: false,
+      desktopClosePrompt: true,
       notificationPreferences: {
         "task.success": "system",
         "task.failure": "system",

@@ -1,4 +1,4 @@
-import { CalendarClock, Command as CommandIcon, Database, Image, LayoutDashboard, LogOut, ScrollText, Server, Settings, SquareStack, TerminalSquare } from "lucide-react";
+import { CalendarClock, Command as CommandIcon, Database, DownloadCloud, Image, LayoutDashboard, LogOut, Minimize2, Power, ScrollText, Server, Settings, SquareStack, TerminalSquare } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 
@@ -6,7 +6,10 @@ import { LanguageSwitch } from "./LanguageSwitch";
 import { BackgroundScheduledTaskRunner } from "./BackgroundScheduledTaskRunner";
 import { CommandPalette } from "./CommandPalette";
 import { TaskNotificationWatcher } from "./TaskNotificationWatcher";
-import { Button } from "./ui";
+import { Button, Dialog } from "./ui";
+import { APP_SETTINGS_STORAGE_KEY, getRuntimeSettings, setRuntimeSettings, stringifyAppSettings } from "../lib/app-settings";
+import { useAppUpdate } from "../lib/app-update-context";
+import { browserRuntime } from "../lib/runtime";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { useAuth } from "../lib/use-auth";
 import { cn } from "../lib/utils";
@@ -36,8 +39,11 @@ const titles: Record<string, TranslationKey> = {
 export function AppShell() {
   const auth = useAuth();
   const location = useLocation();
-  const { t } = useI18n();
+  const { t, text } = useI18n();
+  const appUpdate = useAppUpdate();
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [closePromptOpen, setClosePromptOpen] = useState(false);
+  const [rememberCloseChoice, setRememberCloseChoice] = useState(false);
   const userName = auth.user?.username || auth.user?.name || t("shell.loggedIn");
 
   useEffect(() => {
@@ -51,11 +57,94 @@ export function AppShell() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    let removeListener: (() => void) | null = null;
+    void browserRuntime.onDesktopCloseRequested(() => {
+      setClosePromptOpen((open) => {
+        if (!open) setRememberCloseChoice(false);
+        return true;
+      });
+    }).then((remove) => {
+      if (disposed) {
+        remove();
+        return;
+      }
+      removeListener = remove;
+    });
+
+    return () => {
+      disposed = true;
+      removeListener?.();
+    };
+  }, []);
+
+  function closeClosePrompt() {
+    setClosePromptOpen(false);
+    setRememberCloseChoice(false);
+    void browserRuntime.cancelDesktopClosePrompt();
+  }
+
+  async function chooseCloseAction(action: "tray" | "exit") {
+    if (rememberCloseChoice) {
+      const nextSettings = {
+        ...getRuntimeSettings(),
+        desktopClosePrompt: false,
+        desktopCloseToTray: action === "tray",
+      };
+      setRuntimeSettings(nextSettings);
+      await browserRuntime.storage.set(APP_SETTINGS_STORAGE_KEY, stringifyAppSettings(nextSettings));
+      await browserRuntime.setDesktopClosePrompt(false);
+      await browserRuntime.setDesktopCloseToTray(nextSettings.desktopCloseToTray);
+    }
+
+    setClosePromptOpen(false);
+    setRememberCloseChoice(false);
+    await browserRuntime.completeDesktopClosePrompt(action);
+  }
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-app-bg text-app-text md:flex-row">
       <TaskNotificationWatcher />
       <BackgroundScheduledTaskRunner />
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
+      <Dialog
+        open={closePromptOpen}
+        title={text("关闭 EasyConsole", "Close EasyConsole")}
+        onClose={closeClosePrompt}
+        width="max-w-md"
+        closeOnOverlayClick={false}
+      >
+        <div className="space-y-4 p-4">
+          <p className="text-sm leading-6 text-app-muted">
+            {text(
+              "要彻底退出应用，还是最小化到托盘继续执行后台计划任务？",
+              "Exit the app completely, or minimize to tray so background scheduled tasks can continue?",
+            )}
+          </p>
+          <label className="flex items-center gap-2 text-sm text-app-muted">
+            <input
+              type="checkbox"
+              checked={rememberCloseChoice}
+              onChange={(event) => setRememberCloseChoice(event.target.checked)}
+            />
+            {text("不再提示，记住本次选择", "Do not ask again, remember this choice")}
+          </label>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button type="button" variant="secondary" onClick={closeClosePrompt}>
+              {text("继续使用", "Keep open")}
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => void chooseCloseAction("tray")}>
+              <Minimize2 className="h-4 w-4" />
+              {text("最小化到托盘", "Minimize to tray")}
+            </Button>
+            <Button type="button" variant="danger" onClick={() => void chooseCloseAction("exit")}>
+              <Power className="h-4 w-4" />
+              {text("彻底退出", "Exit")}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
       <aside className="hidden h-screen w-60 shrink-0 flex-col overflow-hidden border-r border-app-border bg-app-surface md:flex">
         <div className="flex h-14 items-center gap-2 border-b border-app-border px-4">
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-app-accent text-app-onAccent">
@@ -91,6 +180,14 @@ export function AppShell() {
             <p className="hidden truncate text-xs text-app-muted sm:block">{t("shell.headerDescription")}</p>
           </div>
           <div className="flex items-center gap-3">
+            {browserRuntime.isDesktop && (appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading") ? (
+              <Button className="shrink-0" variant="secondary" onClick={appUpdate.openUpdateDialog}>
+                <DownloadCloud className="h-4 w-4" />
+                <span className="hidden sm:inline">
+                  {appUpdate.state.status === "readyToRestart" ? text("重启更新", "Restart update") : text("更新", "Update")}
+                </span>
+              </Button>
+            ) : null}
             <Button className="hidden shrink-0 sm:inline-flex" variant="secondary" onClick={() => setCommandPaletteOpen(true)}>
               <CommandIcon className="h-4 w-4" />
               Ctrl K

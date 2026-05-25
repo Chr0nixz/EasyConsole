@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, BellRing, Download, RotateCcw, Save, Settings2, Upload } from "lucide-react";
+import { ArrowLeft, BellRing, Download, ExternalLink, RefreshCw, RotateCcw, Save, Settings2, Upload } from "lucide-react";
 import { ChangeEvent, FormEvent, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -16,6 +16,8 @@ import {
   stringifyAppSettings,
   type AppSettings,
 } from "../lib/app-settings";
+import { APP_UPDATE_ENDPOINT_URL } from "../lib/app-update";
+import { useAppUpdate } from "../lib/app-update-context";
 import { deriveWebsshUrl } from "../lib/webssh";
 import { saveBlob } from "../lib/download";
 import {
@@ -52,6 +54,7 @@ function applySettings(settings: AppSettings) {
   setRuntimeSettings(settings);
   setApiBaseUrl(settings.apiBaseUrl);
   void browserRuntime.setDesktopCloseToTray(settings.desktopCloseToTray);
+  void browserRuntime.setDesktopClosePrompt(settings.desktopClosePrompt);
 }
 
 const notificationEvents: Array<{ event: ImportantNotificationEvent; zh: string; en: string; descriptionZh: string; descriptionEn: string }> = [
@@ -87,6 +90,7 @@ const notificationModeOptions: Array<{ mode: NotificationMode; zh: string; en: s
 export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const toast = useToast();
   const { t, text } = useI18n();
+  const appUpdate = useAppUpdate();
   const runLogger = useRunLogger();
   const queryClient = useQueryClient();
   const [form, setForm] = useState<AppSettings>(() => getRuntimeSettings());
@@ -324,22 +328,6 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             </label>
 
             {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
-            {browserRuntime.isDesktop ? (
-              <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
-                <input
-                  className="mt-1"
-                  type="checkbox"
-                  checked={form.desktopCloseToTray}
-                  onChange={(event) => setForm((value) => ({ ...value, desktopCloseToTray: event.target.checked }))}
-                />
-                <span>
-                  <span className="block font-medium text-app-text">{text("关闭窗口时驻留后台", "Keep running after window close")}</span>
-                  <span className="mt-1 block text-xs leading-5 text-app-muted">
-                    {text("开启后关闭主窗口会隐藏到托盘，计划任务仍会在后台检查；从托盘菜单退出才会结束应用。", "When enabled, closing the main window hides it to the tray and scheduled tasks keep running. Use the tray menu to quit.")}
-                  </span>
-                </span>
-              </label>
-            ) : null}
           </div>
 
           <div className="rounded-lg border border-app-border bg-app-panel p-3">
@@ -357,6 +345,116 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                   {t("settings.scopeDescription")}
                 </p>
               </div>
+            </div>
+          </div>
+        </div>
+      </Panel>
+
+      {browserRuntime.isDesktop ? (
+        <Panel>
+          <div className="border-b border-app-border px-4 py-3">
+            <h2 className="text-sm font-semibold">{text("窗口关闭", "Window Close")}</h2>
+            <p className="mt-1 text-xs text-app-muted">
+              {text("控制桌面端点击关闭按钮后的确认和托盘行为。", "Control confirmation and tray behavior when closing the desktop window.")}
+            </p>
+          </div>
+          <div className="grid gap-3 p-4 sm:grid-cols-2">
+            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+              <input
+                className="mt-1"
+                type="checkbox"
+                checked={form.desktopClosePrompt}
+                onChange={(event) => setForm((value) => ({ ...value, desktopClosePrompt: event.target.checked }))}
+              />
+              <span>
+                <span className="block font-medium text-app-text">{text("关闭窗口前确认", "Confirm before closing")}</span>
+                <span className="mt-1 block text-xs leading-5 text-app-muted">
+                  {text("开启后点击关闭会先选择彻底退出或最小化到托盘。", "When enabled, closing asks whether to exit or minimize to tray.")}
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+              <input
+                className="mt-1"
+                type="checkbox"
+                checked={form.desktopCloseToTray}
+                onChange={(event) => setForm((value) => ({ ...value, desktopCloseToTray: event.target.checked }))}
+              />
+              <span>
+                <span className="block font-medium text-app-text">{text("关闭窗口时最小化到托盘", "Minimize to tray on close")}</span>
+                <span className="mt-1 block text-xs leading-5 text-app-muted">
+                  {text("未启用关闭确认时生效：关闭主窗口会隐藏到托盘而不是退出。", "Applies when close confirmation is off: closing the main window hides it to tray instead of exiting.")}
+                </span>
+              </span>
+            </label>
+          </div>
+        </Panel>
+      ) : null}
+
+      <Panel>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold">{text("应用更新", "App Updates")}</h2>
+            <p className="mt-1 text-xs text-app-muted">
+              {text("桌面端从 GitHub Release 检查稳定版更新。", "The desktop app checks stable updates from GitHub Release.")}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              disabled={!browserRuntime.isDesktop || appUpdate.state.status === "checking" || appUpdate.state.status === "downloading"}
+              type="button"
+              variant="secondary"
+              onClick={() => void appUpdate.checkForUpdates(true)}
+            >
+              <RefreshCw className="h-4 w-4" />
+              {appUpdate.state.status === "checking" ? text("检查中", "Checking") : text("检查更新", "Check")}
+            </Button>
+            <Button type="button" variant="secondary" onClick={appUpdate.openReleasePage}>
+              <ExternalLink className="h-4 w-4" />
+              GitHub
+            </Button>
+          </div>
+        </div>
+        <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+          <div className="space-y-3">
+            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+              <input
+                className="mt-1"
+                type="checkbox"
+                checked={form.autoCheckUpdates}
+                onChange={(event) => setForm((value) => ({ ...value, autoCheckUpdates: event.target.checked }))}
+              />
+              <span>
+                <span className="block font-medium text-app-text">{text("启动后自动检查更新", "Check for updates after startup")}</span>
+                <span className="mt-1 block text-xs leading-5 text-app-muted">
+                  {text("最多每 12 小时自动检查一次；手动检查不受限制。", "Automatic checks run at most once every 12 hours; manual checks are not limited.")}
+                </span>
+              </span>
+            </label>
+            {!browserRuntime.isDesktop ? (
+              <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">
+                {text("网页运行时不支持安装桌面更新。", "The web runtime cannot install desktop updates.")}
+              </div>
+            ) : null}
+            {appUpdate.state.error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{appUpdate.state.error}</div> : null}
+          </div>
+          <div className="min-w-0 rounded-lg border border-app-border bg-app-panel p-3 text-xs">
+            <div className="grid gap-3">
+              <div>
+                <div className="mb-1 text-app-muted">{text("当前版本", "Current version")}</div>
+                <code className="font-mono text-app-text">{appUpdate.state.currentVersion ?? appUpdate.state.info?.currentVersion ?? "-"}</code>
+              </div>
+              <div>
+                <div className="mb-1 text-app-muted">{text("更新源", "Update source")}</div>
+                <code className="block max-w-full break-all rounded-md bg-app-surface px-2.5 py-2 font-mono leading-5 text-app-text">
+                  {APP_UPDATE_ENDPOINT_URL}
+                </code>
+              </div>
+              {appUpdate.state.lastCheckedAt ? (
+                <div className="text-app-muted">
+                  {text("上次检查", "Last checked")} {new Date(appUpdate.state.lastCheckedAt).toLocaleString()}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

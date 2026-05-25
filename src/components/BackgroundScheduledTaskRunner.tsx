@@ -11,6 +11,36 @@ import { errorMessage } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
 const CHECK_INTERVAL_MS = 30_000;
+const BACKGROUND_LOCK_NAME = "easy-console.background-scheduled-task-runner";
+
+type RuntimeLockManager = {
+  request(
+    name: string,
+    options: { mode?: "exclusive" | "shared"; signal?: AbortSignal },
+    callback: () => Promise<void>,
+  ): Promise<void>;
+};
+
+function startDesktopBackgroundLock() {
+  if (!browserRuntime.isDesktop || typeof navigator === "undefined") return () => undefined;
+
+  const locks = (navigator as Navigator & { locks?: RuntimeLockManager }).locks;
+  if (!locks) return () => undefined;
+
+  const controller = new AbortController();
+  const waitUntilStopped = new Promise<void>((resolve) => {
+    controller.signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+
+  void locks
+    .request(BACKGROUND_LOCK_NAME, { mode: "shared", signal: controller.signal }, () => waitUntilStopped)
+    .catch((error) => {
+      if (controller.signal.aborted) return;
+      console.warn("Failed to hold EasyConsole background lock.", error);
+    });
+
+  return () => controller.abort();
+}
 
 export function BackgroundScheduledTaskRunner() {
   const toast = useToast();
@@ -77,15 +107,33 @@ export function BackgroundScheduledTaskRunner() {
       }
     }
 
+    const stopBackgroundLock = startDesktopBackgroundLock();
+    const runDue = () => void executeDueTasks();
+    let removeDesktopRunDue: (() => void) | null = null;
+
     void executeDueTasks();
     const timer = window.setInterval(() => void executeDueTasks(), CHECK_INTERVAL_MS);
-    void browserRuntime.onDesktopRunDueScheduledTasks(() => void executeDueTasks()).then((remove) => {
-      if (disposed) remove();
+    window.addEventListener("focus", runDue);
+    window.addEventListener("online", runDue);
+    window.addEventListener("pageshow", runDue);
+    document.addEventListener("visibilitychange", runDue);
+    void browserRuntime.onDesktopRunDueScheduledTasks(runDue).then((remove) => {
+      if (disposed) {
+        remove();
+        return;
+      }
+      removeDesktopRunDue = remove;
     });
 
     return () => {
       disposed = true;
       window.clearInterval(timer);
+      window.removeEventListener("focus", runDue);
+      window.removeEventListener("online", runDue);
+      window.removeEventListener("pageshow", runDue);
+      document.removeEventListener("visibilitychange", runDue);
+      stopBackgroundLock();
+      removeDesktopRunDue?.();
     };
   }, [queryClient, text, toast]);
 

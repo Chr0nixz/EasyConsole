@@ -309,6 +309,14 @@ export type RuntimeTransport = {
   openSystemSshTerminal(request: SshConnectionRequest): Promise<void>;
   openVscodeSsh(request: SshConnectionRequest): Promise<void>;
   setDesktopCloseToTray(enabled: boolean): Promise<void>;
+  setDesktopClosePrompt(enabled: boolean): Promise<void>;
+  cancelDesktopClosePrompt(): Promise<void>;
+  completeDesktopClosePrompt(action: "tray" | "exit"): Promise<void>;
+  showDesktopMainWindow(): Promise<void>;
+  hideDesktopTrayMenu(): Promise<void>;
+  runDueScheduledTasks(): Promise<void>;
+  quitDesktopApp(): Promise<void>;
+  onDesktopCloseRequested(handler: () => void): Promise<() => void>;
   onDesktopRunDueScheduledTasks(handler: () => void): Promise<() => void>;
 };
 

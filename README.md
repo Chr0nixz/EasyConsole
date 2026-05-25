@@ -221,12 +221,30 @@ Installers and app bundles include both sidecars. For portable/manual distributi
 
 Current sidecar packaging supports Windows, macOS, and Linux on x64 and arm64. The sidecars are generated artifacts and are ignored by git.
 
+## Desktop Updates
+
+The packaged desktop app uses Tauri's updater plugin. The stable update feed is the public GitHub Release asset:
+
+```text
+https://github.com/Chr0nixz/EasyConsole/releases/latest/download/latest.json
+```
+
+The app checks for updates after startup at most once every 12 hours when Settings enables automatic checks. Users can also check manually from Settings. If an update is found, EasyConsole shows the release notes, downloads and installs only after user confirmation, and then asks the user to restart the app.
+
+Updater packages are signed. The updater public key is committed in `src-tauri/tauri.conf.json`; keep the matching private key out of git. The local key generated during setup is stored at:
+
+```text
+%USERPROFILE%\.easy-console\tauri-updater-private.key
+```
+
+For GitHub Actions releases, copy the private key content into `TAURI_SIGNING_PRIVATE_KEY`. If the key has a password, also set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Losing or changing the private key breaks updates from already installed versions unless a new build ships with a matching public key through another distribution path.
+
 ## CI/CD
 
 GitHub Actions workflows live in `.github/workflows/`:
 
-- `ci.yml`: runs on pull requests and pushes to `main`/`master`; verifies Windows, macOS, and Linux with typecheck, tool typecheck, lint, tests, desktop input build, Tauri shell check, and sidecar artifact upload.
-- `release.yml`: runs on `v*` tags or manual dispatch; verifies the project, builds Windows, macOS, and Linux Tauri desktop bundles, creates a draft GitHub release, and uploads sidecar plus desktop artifacts.
+- `ci.yml`: runs on pull requests and pushes to `main`/`master`; verifies Windows, macOS, and Linux with version consistency, typecheck, tool typecheck, lint, tests, desktop input build, Tauri shell check, and sidecar artifact upload.
+- `release.yml`: runs on `v*` tags or manual dispatch; verifies the project, builds Windows, macOS, and Linux Tauri desktop bundles, creates a draft GitHub release, signs updater artifacts, and uploads sidecar plus desktop artifacts.
 
 Create a release by pushing a version tag:
 
@@ -235,11 +253,29 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+Release checklist:
+
+```powershell
+npm.cmd version patch --no-git-tag-version
+npm.cmd run version:check
+npm.cmd run typecheck
+npm.cmd run typecheck:tools
+npm.cmd run lint
+npm.cmd run test
+npm.cmd run build:desktop
+cargo check --manifest-path src-tauri/Cargo.toml
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+After the workflow creates the draft release, verify that `latest.json` and `.sig` updater signatures are present, install the previous stable version, publish the release, and confirm the app discovers and installs the update. Manual workflow dispatches are marked prerelease and should not be used as the stable update feed.
+
 ## Verification
 
 Run these before shipping:
 
 ```powershell
+npm.cmd run version:check
 npm.cmd run typecheck
 npm.cmd run typecheck:tools
 npm.cmd run lint

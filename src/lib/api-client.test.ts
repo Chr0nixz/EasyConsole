@@ -60,6 +60,16 @@ function createRuntime() {
     async openSystemSshTerminal() {},
     async openVscodeSsh() {},
     async setDesktopCloseToTray() {},
+    async setDesktopClosePrompt() {},
+    async cancelDesktopClosePrompt() {},
+    async completeDesktopClosePrompt() {},
+    async showDesktopMainWindow() {},
+    async hideDesktopTrayMenu() {},
+    async runDueScheduledTasks() {},
+    async quitDesktopApp() {},
+    async onDesktopCloseRequested() {
+      return () => {};
+    },
     async onDesktopRunDueScheduledTasks() {
       return () => {};
     },

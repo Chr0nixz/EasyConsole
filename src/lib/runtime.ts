@@ -320,6 +320,39 @@ export const browserRuntime: RuntimeTransport = {
     if (!isTauri()) return Promise.resolve();
     return invokeTauriCommand("set_desktop_close_to_tray", { enabled });
   },
+  setDesktopClosePrompt(enabled) {
+    if (!isTauri()) return Promise.resolve();
+    return invokeTauriCommand("set_desktop_close_prompt", { enabled });
+  },
+  cancelDesktopClosePrompt() {
+    if (!isTauri()) return Promise.resolve();
+    return invokeTauriCommand("cancel_desktop_close_prompt", {});
+  },
+  completeDesktopClosePrompt(action) {
+    if (!isTauri()) return Promise.resolve();
+    return invokeTauriCommand("complete_desktop_close_prompt", { action });
+  },
+  showDesktopMainWindow() {
+    if (!isTauri()) return Promise.resolve();
+    return invokeTauriCommand("show_desktop_main_window", {});
+  },
+  hideDesktopTrayMenu() {
+    if (!isTauri()) return Promise.resolve();
+    return invokeTauriCommand("hide_desktop_tray_menu", {});
+  },
+  runDueScheduledTasks() {
+    if (!isTauri()) return Promise.resolve();
+    return invokeTauriCommand("run_due_scheduled_tasks", {});
+  },
+  quitDesktopApp() {
+    if (!isTauri()) return Promise.resolve();
+    return invokeTauriCommand("quit_desktop_app", {});
+  },
+  async onDesktopCloseRequested(handler) {
+    if (!isTauri()) return () => undefined;
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen("desktop-close-requested", handler);
+  },
   async onDesktopRunDueScheduledTasks(handler) {
     if (!isTauri()) return () => undefined;
     const { listen } = await import("@tauri-apps/api/event");

@@ -11,7 +11,9 @@ export type AppSettings = {
   apiBaseUrl: string;
   monitorDashboardUrl: string;
   notificationPreferences: NotificationPreferences;
+  autoCheckUpdates: boolean;
   desktopCloseToTray: boolean;
+  desktopClosePrompt: boolean;
 };
 
 export type ImportantNotificationEvent = "task.success" | "task.failure" | "task.abnormal";
@@ -33,7 +35,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   monitorDashboardUrl:
     (import.meta as ImportMetaWithEnv).env?.VITE_MONITOR_DASHBOARD_URL || DEFAULT_MONITOR_DASHBOARD_URL,
   notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+  autoCheckUpdates: true,
   desktopCloseToTray: false,
+  desktopClosePrompt: true,
 };
 
 let runtimeSettings: AppSettings = DEFAULT_APP_SETTINGS;
@@ -67,7 +71,9 @@ export function normalizeAppSettings(settings: Partial<AppSettings>): AppSetting
     apiBaseUrl: normalizeUrl(settings.apiBaseUrl, DEFAULT_APP_SETTINGS.apiBaseUrl),
     monitorDashboardUrl: normalizeUrl(settings.monitorDashboardUrl, DEFAULT_APP_SETTINGS.monitorDashboardUrl),
     notificationPreferences: normalizeNotificationPreferences(settings.notificationPreferences),
+    autoCheckUpdates: settings.autoCheckUpdates !== false,
     desktopCloseToTray: settings.desktopCloseToTray === true,
+    desktopClosePrompt: settings.desktopClosePrompt !== false,
   };
 }
 

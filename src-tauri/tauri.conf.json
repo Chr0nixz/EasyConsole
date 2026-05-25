@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "EasyConsole",
   "mainBinaryName": "EasyConsole",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.easyconsole.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "externalBin": [
       "binaries/easy-console-cli",
       "binaries/easy-console-mcp"
@@ -42,6 +43,17 @@
     ],
     "android": {
       "debugApplicationIdSuffix": ".debug"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIyNjBFRTlCRkIwQzAwREQKUldUZEFBejdtKzVnSW1UYWpiOWVnYWFhV2hxN2daWGJnaWpsVVA4bG55RXFlcTJJQ3Vya1VGQmIK",
+      "endpoints": [
+        "https://github.com/Chr0nixz/EasyConsole/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

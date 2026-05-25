@@ -8,15 +8,22 @@ use std::time::Duration;
 use russh::keys::ssh_key::{self, HashAlg};
 use russh::{client, ChannelMsg};
 use serde::{Deserialize, Serialize};
-use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, Position, RunEvent, State, WebviewUrl,
+    WebviewWindowBuilder, WindowEvent,
+};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 const SSH_SESSION_EVENT: &str = "ssh-session-event";
 const DESKTOP_RUN_DUE_EVENT: &str = "desktop-run-due-scheduled-tasks";
+const DESKTOP_CLOSE_REQUESTED_EVENT: &str = "desktop-close-requested";
 const APP_SETTINGS_STORAGE_KEY: &str = "easy-console.settings";
+const DESKTOP_RUN_DUE_INTERVAL_SECS: u64 = 30;
+const TRAY_MENU_LABEL: &str = "tray-menu";
+const TRAY_MENU_WIDTH: f64 = 320.0;
+const TRAY_MENU_HEIGHT: f64 = 244.0;
 const DEFAULT_COLS: u32 = 120;
 const DEFAULT_ROWS: u32 = 32;
 const VSCODE_KEY_NAME: &str = "easyconsole_vscode_ed25519";
@@ -57,6 +64,7 @@ struct SshSessionState {
 #[derive(Default)]
 struct DesktopRuntimeState {
     close_to_tray: Mutex<bool>,
+    close_prompt_enabled: Mutex<bool>,
     quit_requested: Mutex<bool>,
 }
 
@@ -854,6 +862,22 @@ fn read_close_to_tray_setting(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+fn read_close_prompt_setting(app: &AppHandle) -> bool {
+    let Ok(path) = runtime_storage_path(app) else {
+        return true;
+    };
+    let Ok(data) = load_string_map(&path) else {
+        return true;
+    };
+    let Some(raw) = data.get(APP_SETTINGS_STORAGE_KEY) else {
+        return true;
+    };
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("desktopClosePrompt").and_then(serde_json::Value::as_bool))
+        .unwrap_or(true)
+}
+
 fn set_close_to_tray_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> Result<(), String> {
     let mut close_to_tray = state
         .close_to_tray
@@ -863,12 +887,29 @@ fn set_close_to_tray_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> R
     Ok(())
 }
 
+fn set_close_prompt_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> Result<(), String> {
+    let mut close_prompt_enabled = state
+        .close_prompt_enabled
+        .lock()
+        .map_err(|_| "桌面关闭确认状态已损坏".to_string())?;
+    *close_prompt_enabled = enabled;
+    Ok(())
+}
+
 fn get_close_to_tray_state(state: &Arc<DesktopRuntimeState>) -> bool {
     state
         .close_to_tray
         .lock()
         .map(|value| *value)
         .unwrap_or(false)
+}
+
+fn get_close_prompt_state(state: &Arc<DesktopRuntimeState>) -> bool {
+    state
+        .close_prompt_enabled
+        .lock()
+        .map(|value| *value)
+        .unwrap_or(true)
 }
 
 fn set_quit_requested(state: &Arc<DesktopRuntimeState>, requested: bool) {
@@ -895,33 +936,66 @@ fn hide_main_window(app: &AppHandle) {
     }
 }
 
-fn setup_tray(app: &mut tauri::App, state: Arc<DesktopRuntimeState>) -> tauri::Result<()> {
-    let menu = MenuBuilder::new(app)
-        .text("show", "显示 EasyConsole")
-        .text("hide", "隐藏窗口")
-        .text("run_due", "执行到期计划")
-        .separator()
-        .text("quit", "退出")
-        .build()?;
-    let mut tray = TrayIconBuilder::with_id("main").menu(&menu).show_menu_on_left_click(false);
+fn hide_tray_menu(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(TRAY_MENU_LABEL) {
+        let _ = window.hide();
+    }
+}
+
+fn ensure_tray_menu_window(app: &AppHandle) -> tauri::Result<()> {
+    if app.get_webview_window(TRAY_MENU_LABEL).is_some() {
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        TRAY_MENU_LABEL,
+        WebviewUrl::App("index.html#/tray-menu".into()),
+    )
+    .title("EasyConsole")
+    .inner_size(TRAY_MENU_WIDTH, TRAY_MENU_HEIGHT)
+    .resizable(false)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .visible(false)
+    .focused(false)
+    .shadow(true)
+    .build()?;
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        window.set_icon(icon)?;
+    }
+
+    Ok(())
+}
+
+fn show_tray_menu(app: &AppHandle, position: PhysicalPosition<f64>) {
+    if let Err(error) = ensure_tray_menu_window(app) {
+        log::warn!("failed to create tray menu window: {error}");
+        return;
+    }
+
+    let x = (position.x - TRAY_MENU_WIDTH + 16.0).max(8.0);
+    let y = (position.y - TRAY_MENU_HEIGHT - 8.0).max(8.0);
+    if let Some(window) = app.get_webview_window(TRAY_MENU_LABEL) {
+        let _ = window.set_position(Position::Physical(PhysicalPosition::new(x as i32, y as i32)));
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    ensure_tray_menu_window(app.handle())?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("EasyConsole")
+        .show_menu_on_left_click(false);
     if let Some(icon) = app.default_window_icon().cloned() {
         tray = tray.icon(icon);
     }
     tray.build(app)?;
 
     let handle = app.handle().clone();
-    app.on_menu_event(move |app, event| match event.id().as_ref() {
-        "show" => show_main_window(app),
-        "hide" => hide_main_window(app),
-        "run_due" => {
-            let _ = app.emit(DESKTOP_RUN_DUE_EVENT, ());
-        }
-        "quit" => {
-            set_quit_requested(&state, true);
-            app.exit(0);
-        }
-        _ => {}
-    });
     app.on_tray_icon_event(move |_app, event| match event {
         TrayIconEvent::Click {
             button: MouseButton::Left,
@@ -932,9 +1006,26 @@ fn setup_tray(app: &mut tauri::App, state: Arc<DesktopRuntimeState>) -> tauri::R
             button: MouseButton::Left,
             ..
         } => show_main_window(&handle),
+        TrayIconEvent::Click {
+            button: MouseButton::Right,
+            button_state: MouseButtonState::Up,
+            position,
+            ..
+        } => show_tray_menu(&handle, position),
         _ => {}
     });
     Ok(())
+}
+
+fn start_desktop_run_due_timer(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(DESKTOP_RUN_DUE_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            let _ = app.emit(DESKTOP_RUN_DUE_EVENT, ());
+        }
+    });
 }
 
 #[tauri::command]
@@ -986,6 +1077,60 @@ fn set_desktop_close_to_tray(
     set_close_to_tray_state(&state, enabled)
 }
 
+#[tauri::command]
+fn set_desktop_close_prompt(
+    state: State<'_, Arc<DesktopRuntimeState>>,
+    enabled: bool,
+) -> Result<(), String> {
+    set_close_prompt_state(&state, enabled)
+}
+
+#[tauri::command]
+fn cancel_desktop_close_prompt() {}
+
+#[tauri::command]
+fn complete_desktop_close_prompt(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopRuntimeState>>,
+    action: String,
+) -> Result<(), String> {
+    match action.as_str() {
+        "tray" => {
+            hide_main_window(&app);
+            Ok(())
+        }
+        "exit" => {
+            set_quit_requested(&state, true);
+            app.exit(0);
+            Ok(())
+        }
+        _ => Err("未知关闭操作".to_string()),
+    }
+}
+
+#[tauri::command]
+fn show_desktop_main_window(app: AppHandle) {
+    hide_tray_menu(&app);
+    show_main_window(&app);
+}
+
+#[tauri::command]
+fn hide_desktop_tray_menu(app: AppHandle) {
+    hide_tray_menu(&app);
+}
+
+#[tauri::command]
+fn run_due_scheduled_tasks(app: AppHandle) {
+    hide_tray_menu(&app);
+    let _ = app.emit(DESKTOP_RUN_DUE_EVENT, ());
+}
+
+#[tauri::command]
+fn quit_desktop_app(app: AppHandle, state: State<'_, Arc<DesktopRuntimeState>>) {
+    set_quit_requested(&state, true);
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let desktop_state = Arc::new(DesktopRuntimeState::default());
@@ -997,6 +1142,8 @@ pub fn run() {
         .plugin(tauri_plugin_websocket::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup({
             let desktop_state = Arc::clone(&desktop_state);
             move |app| {
@@ -1009,7 +1156,12 @@ pub fn run() {
             if let Err(error) = set_close_to_tray_state(&desktop_state, close_to_tray) {
                 log::warn!("failed to initialize close-to-tray state: {error}");
             }
-            setup_tray(app, Arc::clone(&desktop_state))?;
+            let close_prompt = read_close_prompt_setting(app.handle());
+            if let Err(error) = set_close_prompt_state(&desktop_state, close_prompt) {
+                log::warn!("failed to initialize close prompt state: {error}");
+            }
+            setup_tray(app)?;
+            start_desktop_run_due_timer(app.handle().clone());
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -1028,6 +1180,13 @@ pub fn run() {
             open_vscode_ssh,
             open_external_url,
             set_desktop_close_to_tray,
+            set_desktop_close_prompt,
+            cancel_desktop_close_prompt,
+            complete_desktop_close_prompt,
+            show_desktop_main_window,
+            hide_desktop_tray_menu,
+            run_due_scheduled_tasks,
+            quit_desktop_app,
             runtime_storage_get,
             runtime_storage_set,
             runtime_storage_remove
@@ -1039,13 +1198,38 @@ pub fn run() {
                 label,
                 event: WindowEvent::CloseRequested { api, .. },
                 ..
-            } if label == "main" && get_close_to_tray_state(&desktop_state) && !is_quit_requested(&desktop_state) => {
-                api.prevent_close();
-                hide_main_window(app);
+            } if label == "main" && !is_quit_requested(&desktop_state) => {
+                if get_close_prompt_state(&desktop_state) {
+                    api.prevent_close();
+                    let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
+                } else if get_close_to_tray_state(&desktop_state) {
+                    api.prevent_close();
+                    hide_main_window(app);
+                }
             }
-            RunEvent::ExitRequested { api, .. } if get_close_to_tray_state(&desktop_state) && !is_quit_requested(&desktop_state) => {
-                api.prevent_exit();
-                hide_main_window(app);
+            RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::CloseRequested { api, .. },
+                ..
+            } if label == TRAY_MENU_LABEL => {
+                api.prevent_close();
+                hide_tray_menu(app);
+            }
+            RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::Focused(false),
+                ..
+            } if label == TRAY_MENU_LABEL => {
+                hide_tray_menu(app);
+            }
+            RunEvent::ExitRequested { api, .. } if !is_quit_requested(&desktop_state) => {
+                if get_close_prompt_state(&desktop_state) {
+                    api.prevent_exit();
+                    let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
+                } else if get_close_to_tray_state(&desktop_state) {
+                    api.prevent_exit();
+                    hide_main_window(app);
+                }
             }
             _ => {}
         });

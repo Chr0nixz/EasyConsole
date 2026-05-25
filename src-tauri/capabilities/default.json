@@ -16,6 +16,8 @@
     },
     "websocket:default",
     "notification:default",
+    "updater:default",
+    "process:default",
     "dialog:default",
     "fs:default",
     "fs:write-files",

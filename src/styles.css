@@ -1,6 +1,8 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@config "../tailwind.config.ts";
+@source "../index.html";
+@source "./";
 
 :root {
   color: oklch(0.23 0.018 255);

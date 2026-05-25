@@ -127,6 +127,16 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
       return unsupported("VS Code SSH");
     },
     async setDesktopCloseToTray() {},
+    async setDesktopClosePrompt() {},
+    async cancelDesktopClosePrompt() {},
+    async completeDesktopClosePrompt() {},
+    async showDesktopMainWindow() {},
+    async hideDesktopTrayMenu() {},
+    async runDueScheduledTasks() {},
+    async quitDesktopApp() {},
+    async onDesktopCloseRequested() {
+      return () => {};
+    },
     async onDesktopRunDueScheduledTasks() {
       return () => {};
     },
