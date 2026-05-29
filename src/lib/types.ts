@@ -259,6 +259,7 @@ export type RuntimeHttpRequest = {
   timeoutMs?: number;
   signal?: AbortSignal;
   onUploadProgress?: (progress: UploadProgress) => void;
+  onDownloadProgress?: (progress: UploadProgress) => void;
 };
 
 export type RuntimeHttpResponse<T = unknown> = {
@@ -301,6 +302,8 @@ export type RuntimeTransport = {
   requestSystemNotificationPermission(): Promise<RuntimeSystemNotificationPermission>;
   notifySystem(notification: RuntimeSystemNotification): Promise<RuntimeSystemNotificationResult>;
   openExternal(url: string): void;
+  openLocalPath(path: string): Promise<void>;
+  revealLocalPath(path: string): Promise<void>;
   openSshSession(request: SshConnectionRequest): Promise<string>;
   writeSshSession(sessionId: string, data: string): Promise<void>;
   resizeSshSession(sessionId: string, cols: number, rows: number): Promise<void>;
@@ -318,6 +321,27 @@ export type RuntimeTransport = {
   quitDesktopApp(): Promise<void>;
   onDesktopCloseRequested(handler: () => void): Promise<() => void>;
   onDesktopRunDueScheduledTasks(handler: () => void): Promise<() => void>;
+};
+
+export type DownloadQueueItemStatus = "queued" | "downloading" | "done" | "failed" | "cancelled";
+
+export type DownloadQueueSource = "task" | "storage" | "image";
+
+export type DownloadQueueItem = {
+  id: string;
+  source: DownloadQueueSource;
+  sourceLabel: string;
+  filename: string;
+  targetName: string;
+  targetId?: string | number;
+  status: DownloadQueueItemStatus;
+  progress: number;
+  loaded: number;
+  total?: number;
+  destinationPath?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type SshConnectionRequest = {

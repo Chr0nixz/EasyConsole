@@ -22,6 +22,11 @@ import type {
 
 const UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024;
 
+type DownloadRequestOptions = {
+  signal?: AbortSignal;
+  onProgress?: (progress: UploadProgress) => void;
+};
+
 export function formatContentRange(range: UploadChunkRange) {
   return `bytes ${range.start}-${range.end}/${range.total}`;
 }
@@ -149,8 +154,13 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
     monitorIndex(query?: UnknownRecord) {
       return apiClient.get<unknown>("/instance/monitor_index", { query });
     },
-    downloadTask(query: UnknownRecord) {
-      return apiClient.get<Blob>("/instance/task/download", { query, responseType: "blob" });
+    downloadTask(query: UnknownRecord, options?: DownloadRequestOptions) {
+      return apiClient.get<Blob>("/instance/task/download", {
+        query,
+        responseType: "blob",
+        signal: options?.signal,
+        onDownloadProgress: options?.onProgress,
+      });
     },
   };
 
@@ -166,8 +176,12 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
     detail(id: string | number) {
       return apiClient.get<ImageItem>(`/image/image/${id}`);
     },
-    download(id: string | number) {
-      return apiClient.get<Blob>(`/image/image/download/${id}`, { responseType: "blob" });
+    download(id: string | number, options?: DownloadRequestOptions) {
+      return apiClient.get<Blob>(`/image/image/download/${id}`, {
+        responseType: "blob",
+        signal: options?.signal,
+        onDownloadProgress: options?.onProgress,
+      });
     },
     commitImage(payload: ImageCommitPayload) {
       return apiClient.post<unknown>("/image/image_commit", payload);
@@ -193,11 +207,13 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
     info() {
       return apiClient.get<unknown>("/storage/info");
     },
-    transmit(query: UnknownRecord, asBlob = true) {
+    transmit(query: UnknownRecord, asBlob = true, options?: DownloadRequestOptions) {
       return apiClient.get<Blob | unknown>("/storage/file_transmit", {
         query,
         responseType: asBlob ? "blob" : "json",
         raw: asBlob,
+        signal: options?.signal,
+        onDownloadProgress: options?.onProgress,
       });
     },
     async uploadChunk(

@@ -1,4 +1,4 @@
-import { CalendarClock, Command as CommandIcon, Database, DownloadCloud, Image, LayoutDashboard, LogOut, Minimize2, Power, ScrollText, Server, Settings, SquareStack, TerminalSquare } from "lucide-react";
+import { CalendarClock, Command as CommandIcon, Database, DownloadCloud, ExternalLink, FolderOpen, Image, LayoutDashboard, LogOut, Minimize2, Power, RotateCcw, ScrollText, Server, Settings, SquareStack, TerminalSquare, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 
@@ -9,9 +9,12 @@ import { TaskNotificationWatcher } from "./TaskNotificationWatcher";
 import { Button, Dialog } from "./ui";
 import { APP_SETTINGS_STORAGE_KEY, getRuntimeSettings, setRuntimeSettings, stringifyAppSettings } from "../lib/app-settings";
 import { useAppUpdate } from "../lib/app-update-context";
+import { downloadStatusText } from "../lib/download-queue";
+import { formatDownloadProgress, useDownloadQueue } from "../lib/download-queue-context";
 import { browserRuntime } from "../lib/runtime";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { useAuth } from "../lib/use-auth";
+import { useToast } from "../lib/use-toast";
 import { cn } from "../lib/utils";
 
 const navItems = [
@@ -41,7 +44,10 @@ export function AppShell() {
   const location = useLocation();
   const { t, text } = useI18n();
   const appUpdate = useAppUpdate();
+  const downloadQueue = useDownloadQueue();
+  const toast = useToast();
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [downloadQueueOpen, setDownloadQueueOpen] = useState(false);
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [rememberCloseChoice, setRememberCloseChoice] = useState(false);
   const userName = auth.user?.username || auth.user?.name || t("shell.loggedIn");
@@ -103,11 +109,101 @@ export function AppShell() {
     await browserRuntime.completeDesktopClosePrompt(action);
   }
 
+  function openDownloadedPath(path: string) {
+    void browserRuntime.openLocalPath(path).catch((error) => {
+      toast.error(text("打开文件失败", "Failed to open file"), error instanceof Error ? error.message : text("请确认文件仍然存在。", "Check that the file still exists."));
+    });
+  }
+
+  function revealDownloadedPath(path: string) {
+    void browserRuntime.revealLocalPath(path).catch((error) => {
+      toast.error(text("打开所在文件夹失败", "Failed to open containing folder"), error instanceof Error ? error.message : text("请确认文件仍然存在。", "Check that the file still exists."));
+    });
+  }
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-app-bg text-app-text md:flex-row">
       <TaskNotificationWatcher />
       <BackgroundScheduledTaskRunner />
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
+      {downloadQueueOpen ? (
+        <div className="fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" role="region" aria-label={text("下载队列", "Download queue")}>
+          <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-app-text">{text("下载队列", "Download queue")}</div>
+              <div className="text-xs text-app-muted">
+                {downloadQueue.summary.total
+                  ? text(
+                      `${downloadQueue.summary.completed}/${downloadQueue.summary.total} 完成，${downloadQueue.summary.failed} 失败`,
+                      `${downloadQueue.summary.completed}/${downloadQueue.summary.total} done, ${downloadQueue.summary.failed} failed`,
+                    )
+                  : text("暂无下载任务", "No downloads")}
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <Button className="h-8 px-2 text-xs" disabled={downloadQueue.summary.completed + downloadQueue.summary.cancelled === 0} type="button" variant="ghost" onClick={downloadQueue.clearCompleted}>
+                {text("清理", "Clear")}
+              </Button>
+              <button className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text" type="button" onClick={() => setDownloadQueueOpen(false)}>
+                <X className="h-4 w-4" />
+                <span className="sr-only">{t("common.close")}</span>
+              </button>
+            </div>
+          </div>
+          <div className="max-h-[min(28rem,calc(100vh-8rem))] overflow-auto p-2">
+            {downloadQueue.items.length === 0 ? (
+              <div className="px-3 py-8 text-center text-sm text-app-muted">{text("下载任务会显示在这里", "Downloads will appear here")}</div>
+            ) : (
+              <div className="space-y-2">
+                {downloadQueue.items.map((item) => {
+                  const active = item.status === "queued" || item.status === "downloading";
+                  return (
+                    <div key={item.id} className="rounded-md border border-app-border bg-app-surface p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-app-text" title={item.filename}>{item.filename}</div>
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
+                            <span>{item.sourceLabel}</span>
+                            <span>{downloadStatusText(item.status)}</span>
+                            <span>{formatDownloadProgress(item)}</span>
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {item.status === "failed" || item.status === "cancelled" ? (
+                            <Button className="h-8 w-8 px-0" type="button" title={t("common.retry")} variant="ghost" onClick={() => downloadQueue.retry(item.id)}>
+                              <RotateCcw className="h-4 w-4" />
+                            </Button>
+                          ) : null}
+                          {browserRuntime.isDesktop && item.status === "done" && item.destinationPath ? (
+                            <>
+                              <Button className="h-8 w-8 px-0" type="button" title={text("打开所在文件夹", "Open containing folder")} variant="ghost" onClick={() => revealDownloadedPath(item.destinationPath!)}>
+                                <FolderOpen className="h-4 w-4" />
+                              </Button>
+                              <Button className="h-8 w-8 px-0" type="button" title={text("打开文件", "Open file")} variant="ghost" onClick={() => openDownloadedPath(item.destinationPath!)}>
+                                <ExternalLink className="h-4 w-4" />
+                              </Button>
+                            </>
+                          ) : null}
+                          {active ? (
+                            <Button className="h-8 w-8 px-0" type="button" title={text("取消下载", "Cancel download")} variant="ghost" onClick={() => downloadQueue.cancel(item.id)}>
+                              <X className="h-4 w-4" />
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-app-panel" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={item.progress}>
+                        <div className="h-full bg-app-accent transition-all" style={{ width: `${item.status === "done" ? 100 : item.progress}%` }} />
+                      </div>
+                      {item.error ? <div className="mt-2 text-xs text-app-danger">{item.error}</div> : null}
+                      {item.destinationPath ? <div className="mt-2 truncate font-mono text-xs text-app-muted" title={item.destinationPath}>{item.destinationPath}</div> : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
       <Dialog
         open={closePromptOpen}
         title={text("关闭 EasyConsole", "Close EasyConsole")}
@@ -180,6 +276,15 @@ export function AppShell() {
             <p className="hidden truncate text-xs text-app-muted sm:block">{t("shell.headerDescription")}</p>
           </div>
           <div className="flex items-center gap-3">
+            <Button className="shrink-0" variant="secondary" onClick={() => setDownloadQueueOpen((value) => !value)}>
+              <DownloadCloud className="h-4 w-4" />
+              <span className="hidden sm:inline">{text("下载", "Downloads")}</span>
+              {downloadQueue.summary.active || downloadQueue.summary.failed ? (
+                <span className="rounded bg-app-panel px-1.5 py-0.5 text-xs text-app-muted">
+                  {downloadQueue.summary.active || downloadQueue.summary.failed}
+                </span>
+              ) : null}
+            </Button>
             {browserRuntime.isDesktop && (appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading") ? (
               <Button className="shrink-0" variant="secondary" onClick={appUpdate.openUpdateDialog}>
                 <DownloadCloud className="h-4 w-4" />

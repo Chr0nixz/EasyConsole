@@ -264,6 +264,92 @@ fn validate_external_url(url: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
+fn validate_local_path(path: &str) -> Result<PathBuf, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("本地路径为空，无法打开".to_string());
+    }
+    if path.chars().any(char::is_control) {
+        return Err("本地路径包含不支持的字符".to_string());
+    }
+    let path = PathBuf::from(path);
+    if !path.exists() {
+        return Err("本地路径不存在".to_string());
+    }
+    Ok(path)
+}
+
+#[cfg(target_os = "windows")]
+fn open_path_with_system(path: &Path) -> Result<(), String> {
+    Command::new("rundll32")
+        .arg("url.dll,FileProtocolHandler")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开本地路径：{error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn open_path_with_system(path: &Path) -> Result<(), String> {
+    Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开本地路径：{error}"))
+}
+
+#[cfg(target_os = "linux")]
+fn open_path_with_system(path: &Path) -> Result<(), String> {
+    Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开本地路径：{error}"))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn open_path_with_system(_path: &Path) -> Result<(), String> {
+    Err("当前平台暂不支持打开本地路径".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_path_with_system(path: &Path) -> Result<(), String> {
+    Command::new("explorer")
+        .arg(format!("/select,{}", path.to_string_lossy()))
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开所在文件夹：{error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_path_with_system(path: &Path) -> Result<(), String> {
+    Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开所在文件夹：{error}"))
+}
+
+#[cfg(target_os = "linux")]
+fn reveal_path_with_system(path: &Path) -> Result<(), String> {
+    let directory = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+    Command::new("xdg-open")
+        .arg(directory)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开所在文件夹：{error}"))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn reveal_path_with_system(_path: &Path) -> Result<(), String> {
+    Err("当前平台暂不支持打开所在文件夹".to_string())
+}
+
 fn user_ssh_dir() -> Result<PathBuf, String> {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -1070,6 +1156,18 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_local_path(path: String) -> Result<(), String> {
+    let path = validate_local_path(&path)?;
+    open_path_with_system(&path)
+}
+
+#[tauri::command]
+fn reveal_local_path(path: String) -> Result<(), String> {
+    let path = validate_local_path(&path)?;
+    reveal_path_with_system(&path)
+}
+
+#[tauri::command]
 fn set_desktop_close_to_tray(
     state: State<'_, Arc<DesktopRuntimeState>>,
     enabled: bool,
@@ -1179,6 +1277,8 @@ pub fn run() {
             open_system_ssh_terminal,
             open_vscode_ssh,
             open_external_url,
+            open_local_path,
+            reveal_local_path,
             set_desktop_close_to_tray,
             set_desktop_close_prompt,
             cancel_desktop_close_prompt,

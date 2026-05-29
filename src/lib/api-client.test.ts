@@ -48,6 +48,8 @@ function createRuntime() {
       return "unsupported";
     },
     openExternal() {},
+    async openLocalPath() {},
+    async revealLocalPath() {},
     async openSshSession() {
       return "session-1";
     },

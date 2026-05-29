@@ -16,6 +16,7 @@ type RequestOptions = {
   signal?: AbortSignal;
   auth?: boolean;
   raw?: boolean;
+  onDownloadProgress?: (progress: { loaded: number; total?: number; percent: number }) => void;
 };
 
 function trimSlash(value: string) {
@@ -102,6 +103,7 @@ export class ApiClient {
         responseType: options.responseType,
         timeoutMs: options.timeoutMs,
         signal: options.signal,
+        onDownloadProgress: options.onDownloadProgress,
       });
     } catch (error) {
       if (error instanceof ApiError) throw error;

@@ -1,15 +1,15 @@
-# EasyConsole v0.1.1
+# EasyConsole v0.2.0
 
-本版本补齐桌面端自动更新链路，并把 GitHub Release 作为稳定更新源。
+This release improves desktop download workflows and prepares the app for a more complete packaged distribution path.
 
-## 更新内容
+## Highlights
 
-- 新增设置页“应用更新”区域，可查看当前版本、更新源，并手动检查更新。
-- 新增启动后自动检查更新开关；桌面端会按节流策略检查 GitHub Release 中的稳定版本。
-- 检测到新版本时展示更新说明，用户确认后下载、安装，并提示重启完成更新。
-- 发布流程加入 Tauri updater 签名、版本一致性校验，以及 GitHub Release updater manifest 生成。
-- CLI/MCP 侧车继续随桌面包一起发布，保持与桌面应用版本一致。
+- Added a shared download queue so task, storage, and image downloads can be tracked from the desktop shell.
+- Improved browser, Tauri, and Node download adapters for blob responses and local file saving.
+- Extended API wrappers and tests around binary download behavior.
+- Added desktop-side download commands and runtime hooks for packaged app usage.
+- Kept the GitHub Release updater path and version checks ready for the `v0.2.0` release.
 
-## 发布备注
+## Release Notes
 
-发布前请确认 GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY` 已配置，并在 draft release 中检查 `latest.json` 与签名文件是否存在。
+After the GitHub Actions draft release is created, verify updater assets such as `latest.json` and signature files before publishing the release.

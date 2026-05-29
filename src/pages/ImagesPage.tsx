@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
 import { Button, Input, Panel, Select, TableRegion } from "../components/ui";
 import { imageApi } from "../lib/api";
-import { saveBlob } from "../lib/download";
+import { useDownloadQueue } from "../lib/download-queue-context";
 import { useI18n } from "../lib/i18n";
 import type { ImageItem } from "../lib/types";
 import { cn } from "../lib/utils";
@@ -49,6 +49,7 @@ export function ImagesPage() {
   const toast = useToast();
   const { text } = useI18n();
   const runLogger = useRunLogger();
+  const downloadQueue = useDownloadQueue();
   const { confirm, confirmDialog } = useConfirmAction();
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [keyword, setKeyword] = useState("");
@@ -115,34 +116,17 @@ export function ImagesPage() {
 
   const downloadImage = (image: ImageRow) => {
     const filename = `${imageName(image)}.tar`;
-    void imageApi
-      .download(image.id)
-      .then((blob) => saveBlob(blob, filename))
-      .then(() => {
-        toast.success(text("镜像已下载", "Image downloaded"), filename);
-        void runLogger.log({
-          source: "image",
-          level: "info",
-          action: "image.download",
-          result: "success",
-          title: text("镜像已下载", "Image downloaded"),
-          targetName: imageName(image),
-          targetId: image.id,
-        });
-      })
-      .catch((error) => {
-        toast.error(text("镜像下载失败", "Image download failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
-        void runLogger.log({
-          source: "image",
-          level: "error",
-          action: "image.download",
-          result: "failure",
-          title: text("镜像下载失败", "Image download failed"),
-          targetName: imageName(image),
-          targetId: image.id,
-          error: errorMessage(error, text("镜像下载失败", "Image download failed")),
-        });
-      });
+    downloadQueue.enqueue({
+      source: "image",
+      sourceLabel: text("镜像", "Image"),
+      filename,
+      targetName: imageName(image),
+      targetId: image.id,
+      successTitle: text("镜像已下载", "Image downloaded"),
+      failureTitle: text("镜像下载失败", "Image download failed"),
+      action: "image.download",
+      request: ({ signal, onProgress }) => imageApi.download(image.id, { signal, onProgress }),
+    });
   };
 
   const isLoading = custom.isLoading || system.isLoading;

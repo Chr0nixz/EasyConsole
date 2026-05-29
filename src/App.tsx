@@ -8,6 +8,7 @@ import { ProtectedRoute } from "./components/ProtectedRoute";
 import { TrayMenu } from "./components/TrayMenu";
 import { ToastProvider } from "./components/Toast";
 import { AppUpdateProvider } from "./lib/app-update-context";
+import { DownloadQueueProvider } from "./lib/download-queue-context";
 
 const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })));
 const ImagesPage = lazy(() => import("./pages/ImagesPage").then((module) => ({ default: module.ImagesPage })));
@@ -22,35 +23,37 @@ const TasksPage = lazy(() => import("./pages/TasksPage").then((module) => ({ def
 export function App() {
   return (
     <ToastProvider>
-      <AppUpdateProvider>
-        <Suspense fallback={<LoadingState />}>
-          <Routes>
-            <Route path="/tray-menu" element={<TrayMenu />} />
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/login/settings" element={<SettingsPage standalone />} />
-            <Route
-              path="/"
-              element={
-                <ProtectedRoute>
-                  <AppShell />
-                </ProtectedRoute>
-              }
-            >
-              <Route index element={<Navigate to="/dashboard" replace />} />
-              <Route path="dashboard" element={<DashboardPage />} />
-              <Route path="tasks" element={<TasksPage />} />
-              <Route path="scheduled-tasks" element={<ScheduledTasksPage />} />
-              <Route path="task-templates" element={<TaskTemplatesPage />} />
-              <Route path="storage" element={<StoragePage />} />
-              <Route path="images" element={<ImagesPage />} />
-              <Route path="run-logs" element={<RunLogsPage />} />
-              <Route path="settings" element={<SettingsPage />} />
-            </Route>
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-          <AppUpdateDialog />
-        </Suspense>
-      </AppUpdateProvider>
+      <DownloadQueueProvider>
+        <AppUpdateProvider>
+          <Suspense fallback={<LoadingState />}>
+            <Routes>
+              <Route path="/tray-menu" element={<TrayMenu />} />
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/login/settings" element={<SettingsPage standalone />} />
+              <Route
+                path="/"
+                element={
+                  <ProtectedRoute>
+                    <AppShell />
+                  </ProtectedRoute>
+                }
+              >
+                <Route index element={<Navigate to="/dashboard" replace />} />
+                <Route path="dashboard" element={<DashboardPage />} />
+                <Route path="tasks" element={<TasksPage />} />
+                <Route path="scheduled-tasks" element={<ScheduledTasksPage />} />
+                <Route path="task-templates" element={<TaskTemplatesPage />} />
+                <Route path="storage" element={<StoragePage />} />
+                <Route path="images" element={<ImagesPage />} />
+                <Route path="run-logs" element={<RunLogsPage />} />
+                <Route path="settings" element={<SettingsPage />} />
+              </Route>
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+            <AppUpdateDialog />
+          </Suspense>
+        </AppUpdateProvider>
+      </DownloadQueueProvider>
     </ToastProvider>
   );
 }

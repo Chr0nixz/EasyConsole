@@ -78,6 +78,35 @@ function normalizeBody(body: unknown, headers: Record<string, string>) {
   return JSON.stringify(body);
 }
 
+async function readBlobWithProgress(response: Response, onProgress?: (progress: UploadProgress) => void) {
+  const totalValue = response.headers.get("content-length");
+  const total = totalValue ? Number(totalValue) : undefined;
+  const knownTotal = total && Number.isFinite(total) && total > 0 ? total : undefined;
+  if (!response.body) {
+    const blob = await response.blob();
+    onProgress?.(toProgress(blob.size, knownTotal ?? blob.size));
+    return blob;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: BlobPart[] = [];
+  let loaded = 0;
+  onProgress?.(toProgress(0, knownTotal));
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    chunks.push(value as BlobPart);
+    loaded += value.byteLength;
+    onProgress?.(toProgress(loaded, knownTotal));
+  }
+
+  const blob = new Blob(chunks);
+  onProgress?.(toProgress(blob.size, knownTotal ?? blob.size));
+  return blob;
+}
+
 async function fetchRequest<T = unknown>(request: RuntimeHttpRequest): Promise<RuntimeHttpResponse<T>> {
   const controller = new AbortController();
   const timeoutMs = request.timeoutMs ?? 20_000;
@@ -101,7 +130,7 @@ async function fetchRequest<T = unknown>(request: RuntimeHttpRequest): Promise<R
     const responseType = request.responseType ?? "json";
     let data: unknown;
     if (responseType === "blob") {
-      data = await response.blob();
+      data = await readBlobWithProgress(response, request.onDownloadProgress);
     } else if (responseType === "text") {
       data = await response.text();
     } else {
@@ -289,6 +318,12 @@ export const browserRuntime: RuntimeTransport = {
       return;
     }
     window.open(url, "_blank", "noopener,noreferrer");
+  },
+  openLocalPath(path) {
+    return invokeTauriCommand("open_local_path", { path });
+  },
+  revealLocalPath(path) {
+    return invokeTauriCommand("reveal_local_path", { path });
   },
   openSshSession(request) {
     return invokeTauriCommand<string>("open_ssh_session", { request });

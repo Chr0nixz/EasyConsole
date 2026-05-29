@@ -105,6 +105,12 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     openExternal() {
       return unsupported("External URL opening");
     },
+    async openLocalPath() {
+      return unsupported("Local path opening");
+    },
+    async revealLocalPath() {
+      return unsupported("Local path reveal");
+    },
     async openSshSession() {
       return unsupported("SSH session");
     },

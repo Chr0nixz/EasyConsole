@@ -35,6 +35,8 @@ function createRuntime(responseData: unknown) {
       return "unsupported";
     },
     openExternal() {},
+    async openLocalPath() {},
+    async revealLocalPath() {},
     async openSshSession() {
       return "session";
     },
@@ -98,5 +100,23 @@ describe("api factory", () => {
       url: "http://host/api/image/image_commit",
       body: { user: { username: "xutian" }, pod_name: "common-o7mt1awm" },
     });
+  });
+
+  it("passes download progress and abort options to blob endpoints", async () => {
+    const onProgress = () => undefined;
+    const signal = new AbortController().signal;
+    const { runtime, calls } = createRuntime(new Blob(["data"]));
+    const client = new ApiClient(runtime, "http://host/api");
+    const api = createEasyConsoleApi(client);
+
+    await api.instanceApi.downloadTask({ task_id: 1 }, { signal, onProgress });
+    await api.imageApi.download(2, { signal, onProgress });
+    await api.storageApi.transmit({ path: "/a.txt" }, true, { signal, onProgress });
+
+    expect(calls).toEqual([
+      expect.objectContaining({ responseType: "blob", signal, onDownloadProgress: onProgress }),
+      expect.objectContaining({ responseType: "blob", signal, onDownloadProgress: onProgress }),
+      expect.objectContaining({ responseType: "blob", signal, onDownloadProgress: onProgress }),
+    ]);
   });
 });

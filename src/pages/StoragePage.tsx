@@ -4,7 +4,7 @@ import { useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
-import { saveBlob } from "../lib/download";
+import { useDownloadQueue } from "../lib/download-queue-context";
 import { formatBytes } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import type { Locale } from "../lib/i18n-text";
@@ -41,6 +41,7 @@ export function StoragePage() {
   const toast = useToast();
   const { locale, text } = useI18n();
   const runLogger = useRunLogger();
+  const downloadQueue = useDownloadQueue();
   const { confirm, confirmDialog } = useConfirmAction();
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const uploadCancelledRef = useRef(false);
@@ -291,33 +292,20 @@ export function StoragePage() {
 
   function downloadEntry(entry: StorageEntry, entryPath: string) {
     const directory = isStorageDirectory(entry, path);
-    const download = directory ? remoteStorage.downloadRemotePath(entryPath) : remoteStorage.downloadRemoteFile(entryPath);
     const filename = directory ? getDirectoryDownloadName(entry) : entry.name;
-    void download
-      .then((blob) => saveBlob(blob, filename))
-      .then(() => {
-        toast.success(text("远程文件已下载", "Remote file downloaded"), filename);
-        void runLogger.log({
-          source: "storage",
-          level: "info",
-          action: "storage.download",
-          result: "success",
-          title: text("远程文件已下载", "Remote file downloaded"),
-          targetName: entryPath,
-        });
-      })
-      .catch((error) => {
-        toast.error(text("远程下载失败", "Remote download failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
-        void runLogger.log({
-          source: "storage",
-          level: "error",
-          action: "storage.download",
-          result: "failure",
-          title: text("远程下载失败", "Remote download failed"),
-          targetName: entryPath,
-          error: errorMessage(error, text("远程下载失败", "Remote download failed")),
-        });
-      });
+    downloadQueue.enqueue({
+      source: "storage",
+      sourceLabel: directory ? text("远程文件夹", "Remote folder") : text("远程文件", "Remote file"),
+      filename,
+      targetName: entryPath,
+      successTitle: text("远程文件已下载", "Remote file downloaded"),
+      failureTitle: text("远程下载失败", "Remote download failed"),
+      action: "storage.download",
+      request: ({ signal, onProgress }) =>
+        directory
+          ? remoteStorage.downloadRemotePath(entryPath, { signal, onProgress })
+          : remoteStorage.downloadRemoteFile(entryPath, { signal, onProgress }),
+    });
   }
 
   return (

@@ -11,8 +11,8 @@ export type RemoteStorageService = {
   uploadLocalFile(file: File, remoteDirectory: string, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal): Promise<unknown>;
   uploadLocalFiles(files: File[], remoteDirectory: string, onProgress?: (progress: UploadProgress) => void): Promise<unknown>;
   getDirectorySize(path: string): Promise<number>;
-  downloadRemoteFile(path: string): Promise<Blob>;
-  downloadRemotePath(path: string): Promise<Blob>;
+  downloadRemoteFile(path: string, options?: { signal?: AbortSignal; onProgress?: (progress: UploadProgress) => void }): Promise<Blob>;
+  downloadRemotePath(path: string, options?: { signal?: AbortSignal; onProgress?: (progress: UploadProgress) => void }): Promise<Blob>;
   readTextFile(path: string, options?: { limitBytes?: number }): Promise<{ content: string; truncated: boolean; size: number; binary: boolean }>;
 };
 
@@ -255,13 +255,13 @@ export const remoteStorage: RemoteStorageService = {
   getDirectorySize(path) {
     return calculateDirectorySize(path);
   },
-  async downloadRemoteFile(path) {
-    const result = await storageApi.transmit({ path: normalizeStoragePath(path) });
+  async downloadRemoteFile(path, options) {
+    const result = await storageApi.transmit({ path: normalizeStoragePath(path) }, true, options);
     if (result instanceof Blob) return result;
     return new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
   },
-  downloadRemotePath(path) {
-    return remoteStorage.downloadRemoteFile(path);
+  downloadRemotePath(path, options) {
+    return remoteStorage.downloadRemoteFile(path, options);
   },
   async readTextFile(path, options) {
     const blob = await remoteStorage.downloadRemoteFile(path);

@@ -36,7 +36,7 @@ import { TaskLogDialog } from "../components/tasks/TaskLogDialog";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
-import { saveBlob } from "../lib/download";
+import { useDownloadQueue } from "../lib/download-queue-context";
 import { asJson, formatSecondsDuration, getTaskName, taskStatusText, taskStatusTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { i18nText } from "../lib/i18n-text";
@@ -156,6 +156,10 @@ function taskRowId(task: Task) {
 
 function isRunningTask(task: Task) {
   return Number(task.status) === 2;
+}
+
+function isReleasableTask(task: Task) {
+  return [0, 1, 2].includes(Number(task.status));
 }
 
 function isActionsColumn(id: string) {
@@ -470,6 +474,7 @@ export function TasksPage() {
   const toast = useToast();
   const { locale, text } = useI18n();
   const runLogger = useRunLogger();
+  const downloadQueue = useDownloadQueue();
   const auth = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryState = useMemo(() => parseTaskListQuery(searchParams), [searchParams]);
@@ -625,7 +630,7 @@ export function TasksPage() {
       await runSequentiallyWithDelay(tasks, (task) => instanceApi.deleteTask(task.id));
     },
     onSuccess: (_data, tasks) => {
-      toast.success(text("批量删除已提交", "Batch deletion submitted"), text(`${tasks.length} 个非运行实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `${tasks.length} non-running instances, ${BATCH_REQUEST_DELAY_MS}ms apart`));
+      toast.success(text("批量删除已提交", "Batch deletion submitted"), text(`${tasks.length} 个不可释放实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `${tasks.length} non-releasable instances, ${BATCH_REQUEST_DELAY_MS}ms apart`));
       void runLogger.log({
         source: "task",
         level: "info",
@@ -655,7 +660,7 @@ export function TasksPage() {
       await runSequentiallyWithDelay(tasks, (task) => instanceApi.operateTask(task.id));
     },
     onSuccess: (_data, tasks) => {
-      toast.success(text("批量释放已提交", "Batch release submitted"), text(`${tasks.length} 个运行中实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `${tasks.length} running instances, ${BATCH_REQUEST_DELAY_MS}ms apart`));
+      toast.success(text("批量释放已提交", "Batch release submitted"), text(`${tasks.length} 个可释放实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `${tasks.length} releasable instances, ${BATCH_REQUEST_DELAY_MS}ms apart`));
       void runLogger.log({
         source: "task",
         level: "info",
@@ -695,35 +700,19 @@ export function TasksPage() {
   }, [query.data?.items, queryState]);
 
   const handleDownloadTask = useCallback((task: Task) => {
-    void instanceApi
-      .downloadTask({ task_id: task.id })
-      .then((blob) => saveBlob(blob, `${getTaskName(task)}.zip`))
-      .then(() => {
-        toast.success(text("任务文件已下载", "Task files downloaded"), getTaskName(task));
-        void runLogger.log({
-          source: "task",
-          level: "info",
-          action: "task.download",
-          result: "success",
-          title: text("任务文件已下载", "Task files downloaded"),
-          targetName: getTaskName(task),
-          targetId: task.id,
-        });
-      })
-      .catch((error) => {
-        toast.error(text("任务下载失败", "Task download failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
-        void runLogger.log({
-          source: "task",
-          level: "error",
-          action: "task.download",
-          result: "failure",
-          title: text("任务下载失败", "Task download failed"),
-          targetName: getTaskName(task),
-          targetId: task.id,
-          error: errorMessage(error, text("任务下载失败", "Task download failed")),
-        });
-      });
-  }, [runLogger, text, toast]);
+    const taskName = getTaskName(task);
+    downloadQueue.enqueue({
+      source: "task",
+      sourceLabel: text("任务", "Task"),
+      filename: `${taskName}.zip`,
+      targetName: taskName,
+      targetId: task.id,
+      successTitle: text("任务文件已下载", "Task files downloaded"),
+      failureTitle: text("任务下载失败", "Task download failed"),
+      action: "task.download",
+      request: ({ signal, onProgress }) => instanceApi.downloadTask({ task_id: task.id }, { signal, onProgress }),
+    });
+  }, [downloadQueue, text]);
 
   const openCreateTask = () => {
     setCloneTask(null);
@@ -772,7 +761,7 @@ export function TasksPage() {
   const confirmBatchRelease = useCallback((tasks: Task[]) => {
     confirm({
       title: text("确认批量释放", "Confirm Batch Release"),
-      description: text(`将按顺序释放 ${tasks.length} 个运行中实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms。`, `Release ${tasks.length} running instances in order, ${BATCH_REQUEST_DELAY_MS}ms apart.`),
+      description: text(`将按顺序释放 ${tasks.length} 个可释放实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms。`, `Release ${tasks.length} releasable instances in order, ${BATCH_REQUEST_DELAY_MS}ms apart.`),
       confirmLabel: text("批量释放", "Batch release"),
       tone: "danger",
       run: () => batchReleaseMutation.mutateAsync(tasks),
@@ -782,7 +771,7 @@ export function TasksPage() {
   const confirmBatchDelete = useCallback((tasks: Task[]) => {
     confirm({
       title: text("确认批量删除", "Confirm Batch Deletion"),
-      description: text(`将按顺序删除 ${tasks.length} 个非运行实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms。`, `Delete ${tasks.length} non-running instances in order, ${BATCH_REQUEST_DELAY_MS}ms apart.`),
+      description: text(`将按顺序删除 ${tasks.length} 个不可释放实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms。`, `Delete ${tasks.length} non-releasable instances in order, ${BATCH_REQUEST_DELAY_MS}ms apart.`),
       confirmLabel: text("批量删除", "Batch delete"),
       tone: "danger",
       run: () => batchDeleteMutation.mutateAsync(tasks),
@@ -883,7 +872,7 @@ export function TasksPage() {
         header: () => <ActionHeader />,
         cell: ({ row }) => {
           const task = row.original;
-          const release = isRunningTask(task);
+          const release = isReleasableTask(task);
           return (
             <div className={ACTION_GRID_CLASS}>
               <Button aria-label={text(`打开 ${getTaskName(task)} 的监控`, `Open monitor for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("监控", "Monitor")} onClick={() => openMonitorDashboard(task)}>
@@ -964,8 +953,8 @@ export function TasksPage() {
 
   const configurableColumns = table.getAllLeafColumns().filter((column) => !ALWAYS_VISIBLE_COLUMNS.has(column.id));
   const selectedTasks = table.getSelectedRowModel().flatRows.map((row) => row.original);
-  const selectedRunningTasks = selectedTasks.filter(isRunningTask);
-  const selectedStoppedTasks = selectedTasks.filter((task) => !isRunningTask(task));
+  const selectedReleasableTasks = selectedTasks.filter(isReleasableTask);
+  const selectedNonReleasableTasks = selectedTasks.filter((task) => !isReleasableTask(task));
   const total = query.data?.total;
   const hasKnownTotal = typeof total === "number";
   const totalPages = hasKnownTotal ? Math.max(1, Math.ceil(total / queryState.pageSize)) : undefined;
@@ -1039,29 +1028,29 @@ export function TasksPage() {
         <Panel className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
           <div className="text-sm text-app-muted">
             {text("已选", "Selected")} <span className="font-medium text-app-text">{selectedTasks.length}</span> {text("个实例", "instances")}
-            {selectedRunningTasks.length > 0 ? text(`，运行中 ${selectedRunningTasks.length} 个`, `, running ${selectedRunningTasks.length}`) : ""}
-            {selectedStoppedTasks.length > 0 ? text(`，非运行 ${selectedStoppedTasks.length} 个`, `, non-running ${selectedStoppedTasks.length}`) : ""}
+            {selectedReleasableTasks.length > 0 ? text(`，可释放 ${selectedReleasableTasks.length} 个`, `, releasable ${selectedReleasableTasks.length}`) : ""}
+            {selectedNonReleasableTasks.length > 0 ? text(`，不可释放 ${selectedNonReleasableTasks.length} 个`, `, non-releasable ${selectedNonReleasableTasks.length}`) : ""}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {selectedRunningTasks.length > 0 ? (
+            {selectedReleasableTasks.length > 0 ? (
               <Button
                 disabled={batchPending}
                 variant="secondary"
-                onClick={() => confirmBatchRelease(selectedRunningTasks)}
+                onClick={() => confirmBatchRelease(selectedReleasableTasks)}
               >
                 <Power className="h-4 w-4 text-app-warning" />
-                {text("批量释放", "Batch release")} {selectedRunningTasks.length}
+                {text("批量释放", "Batch release")} {selectedReleasableTasks.length}
               </Button>
             ) : null}
-            {selectedStoppedTasks.length > 0 ? (
+            {selectedNonReleasableTasks.length > 0 ? (
               <Button
                 className="border-app-danger text-app-danger hover:text-app-danger"
                 disabled={batchPending}
                 variant="secondary"
-                onClick={() => confirmBatchDelete(selectedStoppedTasks)}
+                onClick={() => confirmBatchDelete(selectedNonReleasableTasks)}
               >
                 <Trash2 className="h-4 w-4" />
-                {text("批量删除", "Batch delete")} {selectedStoppedTasks.length}
+                {text("批量删除", "Batch delete")} {selectedNonReleasableTasks.length}
               </Button>
             ) : null}
             <Button disabled={batchPending} variant="ghost" onClick={() => setRowSelection({})}>
@@ -1085,7 +1074,7 @@ export function TasksPage() {
           <div className="divide-y divide-app-border sm:hidden">
             {table.getRowModel().rows.map((row) => {
               const task = row.original;
-              const release = isRunningTask(task);
+              const release = isReleasableTask(task);
               const taskName = getTaskName(task);
               return (
                 <article key={row.id} className="space-y-3 px-3 py-3" aria-labelledby={`task-card-${row.id}`}>
