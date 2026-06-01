@@ -7,10 +7,12 @@ import { MoreActionsMenu } from "./TasksPage";
 describe("MoreActionsMenu", () => {
   const task = { id: 1, name: "长任务", status: 2 } as Task;
   const defaultProps = {
+    isPinned: false,
     onCommit: vi.fn(),
     onDownload: vi.fn(),
     onRaw: vi.fn(),
     onSaveTemplate: vi.fn(),
+    onTogglePin: vi.fn(),
   };
 
   it("supports keyboard navigation and restores focus on Escape", async () => {
@@ -20,7 +22,7 @@ describe("MoreActionsMenu", () => {
     fireEvent.click(trigger);
 
     const items = await screen.findAllByRole("menuitem");
-    const [download, commit, saveTemplate, raw] = items;
+    const [download, commit, saveTemplate, pin, raw] = items;
 
     await waitFor(() => expect(download).toHaveFocus());
 
@@ -31,10 +33,13 @@ describe("MoreActionsMenu", () => {
     expect(saveTemplate).toHaveFocus();
 
     fireEvent.keyDown(screen.getByRole("menu"), { key: "ArrowDown" });
+    expect(pin).toHaveFocus();
+
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "ArrowDown" });
     expect(raw).toHaveFocus();
 
     fireEvent.keyDown(screen.getByRole("menu"), { key: "ArrowUp" });
-    expect(saveTemplate).toHaveFocus();
+    expect(pin).toHaveFocus();
 
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
 
@@ -49,8 +54,25 @@ describe("MoreActionsMenu", () => {
     fireEvent.keyDown(trigger, { key: "ArrowUp" });
 
     const items = await screen.findAllByRole("menuitem");
-    const raw = items[3];
+    const raw = items[4];
     await waitFor(() => expect(raw).toHaveFocus());
+  });
+
+  it("calls toggle pin from the collapsed menu", async () => {
+    const onTogglePin = vi.fn();
+    render(<MoreActionsMenu task={task} {...defaultProps} onTogglePin={onTogglePin} />);
+
+    fireEvent.click(screen.getByRole("button"));
+    const items = await screen.findAllByRole("menuitem");
+    fireEvent.click(items[3]);
+    expect(onTogglePin).toHaveBeenCalledWith(task);
+  });
+
+  it("shows unpin label when the task is pinned", async () => {
+    render(<MoreActionsMenu task={task} {...defaultProps} isPinned />);
+
+    fireEvent.click(screen.getByRole("button"));
+    expect(await screen.findByRole("menuitem", { name: /Unpin|取消置顶/ })).toBeInTheDocument();
   });
 
   it("calls commit for running tasks and disables it otherwise", async () => {

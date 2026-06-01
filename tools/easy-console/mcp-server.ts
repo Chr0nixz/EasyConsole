@@ -6,7 +6,7 @@ import { registerEasyConsoleTools } from "./mcp-tools";
 export function createEasyConsoleMcpServer() {
   const server = new McpServer({
     name: "easy-console",
-    version: "0.2.0",
+    version: "0.2.1",
   });
   registerEasyConsoleTools(server);
   return server;

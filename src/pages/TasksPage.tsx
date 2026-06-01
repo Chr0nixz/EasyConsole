@@ -14,6 +14,8 @@ import {
   Download,
   FileText,
   MoreHorizontal,
+  Pin,
+  PinOff,
   Plus,
   Power,
   RefreshCw,
@@ -32,6 +34,7 @@ import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
 import { CreateTaskDialog } from "../components/tasks/CreateTaskDialog";
+import { TaskInstanceName } from "../components/tasks/TaskInstanceName";
 import { TaskLogDialog } from "../components/tasks/TaskLogDialog";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
@@ -42,6 +45,14 @@ import { useI18n } from "../lib/i18n";
 import { i18nText } from "../lib/i18n-text";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
 import { browserRuntime } from "../lib/runtime";
+import {
+  isTaskPinned,
+  loadTaskPins,
+  pruneTaskPins,
+  saveTaskPins,
+  sortTasksWithPins,
+  toggleTaskPin,
+} from "../lib/task-pins";
 import { filterAndSortTasks } from "../lib/task-search";
 import { createTaskTemplate, loadTaskTemplates, saveTaskTemplates, taskToEditableTaskTemplate } from "../lib/task-templates";
 import {
@@ -236,16 +247,20 @@ function taskQueryKey(state: TaskListQueryState) {
 
 export function MoreActionsMenu({
   task,
+  isPinned,
   onRaw,
   onDownload,
   onCommit,
   onSaveTemplate,
+  onTogglePin,
 }: {
   task: Task;
+  isPinned: boolean;
   onRaw: (task: Task) => void;
   onDownload: (task: Task) => void;
   onCommit: (task: Task) => void;
   onSaveTemplate: (task: Task) => void;
+  onTogglePin: (task: Task) => void;
 }) {
   const { text } = useI18n();
   const menuId = useId();
@@ -455,6 +470,22 @@ export function MoreActionsMenu({
               type="button"
               onClick={() => {
                 closeMenu();
+                onTogglePin(task);
+              }}
+            >
+              {isPinned ? <PinOff className="h-4 w-4 text-app-muted" /> : <Pin className="h-4 w-4 text-app-muted" />}
+              {isPinned ? text("取消置顶", "Unpin") : text("置顶", "Pin")}
+            </button>
+            <button
+              ref={(element) => {
+                menuItemRefs.current[4] = element;
+              }}
+              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
+              role="menuitem"
+              tabIndex={-1}
+              type="button"
+              onClick={() => {
+                closeMenu();
                 onRaw(task);
               }}
             >
@@ -491,6 +522,7 @@ export function TasksPage() {
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(() =>
     loadNumberSetting(AUTO_REFRESH_INTERVAL_KEY, DEFAULT_AUTO_REFRESH_INTERVAL),
   );
+  const [pinnedTaskIds, setPinnedTaskIds] = useState<string[]>([]);
 
   const updateTaskQuery = useCallback((patch: Partial<TaskListQueryState>) => {
     const next = { ...queryState, ...patch };
@@ -696,8 +728,32 @@ export function TasksPage() {
 
   const filteredTasks = useMemo(() => {
     const tasks = query.data?.items ?? [];
-    return filterAndSortTasks(tasks.filter((task) => taskMatchesQuery(task, queryState)), queryState.keyword);
-  }, [query.data?.items, queryState]);
+    const matched = filterAndSortTasks(tasks.filter((task) => taskMatchesQuery(task, queryState)), queryState.keyword);
+    return sortTasksWithPins(matched, pinnedTaskIds);
+  }, [pinnedTaskIds, query.data?.items, queryState]);
+
+  useEffect(() => {
+    void loadTaskPins(browserRuntime.storage).then(setPinnedTaskIds);
+  }, []);
+
+  useEffect(() => {
+    const tasks = query.data?.items;
+    if (!tasks) return;
+    setPinnedTaskIds((current) => {
+      const next = pruneTaskPins(current, tasks);
+      if (next.length === current.length && next.every((id, index) => id === current[index])) return current;
+      void saveTaskPins(browserRuntime.storage, next);
+      return next;
+    });
+  }, [query.data?.items]);
+
+  const handleTogglePin = useCallback((task: Task) => {
+    setPinnedTaskIds((current) => {
+      const next = toggleTaskPin(current, task);
+      void saveTaskPins(browserRuntime.storage, next);
+      return next;
+    });
+  }, []);
 
   const handleDownloadTask = useCallback((task: Task) => {
     const taskName = getTaskName(task);
@@ -804,12 +860,20 @@ export function TasksPage() {
       columnHelper.accessor((row) => getTaskName(row), {
         id: "name",
         header: text("实例名称", "Instance name"),
-        cell: ({ row, getValue }) => (
-          <div className="whitespace-nowrap">
-            <div className="font-medium">{getValue()}</div>
-            <div className="mt-0.5 text-xs text-app-muted">#{row.original.id}</div>
-          </div>
-        ),
+        cell: ({ row, getValue }) => {
+          const pinned = isTaskPinned(pinnedTaskIds, row.original);
+          return (
+            <div className="whitespace-nowrap">
+              <div className="flex items-start gap-1.5">
+                {pinned ? <Pin className="mt-1 h-3.5 w-3.5 shrink-0 text-app-accent" aria-label={text("已置顶", "Pinned")} /> : null}
+                <div>
+                  <TaskInstanceName name={getValue()} />
+                  <div className="mt-0.5 text-xs text-app-muted">#{row.original.id}</div>
+                </div>
+              </div>
+            </div>
+          );
+        },
       }),
       columnHelper.accessor("status", {
         header: text("状态", "Status"),
@@ -911,18 +975,20 @@ export function TasksPage() {
                 </Button>
               )}
               <MoreActionsMenu
+                isPinned={isTaskPinned(pinnedTaskIds, task)}
                 task={task}
                 onCommit={confirmCommitTask}
                 onDownload={handleDownloadTask}
                 onRaw={setRawTask}
                 onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
+                onTogglePin={handleTogglePin}
               />
             </div>
           );
         },
       }),
     ],
-    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, locale, releaseMutation.isPending, saveTemplateMutation, text],
+    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, handleTogglePin, locale, pinnedTaskIds, releaseMutation.isPending, saveTemplateMutation, text],
   );
 
   const table = useReactTable({
@@ -1088,7 +1154,10 @@ export function TasksPage() {
                     />
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h3 id={`task-card-${row.id}`} className="truncate text-sm font-semibold text-app-text">{taskName}</h3>
+                        <h3 id={`task-card-${row.id}`} className="flex min-w-0 flex-1 items-center gap-1.5">
+                          {isTaskPinned(pinnedTaskIds, task) ? <Pin className="h-3.5 w-3.5 shrink-0 text-app-accent" aria-label={text("已置顶", "Pinned")} /> : null}
+                          <span className="min-w-0 flex-1"><TaskInstanceName compact name={taskName} /></span>
+                        </h3>
                         <StatusBadge status={task.status} />
                       </div>
                       <div className="mt-1 font-mono text-xs text-app-muted">#{task.id}</div>
@@ -1141,11 +1210,13 @@ export function TasksPage() {
                       </Button>
                     )}
                     <MoreActionsMenu
+                      isPinned={isTaskPinned(pinnedTaskIds, task)}
                       task={task}
                       onCommit={confirmCommitTask}
                       onDownload={handleDownloadTask}
                       onRaw={setRawTask}
                       onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
+                      onTogglePin={handleTogglePin}
                     />
                   </div>
                 </article>

@@ -1,14 +1,13 @@
-# EasyConsole v0.2.0
+# EasyConsole v0.2.1
 
-This release improves desktop download workflows and prepares the app for a more complete packaged distribution path.
+This release improves task instance list usability on the desktop app.
 
 ## Highlights
 
-- Added a shared download queue so task, storage, and image downloads can be tracked from the desktop shell.
-- Improved browser, Tauri, and Node download adapters for blob responses and local file saving.
-- Extended API wrappers and tests around binary download behavior.
-- Added desktop-side download commands and runtime hooks for packaged app usage.
-- Kept the GitHub Release updater path and version checks ready for the `v0.2.0` release.
+- Template-created instance names now hide the template prefix by default and can be expanded to show the full name.
+- Added local instance pinning so important tasks stay at the top of the task list.
+- Pin and unpin actions live in the collapsed More menu to keep the main action row compact.
+- Pinned state persists locally and is cleaned up when instances disappear from the backend.
 
 ## Release Notes
 

@@ -8,6 +8,7 @@ import {
   taskMatchesTemplate,
   taskToEditableTaskTemplate,
   taskTemplateToPayloads,
+  parseTemplateTaskName,
 } from "./task-templates";
 import type { RuntimeStorage, TaskTemplate } from "./types";
 
@@ -86,6 +87,27 @@ describe("task templates", () => {
     expect(taskMatchesTemplate({ name: `dev-${marker}-202605230800-1` }, baseTemplate)).toBe(true);
     expect(taskMatchesTemplate({ name: "dev-202605230800-1" }, baseTemplate)).toBe(false);
   });
+  it("parses template-generated task names into prefix and suffix", () => {
+    const marker = getTaskTemplateMarker(baseTemplate);
+
+    expect(parseTemplateTaskName(`dev-${marker}-202605230800-1`)).toEqual({
+      full: `dev-${marker}-202605230800-1`,
+      prefix: "dev",
+      suffix: `${marker}-202605230800-1`,
+    });
+    expect(parseTemplateTaskName(`train-job-${marker}-202605230800-02`)).toEqual({
+      full: `train-job-${marker}-202605230800-02`,
+      prefix: "train-job",
+      suffix: `${marker}-202605230800-02`,
+    });
+    expect(parseTemplateTaskName("manual-task")).toBeNull();
+    expect(parseTemplateTaskName(`dev-${marker}-202605230800`)).toEqual({
+      full: `dev-${marker}-202605230800`,
+      prefix: "dev",
+      suffix: `${marker}-202605230800`,
+    });
+  });
+
 
   it("records successful template usage", () => {
     const used = recordTaskTemplateUsage(baseTemplate, new Date("2026-05-23T12:00:00.000Z"));

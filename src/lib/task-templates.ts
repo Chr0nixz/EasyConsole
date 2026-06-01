@@ -173,6 +173,26 @@ export function taskMatchesTemplate(task: Pick<Task, "name" | "task_name">, temp
   return [task.name, task.task_name].some((value) => typeof value === "string" && value.includes(`-${marker}-`));
 }
 
+const TEMPLATE_TASK_NAME_SUFFIX = /-tpl[a-zA-Z0-9]{1,10}-\d{12}(?:-\d+)?$/;
+
+export type ParsedTemplateTaskName = {
+  full: string;
+  prefix: string;
+  suffix: string;
+};
+
+export function parseTemplateTaskName(name: string): ParsedTemplateTaskName | null {
+  const trimmed = name.trim();
+  if (!trimmed || !TEMPLATE_TASK_NAME_SUFFIX.test(trimmed)) return null;
+  const prefix = trimmed.replace(TEMPLATE_TASK_NAME_SUFFIX, "");
+  if (!prefix) return null;
+  return {
+    full: trimmed,
+    prefix,
+    suffix: trimmed.slice(prefix.length + 1),
+  };
+}
+
 function normalizeId(value: string) {
   return /^\d+$/.test(value) ? Number(value) : value;
 }
