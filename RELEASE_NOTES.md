@@ -1,3 +1,13 @@
+# EasyConsole v0.3.3
+
+Fix Android white screen caused by blocked cleartext HTTP traffic.
+
+## Changes
+
+- **Android network security config**: Added `network_security_config.xml` allowing cleartext traffic to the API server (`116.172.93.164`). Without this, Android release builds block all `http://` connections, causing silent API failures and a blank screen on launch.
+
+---
+
 # EasyConsole v0.3.2
 
 CI pipeline fixes and Android release signing support.
