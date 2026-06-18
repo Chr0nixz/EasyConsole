@@ -350,7 +350,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         </div>
       </Panel>
 
-      {browserRuntime.isDesktop ? (
+      {browserRuntime.supportsTray ? (
         <Panel>
           <div className="border-b border-app-border px-4 py-3">
             <h2 className="text-sm font-semibold">{text("窗口关闭", "Window Close")}</h2>
@@ -401,7 +401,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
-              disabled={!browserRuntime.isDesktop || appUpdate.state.status === "checking" || appUpdate.state.status === "downloading"}
+              disabled={!browserRuntime.supportsUpdater || appUpdate.state.status === "checking" || appUpdate.state.status === "downloading"}
               type="button"
               variant="secondary"
               onClick={() => void appUpdate.checkForUpdates(true)}
@@ -431,9 +431,9 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 </span>
               </span>
             </label>
-            {!browserRuntime.isDesktop ? (
+            {!browserRuntime.supportsUpdater ? (
               <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">
-                {text("网页运行时不支持安装桌面更新。", "The web runtime cannot install desktop updates.")}
+                {text("当前运行时不支持安装桌面更新。", "This runtime cannot install desktop updates.")}
               </div>
             ) : null}
             {appUpdate.state.error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{appUpdate.state.error}</div> : null}

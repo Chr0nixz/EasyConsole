@@ -60,7 +60,7 @@ function isTrayMenuWindow() {
 
 function initialState(): AppUpdateState {
   return {
-    status: browserRuntime.isDesktop && !isTrayMenuWindow() ? "idle" : "unsupported",
+    status: browserRuntime.supportsUpdater && !isTrayMenuWindow() ? "idle" : "unsupported",
     dialogOpen: false,
   };
 }
@@ -73,7 +73,7 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
   const [updateHandle, setUpdateHandle] = useState<Update | null>(null);
 
   useEffect(() => {
-    if (!browserRuntime.isDesktop || isTrayMenuWindow()) return;
+    if (!browserRuntime.supportsUpdater || isTrayMenuWindow()) return;
     let cancelled = false;
     void getCurrentAppVersion().then((currentVersion) => {
       if (!cancelled) setState((value) => ({ ...value, currentVersion }));
@@ -84,7 +84,7 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const checkForUpdates = useCallback(async (manual = false) => {
-    if (!browserRuntime.isDesktop || isTrayMenuWindow()) {
+    if (!browserRuntime.supportsUpdater || isTrayMenuWindow()) {
       setState((value) => ({ ...value, status: "unsupported", dialogOpen: manual ? true : value.dialogOpen }));
       return;
     }
@@ -172,7 +172,7 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
   }, [runLogger, text, toast]);
 
   useEffect(() => {
-    if (!browserRuntime.isDesktop || isTrayMenuWindow()) return;
+    if (!browserRuntime.supportsUpdater || isTrayMenuWindow()) return;
     const timer = window.setTimeout(() => {
       void (async () => {
         if (!getRuntimeSettings().autoCheckUpdates) return;

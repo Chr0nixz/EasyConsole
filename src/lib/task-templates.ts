@@ -173,7 +173,7 @@ export function taskMatchesTemplate(task: Pick<Task, "name" | "task_name">, temp
   return [task.name, task.task_name].some((value) => typeof value === "string" && value.includes(`-${marker}-`));
 }
 
-const TEMPLATE_TASK_NAME_SUFFIX = /-tpl[a-zA-Z0-9]{1,10}-\d{12}(?:-\d+)?$/;
+const TEMPLATE_TASK_NAME_PATTERN = /^(.*)-tpl[a-zA-Z0-9]{1,10}-(\d{12})(?:-(\d+))?$/;
 
 export type ParsedTemplateTaskName = {
   full: string;
@@ -183,13 +183,16 @@ export type ParsedTemplateTaskName = {
 
 export function parseTemplateTaskName(name: string): ParsedTemplateTaskName | null {
   const trimmed = name.trim();
-  if (!trimmed || !TEMPLATE_TASK_NAME_SUFFIX.test(trimmed)) return null;
-  const prefix = trimmed.replace(TEMPLATE_TASK_NAME_SUFFIX, "");
-  if (!prefix) return null;
+  const match = trimmed.match(TEMPLATE_TASK_NAME_PATTERN);
+  if (!match) return null;
+  const prefix = match[1];
+  const timestamp = match[2];
+  const batch = match[3];
+  if (!prefix || !timestamp) return null;
   return {
     full: trimmed,
     prefix,
-    suffix: trimmed.slice(prefix.length + 1),
+    suffix: batch ? `${timestamp}-${batch}` : timestamp,
   };
 }
 

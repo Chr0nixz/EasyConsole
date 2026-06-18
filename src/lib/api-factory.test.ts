@@ -9,6 +9,14 @@ function createRuntime(responseData: unknown) {
   const calls: RuntimeHttpRequest[] = [];
   const runtime: RuntimeTransport = {
     isDesktop: false,
+    isMobile: false,
+    runtimeKind: "web",
+    runLogChannel: "web",
+    supportsTray: false,
+    supportsSystemTerminal: false,
+    supportsInAppSsh: false,
+    supportsUpdater: false,
+    supportsFileReveal: false,
     storage: {
       async get() {
         return null;

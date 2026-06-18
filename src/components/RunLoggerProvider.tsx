@@ -9,7 +9,7 @@ export function RunLoggerProvider({ children }: { children: ReactNode }) {
     try {
       await appendRunLog(browserRuntime.storage, {
         ...input,
-        channel: input.channel ?? (browserRuntime.isDesktop ? "tauri" : "web"),
+        channel: input.channel ?? browserRuntime.runLogChannel,
       });
     } catch (error) {
       console.warn("Failed to write EasyConsole run log.", error);

@@ -34,6 +34,7 @@ const sourceLabels: Record<RunLogSource, { zh: string; en: string }> = {
 const channelLabels: Record<RunLogChannel, { zh: string; en: string }> = {
   web: { zh: "Web", en: "Web" },
   tauri: { zh: "桌面", en: "Desktop" },
+  mobile: { zh: "移动", en: "Mobile" },
   cli: { zh: "CLI", en: "CLI" },
   mcp: { zh: "MCP", en: "MCP" },
 };

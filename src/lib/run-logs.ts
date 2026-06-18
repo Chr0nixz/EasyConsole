@@ -6,7 +6,7 @@ export const DEFAULT_RUN_LOG_RETENTION_DAYS = 30;
 
 export type RunLogLevel = "info" | "warning" | "error";
 export type RunLogResult = "success" | "failure";
-export type RunLogChannel = "web" | "tauri" | "cli" | "mcp";
+export type RunLogChannel = "web" | "tauri" | "mobile" | "cli" | "mcp";
 export type RunLogSource =
   | "auth"
   | "task"

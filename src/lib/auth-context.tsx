@@ -21,7 +21,7 @@ import type { UserInfo } from "./types";
 function writeAuthLog(input: Omit<RunLogInput, "channel" | "source">) {
   void appendRunLog(browserRuntime.storage, {
     ...input,
-    channel: browserRuntime.isDesktop ? "tauri" : "web",
+    channel: browserRuntime.runLogChannel,
     source: "auth",
   }).catch((error) => console.warn("Failed to write auth run log.", error));
 }

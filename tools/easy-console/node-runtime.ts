@@ -88,6 +88,14 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
 
   return {
     isDesktop: false,
+    isMobile: false,
+    runtimeKind: "web",
+    runLogChannel: "web",
+    supportsTray: false,
+    supportsSystemTerminal: false,
+    supportsInAppSsh: false,
+    supportsUpdater: false,
+    supportsFileReveal: false,
     storage: nodeStorage,
     request,
     async createWebSocket() {

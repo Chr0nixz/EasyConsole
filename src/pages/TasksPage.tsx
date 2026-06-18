@@ -40,7 +40,7 @@ import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components
 import { imageApi, instanceApi } from "../lib/api";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { useDownloadQueue } from "../lib/download-queue-context";
-import { asJson, formatSecondsDuration, getTaskName, taskStatusText, taskStatusTextEn } from "../lib/format";
+import { asJson, formatSecondsDuration, getTaskName, getTaskNodeName, taskStatusText, taskStatusTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { i18nText } from "../lib/i18n-text";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
@@ -884,7 +884,7 @@ export function TasksPage() {
         header: text("资源", "Resources"),
         cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
       }),
-      columnHelper.accessor((row) => row.node_name || "-", {
+      columnHelper.accessor((row) => getTaskNodeName(row) || "-", {
         id: "node",
         header: text("节点", "Node"),
         cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,

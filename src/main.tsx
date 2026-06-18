@@ -10,6 +10,7 @@ import { App } from "./App";
 import { RunLoggerProvider } from "./components/RunLoggerProvider";
 import { AuthProvider } from "./lib/auth-context";
 import { I18nProvider } from "./lib/i18n";
+import { initRuntimeKind } from "./lib/runtime";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -22,18 +23,23 @@ const queryClient = new QueryClient({
 
 const Router = isTauri() ? HashRouter : BrowserRouter;
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <I18nProvider>
-        <AuthProvider>
-          <RunLoggerProvider>
-            <Router>
-              <App />
-            </Router>
-          </RunLoggerProvider>
-        </AuthProvider>
-      </I18nProvider>
-    </QueryClientProvider>
-  </StrictMode>,
-);
+// Resolve the native runtime kind (web/desktop/mobile) before mounting so the
+// renderer can pick capability flags without race conditions. On web this
+// resolves immediately.
+initRuntimeKind().finally(() => {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider>
+          <AuthProvider>
+            <RunLoggerProvider>
+              <Router>
+                <App />
+              </Router>
+            </RunLoggerProvider>
+          </AuthProvider>
+        </I18nProvider>
+      </QueryClientProvider>
+    </StrictMode>,
+  );
+});

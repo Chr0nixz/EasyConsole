@@ -5,7 +5,7 @@ import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
 import { Button, Panel, TableRegion } from "../components/ui";
 import { instanceApi } from "../lib/api";
-import { formatCost, formatNumber, formatSecondsDuration, getTaskName } from "../lib/format";
+import { formatCost, formatNumber, formatSecondsDuration, getTaskName, getTaskNodeName } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import type { ConsoleSummary, Task } from "../lib/types";
 
@@ -103,7 +103,7 @@ export function DashboardPage() {
                     <td className="px-3 py-2 text-app-muted">
                       {task.cpu ?? "-"}C / {task.gpu ?? "-"}GPU / {task.memory ?? "-"}G
                     </td>
-                    <td className="px-3 py-2 text-app-muted">{task.node_name || "-"}</td>
+                    <td className="px-3 py-2 text-app-muted">{getTaskNodeName(task) || "-"}</td>
                     <td className="px-3 py-2 text-app-muted">
                       {formatCost(task.cost, locale)} ({formatSecondsDuration(task.use_time, locale)})
                     </td>

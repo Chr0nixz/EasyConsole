@@ -1,0 +1,35 @@
+{
+  "$schema": "../gen/schemas/android-schema.json",
+  "identifier": "mobile",
+  "description": "permissions scoped to mobile (Android/iOS) runtimes",
+  "platforms": [
+    "android",
+    "iOS"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "http://*:*/*" },
+        { "url": "https://*:*/*" }
+      ]
+    },
+    "websocket:default",
+    "notification:default",
+    "dialog:default",
+    "fs:default",
+    "fs:write-files",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        "$DOWNLOAD/**",
+        "$DOCUMENT/**"
+      ]
+    },
+    "opener:default"
+  ]
+}

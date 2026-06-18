@@ -1,13 +1,13 @@
-# EasyConsole v0.2.1
+# EasyConsole v0.3.0
 
-This release improves task instance list usability on the desktop app.
+This release adds Android tablet support with in-app SSH, enabling tablet users to connect to task instances directly from the app.
 
 ## Highlights
 
-- Template-created instance names now hide the template prefix by default and can be expanded to show the full name.
-- Added local instance pinning so important tasks stay at the top of the task list.
-- Pin and unpin actions live in the collapsed More menu to keep the main action row compact.
-- Pinned state persists locally and is cleaned up when instances disappear from the backend.
+- **Android tablet SSH**: In-app SSH terminal now works on Android tablets via `russh` compiled with NDK, sharing the same Rust SSH pipeline as desktop.
+- **Runtime capability update**: `supportsInAppSsh` now returns `true` for both desktop and mobile runtimes; VS Code and system terminal remain desktop-only.
+- **Android CI**: Added GitHub Actions workflow for Android APK builds on `aarch64` with NDK 27 cross-compilation.
+- **Release pipeline**: Android APK is now included in the GitHub Release alongside desktop installers.
 
 ## Release Notes
 

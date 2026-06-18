@@ -74,7 +74,7 @@ export function BackgroundScheduledTaskRunner() {
             void appendRunLog(browserRuntime.storage, {
               source: "scheduled-task",
               level: "info",
-              channel: browserRuntime.isDesktop ? "tauri" : "web",
+              channel: browserRuntime.runLogChannel,
               action: "scheduledTask.execute",
               result: "success",
               title: text("定时任务已执行", "Scheduled task executed"),
@@ -92,7 +92,7 @@ export function BackgroundScheduledTaskRunner() {
             void appendRunLog(browserRuntime.storage, {
               source: "scheduled-task",
               level: "error",
-              channel: browserRuntime.isDesktop ? "tauri" : "web",
+              channel: browserRuntime.runLogChannel,
               action: "scheduledTask.execute",
               result: "failure",
               title: text("定时任务执行失败", "Scheduled task execution failed"),

@@ -54,6 +54,13 @@ export type Task = UnknownRecord & {
   password?: string;
   login_user?: string;
   node_name?: string;
+  node?: UnknownRecord & {
+    id?: string | number;
+    name?: string;
+    node_type?: string;
+    ip?: string;
+    status?: boolean;
+  };
   user_group?: string;
   user_group_name?: string;
   group_name?: string;
@@ -293,8 +300,20 @@ export type RuntimeSystemNotificationPermission = "granted" | "denied" | "defaul
 
 export type RuntimeSystemNotificationResult = "shown" | "permission-denied" | "unsupported";
 
+export type RuntimeKind = "web" | "desktop" | "mobile";
+
+export type RuntimeLogChannel = "web" | "tauri" | "mobile";
+
 export type RuntimeTransport = {
   isDesktop: boolean;
+  isMobile: boolean;
+  runtimeKind: RuntimeKind;
+  runLogChannel: RuntimeLogChannel;
+  supportsTray: boolean;
+  supportsSystemTerminal: boolean;
+  supportsInAppSsh: boolean;
+  supportsUpdater: boolean;
+  supportsFileReveal: boolean;
   storage: RuntimeStorage;
   request<T = unknown>(request: RuntimeHttpRequest): Promise<RuntimeHttpResponse<T>>;
   createWebSocket(url: string): Promise<RuntimeWebSocket>;

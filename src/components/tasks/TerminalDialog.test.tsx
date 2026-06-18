@@ -13,10 +13,43 @@ const toast: ToastContextValue = {
 };
 
 function setDesktopRuntime(value: boolean) {
-  Object.defineProperty(browserRuntime, "isDesktop", {
-    value,
-    configurable: true,
-  });
+  // TerminalDialog gates on the SSH capability flags (derived from runtimeKind
+  // in production). Override the capability getters directly so desktop/web
+  // behavior is exercised without depending on the native runtime probe.
+  const flags = {
+    isDesktop: value,
+    isMobile: false,
+    supportsInAppSsh: value,
+    supportsSystemTerminal: value,
+    supportsTray: value,
+    supportsUpdater: value,
+    supportsFileReveal: value,
+  };
+  for (const [key, flag] of Object.entries(flags)) {
+    Object.defineProperty(browserRuntime, key, {
+      value: flag,
+      configurable: true,
+    });
+  }
+}
+
+function setMobileRuntime() {
+  // Mobile has in-app SSH (russh NDK) but not system terminal, VS Code, tray, or updater.
+  const flags = {
+    isDesktop: false,
+    isMobile: true,
+    supportsInAppSsh: true,
+    supportsSystemTerminal: false,
+    supportsTray: false,
+    supportsUpdater: false,
+    supportsFileReveal: false,
+  };
+  for (const [key, flag] of Object.entries(flags)) {
+    Object.defineProperty(browserRuntime, key, {
+      value: flag,
+      configurable: true,
+    });
+  }
 }
 
 function renderDialog() {
@@ -76,5 +109,14 @@ describe("TerminalDialog", () => {
     expect(openSystemSshTerminal).toHaveBeenCalledWith(
       expect.objectContaining({ taskId: "task-1", command: "ssh -p 30222 ubuntu@10.0.0.8" }),
     );
+  });
+
+  it("shows in-app SSH button but hides desktop-only entry points in the mobile runtime", () => {
+    setMobileRuntime();
+    renderDialog();
+
+    expect(screen.getByRole("button", { name: "应用内 SSH" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "VS Code" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "系统终端" })).not.toBeInTheDocument();
   });
 });

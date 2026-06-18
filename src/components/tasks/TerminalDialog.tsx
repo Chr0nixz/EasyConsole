@@ -111,20 +111,26 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
                   <div className="mt-1 font-mono text-xs text-app-muted">#{task.task_id ?? task.id}</div>
                 </div>
               </div>
-              {browserRuntime.isDesktop ? (
+              {browserRuntime.supportsInAppSsh || browserRuntime.supportsSystemTerminal ? (
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button disabled={!canConnect} type="button" variant="secondary" onClick={openAppSsh}>
-                    <Terminal className="h-4 w-4" />
-                    {text("应用内 SSH", "In-app SSH")}
-                  </Button>
-                  <Button disabled={!canConnect || isOpeningVscode} type="button" variant="secondary" onClick={openVscodeSsh}>
-                    <Code2 className="h-4 w-4" />
-                    {isOpeningVscode ? text("配置中", "Configuring") : "VS Code"}
-                  </Button>
-                  <Button disabled={!canConnect} type="button" onClick={openSystemSsh}>
-                    <Terminal className="h-4 w-4" />
-                    {text("系统终端", "System terminal")}
-                  </Button>
+                  {browserRuntime.supportsInAppSsh ? (
+                    <Button disabled={!canConnect} type="button" variant="secondary" onClick={openAppSsh}>
+                      <Terminal className="h-4 w-4" />
+                      {text("应用内 SSH", "In-app SSH")}
+                    </Button>
+                  ) : null}
+                  {browserRuntime.supportsSystemTerminal ? (
+                    <>
+                      <Button disabled={!canConnect || isOpeningVscode} type="button" variant="secondary" onClick={openVscodeSsh}>
+                        <Code2 className="h-4 w-4" />
+                        {isOpeningVscode ? text("配置中", "Configuring") : "VS Code"}
+                      </Button>
+                      <Button disabled={!canConnect} type="button" onClick={openSystemSsh}>
+                        <Terminal className="h-4 w-4" />
+                        {text("系统终端", "System terminal")}
+                      </Button>
+                    </>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -144,9 +150,9 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
               </p>
               <Terminal className="h-4 w-4 text-app-accent" />
               <p className="leading-5">
-                {browserRuntime.isDesktop
-                  ? text("桌面端可选择应用内 SSH 自动登录、通过 VS Code Remote-SSH 打开，或打开系统终端后手动输入密码；网页端请复制 SSH 命令后在本机终端中执行。", "On desktop, use in-app SSH auto sign-in, open through VS Code Remote-SSH, or open a system terminal and enter the password manually. On web, copy the SSH command and run it in your local terminal.")
-                  : text("网页端不能直接建立 SSH 连接，请复制 SSH 命令后在本机终端中执行。", "The web app cannot establish SSH directly. Copy the SSH command and run it in your local terminal.")}
+                {browserRuntime.supportsInAppSsh || browserRuntime.supportsSystemTerminal
+                  ? text("桌面端和平板可选择应用内 SSH 自动登录；桌面端还可通过 VS Code Remote-SSH 或系统终端连接；网页端请复制 SSH 命令后在本机终端中执行。", "Desktop and tablet can use in-app SSH auto sign-in. Desktop also supports VS Code Remote-SSH or system terminal. On web, copy the SSH command and run it in your local terminal.")
+                  : text("当前环境不能直接建立 SSH 连接，请复制 SSH 命令后在本机终端中执行。", "This environment cannot establish SSH directly. Copy the SSH command and run it in your local terminal.")}
               </p>
             </div>
           </div>

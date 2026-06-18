@@ -1,7 +1,7 @@
 {
   "name": "easy-console",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -16,6 +16,9 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "tauri:android:init": "tauri android init",
+    "tauri:android:dev": "tauri android dev",
+    "tauri:android:build": "tauri android build",
     "typecheck": "tsc -b --noEmit",
     "typecheck:tools": "tsc -p tsconfig.tools.json --noEmit",
     "version:check": "node tools/easy-console/version-check.mjs",

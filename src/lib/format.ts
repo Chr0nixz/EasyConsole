@@ -1,4 +1,4 @@
-import type { TaskStatus } from "./types";
+import type { TaskStatus, UnknownRecord } from "./types";
 import type { Locale } from "./i18n-text";
 
 function pad2(value: number) {
@@ -61,6 +61,14 @@ export const releaseConditionTextEn: Record<number, string> = {
 
 export function getTaskName(task: { name?: string; task_name?: string; id?: string | number }) {
   return task.name || task.task_name || `任务 ${task.id ?? ""}`.trim();
+}
+
+export function getTaskNodeName(task: UnknownRecord & {
+  node?: UnknownRecord & { name?: string };
+  node_name?: string;
+}) {
+  const node = task.node && typeof task.node === "object" ? task.node : undefined;
+  return node?.name || task.node_name || "";
 }
 
 export function getStatusText(status?: TaskStatus, locale: Locale = "zh-CN") {

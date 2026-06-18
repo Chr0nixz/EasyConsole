@@ -1,5 +1,5 @@
 import { CalendarClock, Command as CommandIcon, Database, DownloadCloud, ExternalLink, FolderOpen, Image, LayoutDashboard, LogOut, Minimize2, Power, RotateCcw, ScrollText, Server, Settings, SquareStack, TerminalSquare, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { LanguageSwitch } from "./LanguageSwitch";
@@ -15,6 +15,12 @@ import { browserRuntime } from "../lib/runtime";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { useAuth } from "../lib/use-auth";
 import { useToast } from "../lib/use-toast";
+import {
+  DEFAULT_SHELL_NAV_WIDTH,
+  clampShellNavWidth,
+  readStoredShellNavWidth,
+  writeStoredShellNavWidth,
+} from "../lib/shell-nav-width";
 import { cn } from "../lib/utils";
 
 const navItems = [
@@ -51,6 +57,48 @@ export function AppShell() {
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [rememberCloseChoice, setRememberCloseChoice] = useState(false);
   const userName = auth.user?.username || auth.user?.name || t("shell.loggedIn");
+  const [navWidth, setNavWidth] = useState(() => readStoredShellNavWidth());
+  const navResizeSessionRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  function finishNavResize() {
+    if (navResizeSessionRef.current === null) return;
+    document.removeEventListener("pointermove", handleNavResizePointerMove);
+    document.removeEventListener("pointerup", handleNavResizePointerUp);
+    document.removeEventListener("pointercancel", handleNavResizePointerUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    navResizeSessionRef.current = null;
+  }
+  function handleNavResizePointerMove(event: PointerEvent) {
+    const session = navResizeSessionRef.current;
+    if (!session || event.pointerId !== session.pointerId) return;
+    setNavWidth(clampShellNavWidth(session.startWidth + (event.clientX - session.startX)));
+  }
+  function handleNavResizePointerUp(event: PointerEvent) {
+    const session = navResizeSessionRef.current;
+    if (!session || event.pointerId !== session.pointerId) return;
+    const nextWidth = clampShellNavWidth(session.startWidth + (event.clientX - session.startX));
+    setNavWidth(nextWidth);
+    writeStoredShellNavWidth(nextWidth);
+    finishNavResize();
+  }
+  function handleNavResizePointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    navResizeSessionRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: navWidth,
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("pointermove", handleNavResizePointerMove);
+    document.addEventListener("pointerup", handleNavResizePointerUp);
+    document.addEventListener("pointercancel", handleNavResizePointerUp);
+  }
+  function handleNavResizeDoubleClick() {
+    setNavWidth(DEFAULT_SHELL_NAV_WIDTH);
+    writeStoredShellNavWidth(DEFAULT_SHELL_NAV_WIDTH);
+  }
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -62,6 +110,8 @@ export function AppShell() {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  useEffect(() => () => finishNavResize(), []);
 
   useEffect(() => {
     let disposed = false;
@@ -174,7 +224,7 @@ export function AppShell() {
                               <RotateCcw className="h-4 w-4" />
                             </Button>
                           ) : null}
-                          {browserRuntime.isDesktop && item.status === "done" && item.destinationPath ? (
+                          {browserRuntime.supportsFileReveal && item.status === "done" && item.destinationPath ? (
                             <>
                               <Button className="h-8 w-8 px-0" type="button" title={text("打开所在文件夹", "Open containing folder")} variant="ghost" onClick={() => revealDownloadedPath(item.destinationPath!)}>
                                 <FolderOpen className="h-4 w-4" />
@@ -241,34 +291,40 @@ export function AppShell() {
           </div>
         </div>
       </Dialog>
-      <aside className="hidden h-screen w-60 shrink-0 flex-col overflow-hidden border-r border-app-border bg-app-surface md:flex">
-        <div className="flex h-14 items-center gap-2 border-b border-app-border px-4">
-          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-app-accent text-app-onAccent">
-            <TerminalSquare className="h-4 w-4" />
+      <div className="relative hidden h-screen shrink-0 md:flex" style={{ width: navWidth }}>
+        <aside className="flex h-full w-full min-w-0 flex-col overflow-hidden border-r border-app-border bg-app-surface">
+          <div className="flex h-14 items-center gap-2 border-b border-app-border px-4">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-app-accent text-app-onAccent">
+              <TerminalSquare className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold">EasyConsole</div>
+              <div className="truncate text-xs text-app-muted">{t("shell.productSubtitle")}</div>
+            </div>
           </div>
-          <div>
-            <div className="text-sm font-semibold">EasyConsole</div>
-            <div className="text-xs text-app-muted">{t("shell.productSubtitle")}</div>
-          </div>
-        </div>
-        <nav className="flex flex-1 flex-col gap-1 px-3 py-4">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                cn(
-                  "app-interactive flex h-9 items-center gap-2 rounded-md px-3 text-sm text-app-muted hover:bg-app-panel hover:text-app-text",
-                  isActive && "bg-app-accentSoft text-app-accent",
-                )
-              }
-            >
-              <item.icon className="h-4 w-4" />
-              {t(item.labelKey)}
-            </NavLink>
-          ))}
-        </nav>
-      </aside>
+          <nav className="flex flex-1 flex-col gap-1 px-3 py-4">
+            {navItems.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                title={t(item.labelKey)}
+                className={({ isActive }) =>
+                  cn(
+                    "app-interactive flex h-9 min-w-0 items-center gap-2 rounded-md px-3 text-sm text-app-muted hover:bg-app-panel hover:text-app-text",
+                    isActive && "bg-app-accentSoft text-app-accent",
+                  )
+                }
+              >
+                <item.icon className="h-4 w-4 shrink-0" />
+                <span className="truncate">{t(item.labelKey)}</span>
+              </NavLink>
+            ))}
+          </nav>
+        </aside>
+        <div aria-orientation="vertical" aria-valuenow={navWidth} className="app-nav-resize-handle absolute inset-y-0 right-0 z-10 w-2 touch-none" role="separator" tabIndex={0} title={text("Sidebar", "Sidebar")} 
+onDoubleClick={handleNavResizeDoubleClick}
+ onPointerDown={handleNavResizePointerDown} />
+      </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-40 flex min-h-14 items-center justify-between gap-3 border-b border-app-border bg-app-surface px-4 md:px-5">
           <div className="min-w-0">
@@ -285,7 +341,7 @@ export function AppShell() {
                 </span>
               ) : null}
             </Button>
-            {browserRuntime.isDesktop && (appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading") ? (
+            {browserRuntime.supportsUpdater && (appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading") ? (
               <Button className="shrink-0" variant="secondary" onClick={appUpdate.openUpdateDialog}>
                 <DownloadCloud className="h-4 w-4" />
                 <span className="hidden sm:inline">

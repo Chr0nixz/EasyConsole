@@ -29,6 +29,8 @@ build/
 src-tauri/target/
 src-tauri/gen/schemas/
 src-tauri/binaries/
+src-tauri/.cargo/config.toml
+src-tauri/cargo-check-android.bat
 
 # Generated desktop installers
 *.msi

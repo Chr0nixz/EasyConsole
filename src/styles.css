@@ -110,6 +110,26 @@ tbody tr {
   transform: translateY(1px) scale(0.99);
 }
 
+.app-nav-resize-handle {
+  cursor: col-resize;
+}
+
+.app-nav-resize-handle::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background-color var(--app-motion-fast) var(--app-ease-out);
+}
+
+.app-nav-resize-handle:hover::after,
+.app-nav-resize-handle:focus-visible::after {
+  background: oklch(0.50 0.145 250 / 0.45);
+}
+
 .app-table-region {
   scrollbar-gutter: stable;
 }

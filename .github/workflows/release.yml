@@ -105,3 +105,86 @@ jobs:
             src-tauri/target/**/release/EasyConsole*
             src-tauri/target/**/release/bundle/**
             build/sidecars/*
+
+  release-android:
+    name: Release Android (aarch64)
+    needs: release-desktop
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: "17"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK and set environment
+        run: |
+          sdkmanager "ndk;27.0.12077973"
+          NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
+          echo "NDK_HOME=$NDK_HOME" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$NDK_HOME" >> $GITHUB_ENV
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-android-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: cargo-android-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify gen/android exists
+        run: |
+          if [ ! -d "gen/android" ]; then
+            echo "::error::gen/android/ not found. Run 'npm run tauri:android:init' locally and commit the result."
+            exit 1
+          fi
+
+      - name: Build Android APK
+        env:
+          NDK_HOME: ${{ env.NDK_HOME }}
+          CC_aarch64_linux_android: ${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+          AR_aarch64_linux_android: ${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+        run: npx tauri android build --target aarch64 --apk
+
+      - name: Upload APK to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}"
+          APK_PATH=$(find gen/android/app/build/outputs/apk -name "*.apk" | head -1)
+          if [ -n "$APK_PATH" ]; then
+            cp "$APK_PATH" "EasyConsole-${TAG}-android-aarch64.apk"
+            gh release upload "$TAG" "EasyConsole-${TAG}-android-aarch64.apk" --clobber
+          else
+            echo "::warning::No APK found"
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easy-console-android-aarch64
+          path: gen/android/app/build/outputs/apk/**/*.apk

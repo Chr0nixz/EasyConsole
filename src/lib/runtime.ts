@@ -4,6 +4,8 @@ import { i18nText } from "./i18n-text";
 import type {
   RuntimeHttpRequest,
   RuntimeHttpResponse,
+  RuntimeKind,
+  RuntimeLogChannel,
   RuntimeStorage,
   RuntimeSystemNotification,
   RuntimeSystemNotificationPermission,
@@ -18,6 +20,47 @@ export const RUNTIME_SOCKET_OPEN = 1;
 const RUNTIME_SOCKET_CONNECTING = 0;
 const RUNTIME_SOCKET_CLOSING = 2;
 const RUNTIME_SOCKET_CLOSED = 3;
+
+/**
+ * Resolved runtime kind. Defaults to "web" and is filled in by
+ * {@link initRuntimeKind} before the renderer mounts, so the desktop/mobile
+ * distinction is known before any UI renders. In non-Tauri runtimes this stays
+ * "web" and init resolves immediately.
+ */
+let runtimeKind: RuntimeKind = "web";
+let runtimeKindReady: Promise<void> | null = null;
+
+/**
+ * Resolve the native runtime kind once. Safe to call multiple times; subsequent
+ * calls return the same promise. On web it resolves synchronously (no IPC).
+ * On Tauri it queries the `runtime_platform` command to distinguish desktop
+ * from mobile, since `isTauri()` is true for both.
+ */
+export function initRuntimeKind(): Promise<void> {
+  if (runtimeKindReady) return runtimeKindReady;
+  runtimeKindReady = (async () => {
+    if (!isTauri()) {
+      runtimeKind = "web";
+      return;
+    }
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      // Race the IPC so a hung command never blocks renderer startup.
+      const platform = await Promise.race([
+        invoke<string>("runtime_platform"),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+      ]);
+      runtimeKind = platform === "mobile" || platform === "desktop" ? platform : "desktop";
+    } catch {
+      runtimeKind = "desktop";
+    }
+  })();
+  return runtimeKindReady;
+}
+
+export function getRuntimeKind(): RuntimeKind {
+  return runtimeKind;
+}
 
 const localStorageAdapter: RuntimeStorage = {
   async get(key) {
@@ -301,7 +344,35 @@ function requireDesktopSsh(): never {
 }
 
 export const browserRuntime: RuntimeTransport = {
-  isDesktop: isTauri(),
+  get isDesktop() {
+    return runtimeKind === "desktop";
+  },
+  get isMobile() {
+    return runtimeKind === "mobile";
+  },
+  get runtimeKind() {
+    return runtimeKind;
+  },
+  get runLogChannel(): RuntimeLogChannel {
+    return runtimeKind === "web" ? "web" : runtimeKind === "mobile" ? "mobile" : "tauri";
+  },
+  // Phase 1: all desktop-only capabilities are gated to desktop only.
+  // Mobile opens these up in later phases (e.g. in-app SSH via russh on NDK).
+  get supportsTray() {
+    return runtimeKind === "desktop";
+  },
+  get supportsSystemTerminal() {
+    return runtimeKind === "desktop";
+  },
+  get supportsInAppSsh() {
+    return runtimeKind !== "web";
+  },
+  get supportsUpdater() {
+    return runtimeKind === "desktop";
+  },
+  get supportsFileReveal() {
+    return runtimeKind === "desktop";
+  },
   storage: isTauri() ? tauriStorageAdapter : localStorageAdapter,
   request: fetchRequest,
   async createWebSocket(url) {
@@ -320,9 +391,11 @@ export const browserRuntime: RuntimeTransport = {
     window.open(url, "_blank", "noopener,noreferrer");
   },
   openLocalPath(path) {
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("open_local_path", { path });
   },
   revealLocalPath(path) {
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("reveal_local_path", { path });
   },
   openSshSession(request) {
@@ -338,7 +411,7 @@ export const browserRuntime: RuntimeTransport = {
     return invokeTauriCommand("ssh_close", { sessionId });
   },
   async onSshSessionEvent(sessionId, handler) {
-    if (!isTauri()) requireDesktopSsh();
+    if (runtimeKind !== "desktop") requireDesktopSsh();
     const { listen } = await import("@tauri-apps/api/event");
     return listen<SshSessionEvent>("ssh-session-event", (event) => {
       if (event.payload.sessionId !== sessionId) return;
@@ -352,44 +425,44 @@ export const browserRuntime: RuntimeTransport = {
     return invokeTauriCommand("open_vscode_ssh", { request });
   },
   setDesktopCloseToTray(enabled) {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("set_desktop_close_to_tray", { enabled });
   },
   setDesktopClosePrompt(enabled) {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("set_desktop_close_prompt", { enabled });
   },
   cancelDesktopClosePrompt() {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("cancel_desktop_close_prompt", {});
   },
   completeDesktopClosePrompt(action) {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("complete_desktop_close_prompt", { action });
   },
   showDesktopMainWindow() {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("show_desktop_main_window", {});
   },
   hideDesktopTrayMenu() {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("hide_desktop_tray_menu", {});
   },
   runDueScheduledTasks() {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("run_due_scheduled_tasks", {});
   },
   quitDesktopApp() {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("quit_desktop_app", {});
   },
   async onDesktopCloseRequested(handler) {
-    if (!isTauri()) return () => undefined;
+    if (runtimeKind !== "desktop") return () => undefined;
     const { listen } = await import("@tauri-apps/api/event");
     return listen("desktop-close-requested", handler);
   },
   async onDesktopRunDueScheduledTasks(handler) {
-    if (!isTauri()) return () => undefined;
+    if (runtimeKind !== "desktop") return () => undefined;
     const { listen } = await import("@tauri-apps/api/event");
     return listen("desktop-run-due-scheduled-tasks", handler);
   },

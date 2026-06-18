@@ -1,4 +1,3 @@
-import { isTauri } from "@tauri-apps/api/core";
 import type { DownloadEvent, Update } from "@tauri-apps/plugin-updater";
 
 import { i18nText } from "./i18n-text";
@@ -76,13 +75,13 @@ export async function saveAppUpdateState(state: AppUpdateStateSnapshot) {
 }
 
 export async function getCurrentAppVersion() {
-  if (!isTauri()) return undefined;
+  if (!browserRuntime.supportsUpdater) return undefined;
   const { getVersion } = await import("@tauri-apps/api/app");
   return getVersion();
 }
 
 export async function checkForAppUpdate(): Promise<AppUpdateCheckResult> {
-  if (!isTauri()) {
+  if (!browserRuntime.supportsUpdater) {
     return { kind: "unsupported", currentVersion: await getCurrentAppVersion() };
   }
 
@@ -133,7 +132,7 @@ export async function downloadAndInstallAppUpdate(
 }
 
 export async function relaunchAppAfterUpdate() {
-  if (!isTauri()) throw new Error(i18nText("当前环境不是桌面端", "The current environment is not the desktop app"));
+  if (!browserRuntime.supportsUpdater) throw new Error(i18nText("当前环境不是桌面端", "The current environment is not the desktop app"));
   const { relaunch } = await import("@tauri-apps/plugin-process");
   await relaunch();
 }

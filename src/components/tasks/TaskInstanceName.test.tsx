@@ -43,7 +43,7 @@ describe("TaskInstanceName", () => {
   it("collapses template prefix by default and toggles full name", () => {
     const marker = getTaskTemplateMarker(baseTemplate);
     const fullName = `dev-${marker}-202605230800-1`;
-    const suffix = `${marker}-202605230800-1`;
+    const suffix = "202605230800-1";
 
     renderName(fullName);
 
@@ -70,6 +70,6 @@ describe("TaskInstanceName", () => {
     renderName(fullName);
 
     expect(screen.getByRole("button", { name: /Expand full name \(template prefix: dev\)/ })).toBeInTheDocument();
-    expect(screen.getByText(`${marker}-202605230800`)).toBeInTheDocument();
+    expect(screen.getByText("202605230800")).toBeInTheDocument();
   });
 });

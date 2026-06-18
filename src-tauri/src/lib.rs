@@ -1,35 +1,50 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
+
+#[cfg(desktop)]
+use std::process::Command;
 use russh::keys::ssh_key::{self, HashAlg};
 use russh::{client, ChannelMsg};
-use serde::{Deserialize, Serialize};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, Position, RunEvent, State, WebviewUrl,
-    WebviewWindowBuilder, WindowEvent,
-};
 use tokio::sync::mpsc;
 use uuid::Uuid;
+#[cfg(desktop)]
+use {
+    tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tauri::{
+        PhysicalPosition, Position, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    },
+};
 
 const SSH_SESSION_EVENT: &str = "ssh-session-event";
+#[cfg(desktop)]
 const DESKTOP_RUN_DUE_EVENT: &str = "desktop-run-due-scheduled-tasks";
+#[cfg(desktop)]
 const DESKTOP_CLOSE_REQUESTED_EVENT: &str = "desktop-close-requested";
+#[cfg(desktop)]
 const APP_SETTINGS_STORAGE_KEY: &str = "easy-console.settings";
+#[cfg(desktop)]
 const DESKTOP_RUN_DUE_INTERVAL_SECS: u64 = 30;
+#[cfg(desktop)]
 const TRAY_MENU_LABEL: &str = "tray-menu";
+#[cfg(desktop)]
 const TRAY_MENU_WIDTH: f64 = 320.0;
+#[cfg(desktop)]
 const TRAY_MENU_HEIGHT: f64 = 244.0;
 const DEFAULT_COLS: u32 = 120;
 const DEFAULT_ROWS: u32 = 32;
+#[cfg(desktop)]
 const VSCODE_KEY_NAME: &str = "easyconsole_vscode_ed25519";
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(not(desktop), allow(dead_code))]
 struct SshConnectionRequest {
     host: String,
     port: Option<String>,
@@ -61,6 +76,7 @@ struct SshSessionState {
     sessions: Mutex<HashMap<String, mpsc::UnboundedSender<SshCommand>>>,
 }
 
+#[cfg(desktop)]
 #[derive(Default)]
 struct DesktopRuntimeState {
     close_to_tray: Mutex<bool>,
@@ -204,10 +220,12 @@ fn validate_username(username: Option<&str>) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+#[cfg(desktop)]
 fn require_username(username: Option<&str>) -> Result<String, String> {
     validate_username(username)?.ok_or_else(|| "SSH Username 为空，无法建立连接".to_string())
 }
 
+#[cfg(desktop)]
 fn require_password(password: Option<&str>) -> Result<String, String> {
     password
         .map(str::trim)
@@ -216,6 +234,7 @@ fn require_password(password: Option<&str>) -> Result<String, String> {
         .ok_or_else(|| "SSH Password 为空，无法为 VS Code 配置免密登录".to_string())
 }
 
+#[cfg(desktop)]
 fn sanitize_alias_part(value: &str) -> String {
     let mut sanitized = String::new();
     for ch in value.chars() {
@@ -232,6 +251,7 @@ fn sanitize_alias_part(value: &str) -> String {
         .collect::<String>()
 }
 
+#[cfg(desktop)]
 fn vscode_ssh_alias(request: &SshConnectionRequest) -> Result<String, String> {
     let host = validate_host(&request.host)?;
     let username = require_username(request.username.as_deref())?;
@@ -264,6 +284,7 @@ fn validate_external_url(url: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
+#[cfg(desktop)]
 fn validate_local_path(path: &str) -> Result<PathBuf, String> {
     let path = path.trim();
     if path.is_empty() {
@@ -279,7 +300,7 @@ fn validate_local_path(path: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(desktop, target_os = "windows"))]
 fn open_path_with_system(path: &Path) -> Result<(), String> {
     Command::new("rundll32")
         .arg("url.dll,FileProtocolHandler")
@@ -289,7 +310,7 @@ fn open_path_with_system(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法打开本地路径：{error}"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(desktop, target_os = "macos"))]
 fn open_path_with_system(path: &Path) -> Result<(), String> {
     Command::new("open")
         .arg(path)
@@ -298,7 +319,7 @@ fn open_path_with_system(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法打开本地路径：{error}"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(desktop, target_os = "linux"))]
 fn open_path_with_system(path: &Path) -> Result<(), String> {
     Command::new("xdg-open")
         .arg(path)
@@ -307,12 +328,7 @@ fn open_path_with_system(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法打开本地路径：{error}"))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn open_path_with_system(_path: &Path) -> Result<(), String> {
-    Err("当前平台暂不支持打开本地路径".to_string())
-}
-
-#[cfg(target_os = "windows")]
+#[cfg(all(desktop, target_os = "windows"))]
 fn reveal_path_with_system(path: &Path) -> Result<(), String> {
     Command::new("explorer")
         .arg(format!("/select,{}", path.to_string_lossy()))
@@ -321,7 +337,7 @@ fn reveal_path_with_system(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法打开所在文件夹：{error}"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(desktop, target_os = "macos"))]
 fn reveal_path_with_system(path: &Path) -> Result<(), String> {
     Command::new("open")
         .arg("-R")
@@ -331,7 +347,7 @@ fn reveal_path_with_system(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法打开所在文件夹：{error}"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(desktop, target_os = "linux"))]
 fn reveal_path_with_system(path: &Path) -> Result<(), String> {
     let directory = if path.is_dir() {
         path
@@ -345,11 +361,7 @@ fn reveal_path_with_system(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法打开所在文件夹：{error}"))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn reveal_path_with_system(_path: &Path) -> Result<(), String> {
-    Err("当前平台暂不支持打开所在文件夹".to_string())
-}
-
+#[cfg(desktop)]
 fn user_ssh_dir() -> Result<PathBuf, String> {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -358,6 +370,7 @@ fn user_ssh_dir() -> Result<PathBuf, String> {
     Ok(home.join(".ssh"))
 }
 
+#[cfg(desktop)]
 fn ensure_vscode_key(app: &AppHandle) -> Result<(PathBuf, String), String> {
     let key_dir = app
         .path()
@@ -403,6 +416,7 @@ fn ensure_vscode_key(app: &AppHandle) -> Result<(PathBuf, String), String> {
     Ok((private_key, public_key_text))
 }
 
+#[cfg(desktop)]
 fn ssh_config_identity_path(path: &Path) -> String {
     format!(
         "\"{}\"",
@@ -412,6 +426,7 @@ fn ssh_config_identity_path(path: &Path) -> String {
     )
 }
 
+#[cfg(desktop)]
 fn write_vscode_ssh_config(
     request: &SshConnectionRequest,
     alias: &str,
@@ -455,11 +470,12 @@ fn write_vscode_ssh_config(
     fs::write(&config_path, next).map_err(|error| format!("无法写入本机 SSH 配置：{error}"))
 }
 
+#[cfg(desktop)]
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(desktop, target_os = "windows"))]
 fn open_url_in_browser(url: &str) -> Result<(), String> {
     Command::new("rundll32")
         .arg("url.dll,FileProtocolHandler")
@@ -469,7 +485,7 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
         .map_err(|error| format!("无法打开浏览器：{error}"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(desktop, target_os = "macos"))]
 fn open_url_in_browser(url: &str) -> Result<(), String> {
     Command::new("open")
         .arg(url)
@@ -478,7 +494,7 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
         .map_err(|error| format!("无法打开浏览器：{error}"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(desktop, target_os = "linux"))]
 fn open_url_in_browser(url: &str) -> Result<(), String> {
     Command::new("xdg-open")
         .arg(url)
@@ -487,11 +503,7 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
         .map_err(|error| format!("无法打开浏览器：{error}"))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn open_url_in_browser(_url: &str) -> Result<(), String> {
-    Err("当前平台暂不支持打开系统浏览器".to_string())
-}
-
+#[cfg(desktop)]
 fn ssh_args(request: &SshConnectionRequest) -> Result<Vec<String>, String> {
     let host = validate_host(&request.host)?;
     let mut args = Vec::new();
@@ -516,7 +528,7 @@ fn ssh_args(request: &SshConnectionRequest) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(desktop, target_os = "windows"))]
 fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
     let args = ssh_args(request)?;
     let mut wt_args = vec![
@@ -548,7 +560,7 @@ fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(desktop, target_os = "macos"))]
 fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
     let args = ssh_args(request)?;
     let escaped = args
@@ -566,7 +578,7 @@ fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
         .map_err(|error| format!("无法打开系统终端：{error}"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(desktop, target_os = "linux"))]
 fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
     let args = ssh_args(request)?;
     let terminals = [
@@ -596,11 +608,7 @@ fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
     Err("无法打开系统终端，请确认本机已安装终端和 ssh 客户端".to_string())
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn spawn_ssh_terminal(_request: &SshConnectionRequest) -> Result<(), String> {
-    Err("当前平台暂不支持桌面端 SSH 启动".to_string())
-}
-
+#[cfg(desktop)]
 fn spawn_vscode_ssh(alias: &str) -> Result<(), String> {
     let authority = format!("ssh-remote+{alias}");
 
@@ -623,6 +631,7 @@ fn spawn_vscode_ssh(alias: &str) -> Result<(), String> {
     open_url_in_browser(&uri).map_err(|error| format!("无法打开 VS Code：{error}"))
 }
 
+#[cfg(desktop)]
 async fn install_vscode_public_key(
     app: &AppHandle,
     request: &SshConnectionRequest,
@@ -702,6 +711,7 @@ async fn install_vscode_public_key(
     Ok(())
 }
 
+#[cfg(desktop)]
 async fn prepare_vscode_ssh(
     app: &AppHandle,
     request: &SshConnectionRequest,
@@ -932,6 +942,7 @@ fn runtime_storage_remove(app: AppHandle, key: String) -> Result<(), String> {
     write_string_map(&path, &data)
 }
 
+#[cfg(desktop)]
 fn read_close_to_tray_setting(app: &AppHandle) -> bool {
     let Ok(path) = runtime_storage_path(app) else {
         return false;
@@ -948,6 +959,7 @@ fn read_close_to_tray_setting(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(desktop)]
 fn read_close_prompt_setting(app: &AppHandle) -> bool {
     let Ok(path) = runtime_storage_path(app) else {
         return true;
@@ -964,6 +976,7 @@ fn read_close_prompt_setting(app: &AppHandle) -> bool {
         .unwrap_or(true)
 }
 
+#[cfg(desktop)]
 fn set_close_to_tray_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> Result<(), String> {
     let mut close_to_tray = state
         .close_to_tray
@@ -973,6 +986,7 @@ fn set_close_to_tray_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> R
     Ok(())
 }
 
+#[cfg(desktop)]
 fn set_close_prompt_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> Result<(), String> {
     let mut close_prompt_enabled = state
         .close_prompt_enabled
@@ -982,6 +996,7 @@ fn set_close_prompt_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> Re
     Ok(())
 }
 
+#[cfg(desktop)]
 fn get_close_to_tray_state(state: &Arc<DesktopRuntimeState>) -> bool {
     state
         .close_to_tray
@@ -990,6 +1005,7 @@ fn get_close_to_tray_state(state: &Arc<DesktopRuntimeState>) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(desktop)]
 fn get_close_prompt_state(state: &Arc<DesktopRuntimeState>) -> bool {
     state
         .close_prompt_enabled
@@ -998,16 +1014,19 @@ fn get_close_prompt_state(state: &Arc<DesktopRuntimeState>) -> bool {
         .unwrap_or(true)
 }
 
+#[cfg(desktop)]
 fn set_quit_requested(state: &Arc<DesktopRuntimeState>, requested: bool) {
     if let Ok(mut value) = state.quit_requested.lock() {
         *value = requested;
     }
 }
 
+#[cfg(desktop)]
 fn is_quit_requested(state: &Arc<DesktopRuntimeState>) -> bool {
     state.quit_requested.lock().map(|value| *value).unwrap_or(false)
 }
 
+#[cfg(desktop)]
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -1016,18 +1035,21 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+#[cfg(desktop)]
 fn hide_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
 }
 
+#[cfg(desktop)]
 fn hide_tray_menu(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(TRAY_MENU_LABEL) {
         let _ = window.hide();
     }
 }
 
+#[cfg(desktop)]
 fn ensure_tray_menu_window(app: &AppHandle) -> tauri::Result<()> {
     if app.get_webview_window(TRAY_MENU_LABEL).is_some() {
         return Ok(());
@@ -1056,6 +1078,7 @@ fn ensure_tray_menu_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(desktop)]
 fn show_tray_menu(app: &AppHandle, position: PhysicalPosition<f64>) {
     if let Err(error) = ensure_tray_menu_window(app) {
         log::warn!("failed to create tray menu window: {error}");
@@ -1071,6 +1094,7 @@ fn show_tray_menu(app: &AppHandle, position: PhysicalPosition<f64>) {
     }
 }
 
+#[cfg(desktop)]
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     ensure_tray_menu_window(app.handle())?;
     let mut tray = TrayIconBuilder::with_id("main")
@@ -1103,6 +1127,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(desktop)]
 fn start_desktop_run_due_timer(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval =
@@ -1138,11 +1163,13 @@ fn ssh_close(state: State<'_, Arc<SshSessionState>>, session_id: String) -> Resu
     send_session_command(state, &session_id, SshCommand::Close)
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn open_system_ssh_terminal(request: SshConnectionRequest) -> Result<(), String> {
     spawn_ssh_terminal(&request)
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 async fn open_vscode_ssh(app: AppHandle, request: SshConnectionRequest) -> Result<(), String> {
     let alias = prepare_vscode_ssh(&app, &request).await?;
@@ -1150,23 +1177,28 @@ async fn open_vscode_ssh(app: AppHandle, request: SshConnectionRequest) -> Resul
 }
 
 #[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
+fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
     let url = validate_external_url(&url)?;
-    open_url_in_browser(&url)
+    app.opener()
+        .open_url(url.clone(), None::<&str>)
+        .map_err(|error| format!("无法打开外部链接：{error}"))
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn open_local_path(path: String) -> Result<(), String> {
     let path = validate_local_path(&path)?;
     open_path_with_system(&path)
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn reveal_local_path(path: String) -> Result<(), String> {
     let path = validate_local_path(&path)?;
     reveal_path_with_system(&path)
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn set_desktop_close_to_tray(
     state: State<'_, Arc<DesktopRuntimeState>>,
@@ -1175,6 +1207,7 @@ fn set_desktop_close_to_tray(
     set_close_to_tray_state(&state, enabled)
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn set_desktop_close_prompt(
     state: State<'_, Arc<DesktopRuntimeState>>,
@@ -1183,9 +1216,11 @@ fn set_desktop_close_prompt(
     set_close_prompt_state(&state, enabled)
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn cancel_desktop_close_prompt() {}
 
+#[cfg(desktop)]
 #[tauri::command]
 fn complete_desktop_close_prompt(
     app: AppHandle,
@@ -1206,60 +1241,93 @@ fn complete_desktop_close_prompt(
     }
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn show_desktop_main_window(app: AppHandle) {
     hide_tray_menu(&app);
     show_main_window(&app);
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn hide_desktop_tray_menu(app: AppHandle) {
     hide_tray_menu(&app);
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn run_due_scheduled_tasks(app: AppHandle) {
     hide_tray_menu(&app);
     let _ = app.emit(DESKTOP_RUN_DUE_EVENT, ());
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn quit_desktop_app(app: AppHandle, state: State<'_, Arc<DesktopRuntimeState>>) {
     set_quit_requested(&state, true);
     app.exit(0);
 }
 
+/// Exposes the native runtime kind to the renderer so it can pick capability
+/// flags without relying on `isTauri()` alone (which is true on mobile too).
+#[tauri::command]
+fn runtime_platform() -> &'static str {
+    if cfg!(mobile) {
+        "mobile"
+    } else {
+        "desktop"
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(desktop)]
     let desktop_state = Arc::new(DesktopRuntimeState::default());
-    tauri::Builder::default()
-        .manage(Arc::new(SshSessionState::default()))
-        .manage(Arc::clone(&desktop_state))
+
+    let mut builder = tauri::Builder::default()
+        .manage(Arc::new(SshSessionState::default()));
+
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .manage(Arc::clone(&desktop_state))
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
+    builder = builder
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_websocket::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_http::init())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup({
-            let desktop_state = Arc::clone(&desktop_state);
-            move |app| {
+        .plugin(tauri_plugin_opener::init());
+
+    builder = builder.setup({
+        #[cfg(desktop)]
+        let desktop_state = Arc::clone(&desktop_state);
+        move |app| {
+            #[cfg(desktop)]
             if let Some(icon) = app.default_window_icon().cloned() {
                 for window in app.webview_windows().values() {
                     window.set_icon(icon.clone())?;
                 }
             }
-            let close_to_tray = read_close_to_tray_setting(app.handle());
-            if let Err(error) = set_close_to_tray_state(&desktop_state, close_to_tray) {
-                log::warn!("failed to initialize close-to-tray state: {error}");
+
+            #[cfg(desktop)]
+            {
+                let close_to_tray = read_close_to_tray_setting(app.handle());
+                if let Err(error) = set_close_to_tray_state(&desktop_state, close_to_tray) {
+                    log::warn!("failed to initialize close-to-tray state: {error}");
+                }
+                let close_prompt = read_close_prompt_setting(app.handle());
+                if let Err(error) = set_close_prompt_state(&desktop_state, close_prompt) {
+                    log::warn!("failed to initialize close prompt state: {error}");
+                }
+                setup_tray(app)?;
+                start_desktop_run_due_timer(app.handle().clone());
             }
-            let close_prompt = read_close_prompt_setting(app.handle());
-            if let Err(error) = set_close_prompt_state(&desktop_state, close_prompt) {
-                log::warn!("failed to initialize close prompt state: {error}");
-            }
-            setup_tray(app)?;
-            start_desktop_run_due_timer(app.handle().clone());
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -1268,71 +1336,102 @@ pub fn run() {
                 )?;
             }
             Ok(())
-        }})
-        .invoke_handler(tauri::generate_handler![
-            open_ssh_session,
-            ssh_write,
-            ssh_resize,
-            ssh_close,
-            open_system_ssh_terminal,
-            open_vscode_ssh,
-            open_external_url,
-            open_local_path,
-            reveal_local_path,
-            set_desktop_close_to_tray,
-            set_desktop_close_prompt,
-            cancel_desktop_close_prompt,
-            complete_desktop_close_prompt,
-            show_desktop_main_window,
-            hide_desktop_tray_menu,
-            run_due_scheduled_tasks,
-            quit_desktop_app,
-            runtime_storage_get,
-            runtime_storage_set,
-            runtime_storage_remove
-        ])
+        }
+    });
+
+    builder = builder.invoke_handler(tauri::generate_handler![
+        open_external_url,
+        runtime_storage_get,
+        runtime_storage_set,
+        runtime_storage_remove,
+        runtime_platform,
+        open_ssh_session,
+        ssh_write,
+        ssh_resize,
+        ssh_close,
+        #[cfg(desktop)]
+        open_system_ssh_terminal,
+        #[cfg(desktop)]
+        open_vscode_ssh,
+        #[cfg(desktop)]
+        open_local_path,
+        #[cfg(desktop)]
+        reveal_local_path,
+        #[cfg(desktop)]
+        set_desktop_close_to_tray,
+        #[cfg(desktop)]
+        set_desktop_close_prompt,
+        #[cfg(desktop)]
+        cancel_desktop_close_prompt,
+        #[cfg(desktop)]
+        complete_desktop_close_prompt,
+        #[cfg(desktop)]
+        show_desktop_main_window,
+        #[cfg(desktop)]
+        hide_desktop_tray_menu,
+        #[cfg(desktop)]
+        run_due_scheduled_tasks,
+        #[cfg(desktop)]
+        quit_desktop_app
+    ]);
+
+    builder
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(move |app, event| match event {
-            RunEvent::WindowEvent {
-                label,
-                event: WindowEvent::CloseRequested { api, .. },
-                ..
-            } if label == "main" && !is_quit_requested(&desktop_state) => {
-                if get_close_prompt_state(&desktop_state) {
-                    api.prevent_close();
-                    let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
-                } else if get_close_to_tray_state(&desktop_state) {
-                    api.prevent_close();
-                    hide_main_window(app);
-                }
+        .run(move |app, event| {
+            #[cfg(desktop)]
+            {
+                handle_desktop_event(app, &event, &desktop_state);
             }
-            RunEvent::WindowEvent {
-                label,
-                event: WindowEvent::CloseRequested { api, .. },
-                ..
-            } if label == TRAY_MENU_LABEL => {
-                api.prevent_close();
-                hide_tray_menu(app);
+            #[cfg(not(desktop))]
+            {
+                let _ = (app, event);
             }
-            RunEvent::WindowEvent {
-                label,
-                event: WindowEvent::Focused(false),
-                ..
-            } if label == TRAY_MENU_LABEL => {
-                hide_tray_menu(app);
-            }
-            RunEvent::ExitRequested { api, .. } if !is_quit_requested(&desktop_state) => {
-                if get_close_prompt_state(&desktop_state) {
-                    api.prevent_exit();
-                    let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
-                } else if get_close_to_tray_state(&desktop_state) {
-                    api.prevent_exit();
-                    hide_main_window(app);
-                }
-            }
-            _ => {}
         });
+}
+
+#[cfg(desktop)]
+fn handle_desktop_event(app: &AppHandle, event: &RunEvent, desktop_state: &Arc<DesktopRuntimeState>) {
+    match event {
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == "main" && !is_quit_requested(desktop_state) => {
+            if get_close_prompt_state(desktop_state) {
+                api.prevent_close();
+                let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
+            } else if get_close_to_tray_state(desktop_state) {
+                api.prevent_close();
+                hide_main_window(app);
+            }
+        }
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == TRAY_MENU_LABEL => {
+            api.prevent_close();
+            hide_tray_menu(app);
+        }
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Focused(false),
+            ..
+        } if label == TRAY_MENU_LABEL => {
+            hide_tray_menu(app);
+        }
+        RunEvent::ExitRequested { api, .. } if !is_quit_requested(desktop_state) => {
+            if get_close_prompt_state(desktop_state) {
+                api.prevent_exit();
+                let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
+            } else if get_close_to_tray_state(desktop_state) {
+                api.prevent_exit();
+                hide_main_window(app);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

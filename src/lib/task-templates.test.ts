@@ -93,18 +93,18 @@ describe("task templates", () => {
     expect(parseTemplateTaskName(`dev-${marker}-202605230800-1`)).toEqual({
       full: `dev-${marker}-202605230800-1`,
       prefix: "dev",
-      suffix: `${marker}-202605230800-1`,
+      suffix: "202605230800-1",
     });
     expect(parseTemplateTaskName(`train-job-${marker}-202605230800-02`)).toEqual({
       full: `train-job-${marker}-202605230800-02`,
       prefix: "train-job",
-      suffix: `${marker}-202605230800-02`,
+      suffix: "202605230800-02",
     });
     expect(parseTemplateTaskName("manual-task")).toBeNull();
     expect(parseTemplateTaskName(`dev-${marker}-202605230800`)).toEqual({
       full: `dev-${marker}-202605230800`,
       prefix: "dev",
-      suffix: `${marker}-202605230800`,
+      suffix: "202605230800",
     });
   });
 
