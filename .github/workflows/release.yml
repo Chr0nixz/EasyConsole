@@ -107,9 +107,21 @@ jobs:
             build/sidecars/*
 
   release-android:
-    name: Release Android (aarch64)
+    name: Release Android (${{ matrix.target }})
     needs: release-desktop
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64
+            rust-target: aarch64-linux-android
+            cc-suffix: aarch64-linux-android24
+            linker-env: CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER
+          - target: x86_64
+            rust-target: x86_64-linux-android
+            cc-suffix: x86_64-linux-android24
+            linker-env: CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER
 
     steps:
       - name: Checkout
@@ -130,7 +142,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: ${{ matrix.rust-target }}
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -149,8 +161,8 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-android-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: cargo-android-
+          key: cargo-android-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: cargo-android-${{ matrix.target }}-
 
       - name: Install dependencies
         run: npm ci
@@ -176,13 +188,14 @@ jobs:
       - name: Build Android APK
         env:
           NDK_HOME: ${{ env.NDK_HOME }}
-          CC_aarch64_linux_android: ${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
-          AR_aarch64_linux_android: ${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: npx tauri android build --target aarch64 --apk
+        run: |
+          export CC_${{ matrix.rust-target }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
+          export AR_${{ matrix.rust-target }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          export ${{ matrix.linker-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
+          npx tauri android build --target ${{ matrix.target }} --apk
 
       - name: Upload APK to GitHub Release
         env:
@@ -191,14 +204,14 @@ jobs:
           TAG="${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}"
           APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -1)
           if [ -n "$APK_PATH" ]; then
-            cp "$APK_PATH" "EasyConsole-${TAG}-android-aarch64.apk"
-            gh release upload "$TAG" "EasyConsole-${TAG}-android-aarch64.apk" --clobber
+            cp "$APK_PATH" "EasyConsole-${TAG}-android-${{ matrix.target }}.apk"
+            gh release upload "$TAG" "EasyConsole-${TAG}-android-${{ matrix.target }}.apk" --clobber
           else
-            echo "::warning::No APK found"
+            echo "::warning::No APK found for ${{ matrix.target }}"
           fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: easy-console-android-aarch64
+          name: easy-console-android-${{ matrix.target }}
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk

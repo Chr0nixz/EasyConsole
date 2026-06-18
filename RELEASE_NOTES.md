@@ -1,3 +1,14 @@
+# EasyConsole v0.3.4
+
+Fix Android white screen on x86_64 emulators by building APKs for both ARM64 and x86_64.
+
+## Changes
+
+- **CI: dual-architecture Android builds**: Release and CI workflows now use a matrix strategy to build both `aarch64` (real devices) and `x86_64` (emulators) APKs. Previously, only `aarch64` was built, causing a white screen on x86_64 emulators (MuMu, etc.) because the Houdini ARM translation layer failed to load the native Rust library.
+- **Per-target NDK environment**: Each matrix target gets its own CC, AR, and linker environment variables, with architecture-specific Cargo cache keys.
+
+---
+
 # EasyConsole v0.3.3
 
 Fix Android white screen caused by blocked cleartext HTTP traffic.
