@@ -1281,9 +1281,20 @@ fn runtime_platform() -> &'static str {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "android")]
+    {
+        android_logger::init_once(
+            android_logger::Config::default()
+                .with_max_level(log::LevelFilter::Trace)
+                .with_tag("EasyConsole"),
+        );
+        log::info!("=== EasyConsole Android run() started ===");
+    }
+
     #[cfg(desktop)]
     let desktop_state = Arc::new(DesktopRuntimeState::default());
 
+    log::info!("creating Tauri builder");
     let mut builder = tauri::Builder::default()
         .manage(Arc::new(SshSessionState::default()));
 
@@ -1303,10 +1314,14 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init());
 
+    log::info!("all plugins registered, setting up");
+
     builder = builder.setup({
         #[cfg(desktop)]
         let desktop_state = Arc::clone(&desktop_state);
         move |app| {
+            log::info!("setup closure entered");
+
             #[cfg(desktop)]
             if let Some(icon) = app.default_window_icon().cloned() {
                 for window in app.webview_windows().values() {
@@ -1335,9 +1350,13 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            log::info!("setup closure completed");
             Ok(())
         }
     });
+
+    log::info!("building Tauri app");
 
     builder = builder.invoke_handler(tauri::generate_handler![
         open_external_url,
@@ -1375,10 +1394,18 @@ pub fn run() {
         quit_desktop_app
     ]);
 
-    builder
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(move |app, event| {
+    log::info!("invoke handler registered, building app");
+    let app = match builder.build(tauri::generate_context!()) {
+        Ok(app) => {
+            log::info!("Tauri app built successfully, starting event loop");
+            app
+        }
+        Err(e) => {
+            log::error!("FATAL: failed to build Tauri app: {e:?}");
+            panic!("error while building tauri application: {e:?}");
+        }
+    };
+    app.run(move |app, event| {
             #[cfg(desktop)]
             {
                 handle_desktop_event(app, &event, &desktop_state);
