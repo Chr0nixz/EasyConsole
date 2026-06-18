@@ -157,8 +157,8 @@ jobs:
 
       - name: Verify gen/android exists
         run: |
-          if [ ! -d "gen/android" ]; then
-            echo "::error::gen/android/ not found. Run 'npm run tauri:android:init' locally and commit the result."
+          if [ ! -d "src-tauri/gen/android" ]; then
+            echo "::error::src-tauri/gen/android/ not found. Run 'npm run tauri:android:init' locally and commit the result."
             exit 1
           fi
 
@@ -175,7 +175,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}"
-          APK_PATH=$(find gen/android/app/build/outputs/apk -name "*.apk" | head -1)
+          APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -1)
           if [ -n "$APK_PATH" ]; then
             cp "$APK_PATH" "EasyConsole-${TAG}-android-aarch64.apk"
             gh release upload "$TAG" "EasyConsole-${TAG}-android-aarch64.apk" --clobber
@@ -187,4 +187,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: easy-console-android-aarch64
-          path: gen/android/app/build/outputs/apk/**/*.apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk

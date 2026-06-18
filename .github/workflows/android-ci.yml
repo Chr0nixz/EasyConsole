@@ -64,8 +64,8 @@ jobs:
 
       - name: Verify gen/android exists
         run: |
-          if [ ! -d "gen/android" ]; then
-            echo "::error::gen/android/ not found. Run 'npm run tauri:android:init' locally and commit the result."
+          if [ ! -d "src-tauri/gen/android" ]; then
+            echo "::error::src-tauri/gen/android/ not found. Run 'npm run tauri:android:init' locally and commit the result."
             exit 1
           fi
 
@@ -83,4 +83,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: easy-console-android-${{ matrix.target }}
-          path: gen/android/app/build/outputs/apk/**/*.apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
