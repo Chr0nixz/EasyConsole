@@ -29,7 +29,7 @@ jobs:
             artifact-suffix: macos-arm64
             args: "--target aarch64-apple-darwin"
             rust-targets: "aarch64-apple-darwin"
-          - platform: macos-latest
+          - platform: macos-15-intel
             artifact-suffix: macos-x64
             args: "--target x86_64-apple-darwin"
             rust-targets: "x86_64-apple-darwin"

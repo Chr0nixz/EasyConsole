@@ -1,3 +1,13 @@
+# EasyConsole v0.3.1
+
+Maintenance release to fix the macOS x64 CI build failure.
+
+## Changes
+
+- **CI: macOS x64 runner migration**: Replaced deprecated `macos-13` runner with `macos-15-intel` in the release workflow. GitHub retired `macos-13` images in December 2025; the old runner caused DMG bundling failures due to `macos-latest` migrating to ARM64 (cross-compilation breaks Tauri's `bundle_dmg.sh`).
+
+---
+
 # EasyConsole v0.3.0
 
 This release adds Android tablet support with in-app SSH, enabling tablet users to connect to task instances directly from the app.
