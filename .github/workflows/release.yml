@@ -168,7 +168,7 @@ jobs:
           CC_aarch64_linux_android: ${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
           AR_aarch64_linux_android: ${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
           CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
-        run: npx tauri android build --target aarch64 --apk
+        run: npx tauri android build --target aarch64 --apk --debug
 
       - name: Upload APK to GitHub Release
         env:

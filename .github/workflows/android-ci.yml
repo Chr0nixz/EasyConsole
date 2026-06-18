@@ -77,7 +77,7 @@ jobs:
           cargo check --manifest-path src-tauri/Cargo.toml --target ${{ matrix.rust-target }}
 
       - name: Build Android APK
-        run: npx tauri android build --target ${{ matrix.target }} --apk
+        run: npx tauri android build --target ${{ matrix.target }} --apk --debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
