@@ -17,10 +17,12 @@ jobs:
         include:
           - target: aarch64
             rust-target: aarch64-linux-android
+            cc-env: aarch64_linux_android
             cc-suffix: aarch64-linux-android24
             linker-env: CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER
           - target: x86_64
             rust-target: x86_64-linux-android
+            cc-env: x86_64_linux_android
             cc-suffix: x86_64-linux-android24
             linker-env: CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER
 
@@ -79,8 +81,8 @@ jobs:
         env:
           NDK_HOME: ${{ env.NDK_HOME }}
         run: |
-          export CC_${{ matrix.rust-target }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
-          export AR_${{ matrix.rust-target }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          export CC_${{ matrix.cc-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
+          export AR_${{ matrix.cc-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
           export ${{ matrix.linker-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
           cargo check --manifest-path src-tauri/Cargo.toml --target ${{ matrix.rust-target }}
 
@@ -88,8 +90,8 @@ jobs:
         env:
           NDK_HOME: ${{ env.NDK_HOME }}
         run: |
-          export CC_${{ matrix.rust-target }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
-          export AR_${{ matrix.rust-target }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          export CC_${{ matrix.cc-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
+          export AR_${{ matrix.cc-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
           export ${{ matrix.linker-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
           npx tauri android build --target ${{ matrix.target }} --apk --debug
 
