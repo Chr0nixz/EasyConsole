@@ -36,3 +36,13 @@ src-tauri/*.keystore
 # Generated desktop installers
 *.msi
 *.exe
+
+# Local Android build scripts
+/build-android-x86_64.bat
+/run-gradle.bat
+
+# Android generated assets
+src-tauri/gen/android/app/src/main/assets/
+
+# Sensitive signing material
+src-tauri/*.keystore.b64
