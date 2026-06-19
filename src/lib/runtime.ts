@@ -411,7 +411,7 @@ export const browserRuntime: RuntimeTransport = {
     return invokeTauriCommand("ssh_close", { sessionId });
   },
   async onSshSessionEvent(sessionId, handler) {
-    if (runtimeKind !== "desktop") requireDesktopSsh();
+    if (runtimeKind === "web") requireDesktopSsh();
     const { listen } = await import("@tauri-apps/api/event");
     return listen<SshSessionEvent>("ssh-session-event", (event) => {
       if (event.payload.sessionId !== sessionId) return;

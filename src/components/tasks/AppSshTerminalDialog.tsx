@@ -3,7 +3,7 @@ import "@xterm/xterm/css/xterm.css";
 import type { FitAddon as FitAddonInstance } from "@xterm/addon-fit";
 import type { IDisposable, Terminal as XTermInstance } from "@xterm/xterm";
 import { Maximize2, Minimize2, Terminal, X } from "lucide-react";
-import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
 import { browserRuntime } from "../../lib/runtime";
@@ -36,6 +36,9 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
   const sessionIdRef = useRef<string | null>(null);
   const [isMinimized, setIsMinimized] = useState(false);
   const [status, setStatus] = useState(() => text("准备连接", "Ready to connect"));
+  const [ctrlActive, setCtrlActive] = useState(false);
+  const ctrlActiveRef = useRef(false);
+  const termRef = useRef<XTermInstance | null>(null);
 
   useEffect(() => {
     isMinimizedRef.current = isMinimized;
@@ -85,6 +88,22 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       terminal.loadAddon(fitAddon);
       terminal.open(containerRef.current);
       fitAddon.fit();
+      termRef.current = terminal;
+      terminal.onKey(({ domEvent: ev }) => {
+        if (!ctrlActiveRef.current) return true;
+        const key = ev.key;
+        if (key.length === 1 && /[a-zA-Z]/.test(key) && !ev.altKey && !ev.metaKey) {
+          const code = key.toLowerCase().charCodeAt(0) - 96;
+          const sid = sessionIdRef.current;
+          if (sid) void browserRuntime.writeSshSession(sid, String.fromCharCode(code));
+          ctrlActiveRef.current = false;
+          setCtrlActive(false);
+          return false;
+        }
+        ctrlActiveRef.current = false;
+        setCtrlActive(false);
+        return true;
+      });
       terminal.focus();
       terminal.writeln(text("正在建立 SSH 连接...", "Establishing SSH connection..."));
 
@@ -137,6 +156,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       const sessionId = sessionIdRef.current;
       sessionIdRef.current = null;
       if (sessionId) void browserRuntime.closeSshSession(sessionId).catch(() => {});
+      termRef.current = null;
       terminal?.dispose();
     };
   }, [request, text]);
@@ -145,6 +165,19 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
     if (!request || isMinimized) return;
     window.setTimeout(() => window.dispatchEvent(new Event("resize")), 0);
   }, [isMinimized, request]);
+
+  const sendKeySeq = useCallback((rawKey: string, data: string) => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    if (ctrlActiveRef.current && rawKey.length === 1 && /[a-zA-Z]/.test(rawKey)) {
+      const code = rawKey.toLowerCase().charCodeAt(0) - 96;
+      void browserRuntime.writeSshSession(sid, String.fromCharCode(code));
+      ctrlActiveRef.current = false;
+      setCtrlActive(false);
+    } else {
+      void browserRuntime.writeSshSession(sid, data);
+    }
+  }, []);
 
   if (!request) return null;
 
@@ -213,12 +246,73 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
               </button>
             </div>
           </div>
-          <div className="flex h-[min(72vh,720px)] flex-col">
+          <div className="flex h-[min(80vh,780px)] flex-col">
             <div className="flex h-10 items-center justify-between border-b border-app-terminalBorder bg-app-terminalPanel px-3 text-xs text-app-terminalText">
               <span className="truncate font-mono">{request.command}</span>
               <span id={statusId} className="ml-3 shrink-0 text-app-terminalAccent">{status}</span>
             </div>
             <div ref={containerRef} className="min-h-0 flex-1" />
+            {browserRuntime.isMobile && (
+              <div className="flex h-11 shrink-0 select-none items-center gap-1 overflow-x-auto border-t border-app-terminalBorder bg-app-terminalPanel px-1.5">
+                {(["Esc", "Tab", "↑", "↓", "←", "→", "Ctrl"] as const).map((label) => {
+                  const isCtrl = label === "Ctrl";
+                  return (
+                    <button
+                      key={label}
+                      className={cn(
+                        "flex h-8 min-w-9 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px]",
+                        isCtrl && ctrlActive
+                          ? "bg-app-accent text-white"
+                          : "text-app-terminalText hover:bg-app-panel",
+                      )}
+                      type="button"
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        if (isCtrl) {
+                          const next = !ctrlActiveRef.current;
+                          ctrlActiveRef.current = next;
+                          setCtrlActive(next);
+                          setTimeout(() => termRef.current?.focus(), 0);
+                        } else {
+                          const sequences: Record<string, [string, string]> = {
+                            "Esc": ["Esc", "\x1b"],
+                            "Tab": ["Tab", "\x09"],
+                            "↑": ["Up", "\x1b[A"],
+                            "↓": ["Down", "\x1b[B"],
+                            "←": ["Left", "\x1b[D"],
+                            "→": ["Right", "\x1b[C"],
+                          };
+                          const seq = sequences[label];
+                          if (seq) sendKeySeq(seq[0], seq[1]);
+                          setTimeout(() => termRef.current?.focus(), 0);
+                        }
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+                <div className="mx-0.5 h-5 w-px shrink-0 bg-app-terminalBorder" />
+                {(["Ctrl+C", "Ctrl+Z", "Ctrl+D", "Ctrl+L"] as const).map((combo) => {
+                  const charCode = combo.toLowerCase().charCodeAt(combo.length - 1) - 96;
+                  return (
+                    <button
+                      key={combo}
+                      className="flex h-8 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px] text-app-terminalText hover:bg-app-panel"
+                      type="button"
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        const sid = sessionIdRef.current;
+                        if (sid) void browserRuntime.writeSshSession(sid, String.fromCharCode(charCode));
+                        setTimeout(() => termRef.current?.focus(), 0);
+                      }}
+                    >
+                      {combo}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <div className="flex h-11 items-center justify-end border-t border-app-terminalBorder bg-app-terminalPanel px-3">
               <Button type="button" variant="secondary" onClick={onClose}>
                 {text("关闭", "Close")}
