@@ -1,3 +1,17 @@
+# EasyConsole v0.3.5
+
+Fix Android white screen caused by a logger conflict and missing webview window on mobile.
+
+## Changes
+
+- **Fix logger panic**: Removed `android_logger::init_once()` from `run()` — it conflicted with `tauri_plugin_log` (both try to set the global logger, causing a `SIGABRT` at Tauri `app.rs:1417`). `tauri_plugin_log` now handles log output on all platforms.
+- **Plugin chain ordering**: Moved `tauri_plugin_log` registration from inside the `setup` closure into the main plugin chain, ensuring it initializes before any `log::info!` calls fire.
+- **Mobile webview window**: Added explicit `WebviewWindowBuilder` on mobile — the generated Tauri config has an empty `windows[]` array, so no window was being created, resulting in a blank screen.
+- **WebView DevTools**: `WebView.setWebContentsDebuggingEnabled(true)` retained in `MainActivity` for Chrome remote debugging during development.
+- **Gradle Aliyun mirrors**: Added `maven.aliyun.com` repository mirrors to `build.gradle.kts` for faster dependency resolution from China.
+
+---
+
 # EasyConsole v0.3.4
 
 Fix Android white screen on x86_64 emulators by building APKs for both ARM64 and x86_64.

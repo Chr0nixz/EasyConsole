@@ -1281,15 +1281,9 @@ fn runtime_platform() -> &'static str {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(target_os = "android")]
-    {
-        android_logger::init_once(
-            android_logger::Config::default()
-                .with_max_level(log::LevelFilter::Trace)
-                .with_tag("EasyConsole"),
-        );
-        log::info!("=== EasyConsole Android run() started ===");
-    }
+    // NOTE: Do NOT initialize android_logger here — it conflicts with
+    // tauri_plugin_log (both try to set the global logger, causing a panic).
+    // tauri_plugin_log handles log output on all platforms.
 
     #[cfg(desktop)]
     let desktop_state = Arc::new(DesktopRuntimeState::default());
@@ -1313,6 +1307,16 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init());
+
+    // Register tauri_plugin_log in the plugin chain (not inside setup)
+    // to ensure it initializes before the setup closure runs.
+    if cfg!(debug_assertions) {
+        builder = builder.plugin(
+            tauri_plugin_log::Builder::default()
+                .level(log::LevelFilter::Info)
+                .build(),
+        );
+    }
 
     log::info!("all plugins registered, setting up");
 
@@ -1343,12 +1347,17 @@ pub fn run() {
                 start_desktop_run_due_timer(app.handle().clone());
             }
 
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
+            // On mobile, the generated config has an empty windows array,
+            // so we must create the webview window explicitly.
+            #[cfg(mobile)]
+            {
+                tauri::WebviewWindowBuilder::new(
+                    app,
+                    "main",
+                    tauri::WebviewUrl::App("index.html".into()),
+                )
+                .title("EasyConsole")
+                .build()?;
             }
 
             log::info!("setup closure completed");
