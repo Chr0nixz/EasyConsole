@@ -151,6 +151,8 @@ jobs:
 
       - name: Install NDK and set environment
         run: |
+          # Remove pre-installed NDKs so Tauri CLI only finds NDK 27
+          ls "$ANDROID_HOME/ndk/" 2>/dev/null && rm -rf "$ANDROID_HOME/ndk/"* || true
           sdkmanager "ndk;27.0.12077973"
           NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           echo "NDK_HOME=$NDK_HOME" >> $GITHUB_ENV
@@ -197,7 +199,7 @@ jobs:
           export CC_${{ matrix.cc-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
           export AR_${{ matrix.cc-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
           export ${{ matrix.linker-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
-          npx tauri android build --target ${{ matrix.target }} --apk
+          npx tauri android build --target ${{ matrix.target }} --apk --verbose
 
       - name: Upload APK to GitHub Release
         env:
