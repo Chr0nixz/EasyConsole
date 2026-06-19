@@ -13,6 +13,7 @@ jobs:
   release-desktop:
     name: Release ${{ matrix.artifact-suffix }}
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -50,6 +51,11 @@ jobs:
       - name: Add Rust target
         if: matrix.rust-targets != ''
         run: rustup target add ${{ matrix.rust-targets }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
 
       - name: Install Linux Tauri dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -89,6 +95,7 @@ jobs:
           releaseDraft: true
           prerelease: ${{ github.ref_type != 'tag' }}
           updaterJsonPreferNsis: true
+          retryAttempts: 3
           args: ${{ matrix.args }}
 
       - name: Upload sidecar artifacts
@@ -96,6 +103,7 @@ jobs:
         with:
           name: easy-console-sidecars-${{ matrix.artifact-suffix }}
           path: build/sidecars/*
+          retention-days: 30
 
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v4
@@ -105,11 +113,13 @@ jobs:
             src-tauri/target/**/release/EasyConsole*
             src-tauri/target/**/release/bundle/**
             build/sidecars/*
+          retention-days: 30
 
   release-android:
     name: Release Android (${{ matrix.target }})
     needs: release-desktop
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -146,8 +156,14 @@ jobs:
         with:
           targets: ${{ matrix.rust-target }}
 
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          cache-targets: true
+
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install NDK and set environment
         run: |
@@ -158,15 +174,14 @@ jobs:
           echo "NDK_HOME=$NDK_HOME" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$NDK_HOME" >> $GITHUB_ENV
 
-      - name: Cache Cargo registry
+      - name: Cache Gradle
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: cargo-android-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: cargo-android-${{ matrix.target }}-
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-
 
       - name: Install dependencies
         run: npm ci
@@ -219,3 +234,4 @@ jobs:
         with:
           name: easy-console-android-${{ matrix.target }}
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          retention-days: 30

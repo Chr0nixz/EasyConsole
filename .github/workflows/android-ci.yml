@@ -11,6 +11,7 @@ jobs:
   build-android:
     name: Android (${{ matrix.target }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -20,11 +21,6 @@ jobs:
             cc-env: aarch64_linux_android
             cc-suffix: aarch64-linux-android24
             linker-env: CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER
-          - target: x86_64
-            rust-target: x86_64-linux-android
-            cc-env: x86_64_linux_android
-            cc-suffix: x86_64-linux-android24
-            linker-env: CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER
 
     steps:
       - name: Checkout
@@ -47,8 +43,14 @@ jobs:
         with:
           targets: ${{ matrix.rust-target }}
 
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          cache-targets: true
+
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install NDK and set environment
         run: |
@@ -59,15 +61,14 @@ jobs:
           echo "NDK_HOME=$NDK_HOME" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$NDK_HOME" >> $GITHUB_ENV
 
-      - name: Cache Cargo registry
+      - name: Cache Gradle
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: cargo-android-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: cargo-android-${{ matrix.target }}-
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-
 
       - name: Install dependencies
         run: npm ci
@@ -78,15 +79,6 @@ jobs:
             echo "::error::src-tauri/gen/android/ not found. Run 'npm run tauri:android:init' locally and commit the result."
             exit 1
           fi
-
-      - name: Cargo check for Android target
-        env:
-          NDK_HOME: ${{ env.NDK_HOME }}
-        run: |
-          export CC_${{ matrix.cc-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
-          export AR_${{ matrix.cc-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-          export ${{ matrix.linker-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
-          cargo check --manifest-path src-tauri/Cargo.toml --target ${{ matrix.rust-target }}
 
       - name: Build Android APK
         env:
@@ -102,3 +94,4 @@ jobs:
         with:
           name: easy-console-android-${{ matrix.target }}
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          retention-days: 7

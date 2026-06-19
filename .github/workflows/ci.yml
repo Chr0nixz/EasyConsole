@@ -11,6 +11,7 @@ jobs:
   verify:
     name: Verify (${{ matrix.artifact-suffix }})
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +35,11 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
 
       - name: Install Linux Tauri dependencies
         if: matrix.platform == 'ubuntu-22.04'
