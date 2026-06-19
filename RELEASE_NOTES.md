@@ -1,3 +1,22 @@
+# EasyConsole v0.3.6
+
+This release improves the in-app SSH terminal on mobile and fixes CI pipeline issues for Android builds.
+
+## Highlights
+
+- **Mobile SSH virtual keyboard**: Added an on-screen key bar for Android tablets when using the in-app SSH terminal. It provides Esc, Tab, arrow keys, a sticky Ctrl key, and common shortcuts (Ctrl+C, Ctrl+Z, Ctrl+D, Ctrl+L), making command-line interaction on touch devices much easier.
+- **Mobile SSH event handling**: Fixed the runtime guard that prevented SSH session events from being listened to on mobile. Mobile now uses the same Tauri event channel as desktop for in-app SSH.
+
+## Changes
+
+- **SSH terminal UX**: Added `termRef` to keep the terminal focused after tapping a virtual key, and wired Ctrl key combinations through the terminal's `onKey` handler so mobile users can send control sequences.
+- **CI: workflow optimization**: Added caching, job timeouts, and a streamlined matrix strategy to reduce build times and improve reliability.
+- **CI: Android NDK fixes**: Forced NDK 27 usage, removed Aliyun repository mirrors, and added verbose logging to diagnose Android cross-compilation issues.
+- **CI: executable permissions**: Set the `gradlew` executable bit on Linux runners so Android builds can run the wrapper script.
+- **Android debugging**: Added `android_logger`, WebView debugging, and Kotlin trace logs to help diagnose launch and runtime issues on Android.
+
+---
+
 # EasyConsole v0.3.5
 
 Fix Android white screen caused by a logger conflict and missing webview window on mobile.

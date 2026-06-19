@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "EasyConsole",
   "mainBinaryName": "EasyConsole",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "identifier": "com.easyconsole.desktop",
   "build": {
     "frontendDist": "../dist",
