@@ -36,7 +36,7 @@ describe("DashboardPage", () => {
   it("shows dashboard summary and recent tasks without raw responses", async () => {
     renderDashboard();
 
-    await waitFor(() => expect(screen.getByText("demo")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("demo").length).toBeGreaterThanOrEqual(1));
 
     expect(screen.queryByText("/instance/console")).not.toBeInTheDocument();
     expect(screen.queryByText("/instance/statics")).not.toBeInTheDocument();

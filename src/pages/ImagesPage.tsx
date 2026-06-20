@@ -190,7 +190,68 @@ export function ImagesPage() {
         ) : filteredImages.length === 0 ? (
           <EmptyState title={text("没有匹配的镜像", "No matching images")} action={<Button variant="secondary" onClick={() => setKeyword("")}>{text("清空搜索", "Clear search")}</Button>} />
         ) : (
-          <TableRegion label={text("镜像表格", "Images table")}>
+          <>
+          <div className="divide-y divide-app-border sm:hidden">
+            {filteredImages.map((image) => {
+              const cardId = `image-card-${String(image.id)}`;
+              return (
+                <article key={`${image.source}-${String(image.id)}`} className="space-y-3 px-3 py-3" aria-labelledby={cardId}>
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span id={cardId} className="truncate text-sm font-semibold text-app-text">{imageName(image)}</span>
+                        {isDefaultImage(image) ? (
+                          <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-app-success/30 bg-app-success/10 px-2 py-0.5 text-xs font-medium text-app-success">
+                            <Star className="h-3 w-3" />
+                            {text("默认", "Default")}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="mt-0.5 text-xs text-app-muted">ID: {String(image.id)}</div>
+                    </div>
+                    <span className="inline-flex shrink-0 rounded-md border border-app-border bg-app-surface px-2 py-0.5 text-xs text-app-muted">
+                      {image.source === "system" ? text("系统镜像", "System image") : text("自定义镜像", "Custom image")}
+                    </span>
+                  </div>
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                    <div>
+                      <dt className="text-app-muted">{text("标签", "Tag")}</dt>
+                      <dd className="mt-0.5 text-app-text">{imageVersion(image)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-app-muted">{text("更新时间", "Updated")}</dt>
+                      <dd className="mt-0.5 text-app-text">{getImageUpdatedAt(image)}</dd>
+                    </div>
+                    <div className="col-span-2">
+                      <dt className="text-app-muted">{text("说明", "Description")}</dt>
+                      <dd className="mt-0.5 truncate text-app-text" title={imageDescription(image)}>{imageDescription(image)}</dd>
+                    </div>
+                  </dl>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button
+                      aria-label={text(`将 ${imageName(image)} 设为默认镜像`, `Set ${imageName(image)} as default image`)}
+                      variant="ghost"
+                      title={text("设为默认", "Set default")}
+                      onClick={() => setDefaultImage(image)}
+                    >
+                      <Star className="h-4 w-4" />
+                      {text("设为默认", "Set default")}
+                    </Button>
+                    <Button
+                      aria-label={text(`下载镜像 ${imageName(image)}`, `Download image ${imageName(image)}`)}
+                      variant="ghost"
+                      title={text("下载", "Download")}
+                      onClick={() => downloadImage(image)}
+                    >
+                      <Download className="h-4 w-4" />
+                      {text("下载", "Download")}
+                    </Button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+          <TableRegion className="hidden sm:block" label={text("镜像表格", "Images table")}>
             <table className="w-full min-w-[980px] border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
@@ -244,6 +305,7 @@ export function ImagesPage() {
               </tbody>
             </table>
           </TableRegion>
+          </>
         )}
       </Panel>
       {confirmDialog}

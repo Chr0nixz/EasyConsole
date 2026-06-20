@@ -1,7 +1,8 @@
-import { Download, ExternalLink, RefreshCw, RotateCw } from "lucide-react";
+import { Download, ExternalLink, RefreshCw, RotateCw, Smartphone } from "lucide-react";
 
 import { useAppUpdate } from "../lib/app-update-context";
 import { useI18n } from "../lib/i18n";
+import { browserRuntime } from "../lib/runtime";
 import { Button, Dialog } from "./ui";
 
 function formatBytes(value?: number) {
@@ -74,7 +75,7 @@ export function AppUpdateDialog() {
         {state.status === "downloading" ? (
           <div>
             <div className="mb-2 flex items-center justify-between text-xs text-app-muted">
-              <span>{text("正在下载并安装更新", "Downloading and installing update")}</span>
+              <span>{browserRuntime.isMobile ? text("正在下载 APK", "Downloading APK") : text("正在下载并安装更新", "Downloading and installing update")}</span>
               <span>{state.progress?.percent ?? 0}% {formatBytes(state.progress?.loaded)}{state.progress?.total ? ` / ${formatBytes(state.progress.total)}` : ""}</span>
             </div>
             <div className="h-2 overflow-hidden rounded-full bg-app-border">
@@ -85,10 +86,17 @@ export function AppUpdateDialog() {
 
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           {state.status === "readyToRestart" ? (
-            <Button type="button" onClick={() => void relaunchAfterUpdate()}>
-              <RotateCw className="h-4 w-4" />
-              {text("重启并完成更新", "Restart to finish")}
-            </Button>
+            browserRuntime.isMobile ? (
+              <Button type="button" onClick={() => void relaunchAfterUpdate()}>
+                <Smartphone className="h-4 w-4" />
+                {text("安装 APK", "Install APK")}
+              </Button>
+            ) : (
+              <Button type="button" onClick={() => void relaunchAfterUpdate()}>
+                <RotateCw className="h-4 w-4" />
+                {text("重启并完成更新", "Restart to finish")}
+              </Button>
+            )
           ) : (
             <>
               <Button disabled={busy} type="button" variant="secondary" onClick={() => void dismissUpdate()}>

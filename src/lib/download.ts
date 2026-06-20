@@ -1,4 +1,5 @@
 import { isTauri } from "@tauri-apps/api/core";
+import { getRuntimeKind } from "./runtime";
 
 const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
@@ -29,19 +30,41 @@ function saveBlobInBrowser(blob: Blob, filename: string) {
 
 export async function saveBlob(blob: Blob, filename: string) {
   if (isTauri()) {
-    try {
-      const [{ save }, { writeFile }, { downloadDir, join }] = await Promise.all([
-        import("@tauri-apps/plugin-dialog"),
-        import("@tauri-apps/plugin-fs"),
-        import("@tauri-apps/api/path"),
-      ]);
-      const defaultPath = await join(await downloadDir(), filename);
-      const path = await save({ defaultPath });
-      if (!path) return;
-      await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
-      return;
-    } catch (error) {
-      console.warn("Tauri download failed, falling back to browser download.", error);
+    const safeFilename = sanitizeDownloadFilename(filename);
+
+    // Mobile Tauri: no native save dialog, write directly to download dir
+    if (getRuntimeKind() === "mobile") {
+      try {
+        const [{ exists, writeFile }, { downloadDir, join }] = await Promise.all([
+          import("@tauri-apps/plugin-fs"),
+          import("@tauri-apps/api/path"),
+        ]);
+        const downloads = await downloadDir();
+        const { name, extension } = splitFilename(safeFilename);
+        let targetPath = await join(downloads, safeFilename);
+        for (let index = 1; await exists(targetPath); index += 1) {
+          targetPath = await join(downloads, `${name} (${index})${extension}`);
+        }
+        await writeFile(targetPath, new Uint8Array(await blob.arrayBuffer()));
+        return;
+      } catch (error) {
+        console.warn("Tauri mobile download failed, falling back to browser download.", error);
+      }
+    } else {
+      try {
+        const [{ save }, { writeFile }, { downloadDir, join }] = await Promise.all([
+          import("@tauri-apps/plugin-dialog"),
+          import("@tauri-apps/plugin-fs"),
+          import("@tauri-apps/api/path"),
+        ]);
+        const defaultPath = await join(await downloadDir(), safeFilename);
+        const path = await save({ defaultPath });
+        if (!path) return;
+        await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+        return;
+      } catch (error) {
+        console.warn("Tauri download failed, falling back to browser download.", error);
+      }
     }
   }
 

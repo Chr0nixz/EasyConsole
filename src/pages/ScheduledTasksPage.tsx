@@ -456,70 +456,129 @@ export function ScheduledTasksPage() {
         {items.length === 0 ? (
           <EmptyState title={text("还没有定时任务。设置计划时间后，EasyConsole 会在到期时提交实例创建请求。", "No scheduled tasks yet. After you set a schedule, EasyConsole submits the instance creation request when it is due.")} />
         ) : (
-          <TableRegion label={text("定时任务表格", "Scheduled tasks table")}>
-            <table className="w-max min-w-full table-auto border-collapse text-sm">
-              <thead className="bg-app-panel text-left text-xs text-app-muted">
-                <tr>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("计划", "Plan")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("执行时间", "Run time")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("资源", "Resources")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("状态", "Status")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("最近结果", "Latest result")}</th>
-                  <th className="sticky right-0 z-20 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 text-center font-medium shadow-stickyColumn" scope="col">
-                    {text("操作", "Actions")}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
+          <>
+              {/* Mobile card view */}
+              <div className="divide-y divide-app-border sm:hidden">
                 {items.map((item) => (
-                  <tr key={item.id} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
-                    <td className="whitespace-nowrap px-3 py-2 align-middle">
-                      <div className="font-medium">{item.name}</div>
-                      <div className="mt-0.5 max-w-72 truncate text-xs text-app-muted">{item.description || item.payload.storage_path || "-"}</div>
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{formatScheduleTime(item.scheduleTime)}</td>
-                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">
-                      {item.payload.cpu ?? "-"}C / {item.payload.gpu ?? 0}GPU / {item.payload.memory ?? "-"}G
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-middle">
-                      <span className={`inline-flex h-6 items-center rounded-md px-2 text-xs font-medium ring-1 ${statusClass(item.status)}`}>
+                  <article key={item.id} className="space-y-3 px-3 py-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium">{item.name}</div>
+                        <div className="mt-0.5 truncate text-xs text-app-muted">{item.description || item.payload.storage_path || "-"}</div>
+                      </div>
+                      <span className={`inline-flex h-6 shrink-0 items-center rounded-md px-2 text-xs font-medium ring-1 ${statusClass(item.status)}`}>
                         {locale === "en-US" ? statusText[item.status].en : statusText[item.status].zh}
                       </span>
-                    </td>
-                    <td className="max-w-96 px-3 py-2 align-middle text-app-muted">
-                      {item.lastError ? <span className="text-app-danger">{item.lastError}</span> : item.lastRunAt ? formatScheduleTime(item.lastRunAt) : "-"}
-                    </td>
-                    <td className="sticky right-0 z-10 bg-app-surface px-3 py-2 align-middle shadow-stickyColumn">
-                      <div className="flex justify-end gap-1">
-                        <Button
-                          className="h-8 px-2"
-                          disabled={isExecuting || item.status === "running"}
-                          title={text("立即执行", "Run now")}
-                          type="button"
-                          variant="ghost"
-                          onClick={() => retryItem(item)}
-                        >
-                          <Play className="h-4 w-4" />
-                          {text("执行", "Run")}
-                        </Button>
-                        <Button
-                          aria-label={text(`删除定时任务 ${item.name}`, `Delete scheduled task ${item.name}`)}
-                          className="h-8 w-8 px-0 text-app-danger hover:text-app-danger"
-                          title={text("删除", "Delete")}
-                          type="button"
-                          variant="ghost"
-                          onClick={() => deleteItem(item)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                          <span className="sr-only">{text("删除", "Delete")}</span>
-                        </Button>
+                    </div>
+                    <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                      <div>
+                        <dt className="text-app-muted">{text("执行时间", "Run time")}</dt>
+                        <dd>{formatScheduleTime(item.scheduleTime)}</dd>
                       </div>
-                    </td>
-                  </tr>
+                      <div>
+                        <dt className="text-app-muted">{text("资源", "Resources")}</dt>
+                        <dd>{item.payload.cpu ?? "-"}C / {item.payload.gpu ?? 0}GPU / {item.payload.memory ?? "-"}G</dd>
+                      </div>
+                      <div className="col-span-2">
+                        <dt className="text-app-muted">{text("最近结果", "Latest result")}</dt>
+                        <dd>
+                          {item.lastError ? <span className="text-app-danger">{item.lastError}</span> : item.lastRunAt ? formatScheduleTime(item.lastRunAt) : "-"}
+                        </dd>
+                      </div>
+                    </dl>
+                    <div className="flex flex-wrap gap-1.5">
+                      <Button
+                        className="h-8 px-2"
+                        disabled={isExecuting || item.status === "running"}
+                        title={text("立即执行", "Run now")}
+                        type="button"
+                        variant="ghost"
+                        onClick={() => retryItem(item)}
+                      >
+                        <Play className="h-4 w-4" />
+                        {text("执行", "Run")}
+                      </Button>
+                      <Button
+                        aria-label={text(`删除定时任务 ${item.name}`, `Delete scheduled task ${item.name}`)}
+                        className="h-8 w-8 px-0 text-app-danger hover:text-app-danger"
+                        title={text("删除", "Delete")}
+                        type="button"
+                        variant="ghost"
+                        onClick={() => deleteItem(item)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        <span className="sr-only">{text("删除", "Delete")}</span>
+                      </Button>
+                    </div>
+                  </article>
                 ))}
-              </tbody>
-            </table>
-          </TableRegion>
+              </div>
+              {/* Desktop table view */}
+              <TableRegion className="hidden sm:block" label={text("定时任务表格", "Scheduled tasks table")}>
+                <table className="w-max min-w-full table-auto border-collapse text-sm">
+                  <thead className="bg-app-panel text-left text-xs text-app-muted">
+                    <tr>
+                      <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("计划", "Plan")}</th>
+                      <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("执行时间", "Run time")}</th>
+                      <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("资源", "Resources")}</th>
+                      <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("状态", "Status")}</th>
+                      <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("最近结果", "Latest result")}</th>
+                      <th className="sticky right-0 z-20 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 text-center font-medium shadow-stickyColumn" scope="col">
+                        {text("操作", "Actions")}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((item) => (
+                      <tr key={item.id} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
+                        <td className="whitespace-nowrap px-3 py-2 align-middle">
+                          <div className="font-medium">{item.name}</div>
+                          <div className="mt-0.5 max-w-72 truncate text-xs text-app-muted">{item.description || item.payload.storage_path || "-"}</div>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{formatScheduleTime(item.scheduleTime)}</td>
+                        <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">
+                          {item.payload.cpu ?? "-"}C / {item.payload.gpu ?? 0}GPU / {item.payload.memory ?? "-"}G
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 align-middle">
+                          <span className={`inline-flex h-6 items-center rounded-md px-2 text-xs font-medium ring-1 ${statusClass(item.status)}`}>
+                            {locale === "en-US" ? statusText[item.status].en : statusText[item.status].zh}
+                          </span>
+                        </td>
+                        <td className="max-w-96 px-3 py-2 align-middle text-app-muted">
+                          {item.lastError ? <span className="text-app-danger">{item.lastError}</span> : item.lastRunAt ? formatScheduleTime(item.lastRunAt) : "-"}
+                        </td>
+                        <td className="sticky right-0 z-10 bg-app-surface px-3 py-2 align-middle shadow-stickyColumn">
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              className="h-8 px-2"
+                              disabled={isExecuting || item.status === "running"}
+                              title={text("立即执行", "Run now")}
+                              type="button"
+                              variant="ghost"
+                              onClick={() => retryItem(item)}
+                            >
+                              <Play className="h-4 w-4" />
+                              {text("执行", "Run")}
+                            </Button>
+                            <Button
+                              aria-label={text(`删除定时任务 ${item.name}`, `Delete scheduled task ${item.name}`)}
+                              className="h-8 w-8 px-0 text-app-danger hover:text-app-danger"
+                              title={text("删除", "Delete")}
+                              type="button"
+                              variant="ghost"
+                              onClick={() => deleteItem(item)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              <span className="sr-only">{text("删除", "Delete")}</span>
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableRegion>
+            </>
         )}
       </Panel>
       <RemoteStoragePicker

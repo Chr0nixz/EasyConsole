@@ -197,7 +197,55 @@ export function RunLogsPage() {
         ) : visibleLogs.length === 0 ? (
           <EmptyState title={text("还没有匹配的运行日志。关键操作完成后会自动记录。", "No matching run logs yet. Key operations are recorded automatically after completion.")} />
         ) : (
-          <TableRegion label={text("运行日志表格", "Run logs table")}>
+          <>
+          <div className="divide-y divide-app-border sm:hidden">
+            {visibleLogs.map((item) => (
+              <article key={item.id} className="space-y-3 px-3 py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-app-muted">{formatDateTime(item.createdAt, locale)}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-xs ring-1 ${levelClass(item.level)}`}>{item.level}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-xs ring-1 ${resultClass(item.result)}`}>{labelFor(resultLabels, item.result, locale)}</span>
+                </div>
+                <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                  <div>
+                    <dt className="text-app-muted">{text("模块", "Module")}</dt>
+                    <dd className="mt-0.5 text-app-text">{labelFor(sourceLabels, item.source, locale)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-app-muted">{text("来源", "Channel")}</dt>
+                    <dd className="mt-0.5 text-app-text">{labelFor(channelLabels, item.channel, locale)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-app-muted">{text("对象", "Target")}</dt>
+                    <dd className="mt-0.5 truncate text-app-text">{item.targetName ?? item.targetId ?? "-"}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-app-muted">{text("耗时", "Duration")}</dt>
+                    <dd className="mt-0.5 text-app-text">{item.durationMs === undefined ? "-" : `${item.durationMs}ms`}</dd>
+                  </div>
+                  <div className="col-span-2">
+                    <dt className="text-app-muted">{text("摘要", "Summary")}</dt>
+                    <dd className="mt-0.5 text-app-text">
+                      {item.title}
+                      {item.error ? <span className="ml-2 text-app-danger">{item.error}</span> : null}
+                    </dd>
+                  </div>
+                </dl>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    aria-label={text(`查看运行日志 ${item.title}`, `View run log ${item.title}`)}
+                    className="h-9 px-2"
+                    variant="ghost"
+                    onClick={() => setSelected(item)}
+                  >
+                    <Eye className="h-4 w-4" />
+                    {text("详情", "Details")}
+                  </Button>
+                </div>
+              </article>
+            ))}
+          </div>
+          <TableRegion className="hidden sm:block" label={text("运行日志表格", "Run logs table")}>
             <table className="w-max min-w-full table-auto border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
@@ -246,6 +294,7 @@ export function RunLogsPage() {
               </tbody>
             </table>
           </TableRegion>
+          </>
         )}
       </Panel>
 

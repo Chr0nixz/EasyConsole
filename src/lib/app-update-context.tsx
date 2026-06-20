@@ -5,7 +5,9 @@ import {
   APP_UPDATE_RELEASE_URL,
   checkForAppUpdate,
   downloadAndInstallAppUpdate,
+  downloadMobileApk,
   getCurrentAppVersion,
+  installMobileApk,
   loadAppUpdateState,
   relaunchAppAfterUpdate,
   saveAppUpdateState,
@@ -38,6 +40,7 @@ export type AppUpdateState = {
   currentVersion?: string;
   lastCheckedAt?: string;
   dialogOpen: boolean;
+  apkPath?: string;
 };
 
 type AppUpdateContextValue = {
@@ -133,7 +136,7 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      setUpdateHandle(result.update);
+      setUpdateHandle(result.update ?? null);
       const stored = await loadAppUpdateState();
       const showDialog = manual || shouldShowDismissedUpdate(result.info, stored);
       setState((value) => ({
@@ -185,6 +188,53 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
   }, [checkForUpdates]);
 
   const installUpdate = useCallback(async () => {
+    // Mobile: download APK from GitHub, then trigger install intent
+    if (browserRuntime.isMobile) {
+      const apkUrl = state.info?.apkUrl;
+      if (!apkUrl) {
+        setState((value) => ({ ...value, status: "error", error: text("没有可安装的更新", "No installable update is available") }));
+        return;
+      }
+
+      setState((value) => ({ ...value, status: "downloading", error: undefined, progress: { loaded: 0, percent: 0 } }));
+      try {
+        const apkPath = await downloadMobileApk(apkUrl, (progress) => {
+          setState((value) => ({ ...value, progress }));
+        });
+        setState((value) => ({
+          ...value,
+          status: "readyToRestart",
+          apkPath,
+          progress: { ...value.progress, percent: 100, loaded: value.progress?.loaded ?? 0 },
+        }));
+        toast.success(text("APK 已下载", "APK downloaded"), text("点击下方按钮安装", "Tap the button below to install"));
+        void runLogger.log({
+          source: "system",
+          channel: "mobile",
+          level: "info",
+          action: "app.update.download",
+          result: "success",
+          title: text("APK 下载完成", "APK download completed"),
+          metadata: { ...state.info, apkPath },
+        });
+      } catch (error) {
+        const message = errorMessage(error, text("APK 下载失败", "APK download failed"));
+        setState((value) => ({ ...value, status: "error", error: message }));
+        toast.error(text("APK 下载失败", "APK download failed"), message);
+        void runLogger.log({
+          source: "system",
+          channel: "mobile",
+          level: "error",
+          action: "app.update.download",
+          result: "failure",
+          title: text("APK 下载失败", "APK download failed"),
+          error: message,
+        });
+      }
+      return;
+    }
+
+    // Desktop: use Tauri updater
     if (!updateHandle) {
       setState((value) => ({ ...value, status: "error", error: text("没有可安装的更新", "No installable update is available") }));
       return;
@@ -223,8 +273,21 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
   }, [runLogger, state.info, text, toast, updateHandle]);
 
   const relaunchAfterUpdate = useCallback(async () => {
+    if (browserRuntime.isMobile) {
+      if (!state.apkPath) {
+        toast.error(text("APK 路径丢失", "APK path is missing"), text("请重新下载", "Please download again"));
+        return;
+      }
+      try {
+        await installMobileApk(state.apkPath);
+      } catch (error) {
+        const message = errorMessage(error, text("无法启动安装器", "Failed to launch installer"));
+        toast.error(text("安装失败", "Installation failed"), message);
+      }
+      return;
+    }
     await relaunchAppAfterUpdate();
-  }, []);
+  }, [state.apkPath, text, toast]);
 
   const dismissUpdate = useCallback(async () => {
     const info = state.info;

@@ -246,7 +246,10 @@ export function StoragePage() {
   }
 
   function copyPath(value: string) {
-    void browserRuntime.copyText(value).then(() => toast.success(text("路径已复制", "Path copied"), value));
+    void browserRuntime.copyText(value).then(
+      () => toast.success(text("路径已复制", "Path copied"), value),
+      () => toast.error(text("复制失败", "Copy failed")),
+    );
   }
 
   function openFolderUploadDialog() {
@@ -347,10 +350,12 @@ export function StoragePage() {
             {text("上传到远程", "Upload to remote")}
             <input className="sr-only" type="file" onChange={(event) => void upload(event)} />
           </label>
-          <Button type="button" variant="secondary" onClick={openFolderUploadDialog}>
-            <FolderOpen className="h-4 w-4" />
-            {text("上传文件夹", "Upload folder")}
-          </Button>
+          {browserRuntime.isMobile ? null : (
+            <Button type="button" variant="secondary" onClick={openFolderUploadDialog}>
+              <FolderOpen className="h-4 w-4" />
+              {text("上传文件夹", "Upload folder")}
+            </Button>
+          )}
           <input
             ref={folderInputRef}
             className="sr-only"

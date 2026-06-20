@@ -76,7 +76,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
         cursorBlink: true,
         convertEol: true,
         fontFamily: 'Consolas, "SFMono-Regular", "Cascadia Mono", monospace',
-        fontSize: 13,
+        fontSize: browserRuntime.isMobile ? 15 : 13,
         scrollback: 10_000,
         theme: {
           background: "oklch(0.18 0.028 255)",
@@ -325,6 +325,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       {isMinimized ? (
         <button
           className="fixed bottom-4 right-4 z-50 flex max-w-[min(28rem,calc(100vw-2rem))] items-center gap-3 rounded-lg border border-app-terminalBorder bg-app-terminalBg px-4 py-3 text-left text-app-terminalText shadow-popover hover:bg-app-terminalPanel"
+          style={{ bottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }}
           aria-label={text(`恢复应用内 SSH ${request.taskName ?? ""}`, `Restore in-app SSH ${request.taskName ?? ""}`)}
           type="button"
           onClick={() => setIsMinimized(false)}

@@ -16,7 +16,7 @@ import {
   stringifyAppSettings,
   type AppSettings,
 } from "../lib/app-settings";
-import { APP_UPDATE_ENDPOINT_URL } from "../lib/app-update";
+import { APP_UPDATE_ENDPOINT_URL, GITHUB_API_RELEASE_URL } from "../lib/app-update";
 import { useAppUpdate } from "../lib/app-update-context";
 import { deriveWebsshUrl } from "../lib/webssh";
 import { saveBlob } from "../lib/download";
@@ -391,12 +391,15 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         </Panel>
       ) : null}
 
+      {browserRuntime.supportsUpdater ? (
       <Panel>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">
           <div className="min-w-0">
             <h2 className="text-sm font-semibold">{text("应用更新", "App Updates")}</h2>
             <p className="mt-1 text-xs text-app-muted">
-              {text("桌面端从 GitHub Release 检查稳定版更新。", "The desktop app checks stable updates from GitHub Release.")}
+              {browserRuntime.isMobile
+                ? text("从 GitHub Release 检查 APK 更新。", "Checks for APK updates from GitHub Release.")
+                : text("桌面端从 GitHub Release 检查稳定版更新。", "The desktop app checks stable updates from GitHub Release.")}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -447,7 +450,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               <div>
                 <div className="mb-1 text-app-muted">{text("更新源", "Update source")}</div>
                 <code className="block max-w-full break-all rounded-md bg-app-surface px-2.5 py-2 font-mono leading-5 text-app-text">
-                  {APP_UPDATE_ENDPOINT_URL}
+                  {browserRuntime.isMobile ? GITHUB_API_RELEASE_URL : APP_UPDATE_ENDPOINT_URL}
                 </code>
               </div>
               {appUpdate.state.lastCheckedAt ? (
@@ -459,6 +462,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           </div>
         </div>
       </Panel>
+      ) : null}
 
       <Panel>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">

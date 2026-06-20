@@ -1184,6 +1184,102 @@ fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
         .map_err(|error| format!("无法打开外部链接：{error}"))
 }
 
+#[cfg(mobile)]
+#[tauri::command]
+fn install_apk(app: AppHandle, path: String) -> Result<(), String> {
+    use std::path::Path;
+
+    let file_path = Path::new(&path);
+    if !file_path.exists() {
+        return Err(format!("APK 文件不存在：{path}"));
+    }
+
+    let activity = app.activity();
+    let vm = activity.vm();
+    let mut env = vm.attach_current_thread().map_err(|e| format!("JNI attach 失败：{e}"))?;
+
+    // Convert file path to a content:// URI via FileProvider to avoid
+    // FileUriExposedException on Android 7+ (API 24).
+    let ctx = activity.get_context();
+    let package_name = env
+        .call_method(&ctx, "getPackageName", "()Ljava/lang/String;", &[])
+        .map_err(|e| format!("获取包名失败：{e}"))?
+        .l()
+        .map_err(|e| format!("获取包名对象失败：{e}"))?;
+    let authority = env
+        .call_method(&package_name, "toString", "()Ljava/lang/String;", &[])
+        .map_err(|e| format!("转换包名失败：{e}"))?
+        .l()
+        .map_err(|e| format!("获取包名字符串失败：{e}"))?;
+
+    let authority_str = env
+        .get_string(&authority.into())
+        .map_err(|e| format!("读取包名失败：{e}"))?;
+    let file_provider_authority = format!("{authority_str}.fileprovider");
+
+    // Create java.io.File
+    let path_jstr = env
+        .new_string(&path)
+        .map_err(|e| format!("创建路径字符串失败：{e}"))?;
+    let file = env
+        .new_object("java/io/File", "(Ljava/lang/String;)V", &[(&path_jstr).into()])
+        .map_err(|e| format!("创建 File 对象失败：{e}"))?;
+
+    // FileProvider.getUriForFile(context, authority, file) → Uri
+    let authority_jstr = env
+        .new_string(&file_provider_authority)
+        .map_err(|e| format!("创建 authority 字符串失败：{e}"))?;
+    let uri = env
+        .call_static_method(
+            "androidx/core/content/FileProvider",
+            "getUriForFile",
+            "(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;)Landroid/net/Uri;",
+            &[(&ctx).into(), (&authority_jstr).into(), (&file).into()],
+        )
+        .map_err(|e| format!("FileProvider URI 生成失败：{e}"))?
+        .l()
+        .map_err(|e| format!("获取 URI 对象失败：{e}"))?;
+
+    // Intent(Intent.ACTION_VIEW)
+    let action_view = env
+        .new_string("android.intent.action.VIEW")
+        .map_err(|e| format!("创建 Intent action 失败：{e}"))?;
+    let intent = env
+        .new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;)V",
+            &[(&action_view).into()],
+        )
+        .map_err(|e| format!("创建 Intent 失败：{e}"))?;
+
+    // intent.setDataAndType(uri, "application/vnd.android.package-archive")
+    let mime_type = env
+        .new_string("application/vnd.android.package-archive")
+        .map_err(|e| format!("创建 MIME type 失败：{e}"))?;
+    env.call_method(
+        &intent,
+        "setDataAndType",
+        "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+        &[(&uri).into(), (&mime_type).into()],
+    )
+    .map_err(|e| format!("设置 Intent data/type 失败：{e}"))?;
+
+    // intent.addFlags(FLAG_GRANT_READ_URI_PERMISSION = 0x00000001)
+    env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[1i32.into()])
+        .map_err(|e| format!("添加 Intent flags 失败：{e}"))?;
+
+    // context.startActivity(intent)
+    env.call_method(
+        &ctx,
+        "startActivity",
+        "(Landroid/content/Intent;)V",
+        &[(&intent).into()],
+    )
+    .map_err(|e| format!("启动安装器失败：{e}"))?;
+
+    Ok(())
+}
+
 #[cfg(desktop)]
 #[tauri::command]
 fn open_local_path(path: String) -> Result<(), String> {
@@ -1377,6 +1473,8 @@ pub fn run() {
         ssh_write,
         ssh_resize,
         ssh_close,
+        #[cfg(mobile)]
+        install_apk,
         #[cfg(desktop)]
         open_system_ssh_terminal,
         #[cfg(desktop)]

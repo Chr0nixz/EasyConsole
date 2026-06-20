@@ -1,3 +1,17 @@
+# EasyConsole v0.3.7
+
+Android in-app update support and mobile UI improvements.
+
+## Changes
+
+- **Android in-app update**: Added mobile update checking via GitHub API. The app now detects new releases, downloads the matching APK (aarch64 or x86_64), and launches the system installer through a native `install_apk` Tauri command using JNI and FileProvider.
+- **Mobile navigation**: Redesigned the sidebar for mobile with a compact bottom navigation bar (Dashboard, Tasks, Storage, Images) and a "More" overflow menu for secondary pages. Added online/offline status indicator.
+- **Create task dialog**: Restructured the form with grouped sections (`FormSection`) and inline field validation (`FieldError`) for better usability.
+- **Responsive tables**: Scheduled tasks and other pages now render card layouts on small screens instead of horizontally scrolling tables.
+- **Android manifest**: Added `REQUEST_INSTALL_PACKAGES` permission for in-app APK installation.
+
+---
+
 # EasyConsole v0.3.6
 
 This release improves the in-app SSH terminal on mobile and fixes CI pipeline issues for Android builds.

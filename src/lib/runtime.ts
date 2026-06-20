@@ -368,7 +368,7 @@ export const browserRuntime: RuntimeTransport = {
     return runtimeKind !== "web";
   },
   get supportsUpdater() {
-    return runtimeKind === "desktop";
+    return runtimeKind === "desktop" || runtimeKind === "mobile";
   },
   get supportsFileReveal() {
     return runtimeKind === "desktop";

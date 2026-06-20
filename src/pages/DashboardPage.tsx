@@ -82,36 +82,62 @@ export function DashboardPage() {
         ) : staticsQuery.isError ? (
           <ErrorState error={staticsQuery.error} action={<Button variant="secondary" onClick={() => staticsQuery.refetch()}>{text("重试", "Retry")}</Button>} />
         ) : recentTasks.length > 0 ? (
-          <TableRegion label={text("最近任务表格", "Recent tasks table")}>
-            <table className="w-full min-w-[720px] text-sm">
-              <thead className="bg-app-panel text-left text-xs text-app-muted">
-                <tr>
-                  <th className="px-3 py-2 font-medium" scope="col">{text("名称", "Name")}</th>
-                  <th className="px-3 py-2 font-medium" scope="col">{text("状态", "Status")}</th>
-                  <th className="px-3 py-2 font-medium" scope="col">{text("资源", "Resources")}</th>
-                  <th className="px-3 py-2 font-medium" scope="col">{text("节点", "Node")}</th>
-                  <th className="px-3 py-2 font-medium" scope="col">{text("费用", "Cost")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentTasks.map((task) => (
-                  <tr key={String(task.id)} className="border-t border-app-border">
-                    <td className="px-3 py-2 font-medium">{getTaskName(task)}</td>
-                    <td className="px-3 py-2">
-                      <StatusBadge status={task.status} />
-                    </td>
-                    <td className="px-3 py-2 text-app-muted">
-                      {task.cpu ?? "-"}C / {task.gpu ?? "-"}GPU / {task.memory ?? "-"}G
-                    </td>
-                    <td className="px-3 py-2 text-app-muted">{getTaskNodeName(task) || "-"}</td>
-                    <td className="px-3 py-2 text-app-muted">
-                      {formatCost(task.cost, locale)} ({formatSecondsDuration(task.use_time, locale)})
-                    </td>
+          <>
+            <div className="divide-y divide-app-border sm:hidden">
+              {recentTasks.map((task) => (
+                <article key={String(task.id)} className="space-y-2 px-4 py-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate font-medium">{getTaskName(task)}</span>
+                    <StatusBadge status={task.status} />
+                  </div>
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                    <div>
+                      <dt className="text-app-muted">{text("资源", "Resources")}</dt>
+                      <dd>{task.cpu ?? "-"}C / {task.gpu ?? "-"}GPU / {task.memory ?? "-"}G</dd>
+                    </div>
+                    <div>
+                      <dt className="text-app-muted">{text("节点", "Node")}</dt>
+                      <dd>{getTaskNodeName(task) || "-"}</dd>
+                    </div>
+                    <div className="col-span-2">
+                      <dt className="text-app-muted">{text("费用", "Cost")}</dt>
+                      <dd>{formatCost(task.cost, locale)} ({formatSecondsDuration(task.use_time, locale)})</dd>
+                    </div>
+                  </dl>
+                </article>
+              ))}
+            </div>
+            <TableRegion className="hidden sm:block" label={text("最近任务表格", "Recent tasks table")}>
+              <table className="w-full min-w-[720px] text-sm">
+                <thead className="bg-app-panel text-left text-xs text-app-muted">
+                  <tr>
+                    <th className="px-3 py-2 font-medium" scope="col">{text("名称", "Name")}</th>
+                    <th className="px-3 py-2 font-medium" scope="col">{text("状态", "Status")}</th>
+                    <th className="px-3 py-2 font-medium" scope="col">{text("资源", "Resources")}</th>
+                    <th className="px-3 py-2 font-medium" scope="col">{text("节点", "Node")}</th>
+                    <th className="px-3 py-2 font-medium" scope="col">{text("费用", "Cost")}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </TableRegion>
+                </thead>
+                <tbody>
+                  {recentTasks.map((task) => (
+                    <tr key={String(task.id)} className="border-t border-app-border">
+                      <td className="px-3 py-2 font-medium">{getTaskName(task)}</td>
+                      <td className="px-3 py-2">
+                        <StatusBadge status={task.status} />
+                      </td>
+                      <td className="px-3 py-2 text-app-muted">
+                        {task.cpu ?? "-"}C / {task.gpu ?? "-"}GPU / {task.memory ?? "-"}G
+                      </td>
+                      <td className="px-3 py-2 text-app-muted">{getTaskNodeName(task) || "-"}</td>
+                      <td className="px-3 py-2 text-app-muted">
+                        {formatCost(task.cost, locale)} ({formatSecondsDuration(task.use_time, locale)})
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableRegion>
+          </>
         ) : (
           <EmptyState title={text("暂无最近任务", "No recent tasks")} />
         )}

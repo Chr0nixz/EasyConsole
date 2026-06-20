@@ -34,7 +34,7 @@ export function ConfirmDialog({
     >
       <div className="space-y-4 p-4">
         <div className="text-sm leading-6 text-app-muted">{options?.description}</div>
-        <div className="flex justify-end gap-2 border-t border-app-border pt-3">
+        <div className="flex flex-col-reverse gap-2 border-t border-app-border pt-3 sm:flex-row sm:justify-end">
           <Button disabled={pending} type="button" variant="secondary" onClick={onCancel}>
             {t("common.cancel")}
           </Button>

@@ -523,7 +523,109 @@ export function TaskTemplatesPage() {
         </Panel>
       ) : (
         <Panel className="overflow-hidden">
-          <TableRegion label={text("实例模板表格", "Instance templates table")}>
+          <div className="divide-y divide-app-border sm:hidden">
+            {templates.map((template) => (
+              <article key={template.id} className="space-y-3 px-3 py-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">{template.name}</div>
+                    <div className="mt-0.5 truncate text-xs text-app-muted">
+                      {template.description || text(`${template.taskNamePrefix}，每次 ${template.batchCount} 个`, `${template.taskNamePrefix}, ${template.batchCount} each time`)}
+                    </div>
+                  </div>
+                  <span className="inline-flex shrink-0 items-center rounded-md border border-app-border bg-app-panel px-2 py-0.5 text-xs font-medium text-app-text">
+                    {text("运行中", "Running")}: {runningTasksQuery.isLoading ? "-" : (runningCountByTemplateId[template.id] ?? 0)}
+                  </span>
+                </div>
+                <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                  <div>
+                    <dt className="text-app-muted">{text("镜像", "Image")}</dt>
+                    <dd className="mt-0.5 text-app-text">{getImageName(imageOptions, template.imageId, text)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-app-muted">{text("资源", "Resources")}</dt>
+                    <dd className="mt-0.5 text-app-text">{formatResource(template)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-app-muted">{text("使用次数", "Uses")}</dt>
+                    <dd className="mt-0.5 text-app-text">
+                      {template.usageCount}
+                      {template.lastUsedAt ? <span className="ml-1 text-app-muted">({template.lastUsedAt.slice(0, 19).replace("T", " ")})</span> : null}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-app-muted">{text("释放条件", "Release condition")}</dt>
+                    <dd className="mt-0.5 text-app-text">
+                      {getReleaseConditionText(template.releaseCondition, locale)}
+                      {template.releaseCondition === 2 ? text(`，${template.releaseAfterHours ?? 24} 小时后`, `, after ${template.releaseAfterHours ?? 24} hours`) : ""}
+                    </dd>
+                  </div>
+                  <div className="col-span-2">
+                    <dt className="text-app-muted">{text("路径", "Paths")}</dt>
+                    <dd className="mt-0.5 truncate font-mono text-app-text">{template.storagePath}</dd>
+                    <dd className="mt-0.5 truncate font-mono text-app-muted">{template.mountPath}</dd>
+                  </div>
+                </dl>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    className="h-9 px-2"
+                    disabled={createMutation.isPending}
+                    title={text("一键新建", "Create with template")}
+                    variant="ghost"
+                    onClick={() => createMutation.mutate(template)}
+                  >
+                    <Rocket className="h-4 w-4" />
+                    {text("新建", "New")}
+                  </Button>
+                  <Button
+                    aria-label={text(`编辑模板 ${template.name}`, `Edit template ${template.name}`)}
+                    className="h-9 px-2"
+                    title={text("编辑", "Edit")}
+                    type="button"
+                    variant="ghost"
+                    onClick={() => openEditDialog(template)}
+                  >
+                    <Edit2 className="h-4 w-4" />
+                    {text("编辑", "Edit")}
+                  </Button>
+                  <Button
+                    aria-label={text(`复制模板 ${template.name}`, `Copy template ${template.name}`)}
+                    className="h-9 px-2"
+                    title={text("复制模板", "Copy template")}
+                    type="button"
+                    variant="ghost"
+                    onClick={() => {
+                      setEditingTemplate({
+                        ...template,
+                        id: "",
+                        name: text(`${template.name} 副本`, `${template.name} Copy`),
+                        usageCount: 0,
+                        lastUsedAt: undefined,
+                        createdAt: "",
+                        updatedAt: "",
+                      });
+                      setDialogOpen(true);
+                    }}
+                  >
+                    <CopyPlus className="h-4 w-4" />
+                    {text("复制", "Copy")}
+                  </Button>
+                  <Button
+                    aria-label={text(`删除模板 ${template.name}`, `Delete template ${template.name}`)}
+                    className="h-9 px-2 text-app-danger hover:text-app-danger"
+                    title={text("删除", "Delete")}
+                    type="button"
+                    variant="ghost"
+                    onClick={() => deleteTemplate(template)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {text("删除", "Delete")}
+                  </Button>
+                </div>
+              </article>
+            ))}
+          </div>
+          <TableRegion className="hidden sm:block" label={text("实例模板表格", "Instance templates table")}>
             <table className="w-max min-w-full table-auto border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>

@@ -249,3 +249,21 @@ tbody tr {
   height: 100%;
   padding: 12px;
 }
+
+/* Safe area insets for edge-to-edge mobile (enableEdgeToEdge on Android).
+   env() returns 0 on platforms that don't support it (desktop browsers). */
+
+@media (max-width: 767px) {
+  .app-main-content {
+    padding-bottom: calc(8rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .app-toast-container {
+    bottom: calc(8rem + env(safe-area-inset-bottom, 0px)) !important;
+  }
+}
+
+.app-terminal-modal-panel {
+  margin-top: env(safe-area-inset-top, 0px);
+  margin-bottom: env(safe-area-inset-bottom, 0px);
+}

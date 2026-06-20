@@ -180,16 +180,16 @@ export function Dialog({
     >
       <div
         ref={dialogRef}
-        className={cn("app-modal-panel max-h-[calc(100vh-5rem)] w-full overflow-hidden rounded-lg bg-app-surface", width)}
+        className={cn("app-modal-panel max-h-[calc(100vh-2rem)] w-full overflow-hidden rounded-lg bg-app-surface sm:max-h-[calc(100vh-5rem)]", width)}
       >
         <div className="flex h-12 items-center justify-between border-b border-app-border px-4">
           <h2 id={titleId} className="text-sm font-semibold text-app-text">{title}</h2>
-          <button className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text" type="button" onClick={onClose}>
+          <button className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11" type="button" onClick={onClose}>
             <X className="h-4 w-4" />
             <span className="sr-only">{t("common.close")}</span>
           </button>
         </div>
-        <div className="max-h-[calc(100vh-8rem)] overflow-auto">{children}</div>
+        <div className="max-h-[calc(100vh-5rem)] overflow-auto sm:max-h-[calc(100vh-8rem)]">{children}</div>
       </div>
     </div>,
     document.body,

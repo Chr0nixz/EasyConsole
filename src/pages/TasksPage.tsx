@@ -523,6 +523,8 @@ export function TasksPage() {
     loadNumberSetting(AUTO_REFRESH_INTERVAL_KEY, DEFAULT_AUTO_REFRESH_INTERVAL),
   );
   const [pinnedTaskIds, setPinnedTaskIds] = useState<string[]>([]);
+  const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
+  const viewOptionsRef = useRef<HTMLDivElement>(null);
 
   const updateTaskQuery = useCallback((patch: Partial<TaskListQueryState>) => {
     const next = { ...queryState, ...patch };
@@ -1030,6 +1032,24 @@ export function TasksPage() {
     setRowSelection({});
   }, [queryState.page, queryState.pageSize, queryState.keyword, queryState.status]);
 
+  useEffect(() => {
+    if (!viewOptionsOpen) return undefined;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!viewOptionsRef.current?.contains(event.target as Node)) {
+        setViewOptionsOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setViewOptionsOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [viewOptionsOpen]);
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1055,34 +1075,56 @@ export function TasksPage() {
             <RefreshCw className="h-4 w-4" />
             {text("刷新", "Refresh")}
           </Button>
-          <div className="flex min-h-9 items-center gap-2 rounded-md border border-app-border bg-app-surface px-3 text-sm [@media(pointer:coarse)]:min-h-11">
-            <label className="flex cursor-pointer items-center gap-2 text-app-text">
-              <input
-                type="checkbox"
-                className="h-4 w-4 accent-app-accent"
-                checked={autoRefresh}
-                onChange={(event) => setAutoRefresh(event.target.checked)}
-              />
-              {text("自动刷新", "Auto refresh")}
-            </label>
-            <Select
-              className="h-7 border-0 bg-app-panel px-2 text-xs"
-              disabled={!autoRefresh}
-              value={String(autoRefreshInterval)}
-              onChange={(event) => setAutoRefreshInterval(Number(event.target.value))}
+          <div ref={viewOptionsRef} className="relative">
+            <Button
+              aria-expanded={viewOptionsOpen}
+              aria-haspopup="true"
+              variant="secondary"
+              onClick={() => setViewOptionsOpen((v) => !v)}
             >
-              {autoRefreshOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {locale === "en-US" ? option.en : option.zh}
-                </option>
-              ))}
-            </Select>
-            {autoRefresh && autoRefreshPaused ? <span className="text-xs text-app-warning">{text("已暂停", "Paused")}</span> : null}
+              <Settings2 className="h-4 w-4" />
+              {text("视图", "View")}
+              {autoRefresh ? <span className="h-1.5 w-1.5 rounded-full bg-app-accent" /> : null}
+            </Button>
+            {viewOptionsOpen ? (
+              <div className="absolute right-0 top-full z-30 mt-1 w-72 rounded-lg border border-app-border bg-app-surface p-3 shadow-popover">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="flex cursor-pointer items-center gap-2 text-sm text-app-text">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-app-accent"
+                        checked={autoRefresh}
+                        onChange={(event) => setAutoRefresh(event.target.checked)}
+                      />
+                      {text("自动刷新", "Auto refresh")}
+                    </label>
+                    <Select
+                      className="h-7 w-24 border-0 bg-app-panel px-2 text-xs"
+                      disabled={!autoRefresh}
+                      value={String(autoRefreshInterval)}
+                      onChange={(event) => setAutoRefreshInterval(Number(event.target.value))}
+                    >
+                      {autoRefreshOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {locale === "en-US" ? option.en : option.zh}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                  {autoRefresh && autoRefreshPaused ? (
+                    <div className="text-xs text-app-warning">{text("自动刷新已暂停（对话框打开时）", "Auto refresh paused (dialog open)")}</div>
+                  ) : null}
+                  <div className="border-t border-app-border pt-3">
+                    <Button className="w-full" variant="secondary" onClick={() => { setColumnSettingsOpen(true); setViewOptionsOpen(false); }}>
+                      <Settings2 className="h-4 w-4" />
+                      {text("列设置", "Columns")}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
-          <Button variant="secondary" onClick={() => setColumnSettingsOpen(true)}>
-            <Settings2 className="h-4 w-4" />
-            {text("列设置", "Columns")}
-          </Button>
         </div>
         <Button className="w-full sm:w-auto" onClick={openCreateTask}>
           <Plus className="h-4 w-4" />

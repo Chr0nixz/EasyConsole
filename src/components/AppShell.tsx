@@ -1,4 +1,4 @@
-import { CalendarClock, Command as CommandIcon, Database, DownloadCloud, ExternalLink, FolderOpen, Image, LayoutDashboard, LogOut, Minimize2, Power, RotateCcw, ScrollText, Server, Settings, SquareStack, TerminalSquare, X } from "lucide-react";
+import { CalendarClock, Command as CommandIcon, Database, DownloadCloud, ExternalLink, FolderOpen, Image, LayoutDashboard, LogOut, Minimize2, MoreHorizontal, Power, RotateCcw, ScrollText, Search, Server, Settings, SquareStack, TerminalSquare, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 
@@ -34,6 +34,9 @@ const navItems = [
   { to: "/settings", labelKey: "nav.settings", icon: Settings },
 ] as const;
 
+const primaryMobileNav = navItems.slice(0, 4);
+const secondaryMobileNav = navItems.slice(4);
+
 const titles: Record<string, TranslationKey> = {
   "/dashboard": "title.dashboard",
   "/tasks": "title.tasks",
@@ -56,6 +59,8 @@ export function AppShell() {
   const [downloadQueueOpen, setDownloadQueueOpen] = useState(false);
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [rememberCloseChoice, setRememberCloseChoice] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
   const userName = auth.user?.username || auth.user?.name || t("shell.loggedIn");
   const [navWidth, setNavWidth] = useState(() => readStoredShellNavWidth());
   const navResizeSessionRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
@@ -109,6 +114,40 @@ export function AppShell() {
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    setMoreMenuOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!moreMenuOpen) return;
+    const onClickOutside = (event: MouseEvent) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(event.target as Node)) {
+        setMoreMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMoreMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onClickOutside);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onClickOutside);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [moreMenuOpen]);
+
+  const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+  useEffect(() => {
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
   }, []);
 
   useEffect(() => () => finishNavResize(), []);
@@ -177,7 +216,7 @@ export function AppShell() {
       <BackgroundScheduledTaskRunner />
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
       {downloadQueueOpen ? (
-        <div className="fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" role="region" aria-label={text("下载队列", "Download queue")}>
+        <div className="fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="region" aria-label={text("下载队列", "Download queue")}>
           <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
             <div className="min-w-0">
               <div className="text-sm font-semibold text-app-text">{text("下载队列", "Download queue")}</div>
@@ -326,12 +365,12 @@ onDoubleClick={handleNavResizeDoubleClick}
  onPointerDown={handleNavResizePointerDown} />
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-40 flex min-h-14 items-center justify-between gap-3 border-b border-app-border bg-app-surface px-4 md:px-5">
+        <header className="sticky top-0 z-40 flex min-h-14 items-center justify-between gap-3 border-b border-app-border bg-app-surface px-4 md:px-5" style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}>
           <div className="min-w-0">
             <h1 className="truncate text-base font-semibold">{t(titles[location.pathname] ?? "common.console")}</h1>
             <p className="hidden truncate text-xs text-app-muted sm:block">{t("shell.headerDescription")}</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-3">
             <Button className="shrink-0" variant="secondary" onClick={() => setDownloadQueueOpen((value) => !value)}>
               <DownloadCloud className="h-4 w-4" />
               <span className="hidden sm:inline">{text("下载", "Downloads")}</span>
@@ -353,6 +392,9 @@ onDoubleClick={handleNavResizeDoubleClick}
               <CommandIcon className="h-4 w-4" />
               Ctrl K
             </Button>
+            <Button className="inline-flex shrink-0 sm:hidden" variant="secondary" onClick={() => setCommandPaletteOpen(true)}>
+              <Search className="h-4 w-4" />
+            </Button>
             <LanguageSwitch />
             <span className="hidden max-w-32 truncate text-sm text-app-muted sm:inline md:max-w-48">{userName}</span>
             <Button className="shrink-0" variant="secondary" onClick={() => void auth.logout()}>
@@ -361,20 +403,54 @@ onDoubleClick={handleNavResizeDoubleClick}
             </Button>
           </div>
         </header>
-        <main className="min-h-0 min-w-0 flex-1 overflow-auto px-3 py-4 pb-24 sm:p-5 sm:pb-24 md:pb-5">
+        {isOnline ? null : (
+          <div className="flex items-center gap-2 bg-amber-500/15 px-4 py-1.5 text-xs font-medium text-amber-600 dark:text-amber-400" role="alert">
+            <WifiOff className="h-3.5 w-3.5 shrink-0" />
+            <span>{text("当前处于离线状态，部分功能不可用", "You are offline — some features are unavailable")}</span>
+          </div>
+        )}
+        <main className="app-main-content min-h-0 min-w-0 flex-1 overflow-auto px-3 py-4 pb-32 sm:p-5 sm:pb-32 md:pb-5">
           <div key={location.pathname} className="app-page-enter">
             <Outlet />
           </div>
         </main>
       </div>
-      <nav className="fixed inset-x-0 bottom-0 z-40 flex overflow-x-auto border-t border-app-border bg-app-surface md:hidden">
-        {navItems.map((item) => (
+      {moreMenuOpen ? (
+        <div
+          ref={moreMenuRef}
+          className="fixed inset-x-0 z-50 border-t border-app-border bg-app-surface shadow-popover md:hidden"
+          role="navigation"
+          aria-label={text("更多页面", "More pages")}
+          style={{ bottom: "calc(3.5rem + env(safe-area-inset-bottom, 0px))" }}
+        >
+          <div className="grid grid-cols-4 gap-0">
+            {secondaryMobileNav.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={({ isActive }) =>
+                  cn(
+                    "app-interactive flex flex-col items-center justify-center gap-1 py-3 text-xs text-app-muted",
+                    isActive && "bg-app-accentSoft text-app-accent",
+                  )
+                }
+                onClick={() => setMoreMenuOpen(false)}
+              >
+                <item.icon className="h-5 w-5" />
+                <span>{t(item.labelKey)}</span>
+              </NavLink>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <nav className="fixed inset-x-0 bottom-0 z-40 flex items-stretch border-t border-app-border bg-app-surface md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+        {primaryMobileNav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             className={({ isActive }) =>
               cn(
-                "app-interactive flex h-16 min-w-20 flex-col items-center justify-center gap-1 text-xs text-app-muted",
+                "app-interactive flex h-14 min-w-0 flex-1 flex-col items-center justify-center gap-1 text-xs text-app-muted",
                 isActive && "bg-app-accentSoft text-app-accent",
               )
             }
@@ -383,6 +459,19 @@ onDoubleClick={handleNavResizeDoubleClick}
             <span>{t(item.labelKey)}</span>
           </NavLink>
         ))}
+        <button
+          type="button"
+          aria-expanded={moreMenuOpen}
+          aria-haspopup="true"
+          className={cn(
+            "app-interactive flex h-14 min-w-0 flex-1 flex-col items-center justify-center gap-1 text-xs text-app-muted",
+            secondaryMobileNav.some((item) => location.pathname.startsWith(item.to)) && "bg-app-accentSoft text-app-accent",
+          )}
+          onClick={() => setMoreMenuOpen((v) => !v)}
+        >
+          <MoreHorizontal className="h-5 w-5" />
+          <span>{text("更多", "More")}</span>
+        </button>
       </nav>
     </div>
   );
