@@ -103,6 +103,9 @@ jobs:
       - name: Test
         run: npm run test
 
+      - name: Build desktop inputs
+        run: npm run build:desktop
+
       - name: Cargo check
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
