@@ -1,6 +1,6 @@
-import { CalendarClock, Command as CommandIcon, Database, DownloadCloud, ExternalLink, FolderOpen, Image, LayoutDashboard, LogOut, Minimize2, MoreHorizontal, Power, RotateCcw, ScrollText, Search, Server, Settings, SquareStack, TerminalSquare, WifiOff, X } from "lucide-react";
+import { CalendarClock, Command as CommandIcon, Database, DownloadCloud, ExternalLink, FolderOpen, Image, LayoutDashboard, LogOut, Minimize2, MoreHorizontal, Power, RotateCcw, Save, ScrollText, Search, Server, Settings, SquareStack, TerminalSquare, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { LanguageSwitch } from "./LanguageSwitch";
 import { BackgroundScheduledTaskRunner } from "./BackgroundScheduledTaskRunner";
@@ -9,6 +9,7 @@ import { TaskNotificationWatcher } from "./TaskNotificationWatcher";
 import { Button, Dialog } from "./ui";
 import { APP_SETTINGS_STORAGE_KEY, getRuntimeSettings, setRuntimeSettings, stringifyAppSettings } from "../lib/app-settings";
 import { useAppUpdate } from "../lib/app-update-context";
+import { useCommitQueue } from "../lib/commit-queue-context";
 import { downloadStatusText } from "../lib/download-queue";
 import { formatDownloadProgress, useDownloadQueue } from "../lib/download-queue-context";
 import { browserRuntime } from "../lib/runtime";
@@ -51,16 +52,21 @@ const titles: Record<string, TranslationKey> = {
 export function AppShell() {
   const auth = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const { t, text } = useI18n();
   const appUpdate = useAppUpdate();
   const downloadQueue = useDownloadQueue();
+  const commitQueue = useCommitQueue();
   const toast = useToast();
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [downloadQueueOpen, setDownloadQueueOpen] = useState(false);
+  const [commitQueueOpen, setCommitQueueOpen] = useState(false);
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [rememberCloseChoice, setRememberCloseChoice] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const moreMenuRef = useRef<HTMLDivElement>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
+  const moreMenuPreviousFocusRef = useRef<HTMLElement | null>(null);
   const userName = auth.user?.username || auth.user?.name || t("shell.loggedIn");
   const [navWidth, setNavWidth] = useState(() => readStoredShellNavWidth());
   const navResizeSessionRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
@@ -106,29 +112,94 @@ export function AppShell() {
   }
 
   useEffect(() => {
+    let lastKeyTime = 0;
+    let pendingKey: string | null = null;
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setCommandPaletteOpen(true);
+        return;
       }
+
+      const target = event.target as HTMLElement | null;
+      const isTyping = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable || target.tagName === "SELECT");
+      if (isTyping) return;
+
+      if (event.key === "/") {
+        event.preventDefault();
+        const searchInput = document.querySelector<HTMLInputElement>('input[type="search"], input[placeholder*="搜索"], input[placeholder*="search"], input[placeholder*="Search"]');
+        searchInput?.focus();
+        return;
+      }
+
+      const now = Date.now();
+      if (pendingKey && now - lastKeyTime < 800) {
+        const combo = `${pendingKey}${event.key.toLowerCase()}`;
+        pendingKey = null;
+        const navMap: Record<string, string> = {
+          gd: "/dashboard",
+          gt: "/tasks",
+          gs: "/storage",
+          gi: "/images",
+          gr: "/run-logs",
+          ge: "/settings",
+        };
+        const targetPath = navMap[combo];
+        if (targetPath) {
+          event.preventDefault();
+          navigate(targetPath);
+        }
+        return;
+      }
+
+      if (event.key.toLowerCase() === "g" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        pendingKey = "g";
+        lastKeyTime = now;
+        return;
+      }
+      pendingKey = null;
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [navigate]);
 
   useEffect(() => {
     setMoreMenuOpen(false);
   }, [location.pathname]);
 
   useEffect(() => {
-    if (!moreMenuOpen) return;
+    if (!moreMenuOpen) {
+      moreMenuPreviousFocusRef.current?.focus();
+      moreMenuPreviousFocusRef.current = null;
+      return;
+    }
+    moreMenuPreviousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const container = moreMenuRef.current;
+    const focusable = container ? Array.from(container.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])')) : [];
+    window.setTimeout(() => focusable[0]?.focus(), 0);
+
     const onClickOutside = (event: MouseEvent) => {
-      if (moreMenuRef.current && !moreMenuRef.current.contains(event.target as Node)) {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(event.target as Node) && event.target !== moreButtonRef.current) {
         setMoreMenuOpen(false);
       }
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMoreMenuOpen(false);
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setMoreMenuOpen(false);
+        return;
+      }
+      if (event.key !== "Tab" || focusable.length === 0) return;
+      const activeElement = document.activeElement;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("pointerdown", onClickOutside);
     document.addEventListener("keydown", onKeyDown);
@@ -212,6 +283,9 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-app-bg text-app-text md:flex-row">
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[100] focus:rounded focus:bg-app-surface focus:px-3 focus:py-1.5 focus:text-sm focus:shadow-popover">
+        {text("跳到主内容", "Skip to main content")}
+      </a>
       <TaskNotificationWatcher />
       <BackgroundScheduledTaskRunner />
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
@@ -285,6 +359,62 @@ export function AppShell() {
                       </div>
                       {item.error ? <div className="mt-2 text-xs text-app-danger">{item.error}</div> : null}
                       {item.destinationPath ? <div className="mt-2 truncate font-mono text-xs text-app-muted" title={item.destinationPath}>{item.destinationPath}</div> : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+      {commitQueueOpen ? (
+        <div className="fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="region" aria-label={text("Commit 队列", "Commit queue")}>
+          <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-app-text">{text("Commit 队列", "Commit queue")}</div>
+              <div className="text-xs text-app-muted">
+                {commitQueue.summary.total
+                  ? text(
+                      `${commitQueue.summary.completed}/${commitQueue.summary.total} 完成，${commitQueue.summary.failed} 失败`,
+                      `${commitQueue.summary.completed}/${commitQueue.summary.total} done, ${commitQueue.summary.failed} failed`,
+                    )
+                  : text("暂无 Commit 任务", "No commits")}
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <Button className="h-8 px-2 text-xs" disabled={commitQueue.summary.completed === 0} type="button" variant="ghost" onClick={commitQueue.clearCompleted}>
+                {text("清理", "Clear")}
+              </Button>
+              <button className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text" type="button" onClick={() => setCommitQueueOpen(false)}>
+                <X className="h-4 w-4" />
+                <span className="sr-only">{t("common.close")}</span>
+              </button>
+            </div>
+          </div>
+          <div className="max-h-[min(28rem,calc(100vh-8rem))] overflow-auto p-2">
+            {commitQueue.items.length === 0 ? (
+              <div className="px-3 py-8 text-center text-sm text-app-muted">{text("Commit 任务会显示在这里", "Commits will appear here")}</div>
+            ) : (
+              <div className="space-y-2">
+                {commitQueue.items.map((item) => {
+                  const active = item.status === "queued" || item.status === "running";
+                  const statusLabel = active
+                    ? text("进行中", "Running")
+                    : item.status === "done"
+                      ? text("已完成", "Done")
+                      : text("失败", "Failed");
+                  return (
+                    <div key={item.id} className="rounded-md border border-app-border bg-app-surface p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-app-text" title={item.taskName}>{item.taskName}</div>
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
+                            <span>{statusLabel}</span>
+                            {active ? <RotateCcw className="h-3 w-3 animate-spin" /> : null}
+                          </div>
+                        </div>
+                      </div>
+                      {item.error ? <div className="mt-2 text-xs text-app-danger">{item.error}</div> : null}
                     </div>
                   );
                 })}
@@ -380,6 +510,15 @@ onDoubleClick={handleNavResizeDoubleClick}
                 </span>
               ) : null}
             </Button>
+            <Button className="shrink-0" variant="secondary" onClick={() => setCommitQueueOpen((value) => !value)}>
+              <Save className="h-4 w-4" />
+              <span className="hidden sm:inline">{text("Commit", "Commit")}</span>
+              {commitQueue.summary.active || commitQueue.summary.failed ? (
+                <span className="rounded bg-app-panel px-1.5 py-0.5 text-xs text-app-muted">
+                  {commitQueue.summary.active || commitQueue.summary.failed}
+                </span>
+              ) : null}
+            </Button>
             {browserRuntime.supportsUpdater && (appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading") ? (
               <Button className="shrink-0" variant="secondary" onClick={appUpdate.openUpdateDialog}>
                 <DownloadCloud className="h-4 w-4" />
@@ -409,7 +548,7 @@ onDoubleClick={handleNavResizeDoubleClick}
             <span>{text("当前处于离线状态，部分功能不可用", "You are offline — some features are unavailable")}</span>
           </div>
         )}
-        <main className="app-main-content min-h-0 min-w-0 flex-1 overflow-auto px-3 py-4 pb-32 sm:p-5 sm:pb-32 md:pb-5">
+        <main id="main-content" className="app-main-content min-h-0 min-w-0 flex-1 overflow-auto px-3 py-4 pb-32 sm:p-5 sm:pb-32 md:pb-5">
           <div key={location.pathname} className="app-page-enter">
             <Outlet />
           </div>
@@ -419,7 +558,8 @@ onDoubleClick={handleNavResizeDoubleClick}
         <div
           ref={moreMenuRef}
           className="fixed inset-x-0 z-50 border-t border-app-border bg-app-surface shadow-popover md:hidden"
-          role="navigation"
+          role="dialog"
+          aria-modal="false"
           aria-label={text("更多页面", "More pages")}
           style={{ bottom: "calc(3.5rem + env(safe-area-inset-bottom, 0px))" }}
         >
@@ -460,9 +600,10 @@ onDoubleClick={handleNavResizeDoubleClick}
           </NavLink>
         ))}
         <button
+          ref={moreButtonRef}
           type="button"
           aria-expanded={moreMenuOpen}
-          aria-haspopup="true"
+          aria-haspopup="dialog"
           className={cn(
             "app-interactive flex h-14 min-w-0 flex-1 flex-col items-center justify-center gap-1 text-xs text-app-muted",
             secondaryMobileNav.some((item) => location.pathname.startsWith(item.to)) && "bg-app-accentSoft text-app-accent",

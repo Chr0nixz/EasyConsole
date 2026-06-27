@@ -8,7 +8,14 @@ export type RemoteStorageService = {
   list(query: StorageQuery): Promise<{ items: StorageEntry[]; total?: number; raw: unknown }>;
   createDirectory(path: string): Promise<unknown>;
   remove(path: string, isDirectory?: boolean): Promise<unknown>;
-  uploadLocalFile(file: File, remoteDirectory: string, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal): Promise<unknown>;
+  uploadLocalFile(
+    file: File,
+    remoteDirectory: string,
+    onProgress?: (progress: UploadProgress) => void,
+    signal?: AbortSignal,
+    resumeFromUploadId?: string,
+    onUploadId?: (uploadId: string) => void,
+  ): Promise<unknown>;
   uploadLocalFiles(files: File[], remoteDirectory: string, onProgress?: (progress: UploadProgress) => void): Promise<unknown>;
   getDirectorySize(path: string): Promise<number>;
   downloadRemoteFile(path: string, options?: { signal?: AbortSignal; onProgress?: (progress: UploadProgress) => void }): Promise<Blob>;
@@ -214,8 +221,8 @@ export const remoteStorage: RemoteStorageService = {
   remove(path, isDirectory) {
     return storageApi.delete(normalizeStoragePath(path), isDirectory);
   },
-  uploadLocalFile(file, remoteDirectory, onProgress, signal) {
-    return storageApi.uploadFile(file, normalizeStoragePath(remoteDirectory), onProgress, signal);
+  uploadLocalFile(file, remoteDirectory, onProgress, signal, resumeFromUploadId, onUploadId) {
+    return storageApi.uploadFile(file, normalizeStoragePath(remoteDirectory), onProgress, signal, resumeFromUploadId, onUploadId);
   },
   async uploadLocalFiles(files, remoteDirectory, onProgress) {
     const normalizedRemoteDirectory = normalizeStoragePath(remoteDirectory);

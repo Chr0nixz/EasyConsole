@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, FileText, Folder, FolderOpen, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import { EmptyState, ErrorState, LoadingState } from "../DataState";
+import { EmptyState, ErrorState, FolderOpenIcon, LoadingState } from "../DataState";
 import { Button, Dialog, Select, TableRegion } from "../ui";
 import { formatBytes } from "../../lib/format";
 import { useI18n } from "../../lib/i18n";
@@ -158,7 +158,7 @@ export function RemoteStoragePicker({
           ) : query.isError ? (
             <ErrorState error={query.error} />
           ) : visibleEntries.length === 0 ? (
-            <EmptyState title={text("当前目录为空", "Current directory is empty")} />
+            <EmptyState icon={FolderOpenIcon} title={text("当前目录为空", "Current directory is empty")} />
           ) : (
             <table className="w-full min-w-[560px] border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">

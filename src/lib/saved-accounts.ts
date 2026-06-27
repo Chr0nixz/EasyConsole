@@ -1,4 +1,5 @@
 import type { UserInfo } from "./types";
+import type { RuntimeStorage } from "./types";
 
 export const SAVED_ACCOUNTS_STORAGE_KEY = "easy-console.saved-accounts";
 const MAX_SAVED_ACCOUNTS = 5;
@@ -95,4 +96,23 @@ export function upsertSavedAccount(accounts: SavedLoginAccount[], account: Saved
 
 export function removeSavedAccount(accounts: SavedLoginAccount[], accountId: string) {
   return accounts.filter((item) => item.id !== accountId);
+}
+
+/**
+ * Migrate saved accounts from plaintext storage to secure storage. Idempotent:
+ * if the data already exists in secure storage or the plaintext source is
+ * empty, it is a no-op. On success the plaintext copy is removed.
+ */
+export async function migrateSavedAccountsToSecureStorage(
+  plaintext: RuntimeStorage,
+  secure: RuntimeStorage,
+): Promise<void> {
+  const existing = await secure.get(SAVED_ACCOUNTS_STORAGE_KEY);
+  if (existing) return;
+
+  const raw = await plaintext.get(SAVED_ACCOUNTS_STORAGE_KEY);
+  if (!raw) return;
+
+  await secure.set(SAVED_ACCOUNTS_STORAGE_KEY, raw);
+  await plaintext.remove(SAVED_ACCOUNTS_STORAGE_KEY);
 }

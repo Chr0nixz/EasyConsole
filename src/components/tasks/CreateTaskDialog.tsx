@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderOpen } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { ErrorState } from "../DataState";
+import { FieldError, FormSection, useFormFieldErrors } from "../form-fields";
 import { RemoteStoragePicker } from "../storage/RemoteStoragePicker";
 import { Button, Dialog, Input, Select } from "../ui";
 import { imageApi, instanceApi } from "../../lib/api";
@@ -107,21 +108,20 @@ function formatBatchTaskName(baseName: string, index: number, total: number) {
   return `${baseName}-${String(index + 1).padStart(width, "0")}`;
 }
 
-function FormSection({ title, divided, children }: { title: string; divided?: boolean; children: ReactNode }) {
-  return (
-    <fieldset className={`space-y-3 ${divided ? "border-t border-app-border pt-4" : ""}`}>
-      <legend className="mb-1 text-xs font-medium uppercase tracking-wide text-app-muted">{title}</legend>
-      <div className="space-y-3">{children}</div>
-    </fieldset>
-  );
-}
-
-function FieldError({ message }: { message?: string }) {
-  if (!message) return null;
-  return <p className="mt-1 text-xs text-app-danger" role="alert">{message}</p>;
-}
-
-export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean; onClose: () => void; initialTask?: Task | null }) {
+export function CreateTaskDialog({
+  open,
+  onClose,
+  initialTask,
+  mode = "create",
+  editTaskId,
+}: {
+  open: boolean;
+  onClose: () => void;
+  initialTask?: Task | null;
+  mode?: "create" | "edit";
+  editTaskId?: string | number;
+}) {
+  const isEditMode = mode === "edit";
   const auth = useAuth();
   const toast = useToast();
   const { locale, text } = useI18n();
@@ -143,7 +143,7 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
   const [storagePickerTarget, setStoragePickerTarget] = useState<StoragePickerTarget | null>(null);
   const [batchCount, setBatchCount] = useState("1");
   const [formError, setFormError] = useState<string | null>(null);
-  const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set());
+  const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
 
   const fieldErrors = useMemo(() => {
     const errors: Record<string, string> = {};
@@ -163,22 +163,13 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
     return errors;
   }, [batchCount, cpu, gpu, imageId, memory, name, releaseCondition, releaseTime, scriptPath, text, workDirectory]);
 
-  const markTouched = useCallback((field: string) => {
-    setTouchedFields((prev) => {
-      if (prev.has(field)) return prev;
-      const next = new Set(prev);
-      next.add(field);
-      return next;
-    });
-  }, []);
-
   const imageOptions = useMemo(() => [...(images.data?.items ?? []), ...(systemImages.data?.items ?? [])], [images.data, systemImages.data]);
   const hasSelectedImageOption = imageOptions.some((image) => String(image.id) === imageId);
   const username = auth.user?.username ?? "";
 
   useEffect(() => {
     if (open) {
-      setName(formatTaskDefaultName());
+      setName(isEditMode ? (initialTask?.name ?? "") : formatTaskDefaultName());
       setImageId(String(getTaskImageId(initialTask)));
       setCpu(String(initialTask?.cpu ?? DEFAULT_CPU));
       setGpu(String(initialTask?.gpu ?? DEFAULT_GPU));
@@ -192,9 +183,9 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       setStoragePickerTarget(null);
       setBatchCount("1");
       setFormError(null);
-      setTouchedFields(new Set());
+      resetTouched();
     }
-  }, [initialTask, open, username]);
+  }, [initialTask, open, resetTouched, username]);
 
   useEffect(() => {
     if (!open || imageId || imageOptions.length === 0) return;
@@ -220,10 +211,29 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
 
   const mutation = useMutation({
     mutationFn: async (payloads: CreateTaskPayload[]) => {
+      if (isEditMode && editTaskId !== undefined) {
+        await instanceApi.updateTask(editTaskId, payloads[0] as Partial<CreateTaskPayload>);
+        return;
+      }
       await runSequentiallyWithDelay(payloads, (payload) => instanceApi.createTask(payload));
     },
     onSuccess: (_data, payloads) => {
       const firstName = String(payloads[0]?.name ?? "");
+      if (isEditMode) {
+        toast.success(text("任务已更新", "Task updated"), firstName);
+        void runLogger.log({
+          source: "task",
+          level: "info",
+          action: "task.update",
+          result: "success",
+          title: text("任务已更新", "Task updated"),
+          targetName: firstName,
+          targetId: editTaskId,
+        });
+        queryClient.invalidateQueries({ queryKey: ["tasks"] });
+        onClose();
+        return;
+      }
       const delayText = payloads.length > 1 ? text(`，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `, ${BATCH_REQUEST_DELAY_MS}ms apart`) : "";
       const description = payloads.length > 1 ? text(`${firstName} 等 ${payloads.length} 个实例${delayText}`, `${firstName} and ${payloads.length - 1} more instances${delayText}`) : firstName;
       const title = initialTask ? text("复制创建已提交", "Clone creation submitted") : text("实例创建已提交", "Instance creation submitted");
@@ -241,7 +251,22 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       onClose();
     },
     onError: (error) => {
-      toast.error(text("实例创建失败", "Instance creation failed"), error instanceof Error ? error.message : text("请检查表单或稍后重试", "Check the form or try again later"));
+      const message = error instanceof Error ? error.message : text("请检查表单或稍后重试", "Check the form or try again later");
+      if (isEditMode) {
+        setFormError(message);
+        void runLogger.log({
+          source: "task",
+          level: "error",
+          action: "task.update",
+          result: "failure",
+          title: text("任务更新失败", "Task update failed"),
+          targetName: name.trim(),
+          targetId: editTaskId,
+          error: errorMessage(error, text("任务更新失败", "Task update failed")),
+        });
+        return;
+      }
+      toast.error(text("实例创建失败", "Instance creation failed"), message);
       void runLogger.log({
         source: "task",
         level: "error",
@@ -257,7 +282,7 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
   function submit(event: FormEvent) {
     event.preventDefault();
     setFormError(null);
-    setTouchedFields(new Set(["name", "image", "cpu", "gpu", "memory", "batchCount", "releaseTime", "workDirectory", "scriptPath"]));
+    touchAll(["name", "image", "cpu", "gpu", "memory", "batchCount", "releaseTime", "workDirectory", "scriptPath"]);
     const taskName = name.trim();
     if (!taskName) {
       setFormError(text("任务名称不能为空", "Task name is required"));
@@ -292,16 +317,11 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       return;
     }
 
-    const count = Number(batchCount);
-    if (!Number.isInteger(count) || count < 1 || count > MAX_BATCH_COUNT) {
-      setFormError(text(`批量数量必须在 1-${MAX_BATCH_COUNT} 之间`, `Batch count must be between 1 and ${MAX_BATCH_COUNT}`));
-      return;
-    }
     const selectedStoragePath = normalizeStoragePath(storagePath.trim() || `/${username}`);
     const selectedMountPath = mountPath.trim() || `/home/ubuntu/${username}`;
 
     const sharedPayload = {
-      ...getCloneCreateFields(initialTask),
+      ...(isEditMode ? {} : getCloneCreateFields(initialTask)),
       price: DEFAULT_PRICE,
       cpu: cpuValue,
       gpu: gpuValue > 0 ? gpuValue : undefined,
@@ -314,6 +334,17 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
       work_directory: releaceConditions === 3 ? workDirectory.trim() : undefined,
       script_path: releaceConditions === 3 ? scriptPath.trim() : undefined,
     };
+
+    if (isEditMode) {
+      mutation.mutate([{ ...sharedPayload, name: taskName } as CreateTaskPayload]);
+      return;
+    }
+
+    const count = Number(batchCount);
+    if (!Number.isInteger(count) || count < 1 || count > MAX_BATCH_COUNT) {
+      setFormError(text(`批量数量必须在 1-${MAX_BATCH_COUNT} 之间`, `Batch count must be between 1 and ${MAX_BATCH_COUNT}`));
+      return;
+    }
 
     mutation.mutate(
       Array.from({ length: count }, (_, index) => ({
@@ -334,31 +365,38 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
     storagePickerTarget === "storage" ? text("选择存储目录", "Select storage directory") : storagePickerTarget === "workDirectory" ? text("选择工作目录", "Select working directory") : text("选择脚本文件", "Select script file");
 
   return (
-    <Dialog open={open} title={initialTask ? text("复制实例", "Clone Instance") : text("新建任务", "New Task")} onClose={onClose} width="max-w-4xl">
+    <Dialog
+      open={open}
+      title={isEditMode ? text("编辑任务", "Edit Task") : initialTask ? text("复制实例", "Clone Instance") : text("新建任务", "New Task")}
+      onClose={onClose}
+      width="max-w-4xl"
+    >
       <form className="p-4" onSubmit={submit}>
         <div className="space-y-5">
           <FormSection title={text("基础", "Basic")}>
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className={cn("grid gap-4", isEditMode ? "grid-cols-1" : "md:grid-cols-2")}>
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("任务名称", "Task name")}</span>
                 <Input className={cn("w-full", touchedFields.has("name") && fieldErrors.name && "border-app-danger")} value={name} onChange={(event) => setName(event.target.value)} onBlur={() => markTouched("name")} required />
                 <FieldError message={touchedFields.has("name") ? fieldErrors.name : undefined} />
               </label>
-              <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("创建数量", "Quantity")}</span>
-                <Input
-                  className={cn("w-full", touchedFields.has("batchCount") && fieldErrors.batchCount && "border-app-danger")}
-                  type="number"
-                  min="1"
-                  max={MAX_BATCH_COUNT}
-                  step="1"
-                  value={batchCount}
-                  onChange={(event) => setBatchCount(event.target.value)}
-                  onBlur={() => markTouched("batchCount")}
-                  required
-                />
-                <FieldError message={touchedFields.has("batchCount") ? fieldErrors.batchCount : undefined} />
-              </label>
+              {isEditMode ? null : (
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{text("创建数量", "Quantity")}</span>
+                  <Input
+                    className={cn("w-full", touchedFields.has("batchCount") && fieldErrors.batchCount && "border-app-danger")}
+                    type="number"
+                    min="1"
+                    max={MAX_BATCH_COUNT}
+                    step="1"
+                    value={batchCount}
+                    onChange={(event) => setBatchCount(event.target.value)}
+                    onBlur={() => markTouched("batchCount")}
+                    required
+                  />
+                  <FieldError message={touchedFields.has("batchCount") ? fieldErrors.batchCount : undefined} />
+                </label>
+              )}
             </div>
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("镜像", "Image")}</span>
@@ -468,7 +506,15 @@ export function CreateTaskDialog({ open, onClose, initialTask }: { open: boolean
             <Button type="button" variant="secondary" onClick={onClose}>
               {text("取消", "Cancel")}
             </Button>
-            <Button disabled={mutation.isPending}>{mutation.isPending ? text("正在创建", "Creating") : text("创建", "Create")}</Button>
+            <Button disabled={mutation.isPending}>
+              {mutation.isPending
+                ? isEditMode
+                  ? text("保存中", "Saving")
+                  : text("正在创建", "Creating")
+                : isEditMode
+                  ? text("保存", "Save")
+                  : text("创建", "Create")}
+            </Button>
           </div>
         </div>
       </form>

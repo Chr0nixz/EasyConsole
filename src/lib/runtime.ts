@@ -74,16 +74,28 @@ const localStorageAdapter: RuntimeStorage = {
   },
 };
 
+// Front-end in-memory cache mirror for Tauri storage. Reduces IPC round-trips
+// for hot paths like appendRunLog and scheduled-task persist. The Rust-side
+// Mutex (RUNTIME_STORAGE_LOCK) guarantees correctness; this cache is purely a
+// read optimization.
+const tauriStorageCache = new Map<string, string | null>();
+
 const tauriStorageAdapter: RuntimeStorage = {
   async get(key) {
+    if (tauriStorageCache.has(key)) {
+      return tauriStorageCache.get(key) ?? null;
+    }
     try {
-      return await invokeTauriCommand<string | null>("runtime_storage_get", { key });
+      const value = await invokeTauriCommand<string | null>("runtime_storage_get", { key });
+      tauriStorageCache.set(key, value);
+      return value;
     } catch (error) {
       console.warn("Tauri storage get failed, falling back to localStorage.", error);
       return localStorageAdapter.get(key);
     }
   },
   async set(key, value) {
+    tauriStorageCache.set(key, value);
     try {
       await invokeTauriCommand("runtime_storage_set", { key, value });
     } catch (error) {
@@ -92,11 +104,43 @@ const tauriStorageAdapter: RuntimeStorage = {
     }
   },
   async remove(key) {
+    tauriStorageCache.set(key, null);
     try {
       await invokeTauriCommand("runtime_storage_remove", { key });
     } catch (error) {
       console.warn("Tauri storage remove failed, falling back to localStorage.", error);
       await localStorageAdapter.remove(key);
+    }
+  },
+};
+
+// Secure storage uses the OS keychain on desktop (macOS Keychain, Windows
+// Credential Manager, Linux Secret Service) and falls back to the plaintext
+// tauriStorageAdapter when keychain is unavailable. On web there is no OS
+// keychain, so it resolves to localStorageAdapter.
+const tauriSecureStorageAdapter: RuntimeStorage = {
+  async get(key) {
+    try {
+      return await invokeTauriCommand<string | null>("keychain_get", { key });
+    } catch (error) {
+      console.warn("Keychain get failed, falling back to tauriStorage.", error);
+      return tauriStorageAdapter.get(key);
+    }
+  },
+  async set(key, value) {
+    try {
+      await invokeTauriCommand("keychain_set", { key, value });
+    } catch (error) {
+      console.warn("Keychain set failed, falling back to tauriStorage.", error);
+      await tauriStorageAdapter.set(key, value);
+    }
+  },
+  async remove(key) {
+    try {
+      await invokeTauriCommand("keychain_remove", { key });
+    } catch (error) {
+      console.warn("Keychain remove failed, falling back to tauriStorage.", error);
+      await tauriStorageAdapter.remove(key);
     }
   },
 };
@@ -374,6 +418,7 @@ export const browserRuntime: RuntimeTransport = {
     return runtimeKind === "desktop";
   },
   storage: isTauri() ? tauriStorageAdapter : localStorageAdapter,
+  secureStorage: isTauri() ? tauriSecureStorageAdapter : localStorageAdapter,
   request: fetchRequest,
   async createWebSocket(url) {
     return isTauri() ? createTauriWebSocket(url) : createBrowserWebSocket(url);
@@ -465,6 +510,16 @@ export const browserRuntime: RuntimeTransport = {
     if (runtimeKind !== "desktop") return () => undefined;
     const { listen } = await import("@tauri-apps/api/event");
     return listen("desktop-run-due-scheduled-tasks", handler);
+  },
+  async onDeepLink(handler: (urls: string[]) => void) {
+    if (runtimeKind !== "desktop") return () => undefined;
+    const { listen } = await import("@tauri-apps/api/event");
+    type DeepLinkPayload = { urls: string[] } | string[];
+    return listen<DeepLinkPayload>("deep-link://new-url", (event) => {
+      const payload = event.payload;
+      const urls = Array.isArray(payload) ? payload : payload?.urls ?? [];
+      if (urls.length > 0) handler(urls);
+    });
   },
 };
 

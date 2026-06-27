@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, Download, Eye, FileText, Folder, FolderOpen, FolderPlus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { useMemo, useRef, useState, type ChangeEvent } from "react";
 
-import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
+import { EmptyState, ErrorState, FolderOpenIcon, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
 import { useDownloadQueue } from "../lib/download-queue-context";
 import { formatBytes } from "../lib/format";
@@ -19,6 +19,7 @@ import {
   remoteStorage,
 } from "../lib/remote-storage";
 import { createUploadQueueItems, summarizeUploadQueue } from "../lib/upload-queue";
+import { clearUploadResume, loadUploadResume, makeFileKey, saveUploadResume } from "../lib/upload-resume";
 import type { StorageEntry, UploadQueueItem } from "../lib/types";
 import { browserRuntime } from "../lib/runtime";
 import { useConfirmAction } from "../lib/use-confirm-action";
@@ -27,6 +28,20 @@ import { useToast } from "../lib/use-toast";
 
 type StorageSortField = "name" | "size" | "modified" | "type";
 type StorageSortDirection = "asc" | "desc";
+
+const uploadStatusText: Record<UploadQueueItem["status"], { zh: string; en: string }> = {
+  queued: { zh: "排队中", en: "Queued" },
+  uploading: { zh: "上传中", en: "Uploading" },
+  done: { zh: "已完成", en: "Done" },
+  failed: { zh: "失败", en: "Failed" },
+  skipped: { zh: "已跳过", en: "Skipped" },
+  cancelled: { zh: "已取消", en: "Cancelled" },
+};
+
+function getUploadStatusText(status: UploadQueueItem["status"], locale: Locale) {
+  const entry = uploadStatusText[status];
+  return locale === "en-US" ? entry.en : entry.zh;
+}
 
 function compareText(left: string, right: string, locale: Locale) {
   return left.localeCompare(right, locale, { numeric: true, sensitivity: "base" });
@@ -177,19 +192,46 @@ export function StoragePage() {
         setUploadQueue((current) =>
           current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "uploading", progress: 1, error: undefined } : queueItem)),
         );
+
+        // Check for a previous partial upload to resume from.
+        const fileKey = makeFileKey(item.file);
+        const resumeRecord = item.resumeFromUploadId ? { uploadId: item.resumeFromUploadId, fileKey } : await loadUploadResume(browserRuntime.storage, fileKey);
+        const resumeFromUploadId = resumeRecord?.uploadId;
+        let capturedUploadId: string | null = resumeFromUploadId ?? null;
+
         try {
           const abortController = new AbortController();
           uploadAbortRef.current = abortController;
-          await remoteStorage.uploadLocalFile(item.file, item.remoteDirectory, (progress) => {
-            setUploadQueue((current) =>
-              current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, progress: progress.percent } : queueItem)),
-            );
-          }, abortController.signal);
+          await remoteStorage.uploadLocalFile(
+            item.file,
+            item.remoteDirectory,
+            (progress) => {
+              setUploadQueue((current) =>
+                current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, progress: progress.percent } : queueItem)),
+              );
+            },
+            abortController.signal,
+            resumeFromUploadId,
+            (uploadId) => {
+              capturedUploadId = uploadId;
+            },
+          );
+          // Upload succeeded — clear any resume record for this file.
+          await clearUploadResume(browserRuntime.storage, fileKey);
           setUploadQueue((current) =>
             current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "done", progress: 100 } : queueItem)),
           );
         } catch (error) {
           const message = error instanceof Error ? error.message : text("上传失败", "Upload failed");
+          // Save resume record if we captured an uploadId, so the next attempt can resume.
+          if (capturedUploadId) {
+            await saveUploadResume(browserRuntime.storage, {
+              fileKey,
+              uploadId: capturedUploadId,
+              uploadedChunks: [],
+              createdAt: new Date().toISOString(),
+            }).catch(() => undefined);
+          }
           setUploadQueue((current) =>
             current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: uploadCancelledRef.current ? "cancelled" : "failed", error: uploadCancelledRef.current ? text("已取消", "Cancelled") : message } : queueItem)),
           );
@@ -396,7 +438,7 @@ export function StoragePage() {
             {uploadQueue.map((item) => (
               <div key={item.id} className="grid gap-2 border-b border-app-border px-3 py-2 text-xs last:border-0 sm:grid-cols-[1fr_6rem_4rem]">
                 <span className="truncate font-mono text-app-text">{item.relativePath}</span>
-                <span className="text-app-muted">{item.status}</span>
+                <span className="text-app-muted">{getUploadStatusText(item.status, locale)}</span>
                 <span className={item.status === "failed" ? "text-app-danger" : "text-app-muted"}>
                   {item.error ?? item.skipReason ?? `${item.progress}%`}
                 </span>
@@ -412,12 +454,13 @@ export function StoragePage() {
         ) : query.isError ? (
           <ErrorState error={query.error} />
         ) : visibleEntries.length === 0 && searchKeyword.trim() ? (
-          <EmptyState title={text("未找到匹配文件", "No matching files")} action={<Button variant="secondary" onClick={() => setSearchKeyword("")}>{text("清空搜索", "Clear search")}</Button>} />
-        ) : visibleEntries.length === 0 ? (
-          <EmptyState title={text("当前目录为空", "Current directory is empty")} />
+          <EmptyState icon={SearchXIcon} title={text("未找到匹配文件", "No matching files")} action={<Button variant="secondary" onClick={() => setSearchKeyword("")}>{text("清空搜索", "Clear search")}</Button>} />
+        ) : entries.length === 0 ? (
+          <EmptyState icon={FolderOpenIcon} title={text("当前目录为空", "Current directory is empty")} />
         ) : (
           <>
-          <div className="divide-y divide-app-border sm:hidden">
+          {browserRuntime.isMobile ? (
+          <div className="divide-y divide-app-border">
             {visibleEntries.map((entry, index) => {
               const directory = isStorageDirectory(entry, path);
               const entryPath = getStorageEntryPath(entry, path);
@@ -509,7 +552,8 @@ export function StoragePage() {
               );
             })}
           </div>
-          <TableRegion className="hidden sm:block" label={text("远程文件表格", "Remote files table")}>
+          ) : (
+          <TableRegion label={text("远程文件表格", "Remote files table")}>
             <table className="w-full min-w-[760px] border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
@@ -543,7 +587,7 @@ export function StoragePage() {
                         disabled={!directory}
                         onClick={() => setPath(entryPath)}
                       >
-                        {directory ? <Folder className="h-4 w-4 text-app-accent" /> : <FileText className="h-4 w-4 text-app-muted" />}
+                        {directory ? <Folder className="h-4 w-4 text-app-accent" /> : <FileText className="h-4 w-4 text-app-text" />}
                         {entry.name}
                       </button>
                       <button
@@ -557,8 +601,8 @@ export function StoragePage() {
                         <span className="sr-only">{text("复制远程路径", "Copy remote path")}</span>
                       </button>
                     </td>
-                    <td className="px-3 py-2 text-app-muted">{directory ? text("目录", "Directory") : text("文件", "File")}</td>
-                    <td className="px-3 py-2 text-app-muted">
+                    <td className="px-3 py-2 text-app-text">{directory ? text("目录", "Directory") : text("文件", "File")}</td>
+                    <td className="px-3 py-2 text-app-text">
                       <div className="flex items-center gap-2">
                         <span>{entrySizeText}</span>
                         {directory ? (
@@ -574,7 +618,7 @@ export function StoragePage() {
                         ) : null}
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-app-muted">{getStorageEntryModified(entry)}</td>
+                    <td className="px-3 py-2 text-app-text">{getStorageEntryModified(entry)}</td>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap gap-1">
                         {directory ? (
@@ -622,6 +666,7 @@ export function StoragePage() {
               </tbody>
             </table>
           </TableRegion>
+          )}
           </>
         )}
       </Panel>

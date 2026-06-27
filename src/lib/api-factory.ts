@@ -2,6 +2,7 @@ import { type ApiClient, extractToken, normalizeToken } from "./api-client";
 import { sha256Hex } from "./crypto";
 import { i18nText } from "./i18n-text";
 import { md5Blob } from "./md5";
+import { ApiError } from "./types";
 import type {
   CreateTaskPayload,
   ImageCommitPayload,
@@ -9,6 +10,7 @@ import type {
   ListResult,
   LoginPayload,
   LoginResult,
+  MonitorIndexResponse,
   ResourceSpec,
   StorageEntry,
   StorageQuery,
@@ -88,6 +90,12 @@ function extractList<T>(raw: unknown): ListResult<T> {
   };
 }
 
+let isTaskEditable: boolean | null = null;
+
+export function getTaskEditableState() {
+  return isTaskEditable;
+}
+
 export function createEasyConsoleApi(apiClient: ApiClient) {
   const authApi = {
     bootstrapToken() {
@@ -111,6 +119,13 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
     changePassword(payload: UnknownRecord) {
       return apiClient.post<unknown>("/user/user/change_password", payload);
     },
+    async refreshToken(currentToken: string) {
+      // Attempt to refresh the token. If the endpoint does not exist (404/405),
+      // callers should catch and fall back to a re-login flow.
+      const data = await apiClient.post<unknown>("/user/refresh_token", { token: currentToken }, { auth: false });
+      const token = extractToken(data);
+      return token ? normalizeToken(token) : null;
+    },
   };
 
   const instanceApi = {
@@ -133,6 +148,31 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
     createTask(payload: CreateTaskPayload) {
       return apiClient.post<unknown>("/instance/task", payload);
     },
+    async updateTask(id: string | number, payload: Partial<CreateTaskPayload>) {
+      if (isTaskEditable === false) {
+        throw new Error(i18nText("后端不支持任务编辑，请删除后重建", "Backend does not support task editing. Delete and recreate instead"));
+      }
+      try {
+        const result = await apiClient.patch<unknown>(`/instance/task/${id}`, payload);
+        isTaskEditable = true;
+        return result;
+      } catch (error) {
+        if (error instanceof ApiError && (error.status === 404 || error.status === 405)) {
+          // Try PUT with body as fallback (some backends use PUT for edits).
+          try {
+            const putResult = await apiClient.put<unknown>(`/instance/task/${id}`, payload);
+            isTaskEditable = true;
+            return putResult;
+          } catch (putError) {
+            if (putError instanceof ApiError && (putError.status === 404 || putError.status === 405)) {
+              isTaskEditable = false;
+            }
+            throw putError;
+          }
+        }
+        throw error;
+      }
+    },
     checkTaskName(name: string) {
       return apiClient.get<unknown>(`/instance/checkTaskName?name=${encodeURIComponent(name)}`);
     },
@@ -152,7 +192,7 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       });
     },
     monitorIndex(query?: UnknownRecord) {
-      return apiClient.get<unknown>("/instance/monitor_index", { query });
+      return apiClient.get<MonitorIndexResponse>("/instance/monitor_index", { query });
     },
     downloadTask(query: UnknownRecord, options?: DownloadRequestOptions) {
       return apiClient.get<Blob>("/instance/task/download", {
@@ -276,15 +316,51 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       }
       throw new Error(i18nText("0B 空文件上传后服务端未创建文件", "The server did not create a file after uploading a 0B empty file"));
     },
-    async uploadFile(file: File, path: string, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal) {
+    async uploadFile(
+      file: File,
+      path: string,
+      onProgress?: (progress: UploadProgress) => void,
+      signal?: AbortSignal,
+      resumeFromUploadId?: string,
+      onUploadId?: (uploadId: string) => void,
+    ) {
       if (file.size === 0) return storageApi.uploadEmptyFile(file, path, onProgress, signal);
 
-      let uploadId: string | null = null;
-      for (let start = 0; start < file.size; start += UPLOAD_CHUNK_SIZE) {
+      let uploadId: string | null = resumeFromUploadId ?? null;
+      let startOffset = 0;
+
+      // Notify caller of the resume uploadId immediately so it can be persisted for crash recovery.
+      if (resumeFromUploadId && onUploadId) onUploadId(resumeFromUploadId);
+
+      // If resuming, try to query which chunks are already uploaded.
+      if (resumeFromUploadId) {
+        try {
+          const status = await storageApi.queryUploadedChunks(resumeFromUploadId);
+          if (status && Array.isArray(status.uploadedChunks)) {
+            startOffset = status.uploadedChunks.length * UPLOAD_CHUNK_SIZE;
+            if (startOffset >= file.size) {
+              // All chunks already uploaded, just complete.
+              const params = new URLSearchParams();
+              params.set("upload_id", uploadId!);
+              params.set("md5", await md5Blob(file));
+              params.set("path", path);
+              return storageApi.uploadComplete(params.toString(), signal);
+            }
+          }
+        } catch {
+          // Backend doesn't support status query; fall back to uploading from start.
+          startOffset = 0;
+        }
+      }
+
+      for (let start = startOffset; start < file.size; start += UPLOAD_CHUNK_SIZE) {
         signal?.throwIfAborted();
         const end = Math.min(start + UPLOAD_CHUNK_SIZE, file.size) - 1;
         const result = await storageApi.uploadChunk(file, { start, end, total: file.size }, path, uploadId ?? undefined, onProgress, signal);
-        uploadId ??= extractUploadId(result);
+        if (!uploadId) {
+          uploadId = extractUploadId(result);
+          if (uploadId && onUploadId) onUploadId(uploadId);
+        }
       }
       if (!uploadId) throw new Error(i18nText("上传服务未返回 upload_id", "Upload service did not return upload_id"));
       const params = new URLSearchParams();
@@ -292,6 +368,17 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       params.set("md5", await md5Blob(file));
       params.set("path", path);
       return storageApi.uploadComplete(params.toString(), signal);
+    },
+    async queryUploadedChunks(uploadId: string) {
+      // Attempts to query already-uploaded chunks for resumable uploads.
+      // Returns null if the backend doesn't support this endpoint.
+      try {
+        const data = await apiClient.get<unknown>("/storage/chunked_upload_status", { query: { upload_id: uploadId } });
+        return data as { uploadedChunks?: number[] } | null;
+      } catch (error) {
+        if (error instanceof ApiError && (error.status === 404 || error.status === 405)) return null;
+        throw error;
+      }
     },
     async uploadComplete(payload: URLSearchParams | string, signal?: AbortSignal) {
       const result = await apiClient.post<unknown>("/storage/chunked_upload_complete", payload, {

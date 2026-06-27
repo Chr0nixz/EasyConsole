@@ -22,6 +22,13 @@ function createRuntime() {
       async set() {},
       async remove() {},
     },
+    secureStorage: {
+      async get() {
+        return null;
+      },
+      async set() {},
+      async remove() {},
+    },
     async request<T = unknown>(request: RuntimeHttpRequest) {
       calls.push(request);
       return {
@@ -81,6 +88,9 @@ function createRuntime() {
       return () => {};
     },
     async onDesktopRunDueScheduledTasks() {
+      return () => {};
+    },
+    async onDeepLink() {
       return () => {};
     },
   };

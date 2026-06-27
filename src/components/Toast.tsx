@@ -30,10 +30,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const notify = useCallback(
-    ({ durationMs = 3500, ...input }: ToastInput) => {
+    ({ durationMs, ...input }: ToastInput) => {
       const id = createToastId();
+      const resolvedDuration = durationMs ?? (input.kind === "error" ? 8000 : 3500);
       setToasts((items) => [...items, { id, ...input }].slice(-4));
-      window.setTimeout(() => remove(id), durationMs);
+      window.setTimeout(() => remove(id), resolvedDuration);
     },
     [remove],
   );
@@ -42,7 +43,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     () => ({
       notify,
       success: (title, description) => notify({ kind: "success", title, description }),
-      error: (title, description) => notify({ kind: "error", title, description }),
+      error: (title, description, action) => notify({ kind: "error", title, description, action }),
       info: (title, description) => notify({ kind: "info", title, description }),
     }),
     [notify],
@@ -65,6 +66,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium text-app-text">{toast.title}</div>
                 {toast.description ? <div className="mt-1 text-xs leading-5 text-app-muted">{toast.description}</div> : null}
+                {toast.action ? (
+                  <button
+                    type="button"
+                    className="app-interactive mt-2 rounded border border-app-border px-2 py-0.5 text-xs font-medium text-app-text hover:bg-app-panel"
+                    onClick={() => {
+                      toast.action?.onClick();
+                      remove(toast.id);
+                    }}
+                  >
+                    {toast.action.label}
+                  </button>
+                ) : null}
               </div>
               <button
                 className="app-interactive rounded p-1 text-app-muted hover:bg-app-panel hover:text-app-text"

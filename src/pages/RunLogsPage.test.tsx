@@ -16,7 +16,7 @@ describe("RunLogsPage", () => {
       JSON.stringify([
         {
           id: "log-1",
-          createdAt: "2026-05-24T00:00:00.000Z",
+          createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
           level: "info",
           channel: "web",
           source: "task",

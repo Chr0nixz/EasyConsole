@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_APP_SETTINGS, normalizeAppSettings, parseAppSettings, stringifyAppSettings } from "./app-settings";
+import { DEFAULT_RUN_LOG_LIMIT, DEFAULT_RUN_LOG_RETENTION_DAYS } from "./run-logs";
 
 describe("app settings", () => {
   it("falls back to defaults when stored data is missing or invalid", () => {
@@ -30,6 +31,8 @@ describe("app settings", () => {
       autoCheckUpdates: true,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
+      runLogLimit: DEFAULT_RUN_LOG_LIMIT,
+      runLogRetentionDays: DEFAULT_RUN_LOG_RETENTION_DAYS,
     });
   });
 
@@ -45,6 +48,8 @@ describe("app settings", () => {
       autoCheckUpdates: true,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
+      runLogLimit: DEFAULT_RUN_LOG_LIMIT,
+      runLogRetentionDays: DEFAULT_RUN_LOG_RETENTION_DAYS,
     });
   });
 
@@ -53,11 +58,20 @@ describe("app settings", () => {
       autoCheckUpdates: true,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
+      runLogLimit: DEFAULT_RUN_LOG_LIMIT,
+      runLogRetentionDays: DEFAULT_RUN_LOG_RETENTION_DAYS,
       notificationPreferences: {
         "task.success": "system",
         "task.failure": "system",
         "task.abnormal": "system",
       },
     });
+  });
+
+  it("normalizes run log retention fields", () => {
+    expect(normalizeAppSettings({ runLogLimit: 0, runLogRetentionDays: -5 }).runLogLimit).toBe(DEFAULT_RUN_LOG_LIMIT);
+    expect(normalizeAppSettings({ runLogLimit: 500, runLogRetentionDays: 60 }).runLogLimit).toBe(500);
+    expect(normalizeAppSettings({ runLogLimit: 500, runLogRetentionDays: 60 }).runLogRetentionDays).toBe(60);
+    expect(normalizeAppSettings({ runLogLimit: 1.5 }).runLogLimit).toBe(DEFAULT_RUN_LOG_LIMIT);
   });
 });

@@ -2,7 +2,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import type { FitAddon as FitAddonInstance } from "@xterm/addon-fit";
 import type { IDisposable, Terminal as XTermInstance } from "@xterm/xterm";
-import { Maximize2, Minimize2, Terminal, X } from "lucide-react";
+import { Maximize2, Minimize2, RefreshCw, Terminal, X } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
@@ -37,6 +37,8 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
   const [isMinimized, setIsMinimized] = useState(false);
   const [status, setStatus] = useState(() => text("准备连接", "Ready to connect"));
   const [ctrlActive, setCtrlActive] = useState(false);
+  const [canReconnect, setCanReconnect] = useState(false);
+  const [reconnectKey, setReconnectKey] = useState(0);
   const ctrlActiveRef = useRef(false);
   const termRef = useRef<XTermInstance | null>(null);
 
@@ -47,6 +49,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
   useEffect(() => {
     setIsMinimized(false);
     setStatus(text("准备连接", "Ready to connect"));
+    setCanReconnect(false);
   }, [request, text]);
 
   useEffect(() => {
@@ -88,6 +91,20 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       terminal.loadAddon(fitAddon);
       terminal.open(containerRef.current);
       fitAddon.fit();
+      try {
+        const { WebglAddon } = await import("@xterm/addon-webgl");
+        const webglAddon = new WebglAddon();
+        webglAddon.onContextLoss(() => webglAddon.dispose());
+        terminal.loadAddon(webglAddon);
+      } catch {
+        // WebGL not available, fallback to canvas renderer
+      }
+      try {
+        const { WebLinksAddon } = await import("@xterm/addon-web-links");
+        terminal.loadAddon(new WebLinksAddon());
+      } catch {
+        // WebLinks addon not available
+      }
       termRef.current = terminal;
       terminal.onKey(({ domEvent: ev }) => {
         if (!ctrlActiveRef.current) return true;
@@ -135,16 +152,19 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
             const message = event.message ?? text("SSH 连接失败", "SSH connection failed");
             setStatus(message);
             activeTerminal.writeln(`\r\n${message}`);
+            setCanReconnect(true);
             return;
           }
           if (event.kind === "closed") {
             setStatus(event.message ?? text("SSH 会话已关闭", "SSH session closed"));
+            setCanReconnect(true);
           }
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : text("SSH 连接失败", "SSH connection failed");
         setStatus(message);
         terminal.writeln(`\r\n${message}`);
+        setCanReconnect(true);
       }
     })();
 
@@ -159,7 +179,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       termRef.current = null;
       terminal?.dispose();
     };
-  }, [request, text]);
+  }, [request, text, reconnectKey]);
 
   useEffect(() => {
     if (!request || isMinimized) return;
@@ -181,7 +201,22 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
 
   if (!request) return null;
 
+  const handleReconnect = () => {
+    setCanReconnect(false);
+    setReconnectKey((key) => key + 1);
+  };
+
   const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      const activeElement = document.activeElement;
+      const isTerminalFocused = activeElement?.closest(".xterm") ?? false;
+      if (!isTerminalFocused || event.ctrlKey) {
+        event.preventDefault();
+        onClose();
+      }
+      return;
+    }
+
     if (event.key !== "Tab") return;
 
     const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? []).filter(
@@ -313,7 +348,13 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
                 })}
               </div>
             )}
-            <div className="flex h-11 items-center justify-end border-t border-app-terminalBorder bg-app-terminalPanel px-3">
+            <div className="flex h-11 items-center justify-end gap-2 border-t border-app-terminalBorder bg-app-terminalPanel px-3">
+              {canReconnect ? (
+                <Button type="button" variant="secondary" onClick={handleReconnect}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  {text("重连", "Reconnect")}
+                </Button>
+              ) : null}
               <Button type="button" variant="secondary" onClick={onClose}>
                 {text("关闭", "Close")}
               </Button>

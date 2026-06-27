@@ -1,13 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
-import { Download, RefreshCw, Search, Star } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Download, Eye, RefreshCw, Search, Star } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
-import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
+import { EmptyState, ErrorState, SearchXIcon, TableSkeleton } from "../components/DataState";
+import { ImageDetailDialog } from "../components/images/ImageDetailDialog";
 import { Button, Input, Panel, Select, TableRegion } from "../components/ui";
 import { imageApi } from "../lib/api";
 import { useDownloadQueue } from "../lib/download-queue-context";
+import { loadFavoriteImages, toggleFavoriteImage } from "../lib/image-favorites";
 import { useI18n } from "../lib/i18n";
 import type { ImageItem } from "../lib/types";
+import { browserRuntime } from "../lib/runtime";
 import { cn } from "../lib/utils";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
@@ -53,8 +56,20 @@ export function ImagesPage() {
   const { confirm, confirmDialog } = useConfirmAction();
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [keyword, setKeyword] = useState("");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [favorites, setFavorites] = useState<string[]>([]);
+  const [detailImage, setDetailImage] = useState<{ id: string | number; name: string } | null>(null);
   const custom = useQuery({ queryKey: ["images"], queryFn: () => imageApi.list({ page: 1, page_size: 100 }) });
   const system = useQuery({ queryKey: ["images", "system"], queryFn: () => imageApi.system({}) });
+
+  useEffect(() => {
+    void loadFavoriteImages(browserRuntime.storage).then(setFavorites);
+  }, []);
+
+  async function handleToggleFavorite(image: ImageRow) {
+    const next = await toggleFavoriteImage(browserRuntime.storage, image.id);
+    setFavorites(next);
+  }
 
   const images = useMemo<ImageRow[]>(
     () => [
@@ -69,9 +84,10 @@ export function ImagesPage() {
     return images.filter((image) => {
       const matchesSource = sourceFilter === "all" || image.source === sourceFilter;
       const matchesKeyword = !normalizedKeyword || getImageKeyword(image).includes(normalizedKeyword);
-      return matchesSource && matchesKeyword;
+      const matchesFavorite = !favoritesOnly || favorites.includes(String(image.id));
+      return matchesSource && matchesKeyword && matchesFavorite;
     });
-  }, [images, keyword, sourceFilter]);
+  }, [images, keyword, sourceFilter, favoritesOnly, favorites]);
 
   const refetchImages = () => {
     void custom.refetch();
@@ -156,7 +172,7 @@ export function ImagesPage() {
         </div>
 
         <div className="flex flex-col gap-3 border-b border-app-border bg-app-panel/50 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="grid gap-2 sm:grid-cols-[minmax(220px,360px)_160px]">
+          <div className="grid gap-2 sm:grid-cols-[minmax(220px,360px)_160px_auto]">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
               <Input
@@ -172,6 +188,16 @@ export function ImagesPage() {
               <option value="custom">{text("自定义镜像", "Custom images")}</option>
               <option value="system">{text("系统镜像", "System images")}</option>
             </Select>
+            <label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-app-border bg-app-surface px-3 text-sm text-app-text">
+              <input
+                type="checkbox"
+                className="h-4 w-4 cursor-pointer accent-app-accent"
+                checked={favoritesOnly}
+                onChange={(event) => setFavoritesOnly(event.target.checked)}
+              />
+              <Star className={cn("h-4 w-4", favoritesOnly ? "fill-current text-app-warning" : "text-app-muted")} />
+              <span className="whitespace-nowrap">{text("仅看收藏", "Favorites only")}</span>
+            </label>
           </div>
           <Button className="w-full sm:w-auto" variant="secondary" onClick={refetchImages} disabled={isFetching}>
             <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
@@ -188,10 +214,11 @@ export function ImagesPage() {
         ) : images.length === 0 ? (
           <EmptyState title={text("暂无镜像", "No images")} action={<Button variant="secondary" onClick={refetchImages}>{text("重新加载", "Reload")}</Button>} />
         ) : filteredImages.length === 0 ? (
-          <EmptyState title={text("没有匹配的镜像", "No matching images")} action={<Button variant="secondary" onClick={() => setKeyword("")}>{text("清空搜索", "Clear search")}</Button>} />
+          <EmptyState icon={SearchXIcon} title={text("没有匹配的镜像", "No matching images")} action={<Button variant="secondary" onClick={() => setKeyword("")}>{text("清空搜索", "Clear search")}</Button>} />
         ) : (
           <>
-          <div className="divide-y divide-app-border sm:hidden">
+          {browserRuntime.isMobile ? (
+          <div className="divide-y divide-app-border">
             {filteredImages.map((image) => {
               const cardId = `image-card-${String(image.id)}`;
               return (
@@ -229,6 +256,24 @@ export function ImagesPage() {
                   </dl>
                   <div className="flex flex-wrap gap-1.5">
                     <Button
+                      aria-label={favorites.includes(String(image.id)) ? text(`取消收藏 ${imageName(image)}`, `Unfavorite ${imageName(image)}`) : text(`收藏 ${imageName(image)}`, `Favorite ${imageName(image)}`)}
+                      variant="ghost"
+                      title={favorites.includes(String(image.id)) ? text("取消收藏", "Unfavorite") : text("收藏", "Favorite")}
+                      onClick={() => void handleToggleFavorite(image)}
+                    >
+                      <Star className={cn("h-4 w-4", favorites.includes(String(image.id)) && "fill-current text-app-warning")} />
+                      {favorites.includes(String(image.id)) ? text("已收藏", "Favorited") : text("收藏", "Favorite")}
+                    </Button>
+                    <Button
+                      aria-label={text(`查看 ${imageName(image)} 详情`, `View ${imageName(image)} details`)}
+                      variant="ghost"
+                      title={text("详情", "Details")}
+                      onClick={() => setDetailImage({ id: image.id, name: imageName(image) })}
+                    >
+                      <Eye className="h-4 w-4" />
+                      {text("详情", "Details")}
+                    </Button>
+                    <Button
                       aria-label={text(`将 ${imageName(image)} 设为默认镜像`, `Set ${imageName(image)} as default image`)}
                       variant="ghost"
                       title={text("设为默认", "Set default")}
@@ -251,7 +296,8 @@ export function ImagesPage() {
               );
             })}
           </div>
-          <TableRegion className="hidden sm:block" label={text("镜像表格", "Images table")}>
+          ) : (
+          <TableRegion label={text("镜像表格", "Images table")}>
             <table className="w-full min-w-[980px] border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
@@ -276,22 +322,38 @@ export function ImagesPage() {
                           </span>
                         ) : null}
                       </div>
-                      <div className="mt-0.5 text-xs text-app-muted">ID: {String(image.id)}</div>
+                      <div className="mt-0.5 text-xs text-app-text">ID: {String(image.id)}</div>
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 align-middle">
-                      <span className="inline-flex rounded-md border border-app-border bg-app-surface px-2 py-0.5 text-xs text-app-muted">
+                      <span className="inline-flex rounded-md border border-app-border bg-app-surface px-2 py-0.5 text-xs text-app-text">
                         {image.source === "system" ? text("系统镜像", "System image") : text("自定义镜像", "Custom image")}
                       </span>
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{imageVersion(image)}</td>
-                    <td className="max-w-xl px-3 py-2 align-middle text-app-muted">
+                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-text">{imageVersion(image)}</td>
+                    <td className="max-w-xl px-3 py-2 align-middle text-app-text">
                       <div className="truncate" title={imageDescription(image)}>
                         {imageDescription(image)}
                       </div>
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{getImageUpdatedAt(image)}</td>
+                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-text">{getImageUpdatedAt(image)}</td>
                     <td className="sticky right-0 bg-app-surface px-3 py-2 align-middle shadow-stickyColumnSubtle">
                       <div className="flex justify-end gap-1">
+                        <Button
+                          aria-label={favorites.includes(String(image.id)) ? text(`取消收藏 ${imageName(image)}`, `Unfavorite ${imageName(image)}`) : text(`收藏 ${imageName(image)}`, `Favorite ${imageName(image)}`)}
+                          variant="ghost"
+                          title={favorites.includes(String(image.id)) ? text("取消收藏", "Unfavorite") : text("收藏", "Favorite")}
+                          onClick={() => void handleToggleFavorite(image)}
+                        >
+                          <Star className={cn("h-4 w-4", favorites.includes(String(image.id)) && "fill-current text-app-warning")} />
+                        </Button>
+                        <Button
+                          aria-label={text(`查看 ${imageName(image)} 详情`, `View ${imageName(image)} details`)}
+                          variant="ghost"
+                          title={text("详情", "Details")}
+                          onClick={() => setDetailImage({ id: image.id, name: imageName(image) })}
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Button>
                         <Button aria-label={text(`将 ${imageName(image)} 设为默认镜像`, `Set ${imageName(image)} as default image`)} variant="ghost" title={text("设为默认", "Set default")} onClick={() => setDefaultImage(image)}>
                           <Star className="h-4 w-4" />
                         </Button>
@@ -305,10 +367,12 @@ export function ImagesPage() {
               </tbody>
             </table>
           </TableRegion>
+          )}
           </>
         )}
       </Panel>
       {confirmDialog}
+      <ImageDetailDialog imageId={detailImage?.id ?? null} imageName={detailImage?.name} onClose={() => setDetailImage(null)} />
     </div>
   );
 }

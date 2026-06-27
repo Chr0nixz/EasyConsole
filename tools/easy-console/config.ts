@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -78,5 +78,9 @@ export async function saveEasyConsoleConfig(config: EasyConsoleConfigFile, confi
   };
   await mkdir(dirname(configPath), { recursive: true });
   await writeFile(configPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  // Restrict to owner-only read/write on POSIX systems. No-op on Windows.
+  if (process.platform !== "win32") {
+    await chmod(configPath, 0o600).catch(() => {});
+  }
   return payload;
 }

@@ -20,8 +20,14 @@ export function getTaskPodName(task: Task) {
   );
 }
 
-export function buildMonitorDashboardUrl(task: Task, dashboardUrl = DEFAULT_MONITOR_DASHBOARD_URL) {
+export function buildMonitorDashboardUrl(
+  task: Task,
+  dashboardUrl = DEFAULT_MONITOR_DASHBOARD_URL,
+  options?: { from?: string; to?: string },
+) {
   const url = new URL(dashboardUrl);
   url.searchParams.set("var-pod", getTaskPodName(task));
+  if (options?.from) url.searchParams.set("from", options.from);
+  if (options?.to) url.searchParams.set("to", options.to);
   return url.toString();
 }

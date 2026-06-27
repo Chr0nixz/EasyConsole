@@ -9,6 +9,7 @@ import { browserRuntime } from "./runtime";
 import { appendRunLog, type RunLogInput } from "./run-logs";
 import {
   createSavedLoginAccount,
+  migrateSavedAccountsToSecureStorage,
   parseSavedAccounts,
   removeSavedAccount,
   SAVED_ACCOUNTS_STORAGE_KEY,
@@ -26,31 +27,69 @@ function writeAuthLog(input: Omit<RunLogInput, "channel" | "source">) {
   }).catch((error) => console.warn("Failed to write auth run log.", error));
 }
 
+/**
+ * Migrate a single key from plaintext storage to secure storage. Idempotent.
+ */
+async function migrateKeyToSecureStorage(key: string) {
+  const existing = await browserRuntime.secureStorage.get(key);
+  if (existing) return;
+  const raw = await browserRuntime.storage.get(key);
+  if (!raw) return;
+  await browserRuntime.secureStorage.set(key, raw);
+  await browserRuntime.storage.remove(key);
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [ready, setReady] = useState(false);
   const [savedAccounts, setSavedAccounts] = useState<SavedLoginAccount[]>([]);
   const savedAccountsRef = useRef<SavedLoginAccount[]>([]);
+  const refreshAttemptedRef = useRef(false);
 
   useEffect(() => {
+    let cancelled = false;
+    // Migrate any plaintext token/savedAccounts from older versions into secure storage.
     Promise.all([
-      browserRuntime.storage.get(APP_SETTINGS_STORAGE_KEY),
-      browserRuntime.storage.get(TOKEN_STORAGE_KEY),
-      browserRuntime.storage.get(SAVED_ACCOUNTS_STORAGE_KEY),
-    ]).then(
-      ([settingsData, savedToken, savedAccountData]) => {
-        const settings = parseAppSettings(settingsData);
-        setRuntimeSettings(settings);
-        apiClient.setBaseUrl(settings.apiBaseUrl);
-        const parsedAccounts = parseSavedAccounts(savedAccountData);
-        savedAccountsRef.current = parsedAccounts;
-        setSavedAccounts(parsedAccounts);
-        setToken(savedToken);
-        apiClient.setToken(savedToken);
-        setReady(true);
-      },
-    );
+      migrateKeyToSecureStorage(TOKEN_STORAGE_KEY),
+      migrateSavedAccountsToSecureStorage(browserRuntime.storage, browserRuntime.secureStorage),
+    ])
+      .then(() =>
+        Promise.all([
+          browserRuntime.storage.get(APP_SETTINGS_STORAGE_KEY),
+          browserRuntime.secureStorage.get(TOKEN_STORAGE_KEY),
+          browserRuntime.secureStorage.get(SAVED_ACCOUNTS_STORAGE_KEY),
+        ]),
+      )
+      .then(
+        ([settingsData, savedToken, savedAccountData]) => {
+          if (cancelled) return;
+          const settings = parseAppSettings(settingsData);
+          setRuntimeSettings(settings);
+          apiClient.setBaseUrl(settings.apiBaseUrl);
+          const parsedAccounts = parseSavedAccounts(savedAccountData);
+          savedAccountsRef.current = parsedAccounts;
+          setSavedAccounts(parsedAccounts);
+          setToken(savedToken);
+          apiClient.setToken(savedToken);
+          setReady(true);
+        },
+        (error) => {
+          if (cancelled) return;
+          console.error("Auth initialization failed.", error);
+          writeAuthLog({
+            level: "error",
+            action: "auth.init",
+            result: "failure",
+            title: i18nText("初始化失败", "Initialization failed"),
+            error: error instanceof Error ? error.message : String(error),
+          });
+          setReady(true);
+        },
+      );
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -59,7 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .userInfo()
       .then(setUser)
       .catch(() => {
-        void browserRuntime.storage.remove(TOKEN_STORAGE_KEY);
+        void browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
         apiClient.setToken(null);
         setToken(null);
       });
@@ -73,7 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const persistSavedAccounts = useCallback(async (nextAccounts: SavedLoginAccount[]) => {
     savedAccountsRef.current = nextAccounts;
     setSavedAccounts(nextAccounts);
-    await browserRuntime.storage.set(SAVED_ACCOUNTS_STORAGE_KEY, stringifySavedAccounts(nextAccounts));
+    await browserRuntime.secureStorage.set(SAVED_ACCOUNTS_STORAGE_KEY, stringifySavedAccounts(nextAccounts));
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
@@ -81,7 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const result = await authApi.login({ username, password });
     if (!result.token) throw new Error(i18nText("登录响应未包含 token", "Sign-in response did not include a token"));
     apiClient.setToken(result.token);
-    await browserRuntime.storage.set(TOKEN_STORAGE_KEY, result.token);
+    await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, result.token);
     try {
       const next = await authApi.userInfo();
       const nextAccount = createSavedLoginAccount({ username, token: result.token, user: next });
@@ -98,7 +137,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
     } catch (error) {
       apiClient.setToken(null);
-      await browserRuntime.storage.remove(TOKEN_STORAGE_KEY);
+      await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
       writeAuthLog({
         level: "error",
         action: "auth.login",
@@ -118,7 +157,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!account) throw new Error(i18nText("保存的账号不存在", "Saved account does not exist"));
 
     apiClient.setToken(account.token);
-    await browserRuntime.storage.set(TOKEN_STORAGE_KEY, account.token);
+    await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, account.token);
     try {
       const next = await authApi.userInfo();
       const nextAccount = createSavedLoginAccount({ username: account.username, token: account.token, user: next });
@@ -135,7 +174,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
     } catch (error) {
       apiClient.setToken(null);
-      await browserRuntime.storage.remove(TOKEN_STORAGE_KEY);
+      await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
       setToken(null);
       setUser(null);
       writeAuthLog({
@@ -158,7 +197,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     const userName = user?.username ?? user?.name;
     apiClient.setToken(null);
-    await browserRuntime.storage.remove(TOKEN_STORAGE_KEY);
+    await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
     setToken(null);
     setUser(null);
     writeAuthLog({
@@ -170,8 +209,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, [user]);
 
+  // Inject the token refresh handler into the API client.
+  // On 401 for GET requests, the client will call this handler to attempt a token refresh
+  // before rejecting the request. If refresh fails, it emits UNAUTHORIZED_EVENT to trigger logout.
+  useEffect(() => {
+    apiClient.setRefreshTokenHandler(async (currentToken: string) => {
+      if (refreshAttemptedRef.current) return null;
+      refreshAttemptedRef.current = true;
+      try {
+        const newToken = await authApi.refreshToken(currentToken);
+        if (!newToken) return null;
+        await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, newToken);
+        apiClient.setToken(newToken);
+        setToken(newToken);
+        try {
+          const next = await authApi.userInfo();
+          setUser(next);
+        } catch {
+          // User info refresh is best-effort; the token itself was refreshed successfully.
+        }
+        writeAuthLog({
+          level: "info",
+          action: "auth.tokenRefresh",
+          result: "success",
+          title: i18nText("登录令牌已自动刷新", "Sign-in token refreshed automatically"),
+        });
+        return newToken;
+      } catch (error) {
+        writeAuthLog({
+          level: "error",
+          action: "auth.tokenRefresh",
+          result: "failure",
+          title: i18nText("登录令牌刷新失败", "Failed to refresh sign-in token"),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      } finally {
+        refreshAttemptedRef.current = false;
+      }
+    });
+    return () => {
+      apiClient.setRefreshTokenHandler(null);
+    };
+  }, []);
+
   useEffect(() => {
     const handler = () => {
+      // Only trigger logout if refresh was not attempted (refresh handler handles GET retries).
+      // Non-GET 401s and refresh failures still reach here.
       void logout();
     };
     window.addEventListener(UNAUTHORIZED_EVENT, handler);

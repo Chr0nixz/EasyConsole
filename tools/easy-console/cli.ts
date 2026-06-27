@@ -1,26 +1,52 @@
 import { Command, CommanderError } from "commander";
 
-import type { CreateTaskPayload, TaskQuery, UnknownRecord } from "../../src/lib/types";
+import type { CreateTaskPayload, ImageCommitPayload, TaskQuery, TaskRecurrence, UnknownRecord } from "../../src/lib/types";
 import { appendRunLog, clearRunLogs, filterRunLogs, formatRunLogExport, loadRunLogs, type RunLogChannel, type RunLogResult, type RunLogSource } from "../../src/lib/run-logs";
+import { nonSecretBackupSections, secretBackupSections, type LocalDataBackupSection } from "../../src/lib/local-data-backup";
 import { saveEasyConsoleConfig } from "./config";
 import { createEasyConsoleContext, type EasyConsoleContext, type EasyConsoleContextOptions } from "./context";
 import {
+  applyTaskTemplate,
   buildCreateTaskPayload,
+  changePassword,
+  checkTaskName,
+  commitImage,
+  createScheduledTaskRecord,
   createTask,
+  deleteScheduledTask,
   deleteStoragePath,
   deleteTask,
+  deleteTaskTemplate,
+  deleteTasks,
+  downloadImage,
   downloadStoragePath,
+  downloadTask,
+  exportBackup,
+  getDashboardCost,
+  getDashboardCostMonth,
+  getDashboardStats,
+  getImageDetail,
+  getMonitorIndex,
+  getStorageInfo,
   getTaskLog,
+  importBackup,
   listImages,
   listPrices,
   listResources,
+  listScheduledTasks,
   listStorage,
+  listSystemImages,
+  listTaskTemplates,
   listTasks,
   mkdirStorage,
   monitorUrl,
   readStorageText,
+  refreshToken,
   releaseTask,
+  runScheduledTask,
   setDefaultImage,
+  uploadLocalFile,
+  updateTask,
   userInfo,
 } from "./operations";
 
@@ -95,10 +121,10 @@ function commandPath(command: Command) {
 }
 
 function sourceForCommand(action: string): RunLogSource {
-  if (action.startsWith("login") || action.startsWith("whoami")) return "auth";
-  if (action.startsWith("task.")) return "task";
-  if (action.startsWith("storage.")) return "storage";
-  if (action.startsWith("image.")) return "image";
+  if (action.startsWith("login") || action.startsWith("whoami") || action.startsWith("account.")) return "auth";
+  if (action.startsWith("task.") || action.startsWith("template.") || action.startsWith("schedule.")) return "task";
+  if (action.startsWith("storage.") || action.startsWith("backup.")) return "storage";
+  if (action.startsWith("image.") || action.startsWith("dashboard.")) return "image";
   if (action.startsWith("resource.") || action.startsWith("price.") || action.startsWith("monitor-url")) return "system";
   return "system";
 }
@@ -342,6 +368,73 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
+  const taskUpdate = task.command("update").description("Update a task");
+  taskUpdate.argument("<taskId>", "Task id");
+  taskUpdate.option("--payload-json <json>", "Raw update task JSON payload");
+  taskUpdate.option("--name <name>", "Task name");
+  taskUpdate.option("--image-id <id>", "Image id, mapped to backend field img");
+  taskUpdate.option("--price <number>", "Price");
+  taskUpdate.option("--cpu <number>", "CPU count");
+  taskUpdate.option("--gpu <number>", "GPU count");
+  taskUpdate.option("--memory <number>", "Memory GiB");
+  taskUpdate.option("--storage-path <path>", "Storage path");
+  taskUpdate.option("--mount-path <path>", "Mount path");
+  taskUpdate.option("--release-condition <number>", "Backend releace_conditions value");
+  taskUpdate.option("--release-time <datetime>", "Release time");
+  taskUpdate.option("--work-directory <path>", "Work directory");
+  taskUpdate.option("--script-path <path>", "Script path");
+  taskUpdate.option("--yes", "Execute instead of dry-run");
+  taskUpdate.action((taskId: string) =>
+    run(taskUpdate, (context) => {
+      const options = taskUpdate.opts<UnknownRecord & { yes?: boolean }>();
+      const payload = options.payloadJson
+        ? buildCreateTaskPayload(parseJsonRecord(options.payloadJson as string))
+        : buildCreateTaskPayload(
+            compactRecord({
+              name: options.name,
+              price: parseNumber(options.price as string | undefined),
+              cpu: parseNumber(options.cpu as string | undefined),
+              gpu: parseInteger(options.gpu as string | undefined),
+              memory: parseInteger(options.memory as string | undefined),
+              img: typeof options.imageId === "string" ? parseId(options.imageId) : undefined,
+              storage_path: options.storagePath,
+              mount_path: options.mountPath,
+              releace_conditions: parseInteger(options.releaseCondition as string | undefined),
+              releace_time: options.releaseTime,
+              work_directory: options.workDirectory,
+              script_path: options.scriptPath,
+            }),
+          );
+      return updateTask(context.api, parseId(taskId), payload, options.yes);
+    })(),
+  );
+
+  const taskDeleteBatch = task.command("delete-batch").description("Delete multiple tasks");
+  taskDeleteBatch.argument("<ids>", "Comma-separated task ids");
+  taskDeleteBatch.option("--yes", "Execute instead of dry-run");
+  taskDeleteBatch.action((ids: string) =>
+    run(taskDeleteBatch, (context) => {
+      const options = taskDeleteBatch.opts<{ yes?: boolean }>();
+      const taskIds = ids.split(",").map((id) => parseId(id.trim())).filter(Boolean);
+      if (taskIds.length === 0) throw new Error("Provide at least one task id.");
+      return deleteTasks(context.api, taskIds, options.yes);
+    })(),
+  );
+
+  const taskCheckName = task.command("check-name").description("Check if a task name is available");
+  taskCheckName.argument("<name>", "Task name");
+  taskCheckName.action((name: string) => run(taskCheckName, (context) => checkTaskName(context.api, name))());
+
+  const taskDownload = task.command("download").description("Download task data");
+  taskDownload.argument("<taskId>", "Task id");
+  taskDownload.option("--output <path>", "Local output path");
+  taskDownload.action((taskId: string) =>
+    run(taskDownload, (context) => {
+      const options = taskDownload.opts<{ output?: string }>();
+      return downloadTask(context.api, { task_id: parseId(taskId) }, options.output);
+    })(),
+  );
+
   const storage = program.command("storage").description("Storage operations");
   const storageList = storage.command("ls").description("List remote storage path");
   storageList.argument("[path]", "Remote path", "/");
@@ -387,6 +480,20 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
+  const storageUpload = storage.command("upload").description("Upload a local file to remote directory");
+  storageUpload.argument("<localPath>", "Local file path");
+  storageUpload.argument("<remoteDir>", "Remote directory");
+  storageUpload.option("--yes", "Execute instead of dry-run");
+  storageUpload.action((localPath: string, remoteDir: string) =>
+    run(storageUpload, (context) => {
+      const options = storageUpload.opts<{ yes?: boolean }>();
+      return uploadLocalFile(context.api, localPath, remoteDir, options.yes);
+    })(),
+  );
+
+  const storageInfo = storage.command("info").description("Show remote storage info");
+  storageInfo.action(run(storageInfo, (context) => getStorageInfo(context.api)));
+
   const image = program.command("image").description("Image operations");
   const imageList = image.command("list").description("List images");
   imageList.action(run(imageList, (context) => listImages(context.api)));
@@ -400,6 +507,48 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
+  const imageSystem = image.command("system").description("List system images");
+  imageSystem.action(run(imageSystem, (context) => listSystemImages(context.api)));
+
+  const imageDetail = image.command("detail").description("Show image detail");
+  imageDetail.argument("<imageId>", "Image id");
+  imageDetail.action((imageId: string) => run(imageDetail, (context) => getImageDetail(context.api, parseId(imageId)))());
+
+  const imageDownload = image.command("download").description("Download an image");
+  imageDownload.argument("<imageId>", "Image id");
+  imageDownload.option("--output <path>", "Local output path");
+  imageDownload.action((imageId: string) =>
+    run(imageDownload, (context) => {
+      const options = imageDownload.opts<{ output?: string }>();
+      return downloadImage(context.api, parseId(imageId), options.output);
+    })(),
+  );
+
+  const imageCommit = image.command("commit").description("Commit an image from a task pod");
+  imageCommit.option("--payload-json <json>", "Raw commit image JSON payload");
+  imageCommit.option("--pod-name <name>", "Pod name");
+  imageCommit.option("--user <user>", "User (string or object JSON)");
+  imageCommit.option("--yes", "Execute instead of dry-run");
+  imageCommit.action(
+    run(imageCommit, (context) => {
+      const options = imageCommit.opts<{ payloadJson?: string; podName?: string; user?: string; yes?: boolean }>();
+      let payload: ImageCommitPayload;
+      if (options.payloadJson) {
+        payload = parseJsonRecord(options.payloadJson) as unknown as ImageCommitPayload;
+      } else {
+        if (!options.podName || !options.user) throw new Error("Provide --payload-json or both --pod-name and --user.");
+        let user: UnknownRecord | string;
+        try {
+          user = JSON.parse(options.user) as UnknownRecord;
+        } catch {
+          user = options.user;
+        }
+        payload = { user, pod_name: options.podName };
+      }
+      return commitImage(context.api, payload, options.yes);
+    }),
+  );
+
   const resource = program.command("resource").description("Resource operations");
   const resourceList = resource.command("list").description("List resource specs");
   resourceList.action(run(resourceList, (context) => listResources(context.api)));
@@ -411,6 +560,171 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   const monitor = program.command("monitor-url").description("Build a monitor dashboard URL for a task");
   monitor.argument("<taskId>", "Task id");
   monitor.action((taskId: string) => run(monitor, (context) => monitorUrl(context.api, parseId(taskId)))());
+
+  const dashboard = program.command("dashboard").description("Dashboard statistics operations");
+  const dashboardStats = dashboard.command("stats").description("Get dashboard statistics");
+  dashboardStats.option("--query-json <json>", "Raw query JSON");
+  dashboardStats.action(
+    run(dashboardStats, (context) => {
+      const options = dashboardStats.opts<{ queryJson?: string }>();
+      const query = options.queryJson ? parseJsonRecord(options.queryJson) : undefined;
+      return getDashboardStats(context.api, query);
+    }),
+  );
+
+  const dashboardCost = dashboard.command("cost").description("Get dashboard cost statistics");
+  dashboardCost.option("--query-json <json>", "Raw query JSON");
+  dashboardCost.action(
+    run(dashboardCost, (context) => {
+      const options = dashboardCost.opts<{ queryJson?: string }>();
+      const query = options.queryJson ? parseJsonRecord(options.queryJson) : undefined;
+      return getDashboardCost(context.api, query);
+    }),
+  );
+
+  const dashboardCostMonth = dashboard.command("cost-month").description("Get dashboard monthly cost");
+  dashboardCostMonth.action(run(dashboardCostMonth, (context) => getDashboardCostMonth(context.api)));
+
+  const dashboardMonitorIndex = dashboard.command("monitor-index").description("Get monitor index data");
+  dashboardMonitorIndex.option("--query-json <json>", "Raw query JSON");
+  dashboardMonitorIndex.action(
+    run(dashboardMonitorIndex, (context) => {
+      const options = dashboardMonitorIndex.opts<{ queryJson?: string }>();
+      const query = options.queryJson ? parseJsonRecord(options.queryJson) : undefined;
+      return getMonitorIndex(context.api, query);
+    }),
+  );
+
+  const account = program.command("account").description("Account operations");
+  const accountChangePassword = account.command("change-password").description("Change account password");
+  accountChangePassword.option("--payload-json <json>", "Raw change password JSON payload");
+  accountChangePassword.option("--old <password>", "Old password");
+  accountChangePassword.option("--new <password>", "New password");
+  accountChangePassword.option("--yes", "Execute instead of dry-run");
+  accountChangePassword.action(
+    run(accountChangePassword, (context) => {
+      const options = accountChangePassword.opts<{ payloadJson?: string; old?: string; new?: string; yes?: boolean }>();
+      const payload = options.payloadJson
+        ? parseJsonRecord(options.payloadJson)
+        : compactRecord({ old_password: options.old, new_password: options.new });
+      if (Object.keys(payload).length === 0) throw new Error("Provide --payload-json or both --old and --new.");
+      return changePassword(context.api, payload, options.yes);
+    }),
+  );
+
+  const accountRefresh = account.command("refresh-token").description("Refresh the current auth token");
+  accountRefresh.action(
+    run(accountRefresh, async (context) => {
+      if (!context.config.token) throw new Error("No current token found in config.");
+      const result = await refreshToken(context.api, context.config.token);
+      if (result.token) {
+        await saveEasyConsoleConfig({ apiBaseUrl: context.config.apiBaseUrl, token: result.token }, context.config.configPath);
+        context.client.setToken(result.token);
+      }
+      return result;
+    }),
+  );
+
+  const template = program.command("template").description("Local task template operations");
+  const templateList = template.command("list").description("List local task templates");
+  templateList.action(run(templateList, (context) => listTaskTemplates(context.storage)));
+
+  const templateApply = template.command("apply").description("Apply a task template to create tasks");
+  templateApply.argument("<templateId>", "Template id");
+  templateApply.option("--yes", "Execute instead of dry-run");
+  templateApply.action((templateId: string) =>
+    run(templateApply, (context) => {
+      const options = templateApply.opts<{ yes?: boolean }>();
+      return applyTaskTemplate(context.storage, context.api, templateId, options.yes);
+    })(),
+  );
+
+  const templateDelete = template.command("delete").description("Delete a local task template");
+  templateDelete.argument("<templateId>", "Template id");
+  templateDelete.option("--yes", "Execute instead of dry-run");
+  templateDelete.action((templateId: string) =>
+    run(templateDelete, (context) => {
+      const options = templateDelete.opts<{ yes?: boolean }>();
+      return deleteTaskTemplate(context.storage, templateId, options.yes);
+    })(),
+  );
+
+  const schedule = program.command("schedule").description("Local scheduled task operations");
+  const scheduleList = schedule.command("list").description("List local scheduled tasks");
+  scheduleList.action(run(scheduleList, (context) => listScheduledTasks(context.storage)));
+
+  const scheduleCreate = schedule.command("create").description("Create a local scheduled task");
+  scheduleCreate.requiredOption("--name <name>", "Scheduled task name");
+  scheduleCreate.requiredOption("--schedule-time <datetime>", "ISO schedule time");
+  scheduleCreate.requiredOption("--payload-json <json>", "Create task JSON payload");
+  scheduleCreate.option("--description <text>", "Description");
+  scheduleCreate.option("--recurrence-json <json>", "Recurrence JSON");
+  scheduleCreate.action(
+    run(scheduleCreate, async (context) => {
+      const options = scheduleCreate.opts<{
+        name: string;
+        scheduleTime: string;
+        payloadJson: string;
+        description?: string;
+        recurrenceJson?: string;
+      }>();
+      const payload = buildCreateTaskPayload(parseJsonRecord(options.payloadJson));
+      const recurrence = options.recurrenceJson ? (JSON.parse(options.recurrenceJson) as TaskRecurrence) : undefined;
+      return createScheduledTaskRecord(context.storage, {
+        name: options.name,
+        description: options.description,
+        scheduleTime: options.scheduleTime,
+        payload,
+        recurrence,
+      });
+    }),
+  );
+
+  const scheduleRun = schedule.command("run").description("Manually run a scheduled task now");
+  scheduleRun.argument("<taskId>", "Scheduled task id");
+  scheduleRun.option("--yes", "Execute instead of dry-run");
+  scheduleRun.action((taskId: string) =>
+    run(scheduleRun, (context) => {
+      const options = scheduleRun.opts<{ yes?: boolean }>();
+      return runScheduledTask(context.storage, context.api, taskId, options.yes);
+    })(),
+  );
+
+  const scheduleDelete = schedule.command("delete").description("Delete a local scheduled task");
+  scheduleDelete.argument("<taskId>", "Scheduled task id");
+  scheduleDelete.option("--yes", "Execute instead of dry-run");
+  scheduleDelete.action((taskId: string) =>
+    run(scheduleDelete, (context) => {
+      const options = scheduleDelete.opts<{ yes?: boolean }>();
+      return deleteScheduledTask(context.storage, taskId, options.yes);
+    })(),
+  );
+
+  const backup = program.command("backup").description("Local data backup operations");
+  const backupExport = backup.command("export").description("Export local data as backup JSON");
+  backupExport.option("--include-secrets", "Include token and saved accounts in the backup");
+  backupExport.action(
+    run(backupExport, (context) => {
+      const options = backupExport.opts<{ includeSecrets?: boolean }>();
+      return exportBackup(context.storage, Boolean(options.includeSecrets));
+    }),
+  );
+
+  const backupImport = backup.command("import").description("Import local data from a backup file");
+  backupImport.argument("<file>", "Backup JSON file path");
+  backupImport.option("--sections <sections>", "Comma-separated sections to import (default: all non-secret)");
+  backupImport.option("--yes", "Execute instead of dry-run");
+  backupImport.action((file: string) =>
+    run(backupImport, async (context) => {
+      const options = backupImport.opts<{ sections?: string; yes?: boolean }>();
+      const { readFile } = await import("node:fs/promises");
+      const backupText = await readFile(file, "utf8");
+      const sections: LocalDataBackupSection[] = options.sections
+        ? (options.sections.split(",").map((s) => s.trim()).filter(Boolean) as LocalDataBackupSection[])
+        : [...nonSecretBackupSections, ...secretBackupSections];
+      return importBackup(context.storage, backupText, sections, options.yes);
+    })(),
+  );
 
   const runLog = program.command("run-log").description("Local EasyConsole run log operations");
   const runLogList = runLog.command("list").description("List local run logs");

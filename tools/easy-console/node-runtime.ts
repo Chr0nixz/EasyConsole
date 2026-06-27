@@ -97,6 +97,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     supportsUpdater: false,
     supportsFileReveal: false,
     storage: nodeStorage,
+    secureStorage: nodeStorage,
     request,
     async createWebSocket() {
       return unsupported("WebSocket");
@@ -152,6 +153,9 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
       return () => {};
     },
     async onDesktopRunDueScheduledTasks() {
+      return () => {};
+    },
+    async onDeepLink() {
       return () => {};
     },
   };

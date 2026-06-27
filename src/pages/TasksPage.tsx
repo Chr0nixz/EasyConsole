@@ -14,6 +14,7 @@ import {
   Download,
   FileText,
   MoreHorizontal,
+  Pencil,
   Pin,
   PinOff,
   Plus,
@@ -30,15 +31,15 @@ import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useStat
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
-import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
+import { EmptyState, ErrorState, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
-import { CreateTaskDialog } from "../components/tasks/CreateTaskDialog";
 import { TaskInstanceName } from "../components/tasks/TaskInstanceName";
-import { TaskLogDialog } from "../components/tasks/TaskLogDialog";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
-import { imageApi, instanceApi } from "../lib/api";
+import { instanceApi } from "../lib/api";
+import { getTaskEditableState } from "../lib/api-factory";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
+import { useCommitQueue } from "../lib/commit-queue-context";
 import { useDownloadQueue } from "../lib/download-queue-context";
 import { asJson, formatSecondsDuration, getTaskName, getTaskNodeName, taskStatusText, taskStatusTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
@@ -70,6 +71,8 @@ import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
 const columnHelper = createColumnHelper<Task>();
+const CreateTaskDialog = lazy(() => import("../components/tasks/CreateTaskDialog").then((module) => ({ default: module.CreateTaskDialog })));
+const TaskLogDialog = lazy(() => import("../components/tasks/TaskLogDialog").then((module) => ({ default: module.TaskLogDialog })));
 const TerminalDialog = lazy(() => import("../components/tasks/TerminalDialog").then((module) => ({ default: module.TerminalDialog })));
 const COLUMN_VISIBILITY_KEY = "easy-console.tasks.columnVisibility";
 const AUTO_REFRESH_KEY = "easy-console.tasks.autoRefresh";
@@ -191,9 +194,9 @@ function ActionHeader() {
   );
 }
 
-function loadColumnVisibility(): VisibilityState {
+async function loadColumnVisibility(): Promise<VisibilityState> {
   try {
-    const raw = window.localStorage.getItem(COLUMN_VISIBILITY_KEY);
+    const raw = await browserRuntime.storage.get(COLUMN_VISIBILITY_KEY);
     if (!raw) return defaultColumnVisibility;
     const parsed = JSON.parse(raw) as VisibilityState;
     delete parsed.actions;
@@ -218,17 +221,19 @@ function loadColumnVisibility(): VisibilityState {
   }
 }
 
-function loadBooleanSetting(key: string, fallback = false) {
+async function loadBooleanSetting(key: string, fallback = false) {
   try {
-    return window.localStorage.getItem(key) === "true" || fallback;
+    const raw = await browserRuntime.storage.get(key);
+    return raw === "true" || fallback;
   } catch {
     return fallback;
   }
 }
 
-function loadNumberSetting(key: string, fallback: number) {
+async function loadNumberSetting(key: string, fallback: number) {
   try {
-    const value = Number(window.localStorage.getItem(key));
+    const raw = await browserRuntime.storage.get(key);
+    const value = Number(raw);
     return Number.isFinite(value) && value > 0 ? value : fallback;
   } catch {
     return fallback;
@@ -248,17 +253,21 @@ function taskQueryKey(state: TaskListQueryState) {
 export function MoreActionsMenu({
   task,
   isPinned,
+  canEdit,
   onRaw,
   onDownload,
   onCommit,
+  onEdit,
   onSaveTemplate,
   onTogglePin,
 }: {
   task: Task;
   isPinned: boolean;
+  canEdit: boolean;
   onRaw: (task: Task) => void;
   onDownload: (task: Task) => void;
   onCommit: (task: Task) => void;
+  onEdit: (task: Task) => void;
   onSaveTemplate: (task: Task) => void;
   onTogglePin: (task: Task) => void;
 }) {
@@ -410,9 +419,27 @@ export function MoreActionsMenu({
             style={{ left: menuPosition.left, top: menuPosition.top }}
             onKeyDown={handleMenuKeyDown}
           >
+            {canEdit ? (
+              <button
+                ref={(element) => {
+                  menuItemRefs.current[0] = element;
+                }}
+                className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
+                role="menuitem"
+                tabIndex={-1}
+                type="button"
+                onClick={() => {
+                  closeMenu();
+                  onEdit(task);
+                }}
+              >
+                <Pencil className="h-4 w-4 text-app-muted" />
+                {text("编辑", "Edit")}
+              </button>
+            ) : null}
             <button
               ref={(element) => {
-                menuItemRefs.current[0] = element;
+                menuItemRefs.current[canEdit ? 1 : 0] = element;
               }}
               className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
               role="menuitem"
@@ -428,13 +455,13 @@ export function MoreActionsMenu({
             </button>
             <button
               ref={(element) => {
-                menuItemRefs.current[1] = element;
+                menuItemRefs.current[canEdit ? 2 : 1] = element;
               }}
               className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!isRunningTask(task)}
               role="menuitem"
               tabIndex={-1}
-              title={isRunningTask(task) ? "Commit" : text("仅运行中实例可 Commit", "Only running instances can be committed")}
+              title={isRunningTask(task) ? text("提交镜像", "Commit") : text("仅运行中实例可 Commit", "Only running instances can be committed")}
               type="button"
               onClick={() => {
                 closeMenu();
@@ -442,11 +469,11 @@ export function MoreActionsMenu({
               }}
             >
               <Upload className="h-4 w-4 text-app-muted" />
-              Commit
+              {text("提交镜像", "Commit")}
             </button>
             <button
               ref={(element) => {
-                menuItemRefs.current[2] = element;
+                menuItemRefs.current[canEdit ? 3 : 2] = element;
               }}
               className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
               role="menuitem"
@@ -462,7 +489,7 @@ export function MoreActionsMenu({
             </button>
             <button
               ref={(element) => {
-                menuItemRefs.current[3] = element;
+                menuItemRefs.current[canEdit ? 4 : 3] = element;
               }}
               className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
               role="menuitem"
@@ -478,7 +505,7 @@ export function MoreActionsMenu({
             </button>
             <button
               ref={(element) => {
-                menuItemRefs.current[4] = element;
+                menuItemRefs.current[canEdit ? 5 : 4] = element;
               }}
               className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
               role="menuitem"
@@ -506,22 +533,23 @@ export function TasksPage() {
   const { locale, text } = useI18n();
   const runLogger = useRunLogger();
   const downloadQueue = useDownloadQueue();
+  const commitQueue = useCommitQueue();
   const auth = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryState = useMemo(() => parseTaskListQuery(searchParams), [searchParams]);
+  const [keywordInput, setKeywordInput] = useState(queryState.keyword);
   const { confirm, confirmDialog } = useConfirmAction();
   const [createOpen, setCreateOpen] = useState(false);
   const [cloneTask, setCloneTask] = useState<Task | null>(null);
+  const [editTask, setEditTask] = useState<Task | null>(null);
   const [logTask, setLogTask] = useState<Task | null>(null);
   const [terminalTask, setTerminalTask] = useState<Task | null>(null);
   const [rawTask, setRawTask] = useState<Task | null>(null);
   const [columnSettingsOpen, setColumnSettingsOpen] = useState(false);
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => loadColumnVisibility());
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(defaultColumnVisibility);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
-  const [autoRefresh, setAutoRefresh] = useState(() => loadBooleanSetting(AUTO_REFRESH_KEY));
-  const [autoRefreshInterval, setAutoRefreshInterval] = useState(() =>
-    loadNumberSetting(AUTO_REFRESH_INTERVAL_KEY, DEFAULT_AUTO_REFRESH_INTERVAL),
-  );
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState(DEFAULT_AUTO_REFRESH_INTERVAL);
   const [pinnedTaskIds, setPinnedTaskIds] = useState<string[]>([]);
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
   const viewOptionsRef = useRef<HTMLDivElement>(null);
@@ -531,6 +559,20 @@ export function TasksPage() {
     if (!("page" in patch)) next.page = 1;
     setSearchParams(serializeTaskListQuery(next), { replace: true });
   }, [queryState, setSearchParams]);
+
+  // Debounce search input: write to URL 300ms after the last keystroke.
+  useEffect(() => {
+    if (keywordInput === queryState.keyword) return;
+    const timer = window.setTimeout(() => {
+      updateTaskQuery({ keyword: keywordInput });
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [keywordInput, queryState.keyword, updateTaskQuery]);
+
+  // Keep local input in sync when keyword changes externally (URL nav, clear).
+  useEffect(() => {
+    setKeywordInput(queryState.keyword);
+  }, [queryState.keyword]);
 
   const deleteMutation = useMutation({
     mutationFn: (task: Task) => instanceApi.deleteTask(task.id),
@@ -588,36 +630,6 @@ export function TasksPage() {
         targetName: getTaskName(task),
         targetId: task.id,
         error: errorMessage(error, text("实例释放失败", "Instance release failed")),
-      });
-    },
-  });
-
-  const commitMutation = useMutation({
-    mutationFn: (task: Task) => imageApi.commitImage(buildTaskCommitPayload(task)),
-    onSuccess: (_data, task) => {
-      toast.success(text("Commit 已提交", "Commit submitted"), getTaskName(task));
-      void runLogger.log({
-        source: "image",
-        level: "info",
-        action: "image.commit",
-        result: "success",
-        title: text("Commit 已提交", "Commit submitted"),
-        targetName: getTaskName(task),
-        targetId: task.id,
-      });
-      queryClient.invalidateQueries({ queryKey: ["images"] });
-    },
-    onError: (error, task) => {
-      toast.error(text("Commit 失败", "Commit failed"), `${getTaskName(task)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
-      void runLogger.log({
-        source: "image",
-        level: "error",
-        action: "image.commit",
-        result: "failure",
-        title: text("Commit 失败", "Commit failed"),
-        targetName: getTaskName(task),
-        targetId: task.id,
-        error: errorMessage(error, text("Commit 失败", "Commit failed")),
       });
     },
   });
@@ -719,14 +731,22 @@ export function TasksPage() {
     },
   });
 
-  const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending || commitMutation.isPending;
-  const autoRefreshPaused = batchPending || createOpen || Boolean(logTask) || Boolean(terminalTask) || Boolean(rawTask) || columnSettingsOpen;
+  const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending;
+  const autoRefreshPaused = batchPending || createOpen || Boolean(editTask) || Boolean(logTask) || Boolean(terminalTask) || Boolean(rawTask) || columnSettingsOpen;
   const query = useQuery({
     queryKey: taskQueryKey(queryState),
     queryFn: () => instanceApi.tasks(toTaskApiQuery(queryState)),
     refetchInterval: autoRefresh && !autoRefreshPaused ? autoRefreshInterval : false,
     refetchIntervalInBackground: false,
   });
+
+  // Sync fetched data into the TaskNotificationWatcher cache so it can compare
+  // task status snapshots without polling the same endpoint in parallel.
+  useEffect(() => {
+    if (query.data) {
+      queryClient.setQueryData(["task-notification-watch"], query.data);
+    }
+  }, [query.data, queryClient]);
 
   const filteredTasks = useMemo(() => {
     const tasks = query.data?.items ?? [];
@@ -737,6 +757,14 @@ export function TasksPage() {
   useEffect(() => {
     void loadTaskPins(browserRuntime.storage).then(setPinnedTaskIds);
   }, []);
+
+  const prevCommitDoneRef = useRef(0);
+  useEffect(() => {
+    if (commitQueue.summary.completed > prevCommitDoneRef.current) {
+      queryClient.invalidateQueries({ queryKey: ["images"] });
+    }
+    prevCommitDoneRef.current = commitQueue.summary.completed;
+  }, [commitQueue.summary.completed, queryClient]);
 
   useEffect(() => {
     const tasks = query.data?.items;
@@ -787,6 +815,14 @@ export function TasksPage() {
     setCloneTask(null);
   };
 
+  const openEditTask = (task: Task) => {
+    setEditTask(task);
+  };
+
+  const closeEditTask = () => {
+    setEditTask(null);
+  };
+
   const confirmReleaseTask = useCallback((task: Task) => {
     confirm({
       title: text("确认释放实例", "Confirm Instance Release"),
@@ -808,13 +844,27 @@ export function TasksPage() {
   }, [confirm, deleteMutation, text]);
 
   const confirmCommitTask = useCallback((task: Task) => {
+    let payload: ReturnType<typeof buildTaskCommitPayload>;
+    try {
+      payload = buildTaskCommitPayload(task);
+    } catch (error) {
+      toast.error(text("Commit 失败", "Commit failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
+      return;
+    }
     confirm({
       title: text("确认 Commit 实例", "Confirm Instance Commit"),
       description: text(`将把 ${getTaskName(task)} 的当前运行环境提交为镜像。此操作可能需要一段时间，请确认实例内文件状态已经稳定。`, `Commit the current runtime environment of ${getTaskName(task)} as an image. This may take some time; confirm files inside the instance are stable.`),
-      confirmLabel: "Commit",
-      run: () => commitMutation.mutateAsync(task),
+      confirmLabel: text("提交镜像", "Commit"),
+      run: () => {
+        commitQueue.enqueue({
+          taskName: getTaskName(task),
+          taskId: task.id,
+          podName: getTaskCommitPodName(task),
+          payload,
+        });
+      },
     });
-  }, [commitMutation, confirm, text]);
+  }, [commitQueue, confirm, text, toast]);
 
   const confirmBatchRelease = useCallback((tasks: Task[]) => {
     confirm({
@@ -870,7 +920,7 @@ export function TasksPage() {
                 {pinned ? <Pin className="mt-1 h-3.5 w-3.5 shrink-0 text-app-accent" aria-label={text("已置顶", "Pinned")} /> : null}
                 <div>
                   <TaskInstanceName name={getValue()} />
-                  <div className="mt-0.5 text-xs text-app-muted">#{row.original.id}</div>
+                  <div className="mt-0.5 text-xs text-app-text">#{row.original.id}</div>
                 </div>
               </div>
             </div>
@@ -884,42 +934,42 @@ export function TasksPage() {
       columnHelper.accessor((row) => resourceText(row), {
         id: "resource",
         header: text("资源", "Resources"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => getTaskNodeName(row) || "-", {
         id: "node",
         header: text("节点", "Node"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => endpointText(row), {
         id: "endpoint",
         header: text("入口", "Endpoint"),
-        cell: (info) => <span className="whitespace-nowrap font-mono text-xs text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap font-mono text-xs text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => ownerText(row), {
         id: "owner",
         header: text("用户", "User"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => groupText(row), {
         id: "group",
         header: text("用户组", "User group"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.use_time, {
         id: "duration",
         header: text("时长", "Duration"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{formatSecondsDuration(info.getValue(), locale)}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{formatSecondsDuration(info.getValue(), locale)}</span>,
       }),
       columnHelper.accessor((row) => row.create_time ?? row.created_at ?? "-", {
         id: "created",
         header: text("创建时间", "Created"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.releace_time ?? "-", {
         id: "release",
         header: text("释放时间", "Release time"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.releace_conditions ?? row.release_condition, {
         id: "releaseCondition",
@@ -930,7 +980,7 @@ export function TasksPage() {
         id: "deleted",
         header: text("删除状态", "Delete status"),
         cell: (info) => (
-          <span className={info.getValue() === text("已删除", "Deleted") ? "text-app-danger" : "text-app-muted"}>{info.getValue()}</span>
+          <span className={info.getValue() === text("已删除", "Deleted") ? "text-app-danger" : "text-app-text"}>{info.getValue()}</span>
         ),
       }),
       columnHelper.display({
@@ -977,10 +1027,12 @@ export function TasksPage() {
                 </Button>
               )}
               <MoreActionsMenu
+                canEdit={getTaskEditableState() !== false}
                 isPinned={isTaskPinned(pinnedTaskIds, task)}
                 task={task}
                 onCommit={confirmCommitTask}
                 onDownload={handleDownloadTask}
+                onEdit={openEditTask}
                 onRaw={setRawTask}
                 onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
                 onTogglePin={handleTogglePin}
@@ -1007,16 +1059,39 @@ export function TasksPage() {
     onRowSelectionChange: setRowSelection,
   });
 
+  const settingsHydratedRef = useRef(false);
   useEffect(() => {
-    window.localStorage.setItem(COLUMN_VISIBILITY_KEY, JSON.stringify(columnVisibility));
+    let cancelled = false;
+    (async () => {
+      const [savedVisibility, savedAutoRefresh, savedInterval] = await Promise.all([
+        loadColumnVisibility(),
+        loadBooleanSetting(AUTO_REFRESH_KEY),
+        loadNumberSetting(AUTO_REFRESH_INTERVAL_KEY, DEFAULT_AUTO_REFRESH_INTERVAL),
+      ]);
+      if (cancelled) return;
+      setColumnVisibility(savedVisibility);
+      setAutoRefresh(savedAutoRefresh);
+      setAutoRefreshInterval(savedInterval);
+      settingsHydratedRef.current = true;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!settingsHydratedRef.current) return;
+    void browserRuntime.storage.set(COLUMN_VISIBILITY_KEY, JSON.stringify(columnVisibility));
   }, [columnVisibility]);
 
   useEffect(() => {
-    window.localStorage.setItem(AUTO_REFRESH_KEY, String(autoRefresh));
+    if (!settingsHydratedRef.current) return;
+    void browserRuntime.storage.set(AUTO_REFRESH_KEY, String(autoRefresh));
   }, [autoRefresh]);
 
   useEffect(() => {
-    window.localStorage.setItem(AUTO_REFRESH_INTERVAL_KEY, String(autoRefreshInterval));
+    if (!settingsHydratedRef.current) return;
+    void browserRuntime.storage.set(AUTO_REFRESH_INTERVAL_KEY, String(autoRefreshInterval));
   }, [autoRefreshInterval]);
 
   const configurableColumns = table.getAllLeafColumns().filter((column) => !ALWAYS_VISIBLE_COLUMNS.has(column.id));
@@ -1059,8 +1134,8 @@ export function TasksPage() {
             <Input
               className="w-full pl-9 sm:w-64"
               placeholder={text("搜索实例名称", "Search instance name")}
-              value={queryState.keyword}
-              onChange={(event) => updateTaskQuery({ keyword: event.target.value })}
+              value={keywordInput}
+              onChange={(event) => setKeywordInput(event.target.value)}
             />
           </div>
           <Select className="w-32" value={queryState.status} onChange={(event) => updateTaskQuery({ status: event.target.value })}>
@@ -1078,7 +1153,7 @@ export function TasksPage() {
           <div ref={viewOptionsRef} className="relative">
             <Button
               aria-expanded={viewOptionsOpen}
-              aria-haspopup="true"
+              aria-haspopup="dialog"
               variant="secondary"
               onClick={() => setViewOptionsOpen((v) => !v)}
             >
@@ -1087,7 +1162,7 @@ export function TasksPage() {
               {autoRefresh ? <span className="h-1.5 w-1.5 rounded-full bg-app-accent" /> : null}
             </Button>
             {viewOptionsOpen ? (
-              <div className="absolute right-0 top-full z-30 mt-1 w-72 rounded-lg border border-app-border bg-app-surface p-3 shadow-popover">
+              <div role="dialog" aria-label={text("视图选项", "View options")} className="absolute right-0 top-full z-30 mt-1 w-72 rounded-lg border border-app-border bg-app-surface p-3 shadow-popover">
                 <div className="space-y-3">
                   <div className="flex items-center justify-between gap-2">
                     <label className="flex cursor-pointer items-center gap-2 text-sm text-app-text">
@@ -1174,12 +1249,13 @@ export function TasksPage() {
         ) : query.isError ? (
           <ErrorState error={query.error} action={<Button variant="secondary" onClick={() => query.refetch()}>{text("重试", "Retry")}</Button>} />
         ) : table.getRowModel().rows.length === 0 && queryState.keyword.trim() ? (
-          <EmptyState title={text("未找到匹配实例", "No matching instances")} action={<Button variant="secondary" onClick={() => updateTaskQuery({ keyword: "" })}>{text("清空搜索", "Clear search")}</Button>} />
+          <EmptyState icon={SearchXIcon} title={text("未找到匹配实例", "No matching instances")} action={<Button variant="secondary" onClick={() => updateTaskQuery({ keyword: "" })}>{text("清空搜索", "Clear search")}</Button>} />
         ) : table.getRowModel().rows.length === 0 ? (
           <EmptyState title={text("暂无任务实例", "No task instances")} action={<Button onClick={openCreateTask}>{text("新建任务", "New task")}</Button>} />
         ) : (
           <>
-          <div className="divide-y divide-app-border sm:hidden">
+          {browserRuntime.isMobile ? (
+          <div className="divide-y divide-app-border">
             {table.getRowModel().rows.map((row) => {
               const task = row.original;
               const release = isReleasableTask(task);
@@ -1252,10 +1328,12 @@ export function TasksPage() {
                       </Button>
                     )}
                     <MoreActionsMenu
+                      canEdit={getTaskEditableState() !== false}
                       isPinned={isTaskPinned(pinnedTaskIds, task)}
                       task={task}
                       onCommit={confirmCommitTask}
                       onDownload={handleDownloadTask}
+                      onEdit={openEditTask}
                       onRaw={setRawTask}
                       onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
                       onTogglePin={handleTogglePin}
@@ -1265,7 +1343,8 @@ export function TasksPage() {
               );
             })}
           </div>
-          <TableRegion className="hidden sm:block" label={text("任务实例表格", "Task instances table")}>
+          ) : (
+          <TableRegion label={text("任务实例表格", "Task instances table")}>
             <table className="w-max min-w-full table-auto border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 {table.getHeaderGroups().map((headerGroup) => (
@@ -1308,6 +1387,7 @@ export function TasksPage() {
               </tbody>
             </table>
           </TableRegion>
+          )}
           </>
         )}
       </Panel>
@@ -1350,8 +1430,11 @@ export function TasksPage() {
         </div>
       </div>
 
-      <CreateTaskDialog initialTask={cloneTask} open={createOpen} onClose={closeCreateTask} />
-      <TaskLogDialog task={logTask} onClose={() => setLogTask(null)} />
+      <Suspense fallback={null}>
+        <CreateTaskDialog initialTask={cloneTask} open={createOpen} onClose={closeCreateTask} />
+        <CreateTaskDialog mode="edit" editTaskId={editTask?.id} initialTask={editTask} open={Boolean(editTask)} onClose={closeEditTask} />
+        <TaskLogDialog task={logTask} onClose={() => setLogTask(null)} />
+      </Suspense>
       <Suspense fallback={null}>
         <TerminalDialog task={terminalTask} onClose={() => setTerminalTask(null)} />
       </Suspense>

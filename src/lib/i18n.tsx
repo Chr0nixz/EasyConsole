@@ -16,6 +16,8 @@ const zhCN = {
   "common.console": "控制台",
   "common.loading": "正在加载",
   "common.loadingTable": "正在加载表格",
+  "common.loginExpired": "登录已过期，请重新登录",
+  "common.networkError": "网络连接异常，请检查网络",
   "common.processing": "处理中",
   "common.requestFailed": "请求失败",
   "common.retry": "重试",
@@ -87,6 +89,11 @@ const zhCN = {
   "settings.scope": "生效范围",
   "settings.scopeDescription": "保存后，任务、镜像、存储、登录校验、监控链接和 WebSSH 地址会使用这组配置。已保存账号只保存 token，不保存密码。",
   "settings.backToLogin": "返回登录",
+  "notify.permissionDenied": "系统通知未开启",
+  "notify.unsupported": "当前环境不支持系统通知",
+  "notify.permissionDeniedBody": "实例成功或失败时将只显示应用内提示。",
+  "notify.unavailable": "系统通知不可用",
+  "notify.unavailableBody": "可在设置中改为应用内通知或关闭该事件通知。",
 } as const;
 
 const enUS: Record<TranslationKey, string> = {
@@ -97,6 +104,8 @@ const enUS: Record<TranslationKey, string> = {
   "common.console": "Console",
   "common.loading": "Loading",
   "common.loadingTable": "Loading table",
+  "common.loginExpired": "Session expired, please log in again",
+  "common.networkError": "Network error, please check your connection",
   "common.processing": "Processing",
   "common.requestFailed": "Request failed",
   "common.retry": "Retry",
@@ -168,6 +177,11 @@ const enUS: Record<TranslationKey, string> = {
   "settings.scope": "Applies to",
   "settings.scopeDescription": "After saving, tasks, images, storage, sign-in checks, monitor links, and WebSSH URLs will use this configuration. Saved accounts store tokens only, not passwords.",
   "settings.backToLogin": "Back to sign in",
+  "notify.permissionDenied": "System notifications are disabled",
+  "notify.unsupported": "System notifications are not supported in this environment",
+  "notify.permissionDeniedBody": "In-app toasts will be shown for instance success or failure.",
+  "notify.unavailable": "System notifications are unavailable",
+  "notify.unavailableBody": "Switch to in-app notifications or disable this event in Settings.",
 };
 
 const dictionaries: Record<Locale, Record<TranslationKey, string>> = {

@@ -98,6 +98,8 @@ export function TableRegion({ children, label, className }: { children: ReactNod
   );
 }
 
+let dialogScrollLockCount = 0;
+
 export function Dialog({
   open,
   title,
@@ -121,6 +123,11 @@ export function Dialog({
   useEffect(() => {
     if (!open) return undefined;
     previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    dialogScrollLockCount += 1;
+    if (dialogScrollLockCount === 1) {
+      document.body.style.overflow = "hidden";
+    }
 
     window.setTimeout(() => getFocusableElements(dialogRef.current)[0]?.focus(), 0);
 
@@ -159,6 +166,10 @@ export function Dialog({
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
+      dialogScrollLockCount = Math.max(0, dialogScrollLockCount - 1);
+      if (dialogScrollLockCount === 0) {
+        document.body.style.overflow = "";
+      }
       previousFocusRef.current?.focus();
     };
   }, [onClose, open]);

@@ -1,5 +1,6 @@
 import { API_BASE_URL } from "./api-client";
 import { DEFAULT_MONITOR_DASHBOARD_URL } from "./monitor-dashboard-core";
+import { DEFAULT_RUN_LOG_LIMIT, DEFAULT_RUN_LOG_RETENTION_DAYS } from "./run-logs";
 
 type ImportMetaWithEnv = ImportMeta & {
   env?: {
@@ -14,6 +15,8 @@ export type AppSettings = {
   autoCheckUpdates: boolean;
   desktopCloseToTray: boolean;
   desktopClosePrompt: boolean;
+  runLogLimit: number;
+  runLogRetentionDays: number;
 };
 
 export type ImportantNotificationEvent = "task.success" | "task.failure" | "task.abnormal";
@@ -38,6 +41,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   autoCheckUpdates: true,
   desktopCloseToTray: false,
   desktopClosePrompt: true,
+  runLogLimit: DEFAULT_RUN_LOG_LIMIT,
+  runLogRetentionDays: DEFAULT_RUN_LOG_RETENTION_DAYS,
 };
 
 let runtimeSettings: AppSettings = DEFAULT_APP_SETTINGS;
@@ -66,6 +71,11 @@ function normalizeNotificationPreferences(value: unknown): NotificationPreferenc
   };
 }
 
+function normalizePositiveInteger(value: unknown, fallback: number) {
+  const num = Number(value);
+  return Number.isInteger(num) && num > 0 ? num : fallback;
+}
+
 export function normalizeAppSettings(settings: Partial<AppSettings>): AppSettings {
   return {
     apiBaseUrl: normalizeUrl(settings.apiBaseUrl, DEFAULT_APP_SETTINGS.apiBaseUrl),
@@ -74,6 +84,8 @@ export function normalizeAppSettings(settings: Partial<AppSettings>): AppSetting
     autoCheckUpdates: settings.autoCheckUpdates !== false,
     desktopCloseToTray: settings.desktopCloseToTray === true,
     desktopClosePrompt: settings.desktopClosePrompt !== false,
+    runLogLimit: normalizePositiveInteger(settings.runLogLimit, DEFAULT_APP_SETTINGS.runLogLimit),
+    runLogRetentionDays: normalizePositiveInteger(settings.runLogRetentionDays, DEFAULT_APP_SETTINGS.runLogRetentionDays),
   };
 }
 

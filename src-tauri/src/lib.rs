@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -657,9 +657,13 @@ async fn install_vscode_public_key(
         host: host.clone(),
         port,
     };
-    let mut session = client::connect(config, (host.as_str(), port), handler)
-        .await
-        .map_err(|error| format!("SSH 连接失败，无法配置 VS Code 免密：{error}"))?;
+    let mut session = tokio::time::timeout(
+        Duration::from_secs(15),
+        client::connect(config, (host.as_str(), port), handler),
+    )
+    .await
+    .map_err(|_| "SSH 连接超时，无法配置 VS Code 免密，请检查网络和主机是否可达".to_string())?
+    .map_err(|error| format!("SSH 连接失败，无法配置 VS Code 免密：{error}"))?;
 
     let auth = session
         .authenticate_password(username, password)
@@ -762,9 +766,13 @@ async fn run_russh_session(
         host: host.clone(),
         port,
     };
-    let mut session = client::connect(config, (host.as_str(), port), handler)
-        .await
-        .map_err(|error| format!("SSH 连接失败：{error}"))?;
+    let mut session = tokio::time::timeout(
+        Duration::from_secs(15),
+        client::connect(config, (host.as_str(), port), handler),
+    )
+    .await
+    .map_err(|_| "SSH 连接超时，请检查网络和主机是否可达".to_string())?
+    .map_err(|error| format!("SSH 连接失败：{error}"))?;
 
     let auth = session
         .authenticate_password(username, password)
@@ -795,6 +803,10 @@ async fn run_russh_session(
         Some("SSH 已连接".to_string()),
     );
 
+    let mut output_buffer = String::new();
+    let mut flush_interval = tokio::time::interval(Duration::from_millis(16));
+    flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
         tokio::select! {
             command = rx.recv() => {
@@ -812,6 +824,9 @@ async fn run_russh_session(
                             .map_err(|error| format!("SSH 窗口尺寸更新失败：{error}"))?;
                     }
                     Some(SshCommand::Close) | None => {
+                        if !output_buffer.is_empty() {
+                            emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
+                        }
                         let _ = channel.eof().await;
                         let _ = channel.close().await;
                         let _ = session.disconnect(russh::Disconnect::ByApplication, "", "en").await;
@@ -825,18 +840,21 @@ async fn run_russh_session(
                 };
                 match message {
                     ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
-                        emit_session_event(
-                            &app,
-                            &session_id,
-                            "output",
-                            Some(String::from_utf8_lossy(&data).to_string()),
-                            None,
-                        );
+                        output_buffer.push_str(&String::from_utf8_lossy(&data));
+                        if output_buffer.len() >= 8192 {
+                            emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
+                        }
                     }
                     ChannelMsg::ExitStatus { exit_status } => {
+                        if !output_buffer.is_empty() {
+                            emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
+                        }
                         emit_session_event(&app, &session_id, "status", None, Some(format!("SSH 进程已退出，状态码 {exit_status}")));
                     }
                     ChannelMsg::ExitSignal { signal_name, error_message, .. } => {
+                        if !output_buffer.is_empty() {
+                            emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
+                        }
                         emit_session_event(
                             &app,
                             &session_id,
@@ -846,9 +864,17 @@ async fn run_russh_session(
                         );
                     }
                     ChannelMsg::Close | ChannelMsg::Eof => {
+                        if !output_buffer.is_empty() {
+                            emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
+                        }
                         break;
                     }
                     _ => {}
+                }
+            }
+            _ = flush_interval.tick() => {
+                if !output_buffer.is_empty() {
+                    emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
                 }
             }
         }
@@ -919,8 +945,20 @@ fn runtime_storage_path(app: &AppHandle) -> Result<PathBuf, String> {
     app_data_file(app, "runtime-storage.json")
 }
 
+/// Global lock serializing all runtime-storage read-modify-write cycles.
+/// Prevents lost-update races when concurrent callers (e.g. run-log append and
+/// scheduled-task persist) write to the same file.
+static RUNTIME_STORAGE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn runtime_storage_lock() -> &'static Mutex<()> {
+    RUNTIME_STORAGE_LOCK.get_or_init(|| Mutex::new(()))
+}
+
 #[tauri::command]
 fn runtime_storage_get(app: AppHandle, key: String) -> Result<Option<String>, String> {
+    let _guard = runtime_storage_lock()
+        .lock()
+        .map_err(|e| format!("本地数据锁获取失败：{e}"))?;
     let path = runtime_storage_path(&app)?;
     let data = load_string_map(&path)?;
     Ok(data.get(&key).cloned())
@@ -928,6 +966,9 @@ fn runtime_storage_get(app: AppHandle, key: String) -> Result<Option<String>, St
 
 #[tauri::command]
 fn runtime_storage_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
+    let _guard = runtime_storage_lock()
+        .lock()
+        .map_err(|e| format!("本地数据锁获取失败：{e}"))?;
     let path = runtime_storage_path(&app)?;
     let mut data = load_string_map(&path)?;
     data.insert(key, value);
@@ -936,6 +977,9 @@ fn runtime_storage_set(app: AppHandle, key: String, value: String) -> Result<(),
 
 #[tauri::command]
 fn runtime_storage_remove(app: AppHandle, key: String) -> Result<(), String> {
+    let _guard = runtime_storage_lock()
+        .lock()
+        .map_err(|e| format!("本地数据锁获取失败：{e}"))?;
     let path = runtime_storage_path(&app)?;
     let mut data = load_string_map(&path)?;
     data.remove(&key);
@@ -943,37 +987,61 @@ fn runtime_storage_remove(app: AppHandle, key: String) -> Result<(), String> {
 }
 
 #[cfg(desktop)]
-fn read_close_to_tray_setting(app: &AppHandle) -> bool {
-    let Ok(path) = runtime_storage_path(app) else {
-        return false;
-    };
-    let Ok(data) = load_string_map(&path) else {
-        return false;
-    };
-    let Some(raw) = data.get(APP_SETTINGS_STORAGE_KEY) else {
-        return false;
-    };
-    serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|value| value.get("desktopCloseToTray").and_then(serde_json::Value::as_bool))
-        .unwrap_or(false)
+const KEYCHAIN_SERVICE: &str = "easy-console";
+
+#[cfg(desktop)]
+#[tauri::command]
+fn keychain_get(key: String) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
+        .map_err(|e| format!("keychain entry lookup failed: {e}"))?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("keychain get failed: {e}")),
+    }
 }
 
 #[cfg(desktop)]
-fn read_close_prompt_setting(app: &AppHandle) -> bool {
-    let Ok(path) = runtime_storage_path(app) else {
-        return true;
-    };
-    let Ok(data) = load_string_map(&path) else {
-        return true;
-    };
+#[tauri::command]
+fn keychain_set(key: String, value: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
+        .map_err(|e| format!("keychain entry lookup failed: {e}"))?;
+    entry.set_password(&value).map_err(|e| format!("keychain set failed: {e}"))
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn keychain_remove(key: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
+        .map_err(|e| format!("keychain entry lookup failed: {e}"))?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("keychain remove failed: {e}")),
+    }
+}
+
+/// Reads `desktopCloseToTray` and `desktopClosePrompt` from `runtime-storage.json`
+/// in a single file read + parse, instead of two separate passes.
+/// Returns `(close_to_tray, close_prompt)` with defaults `false` and `true`.
+#[cfg(desktop)]
+fn read_close_settings(app: &AppHandle) -> Result<(bool, bool), String> {
+    let path = runtime_storage_path(app)?;
+    let data = load_string_map(&path)?;
     let Some(raw) = data.get(APP_SETTINGS_STORAGE_KEY) else {
-        return true;
+        return Ok((false, true));
     };
-    serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|value| value.get("desktopClosePrompt").and_then(serde_json::Value::as_bool))
-        .unwrap_or(true)
+    let value = serde_json::from_str::<serde_json::Value>(raw)
+        .map_err(|error| format!("invalid app settings json: {error}"))?;
+    let close_to_tray = value
+        .get("desktopCloseToTray")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let close_prompt = value
+        .get("desktopClosePrompt")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    Ok((close_to_tray, close_prompt))
 }
 
 #[cfg(desktop)]
@@ -1096,7 +1164,8 @@ fn show_tray_menu(app: &AppHandle, position: PhysicalPosition<f64>) {
 
 #[cfg(desktop)]
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    ensure_tray_menu_window(app.handle())?;
+    // Tray menu window is created lazily by `show_tray_menu` on first right-click,
+    // avoiding a hidden webview at startup.
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("EasyConsole")
         .show_menu_on_left_click(false);
@@ -1315,7 +1384,29 @@ pub fn run() {
         builder = builder
             .manage(Arc::clone(&desktop_state))
             .plugin(tauri_plugin_process::init())
-            .plugin(tauri_plugin_updater::Builder::new().build());
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_deep_link::init())
+            .plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_shortcut("Alt+Shift+E")
+                    .unwrap_or_else(|error| {
+                        log::warn!("failed to register default global shortcut: {error}");
+                        tauri_plugin_global_shortcut::Builder::new()
+                    })
+                    .with_handler(|app, _shortcut, event| {
+                        if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                            if let Some(window) = app.get_webview_window("main") {
+                                if window.is_visible().unwrap_or(false) {
+                                    let _ = window.hide();
+                                } else {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                            }
+                        }
+                    })
+                    .build(),
+            );
     }
 
     builder = builder
@@ -1353,11 +1444,10 @@ pub fn run() {
 
             #[cfg(desktop)]
             {
-                let close_to_tray = read_close_to_tray_setting(app.handle());
+                let (close_to_tray, close_prompt) = read_close_settings(app.handle()).unwrap_or((false, true));
                 if let Err(error) = set_close_to_tray_state(&desktop_state, close_to_tray) {
                     log::warn!("failed to initialize close-to-tray state: {error}");
                 }
-                let close_prompt = read_close_prompt_setting(app.handle());
                 if let Err(error) = set_close_prompt_state(&desktop_state, close_prompt) {
                     log::warn!("failed to initialize close prompt state: {error}");
                 }
@@ -1390,6 +1480,12 @@ pub fn run() {
         runtime_storage_get,
         runtime_storage_set,
         runtime_storage_remove,
+        #[cfg(desktop)]
+        keychain_get,
+        #[cfg(desktop)]
+        keychain_set,
+        #[cfg(desktop)]
+        keychain_remove,
         runtime_platform,
         open_ssh_session,
         ssh_write,

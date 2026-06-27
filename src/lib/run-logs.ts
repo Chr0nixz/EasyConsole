@@ -44,6 +44,8 @@ export type RunLogFilter = {
   channel?: RunLogChannel | "";
   result?: RunLogResult | "";
   level?: RunLogLevel | "";
+  userName?: string;
+  action?: string;
   keyword?: string;
   limit?: number;
 };
@@ -198,11 +200,15 @@ export async function clearRunLogs(storage: RuntimeStorage) {
 
 export function filterRunLogs(items: RunLogEntry[], filter: RunLogFilter = {}) {
   const keyword = filter.keyword?.trim().toLowerCase();
+  const actionFilter = filter.action?.trim().toLowerCase();
+  const userNameFilter = filter.userName?.trim().toLowerCase();
   const filtered = items.filter((item) => {
     if (filter.source && item.source !== filter.source) return false;
     if (filter.channel && item.channel !== filter.channel) return false;
     if (filter.result && item.result !== filter.result) return false;
     if (filter.level && item.level !== filter.level) return false;
+    if (actionFilter && !item.action.toLowerCase().includes(actionFilter)) return false;
+    if (userNameFilter && (item.userName ?? "").toLowerCase() !== userNameFilter) return false;
     if (!keyword) return true;
     return [
       item.title,
@@ -223,4 +229,76 @@ export function filterRunLogs(items: RunLogEntry[], filter: RunLogFilter = {}) {
 
 export function formatRunLogExport(items: RunLogEntry[]) {
   return JSON.stringify({ exportedAt: new Date().toISOString(), items }, null, 2);
+}
+
+const ADVANCED_QUERY_KEY_PATTERN = /^(action|level|source|result|user|channel):(.*)$/i;
+const ADVANCED_QUERY_ALLOWED_LEVELS = ["info", "warning", "error"] as const;
+const ADVANCED_QUERY_ALLOWED_SOURCES = ["auth", "task", "scheduled-task", "task-template", "storage", "image", "settings", "system"] as const;
+const ADVANCED_QUERY_ALLOWED_CHANNELS = ["web", "tauri", "mobile", "cli", "mcp"] as const;
+const ADVANCED_QUERY_ALLOWED_RESULTS = ["success", "failure"] as const;
+
+/**
+ * Parses a structured query like `action:task.create level:error alice`.
+ * Recognized keys: action, level, source, result, user, channel.
+ * Unrecognized `key:value` tokens and bare words are combined into `keyword`.
+ */
+export function parseAdvancedQuery(query: string): RunLogFilter {
+  const trimmed = query.trim();
+  if (!trimmed) return {};
+  const tokens = trimmed.split(/\s+/);
+  const filter: RunLogFilter = {};
+  const keywords: string[] = [];
+  for (const token of tokens) {
+    const match = token.match(ADVANCED_QUERY_KEY_PATTERN);
+    if (!match) {
+      keywords.push(token);
+      continue;
+    }
+    const key = match[1].toLowerCase();
+    const value = match[2];
+    if (!value) continue;
+    if (key === "action") {
+      filter.action = value;
+    } else if (key === "level" && (ADVANCED_QUERY_ALLOWED_LEVELS as readonly string[]).includes(value.toLowerCase())) {
+      filter.level = value.toLowerCase() as RunLogLevel;
+    } else if (key === "source" && (ADVANCED_QUERY_ALLOWED_SOURCES as readonly string[]).includes(value.toLowerCase())) {
+      filter.source = value.toLowerCase() as RunLogSource;
+    } else if (key === "result" && (ADVANCED_QUERY_ALLOWED_RESULTS as readonly string[]).includes(value.toLowerCase())) {
+      filter.result = value.toLowerCase() as RunLogResult;
+    } else if (key === "channel" && (ADVANCED_QUERY_ALLOWED_CHANNELS as readonly string[]).includes(value.toLowerCase())) {
+      filter.channel = value.toLowerCase() as RunLogChannel;
+    } else if (key === "user") {
+      filter.userName = value;
+    } else {
+      keywords.push(token);
+    }
+  }
+  if (keywords.length > 0) filter.keyword = keywords.join(" ");
+  return filter;
+}
+
+function csvEscape(value: unknown) {
+  if (value === undefined || value === null) return "";
+  const str = String(value);
+  if (/[",\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+  return str;
+}
+
+export function formatRunLogCsv(items: RunLogEntry[]) {
+  const header = ["createdAt", "level", "source", "channel", "result", "action", "title", "targetName", "targetId", "userName", "durationMs", "error"];
+  const rows = items.map((item) =>
+    [item.createdAt, item.level, item.source, item.channel, item.result, item.action, item.title, item.targetName ?? "", item.targetId ?? "", item.userName ?? "", item.durationMs ?? "", item.error ?? ""]
+      .map(csvEscape)
+      .join(","),
+  );
+  return [header.join(","), ...rows].join("\n");
+}
+
+export function formatRunLogMarkdown(items: RunLogEntry[]) {
+  const header = "| Time | Level | Source | Channel | Result | Action | Title | Target | User | Duration | Error |";
+  const separator = "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |";
+  const rows = items.map((item) =>
+    `| ${item.createdAt} | ${item.level} | ${item.source} | ${item.channel} | ${item.result} | ${item.action} | ${item.title} | ${item.targetName ?? item.targetId ?? ""} | ${item.userName ?? ""} | ${item.durationMs === undefined ? "" : `${item.durationMs}ms`} | ${item.error ?? ""} |`,
+  );
+  return [header, separator, ...rows].join("\n");
 }

@@ -8,8 +8,12 @@ import type { Task } from "./types";
 
 export { getTaskPodName };
 
-export function buildMonitorDashboardUrl(task: Task) {
-  return buildMonitorDashboardUrlWithBase(task, getRuntimeSettings().monitorDashboardUrl);
+export function buildMonitorDashboardUrl(task: Task, options?: { from?: string; to?: string }) {
+  return buildMonitorDashboardUrlWithBase(task, getRuntimeSettings().monitorDashboardUrl, options);
+}
+
+export function buildMonitorDashboardEmbedUrl(task: Task, options?: { from?: string; to?: string }) {
+  return buildMonitorDashboardUrlWithBase(task, getRuntimeSettings().monitorDashboardUrl, options);
 }
 
 export function openMonitorDashboard(task: Task) {

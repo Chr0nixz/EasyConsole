@@ -1,4 +1,5 @@
-import type { CreateTaskPayload, RuntimeStorage, ScheduledTask } from "./types";
+import { computeNextRunTime, isRecurring } from "./task-recurrence";
+import type { CreateTaskPayload, RuntimeStorage, ScheduledTask, TaskRecurrence } from "./types";
 
 export const SCHEDULED_TASKS_STORAGE_KEY = "easy-console.scheduledTasks";
 
@@ -15,6 +16,26 @@ function nowIso() {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
+}
+
+function normalizeRecurrence(raw: unknown): TaskRecurrence | undefined {
+  if (!isRecord(raw)) return undefined;
+  const type = String(raw.type ?? "");
+  if (!["once", "daily", "weekly", "interval", "cron"].includes(type)) return undefined;
+  const recurrence: TaskRecurrence = { type: type as TaskRecurrence["type"] };
+  if (type === "weekly" && Array.isArray(raw.weekdays)) {
+    recurrence.weekdays = raw.weekdays.filter((d) => typeof d === "number" && d >= 0 && d <= 6);
+  }
+  if (type === "interval" && typeof raw.intervalSec === "number") {
+    recurrence.intervalSec = raw.intervalSec;
+  }
+  if (type === "cron" && typeof raw.cron === "string") {
+    recurrence.cron = raw.cron;
+  }
+  if (typeof raw.endDate === "string") {
+    recurrence.endDate = raw.endDate;
+  }
+  return recurrence;
 }
 
 function normalizeSchedule(raw: unknown): ScheduledTask | null {
@@ -35,6 +56,7 @@ function normalizeSchedule(raw: unknown): ScheduledTask | null {
     updatedAt: String(raw.updatedAt ?? nowIso()),
     lastRunAt: typeof raw.lastRunAt === "string" ? raw.lastRunAt : undefined,
     lastError: typeof raw.lastError === "string" ? raw.lastError : undefined,
+    recurrence: normalizeRecurrence(raw.recurrence),
   };
 }
 
@@ -55,6 +77,7 @@ export function createScheduledTask(input: {
   description?: string;
   scheduleTime: string;
   payload: CreateTaskPayload;
+  recurrence?: TaskRecurrence;
 }): ScheduledTask {
   const timestamp = nowIso();
   return {
@@ -66,11 +89,25 @@ export function createScheduledTask(input: {
     payload: input.payload,
     createdAt: timestamp,
     updatedAt: timestamp,
+    recurrence: input.recurrence,
   };
 }
 
 export function isScheduleDue(task: ScheduledTask, now = new Date()) {
   if (task.status !== "pending") return false;
+
+  if (!isRecurring(task)) {
+    // One-time task: original logic
+    const scheduledAt = Date.parse(task.scheduleTime);
+    return Number.isFinite(scheduledAt) && scheduledAt <= now.getTime();
+  }
+
+  // Recurring task: check if the next scheduled time has passed
+  const nextRun = computeNextRunTime(task, now);
+  if (!nextRun) return false;
+
+  // For recurring tasks, the scheduleTime field is updated after each run to
+  // the next run time. So we check if scheduleTime <= now.
   const scheduledAt = Date.parse(task.scheduleTime);
   return Number.isFinite(scheduledAt) && scheduledAt <= now.getTime();
 }
@@ -84,4 +121,35 @@ export function sortScheduledTasks(items: ScheduledTask[]) {
 
 export function updateScheduledTask(items: ScheduledTask[], next: ScheduledTask) {
   return items.map((item) => (item.id === next.id ? { ...next, updatedAt: nowIso() } : item));
+}
+
+/**
+ * After a recurring task completes, compute the next run time and reset
+ * status to "pending". Returns the updated task, or null if the task
+ * should not run again (e.g. past endDate).
+ */
+export function scheduleNextRun(task: ScheduledTask, now = new Date()): ScheduledTask | null {
+  if (!isRecurring(task)) {
+    return { ...task, status: "done" as const };
+  }
+  const nextRun = computeNextRunTime(task, now);
+  if (!nextRun) {
+    return { ...task, status: "done" as const };
+  }
+  return {
+    ...task,
+    status: "pending" as const,
+    scheduleTime: nextRun.toISOString(),
+    updatedAt: nowIso(),
+  };
+}
+
+/**
+ * Reset tasks stuck in "running" state back to "pending" on startup.
+ * This handles crashes where a task was running but the process died.
+ */
+export function resetStaleRunningTasks(items: ScheduledTask[]): ScheduledTask[] {
+  return items.map((item) =>
+    item.status === "running" ? { ...item, status: "pending" as const, updatedAt: nowIso() } : item,
+  );
 }

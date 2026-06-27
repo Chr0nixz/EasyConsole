@@ -138,5 +138,29 @@ export function md5ArrayBuffer(buffer: ArrayBuffer) {
 }
 
 export async function md5Blob(blob: Blob) {
-  return md5ArrayBuffer(await blob.arrayBuffer());
+  const buffer = await blob.arrayBuffer();
+
+  // Fall back to synchronous calculation when Web Workers are unavailable
+  // (e.g. Node.js CLI/MCP sidecar, SSR, or Tauri mobile without worker support).
+  if (typeof Worker === "undefined") {
+    return md5ArrayBuffer(buffer);
+  }
+
+  // Lazy-import the worker so environments without `?worker` support (Node)
+  // don't break at module load time.
+  const Md5Worker = (await import("./md5.worker.ts?worker")).default;
+  const worker = new Md5Worker();
+
+  return new Promise<string>((resolve, reject) => {
+    worker.onmessage = (event: MessageEvent<string>) => {
+      resolve(event.data);
+      worker.terminate();
+    };
+    worker.onerror = (event: ErrorEvent) => {
+      reject(event.error ?? new Error("MD5 worker failed"));
+      worker.terminate();
+    };
+    // Transfer the ArrayBuffer to avoid copying large file contents.
+    worker.postMessage(buffer, [buffer]);
+  });
 }

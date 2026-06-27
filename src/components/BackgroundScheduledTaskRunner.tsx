@@ -5,7 +5,7 @@ import { instanceApi } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { appendRunLog } from "../lib/run-logs";
 import { browserRuntime } from "../lib/runtime";
-import { isScheduleDue, loadScheduledTasks, saveScheduledTasks, sortScheduledTasks, updateScheduledTask } from "../lib/scheduled-tasks";
+import { isScheduleDue, loadScheduledTasks, resetStaleRunningTasks, saveScheduledTasks, scheduleNextRun, sortScheduledTasks, updateScheduledTask } from "../lib/scheduled-tasks";
 import type { ScheduledTask } from "../lib/types";
 import { errorMessage } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
@@ -61,14 +61,22 @@ export function BackgroundScheduledTaskRunner() {
       if (disposed || runningRef.current) return;
       runningRef.current = true;
       try {
-        let items = sortScheduledTasks(await loadScheduledTasks(browserRuntime.storage));
+        // Reset tasks stuck in "running" (e.g. from a previous crash) before evaluating.
+        let items = resetStaleRunningTasks(sortScheduledTasks(await loadScheduledTasks(browserRuntime.storage)));
+        items = await persist(items);
         const due = items.filter((item) => isScheduleDue(item));
         for (const task of due) {
           if (disposed) return;
           items = await persist(updateScheduledTask(items, { ...task, status: "running", lastError: undefined }));
           try {
             await instanceApi.createTask(task.payload);
-            items = await persist(updateScheduledTask(items, { ...task, status: "done", lastRunAt: new Date().toISOString(), lastError: undefined }));
+            const completedTask: ScheduledTask = { ...task, status: "done", lastRunAt: new Date().toISOString(), lastError: undefined };
+            const nextTask = scheduleNextRun(completedTask);
+            if (nextTask) {
+              items = await persist(updateScheduledTask(items, nextTask));
+            } else {
+              items = await persist(updateScheduledTask(items, completedTask));
+            }
             queryClient.invalidateQueries({ queryKey: ["tasks"] });
             toast.success(text("定时任务已执行", "Scheduled task executed"), task.name);
             void appendRunLog(browserRuntime.storage, {

@@ -69,9 +69,9 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       return {
         id: `task-${task.id}`,
         label: name,
-        description: text("按关键字打开任务列表", "Open tasks filtered by keyword"),
+        description: text("打开任务详情", "Open task detail"),
         icon: ListFilter,
-        run: () => navigate(`/tasks?keyword=${encodeURIComponent(name)}`),
+        run: () => navigate(`/tasks/${task.id}`),
       };
     });
     return [...filtered, ...taskCommands];

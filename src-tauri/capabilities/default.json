@@ -29,11 +29,12 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        "$DOWNLOAD/**",
-        "$DOCUMENT/**",
-        "$DESKTOP/**"
+        "$DOWNLOAD/**"
       ]
     },
-    "opener:default"
+    "opener:default",
+    "deep-link:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister"
   ]
 }

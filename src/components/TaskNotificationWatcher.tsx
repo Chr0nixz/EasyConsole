@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
+import { useMatch } from "react-router-dom";
 
 import { instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
+import { i18nText } from "../lib/i18n-text";
 import { browserRuntime } from "../lib/runtime";
 import { getImportantTaskStatusNotification, getTaskNotificationId, type ImportantTaskStatusNotification } from "../lib/task-status-notifications";
 import type { TaskStatus } from "../lib/types";
@@ -19,11 +21,16 @@ export function TaskNotificationWatcher() {
   const statusSnapshotRef = useRef<Map<string, TaskStatus | undefined>>(new Map());
   const permissionWarningRef = useRef<"permission-denied" | "unsupported" | null>(null);
 
+  // When the user is on the Tasks page, TasksPage polls the same endpoint and
+  // pushes its data into our query cache via setQueryData. Suspend our own
+  // polling to avoid duplicate requests.
+  const onTasksPage = Boolean(useMatch("/tasks"));
+
   const query = useQuery({
     queryKey: ["task-notification-watch"],
     queryFn: () => instanceApi.tasks({ page: 1, page_size: TASK_NOTIFICATION_PAGE_SIZE }),
     enabled: Boolean(auth.token),
-    refetchInterval: TASK_NOTIFICATION_WATCH_INTERVAL,
+    refetchInterval: onTasksPage ? false : TASK_NOTIFICATION_WATCH_INTERVAL,
     refetchIntervalInBackground: true,
   });
 
@@ -48,8 +55,12 @@ export function TaskNotificationWatcher() {
 
       permissionWarningRef.current = permission === "denied" ? "permission-denied" : permission;
       toast.info(
-        permission === "denied" ? "系统通知未开启" : "当前环境不支持系统通知",
-        permission === "denied" ? "实例成功或失败时将只显示应用内提示。" : undefined,
+        permission === "denied"
+          ? i18nText("系统通知未开启", "System notifications are disabled")
+          : i18nText("当前环境不支持系统通知", "System notifications are not supported in this environment"),
+        permission === "denied"
+          ? i18nText("实例成功或失败时将只显示应用内提示。", "In-app toasts will be shown for instance success or failure.")
+          : undefined,
       );
     });
   }, [auth.token, toast]);
@@ -84,8 +95,10 @@ export function TaskNotificationWatcher() {
                 permissionWarningRef.current = result;
               }
               toast.info(
-                result === "permission-denied" ? "系统通知未开启" : "系统通知不可用",
-                "可在设置中改为应用内通知或关闭该事件通知。",
+                result === "permission-denied"
+                  ? i18nText("系统通知未开启", "System notifications are disabled")
+                  : i18nText("系统通知不可用", "System notifications are unavailable"),
+                i18nText("可在设置中改为应用内通知或关闭该事件通知。", "Switch to in-app notifications or disable this event in Settings."),
               );
             });
         }

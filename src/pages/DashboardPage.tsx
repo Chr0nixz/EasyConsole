@@ -1,13 +1,26 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Clock, Coins, Server, type LucideIcon } from "lucide-react";
+import { Activity, Clock, Coins, RefreshCw, Server, type LucideIcon } from "lucide-react";
+import { useState } from "react";
+import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
-import { Button, Panel, TableRegion } from "../components/ui";
+import { Button, Panel, Select, TableRegion } from "../components/ui";
 import { instanceApi } from "../lib/api";
 import { formatCost, formatNumber, formatSecondsDuration, getTaskName, getTaskNodeName } from "../lib/format";
 import { useI18n } from "../lib/i18n";
+import { browserRuntime } from "../lib/runtime";
 import type { ConsoleSummary, Task } from "../lib/types";
+
+type TimeRange = "day" | "week" | "month";
+
+const TIME_RANGES: TimeRange[] = ["day", "week", "month"];
+const AUTO_REFRESH_OPTIONS = [
+  { zh: "关闭", en: "Off", value: 0 },
+  { zh: "30 秒", en: "30 sec", value: 30_000 },
+  { zh: "1 分钟", en: "1 min", value: 60_000 },
+  { zh: "5 分钟", en: "5 min", value: 300_000 },
+];
 
 function StatTile({ label, value, icon: Icon }: { label: string; value: string; icon: LucideIcon }) {
   return (
@@ -33,38 +46,133 @@ function toTasks(raw: unknown): Task[] {
   return Array.isArray(value) ? (value as Task[]) : [];
 }
 
+function rangeLabel(range: TimeRange, text: (zh: string, en: string) => string) {
+  if (range === "day") return text("今日", "Today");
+  if (range === "week") return text("本周", "This week");
+  return text("本月", "This month");
+}
+
 export function DashboardPage() {
   const { locale, text } = useI18n();
-  const consoleQuery = useQuery({ queryKey: ["console"], queryFn: instanceApi.console });
-  const staticsQuery = useQuery({ queryKey: ["statics"], queryFn: () => instanceApi.statics({}) });
+  const [timeRange, setTimeRange] = useState<TimeRange>("week");
+  const [autoRefreshMs, setAutoRefreshMs] = useState(0);
 
-  if (consoleQuery.isLoading) return <LoadingState />;
-  if (consoleQuery.isError) return <ErrorState error={consoleQuery.error} />;
+  const refetchInterval = autoRefreshMs > 0 ? autoRefreshMs : false;
+  const consoleQuery = useQuery({ queryKey: ["console"], queryFn: instanceApi.console, refetchInterval });
+  const staticsQuery = useQuery({ queryKey: ["statics"], queryFn: () => instanceApi.statics({}), refetchInterval });
 
   const summary = toSummary(consoleQuery.data);
   const recentTasks = toTasks(staticsQuery.data).slice(0, 8);
 
+  const runtimeValue = summary.run_time?.[timeRange];
+  const costValue = summary.cost_map?.[timeRange];
+
+  const chartData = TIME_RANGES.map((range) => ({
+    range,
+    label: rangeLabel(range, text),
+    runtime: Number(summary.run_time?.[range] ?? 0),
+    cost: Number(summary.cost_map?.[range] ?? 0),
+  }));
+
+  const selectedRangeIndex = TIME_RANGES.indexOf(timeRange);
+
+  if (consoleQuery.isLoading) return <LoadingState />;
+  if (consoleQuery.isError) return <ErrorState error={consoleQuery.error} />;
+
   return (
     <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-1 rounded-md border border-app-border bg-app-surface p-0.5">
+          {TIME_RANGES.map((range) => (
+            <button
+              key={range}
+              type="button"
+              onClick={() => setTimeRange(range)}
+              className={[
+                "app-interactive rounded px-3 py-1 text-xs font-medium",
+                timeRange === range ? "bg-app-accent text-white" : "text-app-muted hover:text-app-text",
+              ].join(" ")}
+            >
+              {rangeLabel(range, text)}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <Select
+            aria-label={text("自动刷新", "Auto refresh")}
+            value={String(autoRefreshMs)}
+            onChange={(event) => setAutoRefreshMs(Number(event.target.value))}
+            className="h-8 text-xs"
+          >
+            {AUTO_REFRESH_OPTIONS.map((option) => (
+              <option key={option.value} value={String(option.value)}>
+                {locale === "en-US" ? option.en : option.zh}
+              </option>
+            ))}
+          </Select>
+          <Button
+            className="h-8"
+            variant="secondary"
+            onClick={() => {
+              void consoleQuery.refetch();
+              void staticsQuery.refetch();
+            }}
+          >
+            <RefreshCw className={consoleQuery.isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+            {text("刷新", "Refresh")}
+          </Button>
+        </div>
+      </div>
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatTile label={text("运行中任务", "Running tasks")} value={formatNumber(summary.run_task_count, 0, locale)} icon={Activity} />
         <StatTile label={text("排队中任务", "Queued tasks")} value={formatNumber(summary.pending_task_count, 0, locale)} icon={Server} />
-        <StatTile label={text("本周运行时长", "Runtime this week")} value={formatSecondsDuration(summary.run_time?.week, locale)} icon={Clock} />
-        <StatTile label={text("本月费用", "Cost this month")} value={formatCost(summary.cost_map?.month, locale)} icon={Coins} />
+        <StatTile label={text("运行时长", "Runtime")} value={formatSecondsDuration(runtimeValue, locale)} icon={Clock} />
+        <StatTile label={text("费用", "Cost")} value={formatCost(costValue, locale)} icon={Coins} />
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2">
         <Panel className="p-4">
-          <div className="text-sm text-app-muted">{text("今日运行时长", "Runtime today")}</div>
-          <div className="mt-2 text-xl font-semibold">{formatSecondsDuration(summary.run_time?.day, locale)}</div>
+          <div className="mb-3 text-sm font-semibold text-app-text">{text("运行时长对比", "Runtime comparison")}</div>
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                <XAxis dataKey="label" tick={{ fontSize: 12 }} stroke="currentColor" className="text-app-muted" />
+                <YAxis tick={{ fontSize: 11 }} stroke="currentColor" className="text-app-muted" width={48} tickFormatter={(value) => formatSecondsDuration(Number(value), locale)} />
+                <Tooltip
+                  cursor={{ fill: "currentColor", fillOpacity: 0.08 }}
+                  contentStyle={{ background: "var(--color-app-surface)", border: "1px solid var(--color-app-border)", borderRadius: 6, fontSize: 12 }}
+                  formatter={(value: number) => [formatSecondsDuration(value, locale), text("时长", "Runtime")]}
+                />
+                <Bar dataKey="runtime" radius={[4, 4, 0, 0]}>
+                  {chartData.map((entry, index) => (
+                    <Cell key={entry.range} fill={index === selectedRangeIndex ? "var(--color-app-accent)" : "var(--color-app-muted)"} fillOpacity={index === selectedRangeIndex ? 1 : 0.4} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </Panel>
         <Panel className="p-4">
-          <div className="text-sm text-app-muted">{text("本月运行时长", "Runtime this month")}</div>
-          <div className="mt-2 text-xl font-semibold">{formatSecondsDuration(summary.run_time?.month, locale)}</div>
-        </Panel>
-        <Panel className="p-4">
-          <div className="text-sm text-app-muted">{text("本周费用", "Cost this week")}</div>
-          <div className="mt-2 text-xl font-semibold">{formatCost(summary.cost_map?.week, locale)}</div>
+          <div className="mb-3 text-sm font-semibold text-app-text">{text("费用对比", "Cost comparison")}</div>
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                <XAxis dataKey="label" tick={{ fontSize: 12 }} stroke="currentColor" className="text-app-muted" />
+                <YAxis tick={{ fontSize: 11 }} stroke="currentColor" className="text-app-muted" width={48} tickFormatter={(value) => formatCost(Number(value), locale)} />
+                <Tooltip
+                  cursor={{ fill: "currentColor", fillOpacity: 0.08 }}
+                  contentStyle={{ background: "var(--color-app-surface)", border: "1px solid var(--color-app-border)", borderRadius: 6, fontSize: 12 }}
+                  formatter={(value: number) => [formatCost(value, locale), text("费用", "Cost")]}
+                />
+                <Bar dataKey="cost" radius={[4, 4, 0, 0]}>
+                  {chartData.map((entry, index) => (
+                    <Cell key={entry.range} fill={index === selectedRangeIndex ? "var(--color-app-accent)" : "var(--color-app-muted)"} fillOpacity={index === selectedRangeIndex ? 1 : 0.4} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </Panel>
       </div>
 
@@ -82,8 +190,8 @@ export function DashboardPage() {
         ) : staticsQuery.isError ? (
           <ErrorState error={staticsQuery.error} action={<Button variant="secondary" onClick={() => staticsQuery.refetch()}>{text("重试", "Retry")}</Button>} />
         ) : recentTasks.length > 0 ? (
-          <>
-            <div className="divide-y divide-app-border sm:hidden">
+          browserRuntime.isMobile ? (
+            <div className="divide-y divide-app-border">
               {recentTasks.map((task) => (
                 <article key={String(task.id)} className="space-y-2 px-4 py-3">
                   <div className="flex items-center justify-between gap-2">
@@ -107,7 +215,8 @@ export function DashboardPage() {
                 </article>
               ))}
             </div>
-            <TableRegion className="hidden sm:block" label={text("最近任务表格", "Recent tasks table")}>
+          ) : (
+            <TableRegion label={text("最近任务表格", "Recent tasks table")}>
               <table className="w-full min-w-[720px] text-sm">
                 <thead className="bg-app-panel text-left text-xs text-app-muted">
                   <tr>
@@ -137,7 +246,7 @@ export function DashboardPage() {
                 </tbody>
               </table>
             </TableRegion>
-          </>
+          )
         ) : (
           <EmptyState title={text("暂无最近任务", "No recent tasks")} />
         )}

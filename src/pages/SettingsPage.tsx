@@ -30,10 +30,12 @@ import {
   type LocalDataBackup,
   type LocalDataBackupSection,
 } from "../lib/local-data-backup";
+import { decryptBackup, encryptBackup, isEncryptedBackup, type EncryptedBackup } from "../lib/backup-crypto";
 import { browserRuntime } from "../lib/runtime";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
+import { useConfirmAction } from "../lib/use-confirm-action";
 
 function isHttpUrl(value: string) {
   try {
@@ -93,11 +95,16 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const appUpdate = useAppUpdate();
   const runLogger = useRunLogger();
   const queryClient = useQueryClient();
+  const { confirm, confirmDialog } = useConfirmAction();
   const [form, setForm] = useState<AppSettings>(() => getRuntimeSettings());
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [includeSecrets, setIncludeSecrets] = useState(false);
+  const [exportPassword, setExportPassword] = useState("");
   const [importBackup, setImportBackup] = useState<LocalDataBackup | null>(null);
+  const [importEncrypted, setImportEncrypted] = useState<EncryptedBackup | null>(null);
+  const [importPassword, setImportPassword] = useState("");
+  const [importDecryptError, setImportDecryptError] = useState<string | null>(null);
   const [importSections, setImportSections] = useState<LocalDataBackupSection[]>(nonSecretBackupSections);
   const [importSecrets, setImportSecrets] = useState(false);
 
@@ -229,14 +236,33 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     }
   }
 
-  async function exportBackup() {
-    if (includeSecrets && !window.confirm(text("导出文件将包含登录 token 和已保存账号。确认继续？", "The export will include login tokens and saved accounts. Continue?"))) {
+  async function performExportBackup(withSecrets: boolean) {
+    const backup = await exportLocalDataBackup(browserRuntime.storage, withSecrets);
+    const password = exportPassword.trim();
+    if (password) {
+      const encrypted = await encryptBackup(backup, password);
+      const blob = new Blob([JSON.stringify(encrypted, null, 2)], { type: "application/json" });
+      saveBlob(blob, `easy-console-backup-${new Date().toISOString().slice(0, 10)}.encrypted.json`);
+      toast.success(text("加密备份文件已导出", "Encrypted backup exported"));
+    } else {
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      saveBlob(blob, `easy-console-backup-${new Date().toISOString().slice(0, 10)}.json`);
+      toast.success(text("备份文件已导出", "Backup exported"));
+    }
+  }
+
+  function exportBackup() {
+    if (includeSecrets) {
+      confirm({
+        title: text("导出确认", "Export confirmation"),
+        description: text("导出文件将包含登录 token 和已保存账号。确认继续？", "The export will include login tokens and saved accounts. Continue?"),
+        confirmLabel: text("导出", "Export"),
+        tone: "danger",
+        run: () => performExportBackup(true),
+      });
       return;
     }
-    const backup = await exportLocalDataBackup(browserRuntime.storage, includeSecrets);
-    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
-    saveBlob(blob, `easy-console-backup-${new Date().toISOString().slice(0, 10)}.json`);
-    toast.success(text("备份文件已导出", "Backup exported"));
+    void performExportBackup(false);
   }
 
   async function readImportFile(event: ChangeEvent<HTMLInputElement>) {
@@ -244,8 +270,21 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     event.target.value = "";
     if (!file) return;
     try {
-      const backup = parseLocalDataBackup(await file.text());
+      const raw = JSON.parse(await file.text()) as unknown;
+      if (isEncryptedBackup(raw)) {
+        setImportEncrypted(raw);
+        setImportBackup(null);
+        setImportPassword("");
+        setImportDecryptError(null);
+        setImportSecrets(false);
+        setImportSections([]);
+        return;
+      }
+      const backup = parseLocalDataBackup(JSON.stringify(raw));
       setImportBackup(backup);
+      setImportEncrypted(null);
+      setImportPassword("");
+      setImportDecryptError(null);
       setImportSecrets(false);
       setImportSections(nonSecretBackupSections.filter((section) => backup.items[section] !== undefined));
     } catch (importError) {
@@ -253,16 +292,31 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     }
   }
 
+  async function decryptImportFile() {
+    if (!importEncrypted) return;
+    const password = importPassword.trim();
+    if (!password) {
+      setImportDecryptError(text("请输入解密密码", "Enter the decryption password"));
+      return;
+    }
+    try {
+      const backup = await decryptBackup(importEncrypted, password);
+      setImportBackup(backup);
+      setImportEncrypted(null);
+      setImportDecryptError(null);
+      setImportSections(nonSecretBackupSections.filter((section) => backup.items[section] !== undefined));
+    } catch (decryptError) {
+      setImportDecryptError(decryptError instanceof Error ? decryptError.message : text("解密失败", "Decryption failed"));
+    }
+  }
+
   function toggleImportSection(section: LocalDataBackupSection, checked: boolean) {
     setImportSections((current) => checked ? [...new Set([...current, section])] : current.filter((item) => item !== section));
   }
 
-  async function applyImportBackup() {
+  async function performImportBackup() {
     if (!importBackup) return;
     const sections = [...importSections, ...(importSecrets ? secretBackupSections.filter((section) => importBackup.items[section] !== undefined) : [])];
-    if (sections.some((section) => secretBackupSections.includes(section)) && !window.confirm(text("将导入登录凭据并覆盖本地账号数据。确认继续？", "This will import credentials and overwrite local account data. Continue?"))) {
-      return;
-    }
     await importLocalDataBackup(browserRuntime.storage, importBackup, sections);
     const nextSettings = normalizeAppSettings(importBackup.items.settings as Partial<AppSettings>);
     if (sections.includes("settings")) applySettings(nextSettings);
@@ -271,7 +325,24 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     setImportBackup(null);
   }
 
+  function applyImportBackup() {
+    if (!importBackup) return;
+    const sections = [...importSections, ...(importSecrets ? secretBackupSections.filter((section) => importBackup.items[section] !== undefined) : [])];
+    if (sections.some((section) => secretBackupSections.includes(section))) {
+      confirm({
+        title: text("导入确认", "Import confirmation"),
+        description: text("将导入登录凭据并覆盖本地账号数据。确认继续？", "This will import credentials and overwrite local account data. Continue?"),
+        confirmLabel: text("导入", "Import"),
+        tone: "danger",
+        run: performImportBackup,
+      });
+      return;
+    }
+    void performImportBackup();
+  }
+
   const content = (
+    <>
     <form className="space-y-5" onSubmit={onSubmit}>
       <Panel>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">
@@ -467,6 +538,37 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       <Panel>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">
           <div className="min-w-0">
+            <h2 className="text-sm font-semibold">{text("运行日志保留策略", "Run Log Retention")}</h2>
+            <p className="mt-1 text-xs text-app-muted">
+              {text("设置运行日志的最大条数与保留天数。超出后自动清理最早的记录。", "Set the maximum number of run log entries and retention days. Older entries are pruned automatically.")}
+            </p>
+          </div>
+        </div>
+        <div className="grid gap-4 p-4 sm:grid-cols-2">
+          <label className="block text-sm">
+            <span className="mb-1 block text-app-muted">{text("最大条数", "Max entries")}</span>
+            <Input
+              type="number"
+              min={1}
+              value={form.runLogLimit}
+              onChange={(event) => setForm((value) => ({ ...value, runLogLimit: Number(event.target.value) || DEFAULT_APP_SETTINGS.runLogLimit }))}
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block text-app-muted">{text("保留天数", "Retention days")}</span>
+            <Input
+              type="number"
+              min={1}
+              value={form.runLogRetentionDays}
+              onChange={(event) => setForm((value) => ({ ...value, runLogRetentionDays: Number(event.target.value) || DEFAULT_APP_SETTINGS.runLogRetentionDays }))}
+            />
+          </label>
+        </div>
+      </Panel>
+
+      <Panel>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">
+          <div className="min-w-0">
             <h2 className="text-sm font-semibold">{text("本地数据备份", "Local Data Backup")}</h2>
             <p className="mt-1 text-xs text-app-muted">
               {text("导出或恢复设置、任务模板、计划任务和运行日志。登录凭据默认不会包含。", "Export or restore settings, task templates, scheduled tasks, and run logs. Credentials are excluded by default.")}
@@ -487,6 +589,24 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               <input className="sr-only" type="file" accept="application/json,.json" onChange={(event) => void readImportFile(event)} />
             </label>
           </div>
+        </div>
+        <div className="border-b border-app-border bg-app-panel/50 px-4 py-3">
+          <label className="block text-sm">
+            <span className="mb-1 block text-xs text-app-muted">
+              {text("加密密码（可选，留空则导出明文）", "Encryption password (optional, leave empty for plaintext)")}
+            </span>
+            <Input
+              type="password"
+              className="w-full sm:max-w-sm"
+              placeholder={text("设置密码后导出文件将被加密", "If set, the export will be encrypted")}
+              value={exportPassword}
+              onChange={(event) => setExportPassword(event.target.value)}
+              autoComplete="new-password"
+            />
+          </label>
+          <p className="mt-1 text-xs text-app-muted">
+            {text("加密使用 AES-GCM 256 + PBKDF2 密钥派生。导入时需要相同密码。", "Encryption uses AES-GCM 256 + PBKDF2 key derivation. The same password is required for import.")}
+          </p>
         </div>
       </Panel>
 
@@ -524,6 +644,43 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           ))}
         </div>
       </Panel>
+
+      <Dialog
+        open={Boolean(importEncrypted)}
+        title={text("解密备份文件", "Decrypt Backup File")}
+        onClose={() => setImportEncrypted(null)}
+        width="max-w-md"
+      >
+        <div className="space-y-4 p-4 text-sm">
+          <p className="text-app-muted">
+            {text("该备份文件已加密。请输入导出时设置的密码以继续导入。", "This backup file is encrypted. Enter the password set during export to continue.")}
+          </p>
+          <label className="block">
+            <span className="mb-1 block text-xs text-app-muted">{text("解密密码", "Decryption password")}</span>
+            <Input
+              type="password"
+              className="w-full"
+              value={importPassword}
+              onChange={(event) => setImportPassword(event.target.value)}
+              autoComplete="current-password"
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void decryptImportFile();
+              }}
+            />
+          </label>
+          {importDecryptError ? (
+            <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{importDecryptError}</div>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setImportEncrypted(null)}>
+              {text("取消", "Cancel")}
+            </Button>
+            <Button type="button" onClick={() => void decryptImportFile()}>
+              {text("解密", "Decrypt")}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
 
       <Dialog open={Boolean(importBackup)} title={text("导入本地数据", "Import Local Data")} onClose={() => setImportBackup(null)} width="max-w-xl">
         <div className="space-y-4 p-4 text-sm">
@@ -573,6 +730,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         </div>
       </Dialog>
     </form>
+    {confirmDialog}
+  </>
   );
 
   if (!standalone) return content;

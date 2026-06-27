@@ -3,6 +3,7 @@ import { CopyPlus, Edit2, FolderOpen, Plus, RefreshCw, Rocket, Trash2 } from "lu
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
+import { FieldError, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
 import { Button, Dialog, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
@@ -11,11 +12,14 @@ import { getReleaseConditionText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { normalizeStoragePath } from "../lib/remote-storage";
 import { browserRuntime } from "../lib/runtime";
+import { cn } from "../lib/utils";
 import {
   createTaskTemplate,
+  findMissingRequiredVariables,
   loadTaskTemplates,
   MAX_TEMPLATE_BATCH_COUNT,
   recordTaskTemplateUsage,
+  resolveTemplateVariables,
   saveTaskTemplates,
   taskMatchesTemplate,
   taskTemplateToPayloads,
@@ -63,6 +67,7 @@ function getDefaultTemplate(username: string, imageId = ""): EditableTaskTemplat
     releaseAfterHours: 24,
     workDirectory: "",
     scriptPath: "",
+    variables: [],
   };
 }
 
@@ -105,21 +110,43 @@ function TemplateDialog({
   const [form, setForm] = useState<EditableTaskTemplate>(() => getDefaultTemplate(username));
   const [storagePickerTarget, setStoragePickerTarget] = useState<StoragePickerTarget | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
 
   useEffect(() => {
     if (!open) return;
     setForm(initialValue ?? getDefaultTemplate(username, imageOptions[0] ? String(imageOptions[0].id) : ""));
     setFormError(null);
     setStoragePickerTarget(null);
-  }, [imageOptions, initialValue, open, username]);
+    resetTouched();
+  }, [imageOptions, initialValue, open, resetTouched, username]);
 
   function update<K extends keyof EditableTaskTemplate>(key: K, value: EditableTaskTemplate[K]) {
     setForm((current) => ({ ...current, [key]: value }));
   }
 
+  const fieldErrors = useMemo(() => {
+    const errors: Record<string, string> = {};
+    if (!form.name.trim()) errors.name = text("模板名称不能为空", "Template name is required");
+    if (!form.taskNamePrefix.trim()) errors.taskNamePrefix = text("实例名称前缀不能为空", "Instance name prefix is required");
+    if (!form.imageId.trim()) errors.image = text("请选择镜像", "Select an image");
+    if (form.cpu <= 0) errors.cpu = text("CPU 必须大于 0", "CPU must be greater than 0");
+    if (!Number.isInteger(form.gpu) || form.gpu < 0) errors.gpu = text("GPU 必须是非负整数", "GPU must be a non-negative integer");
+    if (!Number.isInteger(form.memory) || form.memory <= 0) errors.memory = text("内存必须是正整数", "Memory must be a positive integer");
+    if (!Number.isInteger(form.batchCount) || form.batchCount < 1 || form.batchCount > MAX_TEMPLATE_BATCH_COUNT) {
+      errors.batchCount = text(`创建数量必须在 1-${MAX_TEMPLATE_BATCH_COUNT} 之间`, `Quantity must be between 1 and ${MAX_TEMPLATE_BATCH_COUNT}`);
+    }
+    if (form.releaseCondition === 2 && (!form.releaseAfterHours || form.releaseAfterHours <= 0)) {
+      errors.releaseAfterHours = text("定时释放小时数必须大于 0", "Timed release hours must be greater than 0");
+    }
+    if (form.releaseCondition === 3 && !form.workDirectory?.trim()) errors.workDirectory = text("请填写工作目录", "Enter the working directory");
+    if (form.releaseCondition === 3 && !form.scriptPath?.trim()) errors.scriptPath = text("请填写脚本路径", "Enter the script path");
+    return errors;
+  }, [form, text]);
+
   function submit(event: FormEvent) {
     event.preventDefault();
     setFormError(null);
+    touchAll(["name", "taskNamePrefix", "image", "cpu", "gpu", "memory", "batchCount", "releaseAfterHours", "workDirectory", "scriptPath"]);
 
     const name = form.name.trim();
     const taskNamePrefix = form.taskNamePrefix.trim();
@@ -171,6 +198,13 @@ function TemplateDialog({
       mountPath: form.mountPath.trim() || `/home/ubuntu/${username}`,
       workDirectory: form.workDirectory?.trim(),
       scriptPath: form.scriptPath?.trim(),
+      variables: (form.variables ?? []).filter((variable) => variable.key.trim()).map((variable) => ({
+        key: variable.key.trim(),
+        label: variable.label?.trim() || undefined,
+        defaultValue: variable.defaultValue?.trim() || undefined,
+        required: variable.required === true,
+        description: variable.description?.trim() || undefined,
+      })),
     });
   }
 
@@ -192,11 +226,13 @@ function TemplateDialog({
         <div className="grid gap-4 md:grid-cols-2">
           <label className="block text-sm">
             <span className="mb-1 block text-app-muted">{text("模板名称", "Template name")}</span>
-            <Input className="w-full" value={form.name} onChange={(event) => update("name", event.target.value)} required />
+            <Input className={cn("w-full", fieldBorderClass(touchedFields.has("name") && Boolean(fieldErrors.name)))} value={form.name} onChange={(event) => update("name", event.target.value)} onBlur={() => markTouched("name")} required />
+            <FieldError message={touchedFields.has("name") ? fieldErrors.name : undefined} />
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-app-muted">{text("实例名称前缀", "Instance name prefix")}</span>
-            <Input className="w-full" value={form.taskNamePrefix} onChange={(event) => update("taskNamePrefix", event.target.value)} required />
+            <Input className={cn("w-full", fieldBorderClass(touchedFields.has("taskNamePrefix") && Boolean(fieldErrors.taskNamePrefix)))} value={form.taskNamePrefix} onChange={(event) => update("taskNamePrefix", event.target.value)} onBlur={() => markTouched("taskNamePrefix")} required />
+            <FieldError message={touchedFields.has("taskNamePrefix") ? fieldErrors.taskNamePrefix : undefined} />
           </label>
         </div>
         <label className="block text-sm">
@@ -206,7 +242,7 @@ function TemplateDialog({
         <div className="grid gap-4 md:grid-cols-2">
           <label className="block text-sm">
             <span className="mb-1 block text-app-muted">{text("镜像", "Image")}</span>
-            <Select className="w-full" value={form.imageId} onChange={(event) => update("imageId", event.target.value)} required>
+            <Select className={cn("w-full", fieldBorderClass(touchedFields.has("image") && Boolean(fieldErrors.image)))} value={form.imageId} onChange={(event) => update("imageId", event.target.value)} onBlur={() => markTouched("image")} required>
               <option value="">{text("请选择镜像", "Select an image")}</option>
               {imageOptions.map((image) => (
                 <option key={String(image.id)} value={String(image.id)}>
@@ -214,33 +250,39 @@ function TemplateDialog({
                 </option>
               ))}
             </Select>
+            <FieldError message={touchedFields.has("image") ? fieldErrors.image : undefined} />
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-app-muted">{text("创建数量", "Quantity")}</span>
             <Input
-              className="w-full"
+              className={cn("w-full", fieldBorderClass(touchedFields.has("batchCount") && Boolean(fieldErrors.batchCount)))}
               max={MAX_TEMPLATE_BATCH_COUNT}
               min="1"
               step="1"
               type="number"
               value={form.batchCount}
               onChange={(event) => update("batchCount", parseFormNumber(event.target.value, 1))}
+              onBlur={() => markTouched("batchCount")}
               required
             />
+            <FieldError message={touchedFields.has("batchCount") ? fieldErrors.batchCount : undefined} />
           </label>
         </div>
         <div className="grid gap-4 md:grid-cols-3">
           <label className="block text-sm">
             <span className="mb-1 block text-app-muted">CPU</span>
-            <Input className="w-full" min="0.1" step="0.1" type="number" value={form.cpu} onChange={(event) => update("cpu", parseFormNumber(event.target.value, DEFAULT_CPU))} required />
+            <Input className={cn("w-full", fieldBorderClass(touchedFields.has("cpu") && Boolean(fieldErrors.cpu)))} min="0.1" step="0.1" type="number" value={form.cpu} onChange={(event) => update("cpu", parseFormNumber(event.target.value, DEFAULT_CPU))} onBlur={() => markTouched("cpu")} required />
+            <FieldError message={touchedFields.has("cpu") ? fieldErrors.cpu : undefined} />
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-app-muted">GPU</span>
-            <Input className="w-full" min="0" step="1" type="number" value={form.gpu} onChange={(event) => update("gpu", parseFormNumber(event.target.value, DEFAULT_GPU))} required />
+            <Input className={cn("w-full", fieldBorderClass(touchedFields.has("gpu") && Boolean(fieldErrors.gpu)))} min="0" step="1" type="number" value={form.gpu} onChange={(event) => update("gpu", parseFormNumber(event.target.value, DEFAULT_GPU))} onBlur={() => markTouched("gpu")} required />
+            <FieldError message={touchedFields.has("gpu") ? fieldErrors.gpu : undefined} />
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-app-muted">{text("内存 (GiB)", "Memory (GiB)")}</span>
-            <Input className="w-full" min="1" step="1" type="number" value={form.memory} onChange={(event) => update("memory", parseFormNumber(event.target.value, DEFAULT_MEMORY))} required />
+            <Input className={cn("w-full", fieldBorderClass(touchedFields.has("memory") && Boolean(fieldErrors.memory)))} min="1" step="1" type="number" value={form.memory} onChange={(event) => update("memory", parseFormNumber(event.target.value, DEFAULT_MEMORY))} onBlur={() => markTouched("memory")} required />
+            <FieldError message={touchedFields.has("memory") ? fieldErrors.memory : undefined} />
           </label>
         </div>
         <div className="grid gap-4 text-sm md:grid-cols-2">
@@ -271,7 +313,8 @@ function TemplateDialog({
           {form.releaseCondition === 2 ? (
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("创建后释放小时数", "Release hours after creation")}</span>
-              <Input className="w-full" min="0.1" step="0.1" type="number" value={form.releaseAfterHours ?? 24} onChange={(event) => update("releaseAfterHours", parseFormNumber(event.target.value, 24))} required />
+              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("releaseAfterHours") && Boolean(fieldErrors.releaseAfterHours)))} min="0.1" step="0.1" type="number" value={form.releaseAfterHours ?? 24} onChange={(event) => update("releaseAfterHours", parseFormNumber(event.target.value, 24))} onBlur={() => markTouched("releaseAfterHours")} required />
+              <FieldError message={touchedFields.has("releaseAfterHours") ? fieldErrors.releaseAfterHours : undefined} />
             </label>
           ) : null}
         </div>
@@ -280,25 +323,119 @@ function TemplateDialog({
             <div className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
               <div className="flex gap-2">
-                <Input className="w-full font-mono text-xs" value={form.workDirectory ?? ""} onChange={(event) => update("workDirectory", event.target.value)} required />
+                <Input className={cn("w-full font-mono text-xs", fieldBorderClass(touchedFields.has("workDirectory") && Boolean(fieldErrors.workDirectory)))} value={form.workDirectory ?? ""} onChange={(event) => update("workDirectory", event.target.value)} onBlur={() => markTouched("workDirectory")} required />
                 <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("workDirectory")}>
                   <FolderOpen className="h-4 w-4" />
                   {text("选择", "Select")}
                 </Button>
               </div>
+              <FieldError message={touchedFields.has("workDirectory") ? fieldErrors.workDirectory : undefined} />
             </div>
             <div className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("脚本路径", "Script path")}</span>
               <div className="flex gap-2">
-                <Input className="w-full font-mono text-xs" value={form.scriptPath ?? ""} onChange={(event) => update("scriptPath", event.target.value)} required />
+                <Input className={cn("w-full font-mono text-xs", fieldBorderClass(touchedFields.has("scriptPath") && Boolean(fieldErrors.scriptPath)))} value={form.scriptPath ?? ""} onChange={(event) => update("scriptPath", event.target.value)} onBlur={() => markTouched("scriptPath")} required />
                 <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("scriptPath")}>
                   <FolderOpen className="h-4 w-4" />
                   {text("选择", "Select")}
                 </Button>
               </div>
+              <FieldError message={touchedFields.has("scriptPath") ? fieldErrors.scriptPath : undefined} />
             </div>
           </div>
         ) : null}
+        <div className="space-y-2 rounded-md border border-app-border bg-app-surface p-3 text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <div className="font-medium text-app-text">{text("变量定义", "Variable Definitions")}</div>
+              <div className="mt-0.5 text-xs text-app-muted">
+                {text("在名称或路径中使用 ${key} 占位符，执行模板时会弹窗收集变量值。", "Use ${key} placeholders in name or path fields. Values are collected at execution time.")}
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => update("variables", [...(form.variables ?? []), { key: "", label: "", defaultValue: "", required: false, description: "" }])}
+            >
+              <Plus className="h-4 w-4" />
+              {text("添加变量", "Add variable")}
+            </Button>
+          </div>
+          {(form.variables ?? []).length === 0 ? null : (
+            <div className="space-y-2">
+              {(form.variables ?? []).map((variable, index) => (
+                <div key={index} className="grid gap-2 rounded-md border border-app-border bg-app-panel/50 p-2 sm:grid-cols-[120px_1fr_1fr_auto_1fr_auto]">
+                  <Input
+                    className="font-mono text-xs"
+                    placeholder={text("key", "key")}
+                    value={variable.key}
+                    onChange={(event) => {
+                      const next = [...(form.variables ?? [])];
+                      next[index] = { ...variable, key: event.target.value };
+                      update("variables", next);
+                    }}
+                  />
+                  <Input
+                    className="text-xs"
+                    placeholder={text("显示标签", "Label")}
+                    value={variable.label ?? ""}
+                    onChange={(event) => {
+                      const next = [...(form.variables ?? [])];
+                      next[index] = { ...variable, label: event.target.value };
+                      update("variables", next);
+                    }}
+                  />
+                  <Input
+                    className="text-xs"
+                    placeholder={text("默认值", "Default value")}
+                    value={variable.defaultValue ?? ""}
+                    onChange={(event) => {
+                      const next = [...(form.variables ?? [])];
+                      next[index] = { ...variable, defaultValue: event.target.value };
+                      update("variables", next);
+                    }}
+                  />
+                  <label className="inline-flex items-center gap-1 whitespace-nowrap px-1 text-xs text-app-text">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 cursor-pointer accent-app-accent"
+                      checked={variable.required === true}
+                      onChange={(event) => {
+                        const next = [...(form.variables ?? [])];
+                        next[index] = { ...variable, required: event.target.checked };
+                        update("variables", next);
+                      }}
+                    />
+                    {text("必填", "Required")}
+                  </label>
+                  <Input
+                    className="text-xs"
+                    placeholder={text("说明", "Description")}
+                    value={variable.description ?? ""}
+                    onChange={(event) => {
+                      const next = [...(form.variables ?? [])];
+                      next[index] = { ...variable, description: event.target.value };
+                      update("variables", next);
+                    }}
+                  />
+                  <Button
+                    aria-label={text("删除变量", "Remove variable")}
+                    type="button"
+                    variant="ghost"
+                    className="h-9 w-9 px-0 text-app-danger hover:text-app-danger"
+                    onClick={() => {
+                      const next = [...(form.variables ?? [])];
+                      next.splice(index, 1);
+                      update("variables", next);
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
         {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
         <div className="flex justify-end gap-2 border-t border-app-border pt-4">
           <Button type="button" variant="secondary" onClick={onClose}>
@@ -324,6 +461,128 @@ function TemplateDialog({
   );
 }
 
+function TemplateExecuteDialog({
+  template,
+  open,
+  onClose,
+  onConfirm,
+  isPending,
+}: {
+  template: TaskTemplate | null;
+  open: boolean;
+  onClose: () => void;
+  onConfirm: (variableValues: Record<string, string>) => void;
+  isPending: boolean;
+}) {
+  const { text } = useI18n();
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || !template) return;
+    const initial: Record<string, string> = {};
+    for (const variable of template.variables ?? []) {
+      initial[variable.key] = variable.defaultValue ?? "";
+    }
+    setValues(initial);
+    setError(null);
+  }, [open, template]);
+
+  const previewPayloads = useMemo(() => {
+    if (!template) return [];
+    const resolved = resolveTemplateVariables(template, values);
+    return taskTemplateToPayloads(template, new Date(), resolved);
+  }, [template, values]);
+
+  if (!template) return null;
+  const variables = template.variables ?? [];
+
+  function submit() {
+    if (!template) return;
+    const resolved = resolveTemplateVariables(template, values);
+    const missing = findMissingRequiredVariables(template, resolved);
+    if (missing.length > 0) {
+      setError(text(`以下变量为必填项：${missing.join(", ")}`, `Required variables missing: ${missing.join(", ")}`));
+      return;
+    }
+    setError(null);
+    onConfirm(resolved);
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title={text(`执行模板：${template.name}`, `Execute Template: ${template.name}`)}
+      onClose={onClose}
+      width="max-w-3xl"
+    >
+      <div className="space-y-4 p-4">
+        {variables.length === 0 ? (
+          <div className="rounded-md bg-app-infoSoft px-3 py-2 text-sm text-app-info">
+            {text("该模板没有定义变量。", "This template has no variables defined.")}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="text-sm font-medium text-app-text">{text("变量值", "Variable Values")}</div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {variables.map((variable) => (
+                <label key={variable.key} className="block text-sm">
+                  <span className="mb-1 flex items-center gap-1 text-app-muted">
+                    <span className="font-mono">{variable.key}</span>
+                    {variable.required ? <span className="text-app-danger">*</span> : null}
+                    {variable.label ? <span className="text-app-text">({variable.label})</span> : null}
+                  </span>
+                  <Input
+                    className="w-full font-mono text-xs"
+                    placeholder={variable.defaultValue ? text(`默认：${variable.defaultValue}`, `Default: ${variable.defaultValue}`) : text("请输入值", "Enter value")}
+                    value={values[variable.key] ?? ""}
+                    onChange={(event) => setValues((current) => ({ ...current, [variable.key]: event.target.value }))}
+                  />
+                  {variable.description ? <span className="mt-1 block text-xs text-app-muted">{variable.description}</span> : null}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          <div className="text-sm font-medium text-app-text">{text("创建预览（试运行）", "Creation Preview (dry-run)")}</div>
+          <div className="max-h-48 overflow-auto rounded-md border border-app-border bg-app-codeBg p-3 font-mono text-xs text-app-codeText">
+            {previewPayloads.length === 0 ? (
+              <div className="text-app-muted">{text("无预览数据", "No preview data")}</div>
+            ) : (
+              <ul className="space-y-1">
+                {previewPayloads.map((payload, index) => (
+                  <li key={index} className="break-all">
+                    <span className="text-app-muted">#{index + 1}</span> {payload.name}
+                    {payload.storage_path ? <div className="pl-4 text-app-muted">storage: {payload.storage_path}</div> : null}
+                    {payload.work_directory ? <div className="pl-4 text-app-muted">workdir: {payload.work_directory}</div> : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="text-xs text-app-muted">
+            {text(`将创建 ${previewPayloads.length} 个实例，请求间隔 ${BATCH_REQUEST_DELAY_MS}ms。`, `Will create ${previewPayloads.length} instance(s), ${BATCH_REQUEST_DELAY_MS}ms apart.`)}
+          </div>
+        </div>
+
+        {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
+
+        <div className="flex justify-end gap-2 border-t border-app-border pt-4">
+          <Button type="button" variant="secondary" onClick={onClose} disabled={isPending}>
+            {text("取消", "Cancel")}
+          </Button>
+          <Button onClick={submit} disabled={isPending}>
+            <Rocket className="h-4 w-4" />
+            {text("确认创建", "Confirm Create")}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 export function TaskTemplatesPage() {
   const auth = useAuth();
   const toast = useToast();
@@ -336,6 +595,7 @@ export function TaskTemplatesPage() {
   const [loadError, setLoadError] = useState<Error | null>(null);
   const [editingTemplate, setEditingTemplate] = useState<TaskTemplate | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [executingTemplate, setExecutingTemplate] = useState<TaskTemplate | null>(null);
   const username = auth.user?.username ?? "";
 
   const imageQuery = useMutation({
@@ -391,13 +651,22 @@ export function TaskTemplatesPage() {
     setDialogOpen(true);
   }
 
+  function executeTemplate(template: TaskTemplate) {
+    if ((template.variables ?? []).length > 0) {
+      setExecutingTemplate(template);
+    } else {
+      createMutation.mutate({ template });
+    }
+  }
+
   const createMutation = useMutation({
-    mutationFn: async (template: TaskTemplate) => {
-      const payloads = taskTemplateToPayloads(template);
+    mutationFn: async (args: { template: TaskTemplate; variableValues?: Record<string, string> }) => {
+      const { template, variableValues } = args;
+      const payloads = taskTemplateToPayloads(template, new Date(), variableValues);
       await runSequentiallyWithDelay(payloads, (payload) => instanceApi.createTask(payload));
-      return payloads;
+      return { payloads, template };
     },
-    onSuccess: (payloads, template) => {
+    onSuccess: ({ payloads, template }) => {
       const description = payloads.length > 1 ? text(`${payloads[0]?.name} 等 ${payloads.length} 个实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `${payloads[0]?.name} and ${payloads.length - 1} more instances, ${BATCH_REQUEST_DELAY_MS}ms apart`) : String(payloads[0]?.name ?? "");
       const title = text(`已按模板创建：${template.name}`, `Created from template: ${template.name}`);
       toast.success(title, description);
@@ -419,7 +688,7 @@ export function TaskTemplatesPage() {
         return next;
       });
     },
-    onError: (error, template) => {
+    onError: (error, { template }) => {
       toast.error(text(`模板创建失败：${template.name}`, `Template creation failed: ${template.name}`), error instanceof Error ? error.message : text("请检查模板配置或稍后重试", "Check the template configuration or try again later"));
       void runLogger.log({
         source: "task-template",
@@ -572,7 +841,7 @@ export function TaskTemplatesPage() {
                     disabled={createMutation.isPending}
                     title={text("一键新建", "Create with template")}
                     variant="ghost"
-                    onClick={() => createMutation.mutate(template)}
+                    onClick={() => executeTemplate(template)}
                   >
                     <Rocket className="h-4 w-4" />
                     {text("新建", "New")}
@@ -646,15 +915,15 @@ export function TaskTemplatesPage() {
                   <tr key={template.id} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
                     <td className="whitespace-nowrap px-3 py-2 align-middle">
                       <div className="font-medium">{template.name}</div>
-                      <div className="mt-0.5 max-w-72 truncate text-xs text-app-muted">
+                      <div className="mt-0.5 max-w-72 truncate text-xs text-app-text">
                         {template.description || text(`${template.taskNamePrefix}，每次 ${template.batchCount} 个`, `${template.taskNamePrefix}, ${template.batchCount} each time`)}
                       </div>
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{getImageName(imageOptions, template.imageId, text)}</td>
-                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{formatResource(template)}</td>
+                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-text">{getImageName(imageOptions, template.imageId, text)}</td>
+                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-text">{formatResource(template)}</td>
                     <td className="whitespace-nowrap px-3 py-2 align-middle">
                       <div className="font-medium text-app-text">{template.usageCount}</div>
-                      {template.lastUsedAt ? <div className="mt-0.5 text-xs text-app-muted">{template.lastUsedAt.slice(0, 19).replace("T", " ")}</div> : null}
+                      {template.lastUsedAt ? <div className="mt-0.5 text-xs text-app-text">{template.lastUsedAt.slice(0, 19).replace("T", " ")}</div> : null}
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 align-middle">
                       <span className="inline-flex min-w-10 justify-center rounded-md border border-app-border bg-app-panel px-2 py-1 text-xs font-medium text-app-text">
@@ -662,10 +931,10 @@ export function TaskTemplatesPage() {
                       </span>
                     </td>
                     <td className="px-3 py-2 align-middle">
-                      <div className="max-w-72 truncate font-mono text-xs text-app-muted">{template.storagePath}</div>
-                      <div className="mt-1 max-w-72 truncate font-mono text-xs text-app-muted">{template.mountPath}</div>
+                      <div className="max-w-72 truncate font-mono text-xs text-app-text">{template.storagePath}</div>
+                      <div className="mt-1 max-w-72 truncate font-mono text-xs text-app-text">{template.mountPath}</div>
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">
+                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-text">
                       {getReleaseConditionText(template.releaseCondition, locale)}
                       {template.releaseCondition === 2 ? text(`，${template.releaseAfterHours ?? 24} 小时后`, `, after ${template.releaseAfterHours ?? 24} hours`) : ""}
                     </td>
@@ -675,7 +944,7 @@ export function TaskTemplatesPage() {
                           className="h-8 px-2"
                           disabled={createMutation.isPending}
                           title={text("一键新建", "Create with template")}
-                          onClick={() => createMutation.mutate(template)}
+                          onClick={() => executeTemplate(template)}
                         >
                           <Rocket className="h-4 w-4" />
                           {text("新建", "New")}
@@ -744,6 +1013,18 @@ export function TaskTemplatesPage() {
           setEditingTemplate(null);
         }}
         onSave={saveTemplate}
+      />
+      <TemplateExecuteDialog
+        template={executingTemplate}
+        open={executingTemplate !== null}
+        isPending={createMutation.isPending}
+        onClose={() => setExecutingTemplate(null)}
+        onConfirm={(variableValues) => {
+          if (executingTemplate) {
+            createMutation.mutate({ template: executingTemplate, variableValues });
+          }
+          setExecutingTemplate(null);
+        }}
       />
       {confirmDialog}
     </div>

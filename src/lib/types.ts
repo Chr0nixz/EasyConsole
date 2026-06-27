@@ -105,6 +105,20 @@ export type ConsoleSummary = UnknownRecord & {
   };
 };
 
+export type MonitorMetricSeries = UnknownRecord & {
+  name?: string;
+  data?: Array<{ timestamp?: number; value?: number }>;
+};
+
+export type MonitorIndexResponse = UnknownRecord & {
+  index?: number;
+  cpu?: MonitorMetricSeries[];
+  memory?: MonitorMetricSeries[];
+  network?: MonitorMetricSeries[];
+  disk?: MonitorMetricSeries[];
+  metrics?: UnknownRecord;
+};
+
 export type ImageItem = UnknownRecord & {
   id: string | number;
   name?: string;
@@ -179,6 +193,20 @@ export type CreateTaskPayload = UnknownRecord & {
 
 export type ScheduledTaskStatus = "pending" | "running" | "done" | "failed" | "paused";
 
+export type TaskRecurrenceType = "once" | "daily" | "weekly" | "interval" | "cron";
+
+export type TaskRecurrence = {
+  type: TaskRecurrenceType;
+  /** Days of week for weekly recurrence (0=Sun … 6=Sat). */
+  weekdays?: number[];
+  /** Seconds between runs for interval recurrence. */
+  intervalSec?: number;
+  /** Standard 5-field cron expression for cron recurrence. */
+  cron?: string;
+  /** Stop repeating after this ISO timestamp. */
+  endDate?: string;
+};
+
 export type ScheduledTask = {
   id: string;
   name: string;
@@ -190,6 +218,20 @@ export type ScheduledTask = {
   updatedAt: string;
   lastRunAt?: string;
   lastError?: string;
+  recurrence?: TaskRecurrence;
+};
+
+export type TaskTemplateVariable = {
+  /** Placeholder key used in `${key}` tokens inside template string fields. */
+  key: string;
+  /** Optional human-readable label shown in the variable collection UI. */
+  label?: string;
+  /** Optional default value used when the user leaves the field empty. */
+  defaultValue?: string;
+  /** Whether the user must provide a non-empty value at execution time. */
+  required?: boolean;
+  /** Optional helper text shown below the input. */
+  description?: string;
 };
 
 export type TaskTemplate = {
@@ -208,6 +250,8 @@ export type TaskTemplate = {
   releaseAfterHours?: number;
   workDirectory?: string;
   scriptPath?: string;
+  /** Optional `${key}` variable definitions that the user fills in at execution time. */
+  variables?: TaskTemplateVariable[];
   usageCount: number;
   lastUsedAt?: string;
   createdAt: string;
@@ -248,6 +292,8 @@ export type UploadQueueItem = {
   progress: number;
   error?: string;
   skipReason?: string;
+  /** Upload ID from a previous partial upload, used for resumable uploads. */
+  resumeFromUploadId?: string;
 };
 
 export type RuntimeStorage = {
@@ -315,6 +361,7 @@ export type RuntimeTransport = {
   supportsUpdater: boolean;
   supportsFileReveal: boolean;
   storage: RuntimeStorage;
+  secureStorage: RuntimeStorage;
   request<T = unknown>(request: RuntimeHttpRequest): Promise<RuntimeHttpResponse<T>>;
   createWebSocket(url: string): Promise<RuntimeWebSocket>;
   copyText(text: string): Promise<void>;
@@ -340,6 +387,7 @@ export type RuntimeTransport = {
   quitDesktopApp(): Promise<void>;
   onDesktopCloseRequested(handler: () => void): Promise<() => void>;
   onDesktopRunDueScheduledTasks(handler: () => void): Promise<() => void>;
+  onDeepLink(handler: (urls: string[]) => void): Promise<() => void>;
 };
 
 export type DownloadQueueItemStatus = "queued" | "downloading" | "done" | "failed" | "cancelled";
@@ -358,6 +406,19 @@ export type DownloadQueueItem = {
   loaded: number;
   total?: number;
   destinationPath?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CommitQueueItemStatus = "queued" | "running" | "done" | "failed";
+
+export type CommitQueueItem = {
+  id: string;
+  taskName: string;
+  taskId?: string | number;
+  podName: string;
+  status: CommitQueueItemStatus;
   error?: string;
   createdAt: string;
   updatedAt: string;

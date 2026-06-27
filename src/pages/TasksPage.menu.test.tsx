@@ -7,9 +7,11 @@ import { MoreActionsMenu } from "./TasksPage";
 describe("MoreActionsMenu", () => {
   const task = { id: 1, name: "长任务", status: 2 } as Task;
   const defaultProps = {
+    canEdit: false,
     isPinned: false,
     onCommit: vi.fn(),
     onDownload: vi.fn(),
+    onEdit: vi.fn(),
     onRaw: vi.fn(),
     onSaveTemplate: vi.fn(),
     onTogglePin: vi.fn(),

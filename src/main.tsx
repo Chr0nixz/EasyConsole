@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, HashRouter } from "react-router-dom";
 
 import { App } from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { RunLoggerProvider } from "./components/RunLoggerProvider";
 import { AuthProvider } from "./lib/auth-context";
 import { I18nProvider } from "./lib/i18n";
@@ -23,23 +24,34 @@ const queryClient = new QueryClient({
 
 const Router = isTauri() ? HashRouter : BrowserRouter;
 
+// Surface unhandled promise rejections and synchronous errors so they show up
+// in the console alongside the ErrorBoundary logs. These do not block rendering.
+window.addEventListener("unhandledrejection", (event) => {
+  console.error("Unhandled promise rejection.", event.reason);
+});
+window.addEventListener("error", (event) => {
+  console.error("Uncaught error.", event.error ?? event.message);
+});
+
 // Resolve the native runtime kind (web/desktop/mobile) before mounting so the
 // renderer can pick capability flags without race conditions. On web this
 // resolves immediately.
 initRuntimeKind().finally(() => {
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <I18nProvider>
-          <AuthProvider>
-            <RunLoggerProvider>
-              <Router>
-                <App />
-              </Router>
-            </RunLoggerProvider>
-          </AuthProvider>
-        </I18nProvider>
-      </QueryClientProvider>
+      <ErrorBoundary>
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <AuthProvider>
+              <RunLoggerProvider>
+                <Router>
+                  <App />
+                </Router>
+              </RunLoggerProvider>
+            </AuthProvider>
+          </I18nProvider>
+        </QueryClientProvider>
+      </ErrorBoundary>
     </StrictMode>,
   );
 });
