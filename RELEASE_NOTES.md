@@ -1,3 +1,23 @@
+# EasyConsole v0.3.8
+
+Task detail page, encrypted backups, image commit queue, and CI reliability improvements.
+
+## Changes
+
+- **Task detail page**: New `TaskDetailPage` with tabbed views for logs, Grafana monitor, in-app SSH, and raw JSON data.
+- **Encrypted backups**: Added backup/restore with PBKDF2 key derivation and AES-GCM encryption for local data portability.
+- **Image commit queue**: Context provider for batching image commit operations with progress tracking.
+- **Image favorites and resumable uploads**: Mark images as favorites; resume interrupted uploads from the last completed chunk.
+- **Task recurrence**: Added cron, interval, and weekly recurrence support for scheduled tasks.
+- **ErrorBoundary**: Crash recovery wrapper for route pages to prevent full-app blank screens on component errors.
+- **MD5 web worker**: Off-thread file hashing for upload integrity checks, keeping the main thread responsive.
+- **Local data store**: Shared data layer for CLI/MCP sidecars to read and write app-local state.
+- **Desktop enhancements**: Added Tauri deep-link, global-shortcut, and keyring plugins. Added `recharts`, `react-virtual`, and xterm webgl/web-links addons.
+- **CI: Linux build fix**: Added `libglib2.0-dev` to apt dependencies — `libgtk-3-dev` alone doesn't reliably pull `glib-2.0.pc` on GitHub runners.
+- **CI: Android quality gates**: Added typecheck, lint, test, and cargo check steps to the Android CI workflow.
+
+---
+
 # EasyConsole v0.3.7
 
 Android in-app update support and mobile UI improvements.
