@@ -8,7 +8,7 @@ export function LanguageSwitch({ compact = false }: { compact?: boolean }) {
   const { locale, setLocale, t } = useI18n();
 
   return (
-    <div className="flex items-center gap-1 rounded-md border border-app-border bg-app-surface p-1" aria-label={t("common.selectLanguage")}>
+    <div className="flex items-center gap-1 rounded-md border border-app-border bg-app-surface p-1" role="group" aria-label={t("common.selectLanguage")}>
       {!compact ? <Languages className="ml-1 h-4 w-4 text-app-muted" /> : null}
       {supportedLocales.map((item) => (
         <button

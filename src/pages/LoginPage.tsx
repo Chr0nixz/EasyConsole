@@ -7,13 +7,34 @@ import { LanguageSwitch } from "../components/LanguageSwitch";
 import { Button, Input } from "../components/ui";
 import { getSavedAccountLabel } from "../lib/saved-accounts";
 import { useI18n } from "../lib/i18n";
+import { useConfirmAction } from "../lib/use-confirm-action";
 import { useAuth } from "../lib/use-auth";
+
+function friendlyLoginError(message: string, fallbackZh: string, fallbackEn: string, locale: "zh-CN" | "en-US") {
+  const lower = message.toLowerCase();
+  const zh = locale === "zh-CN";
+  if (lower.includes("network") || lower.includes("fetch") || lower.includes("failed to fetch") || lower.includes("err_network")) {
+    return zh ? "网络连接异常，请检查网络后重试。" : "Network error. Check your connection and try again.";
+  }
+  if (lower.includes("401") || lower.includes("unauthorized")) {
+    return zh ? "用户名或密码不正确。" : "Username or password is incorrect.";
+  }
+  if (lower.includes("timeout")) {
+    return zh ? "请求超时，请稍后重试。" : "Request timed out. Please try again.";
+  }
+  if (lower.includes("500") || lower.includes("server")) {
+    return zh ? "服务器异常，请稍后重试或联系管理员。" : "Server error. Try again later or contact an administrator.";
+  }
+  // Preserve domain-specific messages (e.g. "Sign-in response did not include a token") but still keep them readable.
+  return message || (zh ? fallbackZh : fallbackEn);
+}
 
 export function LoginPage() {
   const auth = useAuth();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
+  const confirm = useConfirmAction();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +60,8 @@ export function LoginPage() {
       await auth.login(username, password);
       navigateAfterLogin();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : t("login.failed"));
+      const raw = nextError instanceof Error ? nextError.message : t("login.failed");
+      setError(friendlyLoginError(raw, "登录失败", "Sign-in failed", locale));
     } finally {
       setLoading(false);
     }
@@ -52,7 +74,8 @@ export function LoginPage() {
       await auth.loginSaved(accountId);
       navigateAfterLogin();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : t("login.savedLoginFailed"));
+      const raw = nextError instanceof Error ? nextError.message : t("login.savedLoginFailed");
+      setError(friendlyLoginError(raw, "直接登录失败，请重新输入密码", "Saved sign-in failed. Enter the password again.", locale));
       const account = auth.savedAccounts.find((item) => item.id === accountId);
       if (account) setUsername(account.username);
       setShowPasswordForm(true);
@@ -61,9 +84,18 @@ export function LoginPage() {
     }
   }
 
-  async function onForgetSavedAccount(accountId: string) {
+  function onForgetSavedAccount(accountId: string, label: string) {
     setError(null);
-    await auth.forgetSavedAccount(accountId);
+    confirm.confirm({
+      title: t("login.forgetTitle"),
+      description: t("login.forgetDescription"),
+      confirmLabel: t("login.forgetConfirmLabel"),
+      tone: "danger",
+      run: () => auth.forgetSavedAccount(accountId).then(() => {
+        // Remove succeeded; nothing else to do. The list updates via auth context.
+        void label;
+      }),
+    });
   }
 
   return (
@@ -95,7 +127,7 @@ export function LoginPage() {
                 className="app-interactive rounded-md px-2 py-1 text-xs text-app-muted hover:bg-app-panel hover:text-app-text"
                 to="/login/settings"
               >
-                {t("common.settings")}
+                {t("common.apiSettings")}
               </Link>
             </div>
             <h2 className="text-lg font-semibold">{showSavedAccounts ? t("login.chooseSavedTitle") : t("login.passwordTitle")}</h2>
@@ -128,7 +160,7 @@ export function LoginPage() {
                       <Button
                         aria-label={t("login.removeSavedAccount", { account: getSavedAccountLabel(account) })}
                         className="h-8 w-8 px-0"
-                        onClick={() => void onForgetSavedAccount(account.id)}
+                        onClick={() => onForgetSavedAccount(account.id, getSavedAccountLabel(account))}
                         type="button"
                         variant="ghost"
                       >
@@ -204,6 +236,7 @@ export function LoginPage() {
           </div>
         </div>
       </section>
+      {confirm.confirmDialog}
     </main>
   );
 }

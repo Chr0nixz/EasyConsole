@@ -152,16 +152,13 @@ tbody tr {
 }
 
 .app-modal-panel {
-  box-shadow:
-    0 24px 64px oklch(0.19 0.025 255 / 0.22),
-    0 2px 0 oklch(0.995 0.004 95 / 0.7) inset;
+  box-shadow: 0 16px 40px oklch(0.19 0.025 255 / 0.20);
   animation: app-modal-panel-in 160ms var(--app-ease-out);
   transform-origin: top center;
 }
 
 .app-terminal-modal-panel {
-  border: 1px solid oklch(0.34 0.035 255);
-  box-shadow: 0 24px 64px oklch(0.19 0.025 255 / 0.34);
+  box-shadow: 0 16px 40px oklch(0.19 0.025 255 / 0.32);
   animation: app-modal-panel-in 160ms var(--app-ease-out);
   transform-origin: top center;
 }

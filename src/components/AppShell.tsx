@@ -5,6 +5,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { LanguageSwitch } from "./LanguageSwitch";
 import { BackgroundScheduledTaskRunner } from "./BackgroundScheduledTaskRunner";
 import { CommandPalette } from "./CommandPalette";
+import { ShortcutsDialog } from "./ShortcutsDialog";
 import { TaskNotificationWatcher } from "./TaskNotificationWatcher";
 import { Button, Dialog } from "./ui";
 import { APP_SETTINGS_STORAGE_KEY, getRuntimeSettings, setRuntimeSettings, stringifyAppSettings } from "../lib/app-settings";
@@ -14,6 +15,7 @@ import { downloadStatusText } from "../lib/download-queue";
 import { formatDownloadProgress, useDownloadQueue } from "../lib/download-queue-context";
 import { browserRuntime } from "../lib/runtime";
 import { useI18n, type TranslationKey } from "../lib/i18n";
+import { useConfirmAction } from "../lib/use-confirm-action";
 import { useAuth } from "../lib/use-auth";
 import { useToast } from "../lib/use-toast";
 import {
@@ -25,14 +27,14 @@ import {
 import { cn } from "../lib/utils";
 
 const navItems = [
-  { to: "/dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
-  { to: "/tasks", labelKey: "nav.tasks", icon: Server },
-  { to: "/scheduled-tasks", labelKey: "nav.scheduledTasks", icon: CalendarClock },
-  { to: "/task-templates", labelKey: "nav.taskTemplates", icon: SquareStack },
-  { to: "/storage", labelKey: "nav.storage", icon: Database },
-  { to: "/images", labelKey: "nav.images", icon: Image },
-  { to: "/run-logs", labelKey: "nav.runLogs", icon: ScrollText },
-  { to: "/settings", labelKey: "nav.settings", icon: Settings },
+  { to: "/dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard, shortcut: "g d" },
+  { to: "/tasks", labelKey: "nav.tasks", icon: Server, shortcut: "g t" },
+  { to: "/scheduled-tasks", labelKey: "nav.scheduledTasks", icon: CalendarClock, shortcut: "g c" },
+  { to: "/task-templates", labelKey: "nav.taskTemplates", icon: SquareStack, shortcut: "g m" },
+  { to: "/storage", labelKey: "nav.storage", icon: Database, shortcut: "g s" },
+  { to: "/images", labelKey: "nav.images", icon: Image, shortcut: "g i" },
+  { to: "/run-logs", labelKey: "nav.runLogs", icon: ScrollText, shortcut: "g r" },
+  { to: "/settings", labelKey: "nav.settings", icon: Settings, shortcut: "g e" },
 ] as const;
 
 const primaryMobileNav = navItems.slice(0, 4);
@@ -58,15 +60,21 @@ export function AppShell() {
   const downloadQueue = useDownloadQueue();
   const commitQueue = useCommitQueue();
   const toast = useToast();
+  const confirm = useConfirmAction();
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [downloadQueueOpen, setDownloadQueueOpen] = useState(false);
   const [commitQueueOpen, setCommitQueueOpen] = useState(false);
+  const [statusPopoverOpen, setStatusPopoverOpen] = useState(false);
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [rememberCloseChoice, setRememberCloseChoice] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const moreMenuRef = useRef<HTMLDivElement>(null);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
   const moreMenuPreviousFocusRef = useRef<HTMLElement | null>(null);
+  const statusPopoverRef = useRef<HTMLDivElement>(null);
+  const statusButtonRef = useRef<HTMLButtonElement>(null);
+  const statusPopoverPreviousFocusRef = useRef<HTMLElement | null>(null);
   const userName = auth.user?.username || auth.user?.name || t("shell.loggedIn");
   const [navWidth, setNavWidth] = useState(() => readStoredShellNavWidth());
   const navResizeSessionRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
@@ -111,6 +119,25 @@ export function AppShell() {
     writeStoredShellNavWidth(DEFAULT_SHELL_NAV_WIDTH);
   }
 
+  function handleNavResizeKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    const STEP = 16;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      const next = clampShellNavWidth(navWidth - STEP);
+      setNavWidth(next);
+      writeStoredShellNavWidth(next);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      const next = clampShellNavWidth(navWidth + STEP);
+      setNavWidth(next);
+      writeStoredShellNavWidth(next);
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setNavWidth(DEFAULT_SHELL_NAV_WIDTH);
+      writeStoredShellNavWidth(DEFAULT_SHELL_NAV_WIDTH);
+    }
+  }
+
   useEffect(() => {
     let lastKeyTime = 0;
     let pendingKey: string | null = null;
@@ -124,6 +151,12 @@ export function AppShell() {
       const target = event.target as HTMLElement | null;
       const isTyping = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable || target.tagName === "SELECT");
       if (isTyping) return;
+
+      if (event.key === "?" || (event.shiftKey && event.key === "/")) {
+        event.preventDefault();
+        setShortcutsOpen(true);
+        return;
+      }
 
       if (event.key === "/") {
         event.preventDefault();
@@ -139,6 +172,8 @@ export function AppShell() {
         const navMap: Record<string, string> = {
           gd: "/dashboard",
           gt: "/tasks",
+          gc: "/scheduled-tasks",
+          gm: "/task-templates",
           gs: "/storage",
           gi: "/images",
           gr: "/run-logs",
@@ -165,6 +200,7 @@ export function AppShell() {
 
   useEffect(() => {
     setMoreMenuOpen(false);
+    setStatusPopoverOpen(false);
   }, [location.pathname]);
 
   useEffect(() => {
@@ -193,6 +229,12 @@ export function AppShell() {
       const activeElement = document.activeElement;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
+      const isInside = container && activeElement instanceof Node ? container.contains(activeElement) : false;
+      if (!isInside) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
       if (event.shiftKey && activeElement === first) {
         event.preventDefault();
         last.focus();
@@ -208,6 +250,54 @@ export function AppShell() {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [moreMenuOpen]);
+
+  useEffect(() => {
+    if (!statusPopoverOpen) {
+      statusPopoverPreviousFocusRef.current?.focus();
+      statusPopoverPreviousFocusRef.current = null;
+      return;
+    }
+    statusPopoverPreviousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const container = statusPopoverRef.current;
+    const focusable = container ? Array.from(container.querySelectorAll<HTMLElement>('button:not([disabled]), [tabindex]:not([tabindex="-1"])')) : [];
+    window.setTimeout(() => focusable[0]?.focus(), 0);
+
+    const onClickOutside = (event: MouseEvent) => {
+      if (statusPopoverRef.current && !statusPopoverRef.current.contains(event.target as Node) && event.target !== statusButtonRef.current) {
+        setStatusPopoverOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setStatusPopoverOpen(false);
+        return;
+      }
+      if (event.key !== "Tab" || focusable.length === 0) return;
+      const activeElement = document.activeElement;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const isInside = container && activeElement instanceof Node ? container.contains(activeElement) : false;
+      if (!isInside) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
+      if (event.shiftKey && activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("pointerdown", onClickOutside);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onClickOutside);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [statusPopoverOpen]);
 
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   useEffect(() => {
@@ -281,6 +371,16 @@ export function AppShell() {
     });
   }
 
+  function onLogoutClick() {
+    confirm.confirm({
+      title: t("shell.logoutConfirmTitle"),
+      description: t("shell.logoutConfirmDescription"),
+      confirmLabel: t("shell.logoutConfirmLabel"),
+      tone: "danger",
+      run: () => auth.logout(),
+    });
+  }
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-app-bg text-app-text md:flex-row">
       <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[100] focus:rounded focus:bg-app-surface focus:px-3 focus:py-1.5 focus:text-sm focus:shadow-popover">
@@ -289,6 +389,7 @@ export function AppShell() {
       <TaskNotificationWatcher />
       <BackgroundScheduledTaskRunner />
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
+      <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       {downloadQueueOpen ? (
         <div className="fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="region" aria-label={text("下载队列", "Download queue")}>
           <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
@@ -460,6 +561,7 @@ export function AppShell() {
           </div>
         </div>
       </Dialog>
+      {confirm.confirmDialog}
       <div className="relative hidden h-screen shrink-0 md:flex" style={{ width: navWidth }}>
         <aside className="flex h-full w-full min-w-0 flex-col overflow-hidden border-r border-app-border bg-app-surface">
           <div className="flex h-14 items-center gap-2 border-b border-app-border px-4">
@@ -476,7 +578,7 @@ export function AppShell() {
               <NavLink
                 key={item.to}
                 to={item.to}
-                title={t(item.labelKey)}
+                title={`${t(item.labelKey)} (${item.shortcut})`}
                 className={({ isActive }) =>
                   cn(
                     "app-interactive flex h-9 min-w-0 items-center gap-2 rounded-md px-3 text-sm text-app-muted hover:bg-app-panel hover:text-app-text",
@@ -490,9 +592,19 @@ export function AppShell() {
             ))}
           </nav>
         </aside>
-        <div aria-orientation="vertical" aria-valuenow={navWidth} className="app-nav-resize-handle absolute inset-y-0 right-0 z-10 w-2 touch-none" role="separator" tabIndex={0} title={text("Sidebar", "Sidebar")} 
-onDoubleClick={handleNavResizeDoubleClick}
- onPointerDown={handleNavResizePointerDown} />
+        <div
+          aria-orientation="vertical"
+          aria-valuenow={navWidth}
+          aria-label={t("shell.sidebar")}
+          aria-keyshortcuts="ArrowLeft ArrowRight Enter"
+          className="app-nav-resize-handle absolute inset-y-0 right-0 z-10 w-2 touch-none"
+          role="separator"
+          tabIndex={0}
+          title={t("shell.sidebar")}
+          onKeyDown={handleNavResizeKeyDown}
+          onDoubleClick={handleNavResizeDoubleClick}
+          onPointerDown={handleNavResizePointerDown}
+        />
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-40 flex min-h-14 items-center justify-between gap-3 border-b border-app-border bg-app-surface px-4 md:px-5" style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}>
@@ -501,49 +613,150 @@ onDoubleClick={handleNavResizeDoubleClick}
             <p className="hidden truncate text-xs text-app-muted sm:block">{t("shell.headerDescription")}</p>
           </div>
           <div className="flex shrink-0 items-center gap-3">
-            <Button className="shrink-0" variant="secondary" onClick={() => setDownloadQueueOpen((value) => !value)}>
-              <DownloadCloud className="h-4 w-4" />
-              <span className="hidden sm:inline">{text("下载", "Downloads")}</span>
-              {downloadQueue.summary.active || downloadQueue.summary.failed ? (
-                <span className="rounded bg-app-panel px-1.5 py-0.5 text-xs text-app-muted">
-                  {downloadQueue.summary.active || downloadQueue.summary.failed}
-                </span>
-              ) : null}
-            </Button>
-            <Button className="shrink-0" variant="secondary" onClick={() => setCommitQueueOpen((value) => !value)}>
-              <Save className="h-4 w-4" />
-              <span className="hidden sm:inline">{text("Commit", "Commit")}</span>
-              {commitQueue.summary.active || commitQueue.summary.failed ? (
-                <span className="rounded bg-app-panel px-1.5 py-0.5 text-xs text-app-muted">
-                  {commitQueue.summary.active || commitQueue.summary.failed}
-                </span>
-              ) : null}
-            </Button>
-            {browserRuntime.supportsUpdater && (appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading") ? (
-              <Button className="shrink-0" variant="secondary" onClick={appUpdate.openUpdateDialog}>
+            <div className="relative">
+              <Button
+                ref={statusButtonRef}
+                aria-expanded={statusPopoverOpen}
+                aria-haspopup="dialog"
+                aria-label={t("shell.statusLabel")}
+                className="shrink-0"
+                title={t("shell.statusLabel")}
+                variant="secondary"
+                onClick={() => setStatusPopoverOpen((value) => !value)}
+              >
                 <DownloadCloud className="h-4 w-4" />
-                <span className="hidden sm:inline">
-                  {appUpdate.state.status === "readyToRestart" ? text("重启更新", "Restart update") : text("更新", "Update")}
-                </span>
+                <span className="hidden sm:inline">{t("shell.status")}</span>
+                {(() => {
+                  const activeCount = (downloadQueue.summary.active ?? 0) + (commitQueue.summary.active ?? 0);
+                  const failedCount = (downloadQueue.summary.failed ?? 0) + (commitQueue.summary.failed ?? 0);
+                  const updateAvailable = browserRuntime.supportsUpdater && (appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading");
+                  const total = activeCount + failedCount + (updateAvailable ? 1 : 0);
+                  return total > 0 ? (
+                    <span className="rounded bg-app-panel px-1.5 py-0.5 text-xs text-app-muted">
+                      {total}
+                    </span>
+                  ) : null;
+                })()}
               </Button>
-            ) : null}
+              {statusPopoverOpen ? (
+                <div
+                  ref={statusPopoverRef}
+                  className="fixed right-3 top-16 z-50 w-64 rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={t("shell.statusLabel")}
+                  style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }}
+                >
+                  <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
+                    <div className="text-sm font-semibold text-app-text">{t("shell.statusLabel")}</div>
+                    <button
+                      className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text"
+                      type="button"
+                      onClick={() => setStatusPopoverOpen(false)}
+                    >
+                      <X className="h-4 w-4" />
+                      <span className="sr-only">{t("common.close")}</span>
+                    </button>
+                  </div>
+                  <div className="p-2">
+                    <button
+                      className="app-interactive flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-app-panel"
+                      type="button"
+                      onClick={() => {
+                        setDownloadQueueOpen(true);
+                        setStatusPopoverOpen(false);
+                      }}
+                    >
+                      <DownloadCloud className="h-4 w-4 shrink-0 text-app-muted" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-medium text-app-text">{text("下载队列", "Downloads")}</span>
+                        <span className="block truncate text-xs text-app-muted">
+                          {downloadQueue.summary.total
+                            ? text(
+                                `${downloadQueue.summary.completed}/${downloadQueue.summary.total} 完成，${downloadQueue.summary.failed} 失败`,
+                                `${downloadQueue.summary.completed}/${downloadQueue.summary.total} done, ${downloadQueue.summary.failed} failed`,
+                              )
+                            : text("暂无下载任务", "No downloads")}
+                        </span>
+                      </span>
+                      {downloadQueue.summary.active || downloadQueue.summary.failed ? (
+                        <span className="shrink-0 rounded bg-app-panel px-1.5 py-0.5 text-xs text-app-muted">
+                          {downloadQueue.summary.active || downloadQueue.summary.failed}
+                        </span>
+                      ) : null}
+                    </button>
+                    <button
+                      className="app-interactive flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-app-panel"
+                      type="button"
+                      title={t("shell.commitTooltip")}
+                      onClick={() => {
+                        setCommitQueueOpen(true);
+                        setStatusPopoverOpen(false);
+                      }}
+                    >
+                      <Save className="h-4 w-4 shrink-0 text-app-muted" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-medium text-app-text">{text("Commit 队列", "Commit queue")}</span>
+                        <span className="block truncate text-xs text-app-muted">
+                          {commitQueue.summary.total
+                            ? text(
+                                `${commitQueue.summary.completed}/${commitQueue.summary.total} 完成，${commitQueue.summary.failed} 失败`,
+                                `${commitQueue.summary.completed}/${commitQueue.summary.total} done, ${commitQueue.summary.failed} failed`,
+                              )
+                            : text("暂无 Commit 任务", "No commits")}
+                        </span>
+                      </span>
+                      {commitQueue.summary.active || commitQueue.summary.failed ? (
+                        <span className="shrink-0 rounded bg-app-panel px-1.5 py-0.5 text-xs text-app-muted">
+                          {commitQueue.summary.active || commitQueue.summary.failed}
+                        </span>
+                      ) : null}
+                    </button>
+                    {browserRuntime.supportsUpdater && (appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading") ? (
+                      <button
+                        className="app-interactive flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-app-panel"
+                        type="button"
+                        onClick={() => {
+                          appUpdate.openUpdateDialog();
+                          setStatusPopoverOpen(false);
+                        }}
+                      >
+                        <DownloadCloud className="h-4 w-4 shrink-0 text-app-muted" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-medium text-app-text">
+                            {appUpdate.state.status === "readyToRestart" ? text("重启更新", "Restart update") : text("更新", "Update")}
+                          </span>
+                          <span className="block truncate text-xs text-app-muted">{text("有新版本可用", "A new version is available")}</span>
+                        </span>
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
             <Button className="hidden shrink-0 sm:inline-flex" variant="secondary" onClick={() => setCommandPaletteOpen(true)}>
               <CommandIcon className="h-4 w-4" />
               Ctrl K
             </Button>
-            <Button className="inline-flex shrink-0 sm:hidden" variant="secondary" onClick={() => setCommandPaletteOpen(true)}>
+            <Button
+              aria-label={t("shell.shortcutsTitle")}
+              className="inline-flex shrink-0 sm:hidden"
+              title={t("shell.shortcutsTitle")}
+              variant="secondary"
+              onClick={() => setCommandPaletteOpen(true)}
+            >
               <Search className="h-4 w-4" />
             </Button>
             <LanguageSwitch />
             <span className="hidden max-w-32 truncate text-sm text-app-muted sm:inline md:max-w-48">{userName}</span>
-            <Button className="shrink-0" variant="secondary" onClick={() => void auth.logout()}>
+            <Button className="shrink-0" variant="secondary" onClick={onLogoutClick}>
               <LogOut className="h-4 w-4" />
               {t("shell.logout")}
             </Button>
           </div>
         </header>
         {isOnline ? null : (
-          <div className="flex items-center gap-2 bg-amber-500/15 px-4 py-1.5 text-xs font-medium text-amber-600 dark:text-amber-400" role="alert">
+          <div className="flex items-center gap-2 bg-amber-500/15 px-4 py-1.5 text-xs font-medium text-amber-600" role="alert">
             <WifiOff className="h-3.5 w-3.5 shrink-0" />
             <span>{text("当前处于离线状态，部分功能不可用", "You are offline — some features are unavailable")}</span>
           </div>
@@ -559,7 +772,7 @@ onDoubleClick={handleNavResizeDoubleClick}
           ref={moreMenuRef}
           className="fixed inset-x-0 z-50 border-t border-app-border bg-app-surface shadow-popover md:hidden"
           role="dialog"
-          aria-modal="false"
+          aria-modal="true"
           aria-label={text("更多页面", "More pages")}
           style={{ bottom: "calc(3.5rem + env(safe-area-inset-bottom, 0px))" }}
         >

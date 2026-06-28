@@ -13,6 +13,7 @@ type PaletteCommand = {
   label: string;
   description: string;
   icon: typeof LayoutDashboard;
+  shortcut?: string;
   run: () => void;
 };
 
@@ -32,14 +33,14 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const [activeIndex, setActiveIndex] = useState(0);
 
   const staticCommands = useMemo<PaletteCommand[]>(() => [
-    { id: "dashboard", label: t("nav.dashboard"), description: "/dashboard", icon: LayoutDashboard, run: () => navigate("/dashboard") },
-    { id: "tasks", label: t("nav.tasks"), description: "/tasks", icon: Server, run: () => navigate("/tasks") },
-    { id: "scheduled", label: t("nav.scheduledTasks"), description: "/scheduled-tasks", icon: CalendarClock, run: () => navigate("/scheduled-tasks") },
-    { id: "templates", label: t("nav.taskTemplates"), description: "/task-templates", icon: SquareStack, run: () => navigate("/task-templates") },
-    { id: "storage", label: t("nav.storage"), description: "/storage", icon: Database, run: () => navigate("/storage") },
-    { id: "images", label: t("nav.images"), description: "/images", icon: Image, run: () => navigate("/images") },
-    { id: "logs", label: t("nav.runLogs"), description: "/run-logs", icon: ScrollText, run: () => navigate("/run-logs") },
-    { id: "settings", label: t("nav.settings"), description: "/settings", icon: Settings, run: () => navigate("/settings") },
+    { id: "dashboard", label: t("nav.dashboard"), description: "/dashboard", icon: LayoutDashboard, shortcut: "g d", run: () => navigate("/dashboard") },
+    { id: "tasks", label: t("nav.tasks"), description: "/tasks", icon: Server, shortcut: "g t", run: () => navigate("/tasks") },
+    { id: "scheduled", label: t("nav.scheduledTasks"), description: "/scheduled-tasks", icon: CalendarClock, shortcut: "g c", run: () => navigate("/scheduled-tasks") },
+    { id: "templates", label: t("nav.taskTemplates"), description: "/task-templates", icon: SquareStack, shortcut: "g m", run: () => navigate("/task-templates") },
+    { id: "storage", label: t("nav.storage"), description: "/storage", icon: Database, shortcut: "g s", run: () => navigate("/storage") },
+    { id: "images", label: t("nav.images"), description: "/images", icon: Image, shortcut: "g i", run: () => navigate("/images") },
+    { id: "logs", label: t("nav.runLogs"), description: "/run-logs", icon: ScrollText, shortcut: "g r", run: () => navigate("/run-logs") },
+    { id: "settings", label: t("nav.settings"), description: "/settings", icon: Settings, shortcut: "g e", run: () => navigate("/settings") },
   ], [navigate, t]);
 
   const normalizedQuery = query.trim().toLowerCase();
@@ -169,6 +170,11 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                 <span className="block truncate font-medium">{command.label}</span>
                 <span className="block truncate text-xs text-app-muted">{command.description}</span>
               </span>
+              {command.shortcut ? (
+                <kbd className="shrink-0 rounded border border-app-border bg-app-panel px-1.5 py-0.5 font-mono text-[10px] text-app-muted">
+                  {command.shortcut}
+                </kbd>
+              ) : null}
             </div>
           ))}
         </div>
