@@ -1,3 +1,16 @@
+# EasyConsole v0.3.9
+
+Remember passwords for one-click saved-account sign-in, with automatic silent re-login after token expiry.
+
+## Changes
+
+- **Remember password**: Added a "Remember password" option on the login page. When enabled, the password is encrypted with AES-GCM (PBKDF2-derived key, per-account random salt/IV) and stored alongside the token in secure storage. The plaintext password is never persisted.
+- **Silent re-login**: `loginSaved` now tries the saved token first; if it has expired and a stored password is available, the app automatically re-logs in with the decrypted password and refreshes both token and ciphertext — no password retyping required. Accounts without a stored password still fall back to the password form.
+- **Password crypto module**: New `src/lib/password-crypto.ts` provides `encryptPassword`/`decryptPassword` with round-trip, randomness, unicode, and malformed-payload tests.
+- **Login UX**: Added a "Remember password" checkbox (default on) to the password form; updated i18n copy and the saved-account note. Backward compatible with existing saved accounts.
+
+---
+
 # EasyConsole v0.3.8
 
 Task detail page, encrypted backups, image commit queue, and CI reliability improvements.
