@@ -137,7 +137,7 @@ Avoid Node-only APIs in renderer code. If a feature needs platform behavior, des
 - Task status and release condition should be displayed as colored badges with text, not color-only state.
 - Task tables support column visibility settings; keep actions always visible.
 - The app has protected routes for dashboard, task instances, scheduled tasks, instance templates, storage, images, run logs, and settings.
-- Saved accounts store normalized tokens and user display metadata only, not passwords.
+- Saved accounts store normalized tokens, user display metadata, and (when the user opts in via "Remember password") an AES-GCM ciphertext of the password. The plaintext password is never persisted; on Tauri the ciphertext lives in the OS keychain via secureStorage, and on web it lives in localStorage (obfuscation-grade only). Use `encryptPassword`/`decryptPassword` from `src/lib/password-crypto.ts` to round-trip the password field. `loginSaved` silently re-logs in with the stored password when the saved token has expired; accounts without a stored password fall back to the password form.
 - Runtime URL settings affect login checks, task/image/storage requests, monitor links, and WebSSH URLs.
 - Task templates and scheduled tasks are local runtime data, not backend entities. Templates can generate up to 50 task payloads.
 - Run logs are local, pruned by count and age, and redact sensitive metadata keys.
@@ -165,6 +165,7 @@ Add focused tests for shared behavior and API adapters:
 - envelope parsing and business error mapping
 - auth header injection and token normalization
 - password hashing behavior
+- saved-password encryption/decryption round-trip and malformed-payload rejection
 - app settings parsing and runtime URL updates
 - saved accounts and token-only account persistence
 - blob downloads

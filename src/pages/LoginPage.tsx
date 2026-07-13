@@ -37,6 +37,7 @@ export function LoginPage() {
   const confirm = useConfirmAction();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberPassword, setRememberPassword] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [savedLoginId, setSavedLoginId] = useState<string | null>(null);
@@ -57,7 +58,7 @@ export function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      await auth.login(username, password);
+      await auth.login(username, password, { rememberPassword });
       navigateAfterLogin();
     } catch (nextError) {
       const raw = nextError instanceof Error ? nextError.message : t("login.failed");
@@ -177,6 +178,7 @@ export function LoginPage() {
                   setError(null);
                   setUsername("");
                   setPassword("");
+                  setRememberPassword(true);
                   setShowPasswordForm(true);
                 }}
                 type="button"
@@ -209,6 +211,14 @@ export function LoginPage() {
                   type="password"
                   value={password}
                 />
+              </label>
+              <label className="flex items-center gap-2 text-xs text-app-muted">
+                <input
+                  type="checkbox"
+                  checked={rememberPassword}
+                  onChange={(event) => setRememberPassword(event.target.checked)}
+                />
+                {t("login.rememberPassword")}
               </label>
               {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
               <div className="flex flex-col gap-2">

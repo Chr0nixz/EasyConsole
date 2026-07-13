@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 
 import { apiClient, authApi } from "./api";
 import { APP_SETTINGS_STORAGE_KEY, parseAppSettings, setRuntimeSettings } from "./app-settings";
-import { AuthContext } from "./auth-state";
+import { AuthContext, type LoginOptions } from "./auth-state";
 import { TOKEN_STORAGE_KEY, UNAUTHORIZED_EVENT } from "./api-client";
 import { i18nText } from "./i18n-text";
+import { encryptPassword, decryptPassword } from "./password-crypto";
 import { browserRuntime } from "./runtime";
 import { appendRunLog, type RunLogInput } from "./run-logs";
 import {
@@ -115,15 +116,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await browserRuntime.secureStorage.set(SAVED_ACCOUNTS_STORAGE_KEY, stringifySavedAccounts(nextAccounts));
   }, []);
 
-  const login = useCallback(async (username: string, password: string) => {
+  const login = useCallback(async (username: string, password: string, options?: LoginOptions) => {
     const startedAt = Date.now();
+    const rememberPassword = options?.rememberPassword !== false;
     const result = await authApi.login({ username, password });
     if (!result.token) throw new Error(i18nText("登录响应未包含 token", "Sign-in response did not include a token"));
     apiClient.setToken(result.token);
     await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, result.token);
     try {
       const next = await authApi.userInfo();
-      const nextAccount = createSavedLoginAccount({ username, token: result.token, user: next });
+      const encryptedPassword = rememberPassword ? await encryptPassword(password).catch(() => "") : "";
+      const nextAccount = createSavedLoginAccount({
+        username,
+        token: result.token,
+        user: next,
+        encryptedPassword: encryptedPassword || undefined,
+      });
       await persistSavedAccounts(upsertSavedAccount(savedAccountsRef.current, nextAccount));
       setToken(result.token);
       setUser(next);
@@ -158,36 +166,95 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     apiClient.setToken(account.token);
     await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, account.token);
+
+    let next: UserInfo;
+    let activeToken: string = account.token;
     try {
-      const next = await authApi.userInfo();
-      const nextAccount = createSavedLoginAccount({ username: account.username, token: account.token, user: next });
-      await persistSavedAccounts(upsertSavedAccount(savedAccountsRef.current, nextAccount));
-      setToken(account.token);
-      setUser(next);
-      writeAuthLog({
-        level: "info",
-        action: "auth.loginSaved",
-        result: "success",
-        title: i18nText("保存账号登录成功", "Saved account signed in"),
-        userName: account.username,
-        durationMs: Date.now() - startedAt,
-      });
-    } catch (error) {
-      apiClient.setToken(null);
-      await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
-      setToken(null);
-      setUser(null);
-      writeAuthLog({
-        level: "error",
-        action: "auth.loginSaved",
-        result: "failure",
-        title: i18nText("保存账号登录失败", "Saved account sign-in failed"),
-        userName: account.username,
-        durationMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : i18nText("保存账号登录失败", "Saved account sign-in failed"),
-      });
-      throw new Error(error instanceof Error ? i18nText(`保存的登录已失效：${error.message}`, `Saved sign-in expired: ${error.message}`) : i18nText("保存的登录已失效，请重新输入密码", "Saved sign-in expired. Enter the password again."));
+      // Fast path: the saved token is still valid.
+      next = await authApi.userInfo();
+    } catch (tokenError) {
+      // Token expired or rejected. Try to silently re-login with the stored
+      // password, if we have one. Otherwise surface the original failure.
+      const password = account.encryptedPassword
+        ? await decryptPassword(account.encryptedPassword).catch(() => "")
+        : "";
+      if (!password) {
+        apiClient.setToken(null);
+        await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
+        setToken(null);
+        setUser(null);
+        writeAuthLog({
+          level: "error",
+          action: "auth.loginSaved",
+          result: "failure",
+          title: i18nText("保存账号登录失败", "Saved account sign-in failed"),
+          userName: account.username,
+          durationMs: Date.now() - startedAt,
+          error: tokenError instanceof Error ? tokenError.message : i18nText("保存账号登录失败", "Saved account sign-in failed"),
+        });
+        throw new Error(
+          tokenError instanceof Error
+            ? i18nText(`保存的登录已失效：${tokenError.message}`, `Saved sign-in expired: ${tokenError.message}`)
+            : i18nText("保存的登录已失效，请重新输入密码", "Saved sign-in expired. Enter the password again."),
+        );
+      }
+
+      try {
+        const result = await authApi.login({ username: account.username, password });
+        if (!result.token) throw new Error(i18nText("登录响应未包含 token", "Sign-in response did not include a token"));
+        activeToken = result.token;
+        apiClient.setToken(activeToken);
+        await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, activeToken);
+        next = await authApi.userInfo();
+      } catch (reloginError) {
+        apiClient.setToken(null);
+        await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
+        setToken(null);
+        setUser(null);
+        writeAuthLog({
+          level: "error",
+          action: "auth.loginSaved",
+          result: "failure",
+          title: i18nText("保存账号登录失败", "Saved account sign-in failed"),
+          userName: account.username,
+          durationMs: Date.now() - startedAt,
+          error: reloginError instanceof Error ? reloginError.message : i18nText("保存账号登录失败", "Saved account sign-in failed"),
+        });
+        throw new Error(
+          reloginError instanceof Error
+            ? i18nText(`保存的登录已失效：${reloginError.message}`, `Saved sign-in expired: ${reloginError.message}`)
+            : i18nText("保存的登录已失效，请重新输入密码", "Saved sign-in expired. Enter the password again."),
+        );
+      }
     }
+
+    // Re-encrypt the password with a fresh salt/IV so the same ciphertext is
+    // not reused indefinitely. We re-derive from the decrypted plaintext.
+    let nextEncryptedPassword = account.encryptedPassword;
+    if (account.encryptedPassword) {
+      const plaintext = await decryptPassword(account.encryptedPassword).catch(() => "");
+      if (plaintext) {
+        nextEncryptedPassword = await encryptPassword(plaintext).catch(() => account.encryptedPassword);
+      }
+    }
+
+    const nextAccount = createSavedLoginAccount({
+      username: account.username,
+      token: activeToken,
+      user: next,
+      encryptedPassword: nextEncryptedPassword,
+    });
+    await persistSavedAccounts(upsertSavedAccount(savedAccountsRef.current, nextAccount));
+    setToken(activeToken);
+    setUser(next);
+    writeAuthLog({
+      level: "info",
+      action: "auth.loginSaved",
+      result: "success",
+      title: i18nText("保存账号登录成功", "Saved account signed in"),
+      userName: account.username,
+      durationMs: Date.now() - startedAt,
+    });
   }, [persistSavedAccounts]);
 
   const forgetSavedAccount = useCallback(async (accountId: string) => {

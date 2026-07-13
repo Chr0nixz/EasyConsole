@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createSavedLoginAccount,
+  hasStoredPassword,
   parseSavedAccounts,
   removeSavedAccount,
   stringifySavedAccounts,
@@ -24,6 +25,39 @@ describe("saved accounts", () => {
       token: "Bearer token",
       lastLoginAt: "2026-05-23T00:00:00.000Z",
     });
+    expect(account.encryptedPassword).toBeUndefined();
+  });
+
+  it("preserves encryptedPassword when provided", () => {
+    const account = createSavedLoginAccount({
+      username: "alice",
+      token: "Bearer token",
+      encryptedPassword: "enc-blob",
+    });
+    expect(account.encryptedPassword).toBe("enc-blob");
+    expect(hasStoredPassword(account)).toBe(true);
+  });
+
+  it("treats empty encryptedPassword as not stored", () => {
+    const account = createSavedLoginAccount({
+      username: "alice",
+      token: "Bearer token",
+      encryptedPassword: "   ",
+    });
+    expect(account.encryptedPassword).toBeUndefined();
+    expect(hasStoredPassword(account)).toBe(false);
+  });
+
+  it("round-trips encryptedPassword through stringify/parse", () => {
+    const account = createSavedLoginAccount({
+      username: "alice",
+      token: "Bearer token",
+      encryptedPassword: "enc-blob",
+    });
+    const raw = stringifySavedAccounts([account]);
+    const parsed = parseSavedAccounts(raw);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].encryptedPassword).toBe("enc-blob");
   });
 
   it("ignores invalid stored data", () => {

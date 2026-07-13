@@ -68,7 +68,7 @@ describe("LoginPage", () => {
     renderLogin();
 
     fireEvent.change(screen.getByLabelText(/用户名|Username/i), { target: { value: "alice" } });
-    fireEvent.change(screen.getByLabelText(/密码|Password/i), { target: { value: "wrong" } });
+    fireEvent.change(screen.getByLabelText(/^密码$|^Password$/i), { target: { value: "wrong" } });
     fireEvent.click(screen.getByRole("button", { name: /^登录$|^Sign in$/ }));
 
     await waitFor(() => expect(screen.getByText("Invalid credentials")).toBeInTheDocument());
@@ -79,9 +79,38 @@ describe("LoginPage", () => {
     renderLogin();
 
     fireEvent.change(screen.getByLabelText(/用户名|Username/i), { target: { value: "bob" } });
-    fireEvent.change(screen.getByLabelText(/密码|Password/i), { target: { value: "secret" } });
+    fireEvent.change(screen.getByLabelText(/^密码$|^Password$/i), { target: { value: "secret" } });
     fireEvent.click(screen.getByRole("button", { name: /^登录$|^Sign in$/ }));
 
-    await waitFor(() => expect(authMock.login).toHaveBeenCalledWith("bob", "secret"));
+    await waitFor(() =>
+      expect(authMock.login).toHaveBeenCalledWith("bob", "secret", { rememberPassword: true }),
+    );
+  });
+
+  it("passes rememberPassword option (default on, toggles off)", async () => {
+    authMock.login.mockResolvedValue(undefined);
+    renderLogin();
+
+    // Default: remember password checkbox is checked.
+    const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+
+    fireEvent.change(screen.getByLabelText(/用户名|Username/i), { target: { value: "bob" } });
+    fireEvent.change(screen.getByLabelText(/^密码$|^Password$/i), { target: { value: "secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /^登录$|^Sign in$/ }));
+
+    await waitFor(() =>
+      expect(authMock.login).toHaveBeenCalledWith("bob", "secret", { rememberPassword: true }),
+    );
+
+    // Uncheck → next submit passes rememberPassword: false.
+    authMock.login.mockClear();
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: /^登录$|^Sign in$/ }));
+
+    await waitFor(() =>
+      expect(authMock.login).toHaveBeenCalledWith("bob", "secret", { rememberPassword: false }),
+    );
   });
 });
