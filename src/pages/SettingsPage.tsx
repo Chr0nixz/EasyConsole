@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, BellRing, Download, ExternalLink, RefreshCw, RotateCcw, Save, Settings2, Upload } from "lucide-react";
-import { ChangeEvent, FormEvent, useMemo, useState } from "react";
+import { ArrowLeft, BellRing, Download, ExternalLink, RefreshCw, RotateCcw, Save, Settings2, Terminal, Trash2, Upload } from "lucide-react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
@@ -8,13 +8,19 @@ import { setApiBaseUrl } from "../lib/api";
 import {
   APP_SETTINGS_STORAGE_KEY,
   DEFAULT_APP_SETTINGS,
+  DEFAULT_CUSTOM_COLORS,
+  DEFAULT_SSH_SETTINGS,
   getRuntimeSettings,
   type ImportantNotificationEvent,
   normalizeAppSettings,
   type NotificationMode,
   setRuntimeSettings,
+  SSH_FONT_PRESETS,
   stringifyAppSettings,
   type AppSettings,
+  type SshAuthMode,
+  type SshCustomColors,
+  type SshTerminalTheme,
 } from "../lib/app-settings";
 import { APP_UPDATE_ENDPOINT_URL, GITHUB_API_RELEASE_URL } from "../lib/app-update";
 import { useAppUpdate } from "../lib/app-update-context";
@@ -36,6 +42,7 @@ import { useI18n, type TranslationKey } from "../lib/i18n";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 import { useConfirmAction } from "../lib/use-confirm-action";
+import type { KnownHostEntry, PortForwardRule, PortForwardType, SshHistoryEntry } from "../lib/types";
 
 function isHttpUrl(value: string) {
   try {
@@ -89,6 +96,20 @@ const notificationModeOptions: Array<{ mode: NotificationMode; zh: string; en: s
   { mode: "system", zh: "系统通知", en: "System" },
 ];
 
+const sshTermTypeOptions = ["xterm-256color", "xterm", "vt100", "linux"];
+
+const sshAuthModeOptions: Array<{ mode: SshAuthMode; zh: string; en: string }> = [
+  { mode: "password", zh: "密码认证", en: "Password" },
+  { mode: "key", zh: "密钥认证", en: "SSH key" },
+];
+
+const sshThemeOptions: Array<{ theme: SshTerminalTheme; zh: string; en: string }> = [
+  { theme: "dark", zh: "深色", en: "Dark" },
+  { theme: "light", zh: "浅色", en: "Light" },
+  { theme: "hacker", zh: "黑客", en: "Hacker" },
+  { theme: "custom", zh: "自定义", en: "Custom" },
+];
+
 export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const toast = useToast();
   const { t, text } = useI18n();
@@ -107,6 +128,17 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const [importDecryptError, setImportDecryptError] = useState<string | null>(null);
   const [importSections, setImportSections] = useState<LocalDataBackupSection[]>(nonSecretBackupSections);
   const [importSecrets, setImportSecrets] = useState(false);
+  const [knownHosts, setKnownHosts] = useState<KnownHostEntry[]>([]);
+  const [knownHostsLoading, setKnownHostsLoading] = useState(false);
+  const [sshHistory, setSshHistory] = useState<SshHistoryEntry[]>([]);
+  const [sshHistoryLoading, setSshHistoryLoading] = useState(false);
+  const [showPortForwardForm, setShowPortForwardForm] = useState(false);
+  const [pfType, setPfType] = useState<PortForwardType>("local");
+  const [pfLocalHost, setPfLocalHost] = useState("127.0.0.1");
+  const [pfLocalPort, setPfLocalPort] = useState("");
+  const [pfRemoteHost, setPfRemoteHost] = useState("");
+  const [pfRemotePort, setPfRemotePort] = useState("");
+  const [pfEnabled, setPfEnabled] = useState(true);
 
   const normalized = useMemo(() => normalizeAppSettings(form), [form]);
   const derivedWebsshUrl = useMemo(() => {
@@ -234,6 +266,213 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     } catch (testError) {
       toast.error(text("连接测试失败", "Connection test failed"), testError instanceof Error ? testError.message : text("请检查地址和网络", "Check the URL and network"));
     }
+  }
+
+  const loadKnownHosts = useCallback(async () => {
+    if (!browserRuntime.supportsInAppSsh) return;
+    setKnownHostsLoading(true);
+    try {
+      const hosts = await browserRuntime.listKnownHosts();
+      setKnownHosts(hosts);
+    } catch {
+      toast.error(t("settings.sshLoadFailed"));
+    } finally {
+      setKnownHostsLoading(false);
+    }
+  }, [t, toast]);
+
+  useEffect(() => {
+    void loadKnownHosts();
+  }, [loadKnownHosts]);
+
+  function removeKnownHost(hostPort: string) {
+    void (async () => {
+      try {
+        await browserRuntime.removeKnownHost(hostPort);
+        setKnownHosts((hosts) => hosts.filter((host) => host.hostPort !== hostPort));
+        toast.success(t("settings.sshRemoved"));
+      } catch {
+        toast.error(t("settings.sshRemoveFailed"));
+      }
+    })();
+  }
+
+  function clearAllKnownHosts() {
+    confirm({
+      title: t("settings.sshClearAllHosts"),
+      description: t("settings.sshClearAllConfirm"),
+      confirmLabel: t("settings.sshClearAllHosts"),
+      tone: "danger",
+      run: () => {
+        void (async () => {
+          try {
+            await browserRuntime.clearKnownHosts();
+            setKnownHosts([]);
+            toast.success(t("settings.sshCleared"));
+          } catch {
+            toast.error(t("settings.sshClearFailed"));
+          }
+        })();
+      },
+    });
+  }
+
+  const loadSshHistory = useCallback(async () => {
+    setSshHistoryLoading(true);
+    try {
+      const history = await browserRuntime.listSshHistory();
+      setSshHistory(history);
+    } catch {
+      // ignore history load errors
+    } finally {
+      setSshHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSshHistory();
+  }, [loadSshHistory]);
+
+  function clearAllSshHistory() {
+    confirm({
+      title: t("settings.sshClearHistory"),
+      description: t("settings.sshClearHistoryConfirm"),
+      confirmLabel: t("settings.sshClearHistory"),
+      tone: "danger",
+      run: () => {
+        void (async () => {
+          try {
+            await browserRuntime.clearSshHistory();
+            setSshHistory([]);
+            toast.success(t("settings.sshHistoryCleared"));
+          } catch {
+            toast.error(t("settings.sshClearFailed"));
+          }
+        })();
+      },
+    });
+  }
+
+  async function chooseKeyFile() {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "SSH Keys", extensions: ["pem", "key", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "ppk"] }],
+      });
+      if (typeof selected === "string") {
+        setForm((value) => ({ ...value, ssh: { ...value.ssh, sshKeyPath: selected } }));
+      }
+    } catch {
+      // Dialog not available or cancelled
+    }
+  }
+
+  function updateSshField<K extends keyof typeof DEFAULT_SSH_SETTINGS>(key: K, value: typeof DEFAULT_SSH_SETTINGS[K]) {
+    setForm((form) => ({ ...form, ssh: { ...form.ssh, [key]: value } }));
+  }
+
+  function updateSshTerminalField<K extends keyof typeof DEFAULT_SSH_SETTINGS.terminal>(key: K, value: typeof DEFAULT_SSH_SETTINGS.terminal[K]) {
+    setForm((form) => ({ ...form, ssh: { ...form.ssh, terminal: { ...form.ssh.terminal, [key]: value } } }));
+  }
+
+  function syncFontPreset(presetId: string) {
+    const preset = SSH_FONT_PRESETS.find((p) => p.id === presetId);
+    if (preset && preset.id !== "custom") {
+      setForm((form) => ({
+        ...form,
+        ssh: { ...form.ssh, terminal: { ...form.ssh.terminal, fontPreset: presetId, fontFamily: preset.value } },
+      }));
+    } else {
+      setForm((form) => ({
+        ...form,
+        ssh: { ...form.ssh, terminal: { ...form.ssh.terminal, fontPreset: "custom" } },
+      }));
+    }
+  }
+
+  function updateCustomColor(field: keyof SshCustomColors, value: string) {
+    setForm((form) => ({
+      ...form,
+      ssh: { ...form.ssh, terminal: { ...form.ssh.terminal, customColors: { ...form.ssh.terminal.customColors, [field]: value } } },
+    }));
+  }
+
+  function renderColorField(field: keyof SshCustomColors, value: string) {
+    const pickerValue = value.length >= 7 ? value.slice(0, 7) : "#000000";
+    return (
+      <div key={field} className="flex items-center gap-2">
+        <input
+          type="color"
+          value={pickerValue}
+          onChange={(e) => updateCustomColor(field, e.target.value)}
+          className="h-8 w-8 shrink-0 cursor-pointer rounded border border-app-border bg-transparent"
+          aria-label={field}
+        />
+        <Input
+          className="h-8 flex-1 font-mono text-xs"
+          value={value}
+          onChange={(e) => updateCustomColor(field, e.target.value)}
+          placeholder="#rrggbb"
+        />
+      </div>
+    );
+  }
+
+  function addPortForward() {
+    const localPort = Number(pfLocalPort);
+    const remotePort = Number(pfRemotePort);
+    if (!localPort || localPort < 1 || localPort > 65535) {
+      toast.error(t("settings.sshPortForwardLocalPort"));
+      return;
+    }
+    if (pfType !== "dynamic") {
+      if (!pfRemoteHost.trim()) {
+        toast.error(t("settings.sshPortForwardRemoteHost"));
+        return;
+      }
+      if (!remotePort || remotePort < 1 || remotePort > 65535) {
+        toast.error(t("settings.sshPortForwardRemotePort"));
+        return;
+      }
+    }
+    const rule: PortForwardRule = {
+      id: `pf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: pfType,
+      localHost: pfLocalHost.trim() || "127.0.0.1",
+      localPort,
+      remoteHost: pfType === "dynamic" ? "" : pfRemoteHost.trim(),
+      remotePort: pfType === "dynamic" ? 0 : remotePort,
+      enabled: pfEnabled,
+    };
+    setForm((form) => ({
+      ...form,
+      ssh: { ...form.ssh, portForwards: [...form.ssh.portForwards, rule] },
+    }));
+    setShowPortForwardForm(false);
+    setPfType("local");
+    setPfLocalHost("127.0.0.1");
+    setPfLocalPort("");
+    setPfRemoteHost("");
+    setPfRemotePort("");
+    setPfEnabled(true);
+  }
+
+  function removePortForward(id: string) {
+    setForm((form) => ({
+      ...form,
+      ssh: { ...form.ssh, portForwards: form.ssh.portForwards.filter((r) => r.id !== id) },
+    }));
+  }
+
+  function togglePortForwardEnabled(id: string, enabled: boolean) {
+    setForm((form) => ({
+      ...form,
+      ssh: {
+        ...form.ssh,
+        portForwards: form.ssh.portForwards.map((r) => (r.id === id ? { ...r, enabled } : r)),
+      },
+    }));
   }
 
   async function performExportBackup(withSecrets: boolean) {
@@ -458,6 +697,337 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 </span>
               </span>
             </label>
+          </div>
+        </Panel>
+      ) : null}
+
+      {browserRuntime.supportsInAppSsh ? (
+        <Panel>
+          <div className="border-b border-app-border px-4 py-3">
+            <div className="flex items-center gap-2">
+              <Terminal className="h-4 w-4 text-app-accent" />
+              <h2 className="text-sm font-semibold">{t("settings.sshTitle")}</h2>
+            </div>
+            <p className="mt-1 text-xs text-app-muted">{t("settings.sshDescription")}</p>
+          </div>
+
+          <div className="space-y-5 p-4">
+            <div>
+              <h3 className="mb-3 text-xs font-medium text-app-muted">{t("settings.sshConnection")}</h3>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshDefaultUsername")}</span>
+                  <Input value={form.ssh.defaultUsername} onChange={(e) => updateSshField("defaultUsername", e.target.value)} />
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshDefaultPort")}</span>
+                  <Input type="number" min={1} value={form.ssh.defaultPort} onChange={(e) => updateSshField("defaultPort", Number(e.target.value) || DEFAULT_SSH_SETTINGS.defaultPort)} />
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshTermType")}</span>
+                  <Select value={form.ssh.termType} onChange={(e) => updateSshField("termType", e.target.value)}>
+                    {sshTermTypeOptions.map((term) => <option key={term} value={term}>{term}</option>)}
+                  </Select>
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshDefaultCols")}</span>
+                  <Input type="number" min={1} value={form.ssh.defaultCols} onChange={(e) => updateSshField("defaultCols", Number(e.target.value) || DEFAULT_SSH_SETTINGS.defaultCols)} />
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshDefaultRows")}</span>
+                  <Input type="number" min={1} value={form.ssh.defaultRows} onChange={(e) => updateSshField("defaultRows", Number(e.target.value) || DEFAULT_SSH_SETTINGS.defaultRows)} />
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshConnectTimeout")}</span>
+                  <Input type="number" min={1} value={form.ssh.connectTimeoutSec} onChange={(e) => updateSshField("connectTimeoutSec", Number(e.target.value) || DEFAULT_SSH_SETTINGS.connectTimeoutSec)} />
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshKeepalive")}</span>
+                  <Input type="number" min={0} value={form.ssh.keepaliveIntervalSec} onChange={(e) => updateSshField("keepaliveIntervalSec", Number(e.target.value) || 0)} />
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="mb-3 text-xs font-medium text-app-muted">{t("settings.sshAuth")}</h3>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshAuthMode")}</span>
+                  <Select value={form.ssh.authMode} onChange={(e) => updateSshField("authMode", e.target.value as SshAuthMode)}>
+                    {sshAuthModeOptions.map((opt) => <option key={opt.mode} value={opt.mode}>{text(opt.zh, opt.en)}</option>)}
+                  </Select>
+                </label>
+                {form.ssh.authMode === "key" ? (
+                  <label className="block text-sm">
+                    <span className="mb-1 block text-app-muted">{t("settings.sshKeyPath")}</span>
+                    <div className="flex gap-2">
+                      <Input className="flex-1 font-mono text-xs" value={form.ssh.sshKeyPath} onChange={(e) => updateSshField("sshKeyPath", e.target.value)} placeholder="~/.ssh/id_rsa" />
+                      <Button type="button" variant="secondary" onClick={() => void chooseKeyFile()}>
+                        {t("settings.sshChooseKeyFile")}
+                      </Button>
+                    </div>
+                  </label>
+                ) : null}
+              </div>
+            </div>
+
+            <div>
+              <h3 className="mb-3 text-xs font-medium text-app-muted">{t("settings.sshTerminal")}</h3>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshFontPreset")}</span>
+                  <Select value={form.ssh.terminal.fontPreset} onChange={(e) => syncFontPreset(e.target.value)}>
+                    {SSH_FONT_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+                  </Select>
+                </label>
+                {form.ssh.terminal.fontPreset === "custom" ? (
+                  <label className="block text-sm sm:col-span-2">
+                    <span className="mb-1 block text-app-muted">{t("settings.sshFontCustom")}</span>
+                    <Input className="font-mono text-xs" value={form.ssh.terminal.fontFamily} onChange={(e) => updateSshTerminalField("fontFamily", e.target.value)} placeholder='Consolas, monospace' />
+                  </label>
+                ) : null}
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshFontSize")}</span>
+                  <Input type="number" min={6} value={form.ssh.terminal.fontSize} onChange={(e) => updateSshTerminalField("fontSize", Number(e.target.value) || DEFAULT_SSH_SETTINGS.terminal.fontSize)} />
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshScrollback")}</span>
+                  <Input type="number" min={0} value={form.ssh.terminal.scrollback} onChange={(e) => updateSshTerminalField("scrollback", Number(e.target.value) || 0)} />
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshTheme")}</span>
+                  <Select value={form.ssh.terminal.theme} onChange={(e) => updateSshTerminalField("theme", e.target.value as SshTerminalTheme)}>
+                    {sshThemeOptions.map((opt) => <option key={opt.theme} value={opt.theme}>{text(opt.zh, opt.en)}</option>)}
+                  </Select>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={form.ssh.terminal.cursorBlink} onChange={(e) => updateSshTerminalField("cursorBlink", e.target.checked)} />
+                  {t("settings.sshCursorBlink")}
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={form.ssh.terminal.webglRenderer} onChange={(e) => updateSshTerminalField("webglRenderer", e.target.checked)} />
+                  {t("settings.sshWebgl")}
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={form.ssh.terminal.webLinks} onChange={(e) => updateSshTerminalField("webLinks", e.target.checked)} />
+                  {t("settings.sshWebLinks")}
+                </label>
+              </div>
+              {form.ssh.terminal.theme === "custom" ? (
+                <div className="mt-3 rounded-md border border-app-border bg-app-panel p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-xs font-medium text-app-muted">{t("settings.sshThemeCustom")}</span>
+                    <Button type="button" variant="secondary" onClick={() => updateSshTerminalField("customColors", DEFAULT_CUSTOM_COLORS)}>
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      {t("settings.sshResetColors")}
+                    </Button>
+                  </div>
+                  <div className="space-y-3">
+                    <div>
+                      <div className="mb-1 text-xs text-app-muted">{t("settings.sshColorBackground")}</div>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        {renderColorField("background", form.ssh.terminal.customColors.background)}
+                        {renderColorField("foreground", form.ssh.terminal.customColors.foreground)}
+                        {renderColorField("cursor", form.ssh.terminal.customColors.cursor)}
+                        {renderColorField("selection", form.ssh.terminal.customColors.selection)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="mb-1 text-xs text-app-muted">{t("settings.sshColorAnsi")}</div>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        {renderColorField("black", form.ssh.terminal.customColors.black)}
+                        {renderColorField("red", form.ssh.terminal.customColors.red)}
+                        {renderColorField("green", form.ssh.terminal.customColors.green)}
+                        {renderColorField("yellow", form.ssh.terminal.customColors.yellow)}
+                        {renderColorField("blue", form.ssh.terminal.customColors.blue)}
+                        {renderColorField("magenta", form.ssh.terminal.customColors.magenta)}
+                        {renderColorField("cyan", form.ssh.terminal.customColors.cyan)}
+                        {renderColorField("white", form.ssh.terminal.customColors.white)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="mb-1 text-xs text-app-muted">{t("settings.sshColorAnsiBright")}</div>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        {renderColorField("brightBlack", form.ssh.terminal.customColors.brightBlack)}
+                        {renderColorField("brightRed", form.ssh.terminal.customColors.brightRed)}
+                        {renderColorField("brightGreen", form.ssh.terminal.customColors.brightGreen)}
+                        {renderColorField("brightYellow", form.ssh.terminal.customColors.brightYellow)}
+                        {renderColorField("brightBlue", form.ssh.terminal.customColors.brightBlue)}
+                        {renderColorField("brightMagenta", form.ssh.terminal.customColors.brightMagenta)}
+                        {renderColorField("brightCyan", form.ssh.terminal.customColors.brightCyan)}
+                        {renderColorField("brightWhite", form.ssh.terminal.customColors.brightWhite)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div>
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-xs font-medium text-app-muted">{t("settings.sshKnownHosts")}</h3>
+                {knownHosts.length > 0 ? (
+                  <Button type="button" variant="secondary" onClick={clearAllKnownHosts}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {t("settings.sshClearAllHosts")}
+                  </Button>
+                ) : null}
+              </div>
+              {knownHostsLoading ? (
+                <div className="py-4 text-center text-xs text-app-muted">...</div>
+              ) : knownHosts.length === 0 ? (
+                <div className="py-4 text-center text-xs text-app-muted">{t("settings.sshKnownHostsEmpty")}</div>
+              ) : (
+                <div className="space-y-1">
+                  {knownHosts.map((host) => (
+                    <div key={host.hostPort} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-mono text-app-text">{host.hostPort}</div>
+                        <div className="truncate font-mono text-app-muted">{host.fingerprint}</div>
+                      </div>
+                      <button className="ml-2 shrink-0 rounded p-1 text-app-muted hover:bg-app-surface hover:text-app-danger" type="button" onClick={() => removeKnownHost(host.hostPort)}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-xs font-medium text-app-muted">{t("settings.sshHistory")}</h3>
+                {sshHistory.length > 0 ? (
+                  <Button type="button" variant="secondary" onClick={clearAllSshHistory}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {t("settings.sshClearHistory")}
+                  </Button>
+                ) : null}
+              </div>
+              {sshHistoryLoading ? (
+                <div className="py-4 text-center text-xs text-app-muted">...</div>
+              ) : sshHistory.length === 0 ? (
+                <div className="py-4 text-center text-xs text-app-muted">{t("settings.sshHistoryEmpty")}</div>
+              ) : (
+                <div className="space-y-1">
+                  {sshHistory.map((entry) => (
+                    <div key={entry.id} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-mono text-app-text">{entry.host}:{entry.port || "22"}</div>
+                        <div className="truncate text-app-muted">
+                          {entry.username}
+                          {entry.taskName ? ` · ${entry.taskName}` : ""}
+                          {" · "}
+                          {new Date(entry.connectedAt).toLocaleString()}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-xs font-medium text-app-muted">{t("settings.sshPortForwards")}</h3>
+                <Button type="button" variant="secondary" onClick={() => setShowPortForwardForm((prev) => !prev)}>
+                  {t("settings.sshPortForwardAdd")}
+                </Button>
+              </div>
+              {showPortForwardForm ? (
+                <div className="mb-3 space-y-3 rounded-md border border-app-border bg-app-panel p-3">
+                  <label className="block text-sm">
+                    <span className="mb-1 block text-app-muted">{t("settings.sshPortForwardType")}</span>
+                    <Select
+                      value={pfType}
+                      onChange={(e) => setPfType(e.target.value as PortForwardType)}
+                    >
+                      <option value="local">{t("settings.sshPortForwardLocal")}</option>
+                      <option value="remote">{t("settings.sshPortForwardRemote")}</option>
+                      <option value="dynamic">{t("settings.sshPortForwardDynamic")}</option>
+                    </Select>
+                  </label>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block text-sm">
+                      <span className="mb-1 block text-app-muted">{t("settings.sshPortForwardLocalHost")}</span>
+                      <Input value={pfLocalHost} onChange={(e) => setPfLocalHost(e.target.value)} placeholder="127.0.0.1" />
+                    </label>
+                    <label className="block text-sm">
+                      <span className="mb-1 block text-app-muted">{t("settings.sshPortForwardLocalPort")}</span>
+                      <Input type="number" min={1} max={65535} value={pfLocalPort} onChange={(e) => setPfLocalPort(e.target.value)} placeholder="8080" />
+                    </label>
+                  </div>
+                  {pfType !== "dynamic" ? (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="block text-sm">
+                        <span className="mb-1 block text-app-muted">{t("settings.sshPortForwardRemoteHost")}</span>
+                        <Input value={pfRemoteHost} onChange={(e) => setPfRemoteHost(e.target.value)} placeholder="example.com" />
+                      </label>
+                      <label className="block text-sm">
+                        <span className="mb-1 block text-app-muted">{t("settings.sshPortForwardRemotePort")}</span>
+                        <Input type="number" min={1} max={65535} value={pfRemotePort} onChange={(e) => setPfRemotePort(e.target.value)} placeholder="80" />
+                      </label>
+                    </div>
+                  ) : null}
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={pfEnabled} onChange={(e) => setPfEnabled(e.target.checked)} />
+                    <span className="text-app-muted">{t("settings.sshPortForwardEnabled")}</span>
+                  </label>
+                  <div className="flex justify-end gap-2">
+                    <Button type="button" variant="secondary" onClick={() => setShowPortForwardForm(false)}>
+                      {text("取消", "Cancel")}
+                    </Button>
+                    <Button type="button" onClick={addPortForward}>
+                      {text("添加", "Add")}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+              {form.ssh.portForwards.length === 0 ? (
+                <div className="py-4 text-center text-xs text-app-muted">{t("settings.sshPortForwardEmpty")}</div>
+              ) : (
+                <div className="space-y-1">
+                  {form.ssh.portForwards.map((rule) => (
+                    <div key={rule.id} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="rounded bg-app-surface px-1.5 py-0.5 font-mono text-[10px] text-app-accent">
+                            {rule.type === "local" ? "-L" : rule.type === "remote" ? "-R" : "-D"}
+                          </span>
+                          <span className="font-mono text-app-text">
+                            {rule.localHost}:{rule.localPort}
+                            {rule.type !== "dynamic" ? ` → ${rule.remoteHost}:${rule.remotePort}` : ""}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex items-center gap-2 text-app-muted">
+                          <label className="flex items-center gap-1">
+                            <input
+                              type="checkbox"
+                              checked={rule.enabled}
+                              onChange={(e) => togglePortForwardEnabled(rule.id, e.target.checked)}
+                            />
+                            <span>{t("settings.sshPortForwardEnabled")}</span>
+                          </label>
+                        </div>
+                      </div>
+                      <button
+                        className="ml-2 shrink-0 rounded p-1 text-app-muted hover:bg-app-surface hover:text-app-danger"
+                        type="button"
+                        onClick={() => confirm({
+                          title: t("settings.sshPortForwards"),
+                          description: t("settings.sshPortForwardDeleteConfirm"),
+                          confirmLabel: text("删除", "Delete"),
+                          tone: "danger",
+                          run: () => removePortForward(rule.id),
+                        })}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </Panel>
       ) : null}

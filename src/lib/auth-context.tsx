@@ -47,6 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [savedAccounts, setSavedAccounts] = useState<SavedLoginAccount[]>([]);
   const savedAccountsRef = useRef<SavedLoginAccount[]>([]);
   const refreshAttemptedRef = useRef(false);
+  const loginSavedRef = useRef<((accountId: string) => Promise<void>) | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,14 +96,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!ready || !token || user) return;
+    let cancelled = false;
     authApi
       .userInfo()
-      .then(setUser)
-      .catch(() => {
+      .then((next) => {
+        if (cancelled) return;
+        setUser(next);
+      })
+      .catch(async () => {
+        if (cancelled) return;
+        // Token expired or rejected. Try to silently re-login with the most
+        // recent saved account that has a stored password before kicking the
+        // user back to the login page.
+        const account = savedAccountsRef.current[0];
+        if (account?.encryptedPassword && loginSavedRef.current) {
+          try {
+            await loginSavedRef.current(account.id);
+            return; // loginSaved sets token and user on success
+          } catch {
+            if (cancelled) return;
+            // Fall through to clear token
+          }
+        }
         void browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
         apiClient.setToken(null);
         setToken(null);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [ready, token, user]);
 
   const refreshUser = useCallback(async () => {
@@ -256,6 +278,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       durationMs: Date.now() - startedAt,
     });
   }, [persistSavedAccounts]);
+
+  // Keep loginSavedRef in sync so the startup auto-relogin effect can call the
+  // latest loginSaved without adding it to its dependency array.
+  useEffect(() => {
+    loginSavedRef.current = loginSaved;
+  }, [loginSaved]);
 
   const forgetSavedAccount = useCallback(async (accountId: string) => {
     await persistSavedAccounts(removeSavedAccount(savedAccountsRef.current, accountId));

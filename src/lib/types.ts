@@ -365,6 +365,7 @@ export type RuntimeTransport = {
   request<T = unknown>(request: RuntimeHttpRequest): Promise<RuntimeHttpResponse<T>>;
   createWebSocket(url: string): Promise<RuntimeWebSocket>;
   copyText(text: string): Promise<void>;
+  readClipboardText(): Promise<string>;
   requestSystemNotificationPermission(): Promise<RuntimeSystemNotificationPermission>;
   notifySystem(notification: RuntimeSystemNotification): Promise<RuntimeSystemNotificationResult>;
   openExternal(url: string): void;
@@ -375,8 +376,24 @@ export type RuntimeTransport = {
   resizeSshSession(sessionId: string, cols: number, rows: number): Promise<void>;
   closeSshSession(sessionId: string): Promise<void>;
   onSshSessionEvent(sessionId: string, handler: (event: SshSessionEvent) => void): Promise<() => void>;
+  listKnownHosts(): Promise<KnownHostEntry[]>;
+  removeKnownHost(hostPort: string): Promise<void>;
+  clearKnownHosts(): Promise<void>;
   openSystemSshTerminal(request: SshConnectionRequest): Promise<void>;
   openVscodeSsh(request: SshConnectionRequest): Promise<void>;
+  sftpList(sessionId: string, path: string): Promise<SftpEntry[]>;
+  sftpUpload(sessionId: string, localPath: string, remotePath: string): Promise<void>;
+  sftpDownload(sessionId: string, remotePath: string, localPath: string): Promise<void>;
+  sftpDelete(sessionId: string, path: string): Promise<void>;
+  sftpRename(sessionId: string, oldPath: string, newPath: string): Promise<void>;
+  sftpMkdir(sessionId: string, path: string): Promise<void>;
+  onSftpProgress(sessionId: string, handler: (progress: SftpProgress) => void): Promise<() => void>;
+  startPortForward(sessionId: string, rule: PortForwardRule): Promise<void>;
+  stopPortForward(sessionId: string, ruleId: string): Promise<void>;
+  onPortForwardStatus(sessionId: string, handler: (status: PortForwardStatus) => void): Promise<() => void>;
+  listSshHistory(): Promise<SshHistoryEntry[]>;
+  addSshHistory(entry: Omit<SshHistoryEntry, "id" | "connectedAt">): Promise<void>;
+  clearSshHistory(): Promise<void>;
   setDesktopCloseToTray(enabled: boolean): Promise<void>;
   setDesktopClosePrompt(enabled: boolean): Promise<void>;
   cancelDesktopClosePrompt(): Promise<void>;
@@ -424,6 +441,8 @@ export type CommitQueueItem = {
   updatedAt: string;
 };
 
+export type SshAuthMode = "password" | "key";
+
 export type SshConnectionRequest = {
   host: string;
   port?: string;
@@ -434,11 +453,87 @@ export type SshConnectionRequest = {
   taskName?: string;
   cols?: number;
   rows?: number;
+  connectTimeoutSec?: number;
+  keepaliveIntervalSec?: number;
+  termType?: string;
+  sshKeyPath?: string;
+  authMode?: SshAuthMode;
 };
 
 export type SshSessionEvent = {
   sessionId: string;
-  kind: "status" | "output" | "error" | "closed";
+  kind: "status" | "output" | "error" | "closed" | "sftp-progress" | "port-forward-status";
   data?: string;
   message?: string;
+};
+
+export type KnownHostEntry = {
+  hostPort: string;
+  fingerprint: string;
+};
+
+export type SshCustomColors = {
+  background: string;
+  foreground: string;
+  cursor: string;
+  selection: string;
+  black: string;
+  red: string;
+  green: string;
+  yellow: string;
+  blue: string;
+  magenta: string;
+  cyan: string;
+  white: string;
+  brightBlack: string;
+  brightRed: string;
+  brightGreen: string;
+  brightYellow: string;
+  brightBlue: string;
+  brightMagenta: string;
+  brightCyan: string;
+  brightWhite: string;
+};
+
+export type PortForwardType = "local" | "remote" | "dynamic";
+
+export type PortForwardRule = {
+  id: string;
+  type: PortForwardType;
+  localHost: string;
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+  enabled: boolean;
+};
+
+export type PortForwardStatus = {
+  ruleId: string;
+  active: boolean;
+  error?: string;
+};
+
+export type SftpEntry = {
+  name: string;
+  longName: string;
+  isDir: boolean;
+  isFile: boolean;
+  isSymlink: boolean;
+  size: number;
+  modifiedAt: number;
+  permissions: string;
+};
+
+export type SftpProgress = {
+  transferred: number;
+  total: number;
+};
+
+export type SshHistoryEntry = {
+  id: string;
+  host: string;
+  port: string;
+  username: string;
+  taskName: string;
+  connectedAt: number;
 };

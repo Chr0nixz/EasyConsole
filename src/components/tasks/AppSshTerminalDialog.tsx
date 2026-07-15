@@ -1,21 +1,26 @@
-import "@xterm/xterm/css/xterm.css";
-
-import type { FitAddon as FitAddonInstance } from "@xterm/addon-fit";
-import type { IDisposable, Terminal as XTermInstance } from "@xterm/xterm";
-import { Maximize2, Minimize2, RefreshCw, Terminal, X } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { AlertCircle, Check, Circle, Maximize2, Minimize2, Plus, Terminal, X } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent as ReactFormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
-import { browserRuntime } from "../../lib/runtime";
 import { useI18n } from "../../lib/i18n";
+import { useConfirmAction } from "../../lib/use-confirm-action";
 import type { SshConnectionRequest } from "../../lib/types";
 import { cn } from "../../lib/utils";
-import { Button } from "../ui";
+import { Button, Input } from "../ui";
+import { SshTerminalTab } from "./SshTerminalTab";
 
 type AppSshTerminalDialogProps = {
   request: SshConnectionRequest | null;
   onClose: () => void;
 };
+
+type TabState = {
+  id: string;
+  request: SshConnectionRequest;
+  status: string;
+};
+
+type TabStatusKind = "ready" | "connected" | "failed" | "closed" | "other";
 
 const FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -26,193 +31,231 @@ const FOCUSABLE_SELECTOR = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
+function tabTitle(request: SshConnectionRequest) {
+  return request.taskName || request.host || "SSH";
+}
+
+function sameTarget(a: SshConnectionRequest, b: SshConnectionRequest) {
+  return a.host === b.host && a.port === b.port && a.username === b.username && a.taskId === b.taskId;
+}
+
+// Derive a stable status kind from the status string for icon/color/aria.
+// Check "closed" before "connected" since "Disconnected" contains "connected".
+function deriveStatusKind(status: string): TabStatusKind {
+  if (status.includes("已关闭") || /\b(closed|disconnected)\b/i.test(status)) return "closed";
+  if (status.includes("已连接") || /\bconnected\b/i.test(status)) return "connected";
+  if (status.includes("失败") || /\bfailed\b/i.test(status)) return "failed";
+  if (status.includes("准备连接") || /\bready\b/i.test(status)) return "ready";
+  return "other";
+}
+
+function isLiveStatus(status: string): boolean {
+  return deriveStatusKind(status) === "connected";
+}
+
 export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogProps) {
-  const { text } = useI18n();
+  const { t, text } = useI18n();
   const titleId = useId();
-  const statusId = useId();
-  const containerRef = useRef<HTMLDivElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
-  const isMinimizedRef = useRef(false);
-  const sessionIdRef = useRef<string | null>(null);
+  const newTabFormRef = useRef<HTMLFormElement | null>(null);
+  const tabRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const confirmAction = useConfirmAction();
+  const [tabs, setTabs] = useState<TabState[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [isMinimized, setIsMinimized] = useState(false);
-  const [status, setStatus] = useState(() => text("准备连接", "Ready to connect"));
-  const [ctrlActive, setCtrlActive] = useState(false);
-  const [canReconnect, setCanReconnect] = useState(false);
-  const [reconnectKey, setReconnectKey] = useState(0);
-  const ctrlActiveRef = useRef(false);
-  const termRef = useRef<XTermInstance | null>(null);
+  const [showNewTabForm, setShowNewTabForm] = useState(false);
+  const [newHost, setNewHost] = useState("");
+  const [newPort, setNewPort] = useState("22");
+  const [newUsername, setNewUsername] = useState("");
 
-  useEffect(() => {
-    isMinimizedRef.current = isMinimized;
-  }, [isMinimized]);
+  const openTab = useCallback((tabRequest: SshConnectionRequest) => {
+    const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `tab-${Date.now()}`;
+    setTabs((prev) => [...prev, { id, request: tabRequest, status: text("准备连接", "Ready to connect") }]);
+    setActiveTabId(id);
+    setShowNewTabForm(false);
+  }, [text]);
 
+  // Initialize / sync the first tab from the incoming request prop.
   useEffect(() => {
+    if (!request) return;
+    setTabs((prev) => {
+      if (prev.length === 0) {
+        const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `tab-${Date.now()}`;
+        setActiveTabId(id);
+        return [{ id, request, status: text("准备连接", "Ready to connect") }];
+      }
+      // If the incoming request targets a different host than the active tab, open a new tab.
+      const active = prev.find((tab) => tab.id === activeTabId);
+      if (active && sameTarget(active.request, request)) return prev;
+      const exists = prev.find((tab) => sameTarget(tab.request, request));
+      if (exists) {
+        setActiveTabId(exists.id);
+        return prev;
+      }
+      const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `tab-${Date.now()}`;
+      setActiveTabId(id);
+      return [...prev, { id, request, status: text("准备连接", "Ready to connect") }];
+    });
     setIsMinimized(false);
-    setStatus(text("准备连接", "Ready to connect"));
-    setCanReconnect(false);
-  }, [request, text]);
+  }, [request, text, activeTabId]);
 
-  useEffect(() => {
-    if (!request || !containerRef.current) return;
+  const closeTab = useCallback((id: string) => {
+    setTabs((prev) => {
+      const idx = prev.findIndex((tab) => tab.id === id);
+      if (idx === -1) return prev;
+      const next = prev.filter((tab) => tab.id !== id);
+      if (next.length === 0) {
+        setActiveTabId(null);
+        onClose();
+        return next;
+      }
+      if (id === activeTabId) {
+        const fallback = next[Math.min(idx, next.length - 1)];
+        setActiveTabId(fallback.id);
+      }
+      return next;
+    });
+  }, [activeTabId, onClose]);
 
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    let terminal: XTermInstance | null = null;
-    let fitAddon: FitAddonInstance | null = null;
-    let dataDisposable: IDisposable | null = null;
+  // Wrap closeTab with a confirmation guard for live (connected) sessions.
+  const requestCloseTab = useCallback((id: string) => {
+    const tab = tabs.find((t) => t.id === id);
+    if (!tab) return;
+    if (isLiveStatus(tab.status)) {
+      confirmAction.confirm({
+        title: text("关闭已连接的标签", "Close connected tab"),
+        description: text(
+          `${tabTitle(tab.request)} 仍有活动 SSH 连接，关闭将终止会话并丢弃滚动历史。确定关闭吗？`,
+          `${tabTitle(tab.request)} still has an active SSH connection. Closing will terminate the session and discard scrollback. Close anyway?`,
+        ),
+        confirmLabel: text("关闭", "Close"),
+        tone: "danger",
+        run: () => closeTab(id),
+      });
+    } else {
+      closeTab(id);
+    }
+  }, [tabs, text, confirmAction, closeTab]);
 
-    const resizeRemote = () => {
-      if (!terminal || !fitAddon || isMinimizedRef.current) return;
-      fitAddon.fit();
-      const sessionId = sessionIdRef.current;
-      if (!sessionId) return;
-      void browserRuntime.resizeSshSession(sessionId, terminal.cols, terminal.rows);
-    };
-
-    window.addEventListener("resize", resizeRemote);
-
-    void (async () => {
-      const [{ Terminal: XTerm }, { FitAddon }] = await Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")]);
-      if (disposed || !containerRef.current) return;
-
-      terminal = new XTerm({
-        cursorBlink: true,
-        convertEol: true,
-        fontFamily: 'Consolas, "SFMono-Regular", "Cascadia Mono", monospace',
-        fontSize: browserRuntime.isMobile ? 15 : 13,
-        scrollback: 10_000,
-        theme: {
-          background: "oklch(0.18 0.028 255)",
-          foreground: "oklch(0.9 0.018 255)",
-          cursor: "oklch(0.78 0.12 235)",
+  // Wrap dialog close with a confirmation guard when live sessions exist.
+  const requestCloseDialog = useCallback(() => {
+    const liveCount = tabs.filter((t) => isLiveStatus(t.status)).length;
+    if (liveCount > 0) {
+      confirmAction.confirm({
+        title: text("关闭终端窗口", "Close terminal window"),
+        description: text(
+          `还有 ${liveCount} 个活动 SSH 连接，关闭将终止所有会话。确定关闭吗？`,
+          `${liveCount} active SSH connection${liveCount > 1 ? "s" : ""} will be terminated. Close anyway?`,
+        ),
+        confirmLabel: text("关闭", "Close"),
+        tone: "danger",
+        run: () => {
+          setTabs([]);
+          setActiveTabId(null);
+          onClose();
         },
       });
-      fitAddon = new FitAddon();
-      terminal.loadAddon(fitAddon);
-      terminal.open(containerRef.current);
-      fitAddon.fit();
-      try {
-        const { WebglAddon } = await import("@xterm/addon-webgl");
-        const webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => webglAddon.dispose());
-        terminal.loadAddon(webglAddon);
-      } catch {
-        // WebGL not available, fallback to canvas renderer
-      }
-      try {
-        const { WebLinksAddon } = await import("@xterm/addon-web-links");
-        terminal.loadAddon(new WebLinksAddon());
-      } catch {
-        // WebLinks addon not available
-      }
-      termRef.current = terminal;
-      terminal.onKey(({ domEvent: ev }) => {
-        if (!ctrlActiveRef.current) return true;
-        const key = ev.key;
-        if (key.length === 1 && /[a-zA-Z]/.test(key) && !ev.altKey && !ev.metaKey) {
-          const code = key.toLowerCase().charCodeAt(0) - 96;
-          const sid = sessionIdRef.current;
-          if (sid) void browserRuntime.writeSshSession(sid, String.fromCharCode(code));
-          ctrlActiveRef.current = false;
-          setCtrlActive(false);
-          return false;
-        }
-        ctrlActiveRef.current = false;
-        setCtrlActive(false);
-        return true;
-      });
-      terminal.focus();
-      terminal.writeln(text("正在建立 SSH 连接...", "Establishing SSH connection..."));
-
-      dataDisposable = terminal.onData((data) => {
-        const sessionId = sessionIdRef.current;
-        if (!sessionId) return;
-        void browserRuntime.writeSshSession(sessionId, data);
-      });
-
-      try {
-        const activeTerminal = terminal;
-        const sessionId = await browserRuntime.openSshSession({ ...request, cols: activeTerminal.cols, rows: activeTerminal.rows });
-        if (disposed) {
-          void browserRuntime.closeSshSession(sessionId);
-          return;
-        }
-        sessionIdRef.current = sessionId;
-        unlisten = await browserRuntime.onSshSessionEvent(sessionId, (event) => {
-          if (event.kind === "output" && event.data) {
-            activeTerminal.write(event.data);
-            return;
-          }
-          if (event.kind === "status" && event.message) {
-            setStatus(event.message);
-            activeTerminal.writeln(`\r\n${event.message}`);
-            return;
-          }
-          if (event.kind === "error") {
-            const message = event.message ?? text("SSH 连接失败", "SSH connection failed");
-            setStatus(message);
-            activeTerminal.writeln(`\r\n${message}`);
-            setCanReconnect(true);
-            return;
-          }
-          if (event.kind === "closed") {
-            setStatus(event.message ?? text("SSH 会话已关闭", "SSH session closed"));
-            setCanReconnect(true);
-          }
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : text("SSH 连接失败", "SSH connection failed");
-        setStatus(message);
-        terminal.writeln(`\r\n${message}`);
-        setCanReconnect(true);
-      }
-    })();
-
-    return () => {
-      disposed = true;
-      window.removeEventListener("resize", resizeRemote);
-      dataDisposable?.dispose();
-      unlisten?.();
-      const sessionId = sessionIdRef.current;
-      sessionIdRef.current = null;
-      if (sessionId) void browserRuntime.closeSshSession(sessionId).catch(() => {});
-      termRef.current = null;
-      terminal?.dispose();
-    };
-  }, [request, text, reconnectKey]);
-
-  useEffect(() => {
-    if (!request || isMinimized) return;
-    window.setTimeout(() => window.dispatchEvent(new Event("resize")), 0);
-  }, [isMinimized, request]);
-
-  const sendKeySeq = useCallback((rawKey: string, data: string) => {
-    const sid = sessionIdRef.current;
-    if (!sid) return;
-    if (ctrlActiveRef.current && rawKey.length === 1 && /[a-zA-Z]/.test(rawKey)) {
-      const code = rawKey.toLowerCase().charCodeAt(0) - 96;
-      void browserRuntime.writeSshSession(sid, String.fromCharCode(code));
-      ctrlActiveRef.current = false;
-      setCtrlActive(false);
     } else {
-      void browserRuntime.writeSshSession(sid, data);
+      setTabs([]);
+      setActiveTabId(null);
+      onClose();
     }
+  }, [tabs, text, confirmAction, onClose]);
+
+  const updateTabStatus = useCallback((id: string, status: string) => {
+    setTabs((prev) => prev.map((tab) => (tab.id === id ? { ...tab, status } : tab)));
   }, []);
 
-  if (!request) return null;
+  const focusTab = useCallback((id: string) => {
+    tabRefs.current.get(id)?.focus();
+  }, []);
 
-  const handleReconnect = () => {
-    setCanReconnect(false);
-    setReconnectKey((key) => key + 1);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const hasFocusedRef = useRef(false);
+
+  // 首次打开时将焦点移入对话框，符合 WAI-ARIA dialog 模式。
+  useEffect(() => {
+    if (!request) {
+      hasFocusedRef.current = false;
+      return;
+    }
+    if (hasFocusedRef.current) return;
+    hasFocusedRef.current = true;
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const timer = window.setTimeout(() => {
+      const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? []).filter(
+        (element) => !element.hasAttribute("disabled") && element.getAttribute("aria-hidden") !== "true",
+      );
+      if (focusable.length > 0) {
+        focusable[0].focus();
+      } else {
+        dialogRef.current?.focus();
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [request]);
+
+  // 对话框卸载时恢复焦点到触发元素。
+  useEffect(() => {
+    return () => {
+      previousFocusRef.current?.focus();
+    };
+  }, []);
+
+  const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>, currentIdx: number) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setActiveTabId(tabs[currentIdx].id);
+      return;
+    }
+
+    let nextIdx: number | null = null;
+    if (event.key === "ArrowRight") nextIdx = currentIdx + 1 < tabs.length ? currentIdx + 1 : 0;
+    else if (event.key === "ArrowLeft") nextIdx = currentIdx - 1 >= 0 ? currentIdx - 1 : tabs.length - 1;
+    else if (event.key === "Home") nextIdx = 0;
+    else if (event.key === "End") nextIdx = tabs.length - 1;
+
+    if (nextIdx !== null) {
+      event.preventDefault();
+      focusTab(tabs[nextIdx].id);
+    }
   };
+
+  const handleNewTabSubmit = (event: ReactFormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const host = newHost.trim();
+    if (!host) return;
+    const username = newUsername.trim();
+    const port = newPort.trim() || "22";
+    const newRequest: SshConnectionRequest = {
+      host,
+      port,
+      username: username || undefined,
+      command: `ssh ${username ? `${username}@` : ""}${host}${port && port !== "22" ? `:${port}` : ""}`,
+      authMode: "password",
+    };
+    openTab(newRequest);
+    setNewHost("");
+    setNewPort("22");
+    setNewUsername("");
+  };
+
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
 
   const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
       const activeElement = document.activeElement;
+      // If the new-tab form is open and focus is inside it, Escape closes just the form
+      // (not the entire dialog, which may hold live SSH sessions).
+      if (showNewTabForm && newTabFormRef.current?.contains(activeElement)) {
+        event.preventDefault();
+        setShowNewTabForm(false);
+        return;
+      }
       const isTerminalFocused = activeElement?.closest(".xterm") ?? false;
       if (!isTerminalFocused || event.ctrlKey) {
         event.preventDefault();
-        onClose();
+        requestCloseDialog();
       }
       return;
     }
@@ -240,6 +283,8 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
     }
   };
 
+  if (!request && tabs.length === 0) return null;
+
   return createPortal(
     <>
       <div
@@ -251,134 +296,193 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        aria-describedby={statusId}
         onKeyDown={handleDialogKeyDown}
       >
-        <div className="app-terminal-modal-panel max-h-[calc(100vh-5rem)] w-full max-w-5xl overflow-hidden rounded-lg bg-app-terminalBg">
-          <div className="flex h-12 items-center justify-between border-b border-app-border bg-app-surface px-4">
-            <div className="flex min-w-0 items-center gap-2 text-app-text">
-              <Terminal className="h-4 w-4 shrink-0 text-app-accent" />
-              <h2 id={titleId} className="truncate text-sm font-semibold">{text("应用内 SSH", "In-app SSH")} {request.taskName ?? ""}</h2>
+        <div className="app-terminal-modal-panel flex max-h-[calc(100vh-5rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-app-terminalBg">
+          <div className="flex h-12 shrink-0 items-center justify-between border-b border-app-terminalBorder bg-app-terminalPanel px-4">
+            <div className="flex min-w-0 items-center gap-2 text-app-terminalText">
+              <Terminal className="h-4 w-4 shrink-0 text-app-terminalAccent" />
+              <h2 id={titleId} className="truncate text-sm font-semibold">
+                {text("应用内 SSH", "In-app SSH")}
+                {activeTab ? ` · ${tabTitle(activeTab.request)}` : ""}
+              </h2>
             </div>
             <div className="flex items-center gap-1">
               <button
-                className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text"
+                className="flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1"
                 type="button"
                 title={text("最小化", "Minimize")}
+                aria-label={text("最小化", "Minimize")}
                 onClick={() => setIsMinimized(true)}
               >
                 <Minimize2 className="h-4 w-4" />
                 <span className="sr-only">{text("最小化", "Minimize")}</span>
               </button>
               <button
-                className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text"
+                className="flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1"
                 type="button"
                 title={text("关闭", "Close")}
-                onClick={onClose}
+                aria-label={text("关闭", "Close")}
+                onClick={requestCloseDialog}
               >
                 <X className="h-4 w-4" />
                 <span className="sr-only">{text("关闭", "Close")}</span>
               </button>
             </div>
           </div>
-          <div className="flex h-[min(80vh,780px)] flex-col">
-            <div className="flex h-10 items-center justify-between border-b border-app-terminalBorder bg-app-terminalPanel px-3 text-xs text-app-terminalText">
-              <span className="truncate font-mono">{request.command}</span>
-              <span id={statusId} className="ml-3 shrink-0 text-app-terminalAccent">{status}</span>
+
+          <div
+            className="flex h-9 shrink-0 items-center border-b border-app-terminalBorder bg-app-terminalPanel"
+            role="tablist"
+            aria-label={text("SSH 会话标签", "SSH session tabs")}
+          >
+            <div className="flex h-9 flex-1 items-center gap-1 overflow-x-auto px-2">
+              {tabs.map((tab, idx) => {
+                const kind = deriveStatusKind(tab.status);
+                const isActive = tab.id === activeTabId;
+                return (
+                  <div
+                    key={tab.id}
+                    id={`ssh-tab-${tab.id}`}
+                    ref={(el) => {
+                      if (el) tabRefs.current.set(tab.id, el);
+                      else tabRefs.current.delete(tab.id);
+                    }}
+                    className={cn(
+                      "group flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1",
+                      isActive
+                        ? "bg-app-terminalBg text-app-terminalText"
+                        : kind === "failed"
+                          ? "text-app-danger hover:bg-app-terminalBg/60 hover:text-app-terminalText"
+                          : kind === "closed"
+                            ? "text-app-warning hover:bg-app-terminalBg/60 hover:text-app-terminalText"
+                            : "text-app-terminalMuted hover:bg-app-terminalBg/60 hover:text-app-terminalText",
+                    )}
+                    role="tab"
+                    tabIndex={isActive ? 0 : -1}
+                    aria-selected={isActive}
+                    aria-label={`${tabTitle(tab.request)}，${tab.status}`}
+                    onClick={() => setActiveTabId(tab.id)}
+                    onKeyDown={(event) => handleTabKeyDown(event, idx)}
+                    title={tab.request.command}
+                  >
+                    {kind === "connected" ? (
+                      <Check className="h-3 w-3 shrink-0 text-app-success" aria-hidden="true" />
+                    ) : kind === "failed" ? (
+                      <AlertCircle className="h-3 w-3 shrink-0 text-app-danger" aria-hidden="true" />
+                    ) : (
+                      <Circle className="h-3 w-3 shrink-0 text-app-terminalMuted" aria-hidden="true" />
+                    )}
+                    <span className="max-w-[10rem] truncate">{tabTitle(tab.request)}</span>
+                    <button
+                      className="flex h-4 w-4 items-center justify-center rounded text-app-terminalMuted hover:bg-app-terminalPanel hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent opacity-60 group-hover:opacity-100 group-focus-within:opacity-100"
+                      type="button"
+                      tabIndex={-1}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        requestCloseTab(tab.id);
+                      }}
+                      aria-label={text(`关闭 ${tabTitle(tab.request)} 标签`, `Close ${tabTitle(tab.request)} tab`)}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
-            <div ref={containerRef} className="min-h-0 flex-1" />
-            {browserRuntime.isMobile && (
-              <div className="flex h-11 shrink-0 select-none items-center gap-1 overflow-x-auto border-t border-app-terminalBorder bg-app-terminalPanel px-1.5">
-                {(["Esc", "Tab", "↑", "↓", "←", "→", "Ctrl"] as const).map((label) => {
-                  const isCtrl = label === "Ctrl";
-                  return (
-                    <button
-                      key={label}
-                      className={cn(
-                        "flex h-8 min-w-9 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px]",
-                        isCtrl && ctrlActive
-                          ? "bg-app-accent text-white"
-                          : "text-app-terminalText hover:bg-app-panel",
-                      )}
-                      type="button"
-                      onPointerDown={(event) => {
-                        event.preventDefault();
-                        if (isCtrl) {
-                          const next = !ctrlActiveRef.current;
-                          ctrlActiveRef.current = next;
-                          setCtrlActive(next);
-                          setTimeout(() => termRef.current?.focus(), 0);
-                        } else {
-                          const sequences: Record<string, [string, string]> = {
-                            "Esc": ["Esc", "\x1b"],
-                            "Tab": ["Tab", "\x09"],
-                            "↑": ["Up", "\x1b[A"],
-                            "↓": ["Down", "\x1b[B"],
-                            "←": ["Left", "\x1b[D"],
-                            "→": ["Right", "\x1b[C"],
-                          };
-                          const seq = sequences[label];
-                          if (seq) sendKeySeq(seq[0], seq[1]);
-                          setTimeout(() => termRef.current?.focus(), 0);
-                        }
-                      }}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-                <div className="mx-0.5 h-5 w-px shrink-0 bg-app-terminalBorder" />
-                {(["Ctrl+C", "Ctrl+Z", "Ctrl+D", "Ctrl+L"] as const).map((combo) => {
-                  const charCode = combo.toLowerCase().charCodeAt(combo.length - 1) - 96;
-                  return (
-                    <button
-                      key={combo}
-                      className="flex h-8 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px] text-app-terminalText hover:bg-app-panel"
-                      type="button"
-                      onPointerDown={(event) => {
-                        event.preventDefault();
-                        const sid = sessionIdRef.current;
-                        if (sid) void browserRuntime.writeSshSession(sid, String.fromCharCode(charCode));
-                        setTimeout(() => termRef.current?.focus(), 0);
-                      }}
-                    >
-                      {combo}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            <div className="flex h-11 items-center justify-end gap-2 border-t border-app-terminalBorder bg-app-terminalPanel px-3">
-              {canReconnect ? (
-                <Button type="button" variant="secondary" onClick={handleReconnect}>
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  {text("重连", "Reconnect")}
-                </Button>
-              ) : null}
-              <Button type="button" variant="secondary" onClick={onClose}>
-                {text("关闭", "Close")}
+            <div className="flex h-9 shrink-0 items-center px-2">
+              <button
+                className="flex h-7 w-7 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1"
+                type="button"
+                title={t("terminal.newTab")}
+                aria-label={t("terminal.newTab")}
+                onClick={() => setShowNewTabForm((prev) => !prev)}
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
+          {showNewTabForm ? (
+            <form
+              ref={newTabFormRef}
+              className="flex h-auto shrink-0 flex-wrap items-center gap-2 border-b border-app-terminalBorder bg-app-terminalPanel px-3 py-2"
+              onSubmit={handleNewTabSubmit}
+            >
+              <Input
+                className="h-8 w-40 border-app-terminalBorder bg-app-terminalBg text-app-terminalText placeholder:text-app-terminalMuted"
+                placeholder={t("terminal.host")}
+                aria-label={t("terminal.host")}
+                value={newHost}
+                onChange={(event) => setNewHost(event.target.value)}
+                autoFocus
+              />
+              <Input
+                className="h-8 w-20 border-app-terminalBorder bg-app-terminalBg text-app-terminalText placeholder:text-app-terminalMuted"
+                placeholder={t("terminal.port")}
+                aria-label={t("terminal.port")}
+                value={newPort}
+                onChange={(event) => setNewPort(event.target.value)}
+              />
+              <Input
+                className="h-8 w-32 border-app-terminalBorder bg-app-terminalBg text-app-terminalText placeholder:text-app-terminalMuted"
+                placeholder={t("terminal.username")}
+                aria-label={t("terminal.username")}
+                value={newUsername}
+                onChange={(event) => setNewUsername(event.target.value)}
+              />
+              <Button type="submit" className="h-8" disabled={!newHost.trim()}>
+                {t("terminal.connect")}
               </Button>
-            </div>
+            </form>
+          ) : null}
+
+          <div
+            className="flex h-[min(80vh,780px)] min-h-0 flex-1 flex-col"
+            role="tabpanel"
+            aria-labelledby={activeTabId ? `ssh-tab-${activeTabId}` : undefined}
+          >
+            {tabs.map((tab) => (
+              <SshTerminalTab
+                key={tab.id}
+                request={tab.request}
+                tabId={tab.id}
+                active={tab.id === activeTabId}
+                onStatusChange={(status) => updateTabStatus(tab.id, status)}
+              />
+            ))}
           </div>
         </div>
       </div>
 
-      {isMinimized ? (
+      {isMinimized && activeTab ? (
         <button
-          className="fixed bottom-4 right-4 z-50 flex max-w-[min(28rem,calc(100vw-2rem))] items-center gap-3 rounded-lg border border-app-terminalBorder bg-app-terminalBg px-4 py-3 text-left text-app-terminalText shadow-popover hover:bg-app-terminalPanel"
+          className="fixed right-4 z-50 flex max-w-[min(28rem,calc(100vw-2rem))] items-center gap-3 rounded-lg bg-app-terminalBg px-4 py-3 text-left text-app-terminalText shadow-popover hover:bg-app-terminalPanel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
           style={{ bottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }}
-          aria-label={text(`恢复应用内 SSH ${request.taskName ?? ""}`, `Restore in-app SSH ${request.taskName ?? ""}`)}
+          aria-label={text(`恢复应用内 SSH ${tabTitle(activeTab.request)}`, `Restore in-app SSH ${tabTitle(activeTab.request)}`)}
           type="button"
           onClick={() => setIsMinimized(false)}
         >
           <Terminal className="h-4 w-4 shrink-0 text-app-terminalAccent" />
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold">{request.taskName ?? text("应用内 SSH", "In-app SSH")}</span>
-            <span className="mt-1 block truncate text-xs text-app-terminalMuted">{status}</span>
+            <span className="block truncate text-sm font-semibold">{tabTitle(activeTab.request)}</span>
+            <span className="mt-1 block truncate text-xs text-app-terminalMuted">{activeTab.status}</span>
           </span>
+          {tabs.length > 1 ? (
+            <span className="shrink-0 rounded-full bg-app-terminalPanel px-2 py-0.5 text-xs text-app-terminalMuted">
+              {text(`${tabs.length} 个会话`, `${tabs.length} sessions`)}
+            </span>
+          ) : null}
+          {tabs.some((tab) => tab.id !== activeTab.id && (deriveStatusKind(tab.status) === "failed" || deriveStatusKind(tab.status) === "closed")) ? (
+            <span
+              className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-app-danger"
+              aria-label={text("有会话需要关注", "A session needs attention")}
+            />
+          ) : null}
           <Maximize2 className="h-4 w-4 shrink-0 text-app-terminalMuted" />
         </button>
       ) : null}
+      {confirmAction.confirmDialog}
     </>,
     document.body,
   );

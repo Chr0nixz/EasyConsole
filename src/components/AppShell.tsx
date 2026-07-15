@@ -756,7 +756,7 @@ export function AppShell() {
           </div>
         </header>
         {isOnline ? null : (
-          <div className="flex items-center gap-2 bg-amber-500/15 px-4 py-1.5 text-xs font-medium text-amber-600" role="alert">
+          <div className="flex items-center gap-2 bg-app-warningSoft px-4 py-1.5 text-sm font-medium text-app-warningText" role="alert">
             <WifiOff className="h-3.5 w-3.5 shrink-0" />
             <span>{text("当前处于离线状态，部分功能不可用", "You are offline — some features are unavailable")}</span>
           </div>

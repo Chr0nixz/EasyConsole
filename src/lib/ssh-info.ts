@@ -1,6 +1,7 @@
 import type { SshConnectionRequest, Task, UnknownRecord } from "./types";
+import { getRuntimeSettings } from "./app-settings";
 
-const DEFAULT_SSH_USERNAME = "ubuntu";
+const FALLBACK_SSH_USERNAME = "ubuntu";
 
 export type TaskSshInfo = {
   host: string;
@@ -46,9 +47,10 @@ function getTaskLinkName(task: Task) {
 }
 
 export function buildTaskSshInfo(task: Task): TaskSshInfo {
+  const defaultUsername = getRuntimeSettings().ssh.defaultUsername || FALLBACK_SSH_USERNAME;
   const host = firstText(task.ssh_host, task.host, task.hostname, task.ip) || "-";
   const port = firstText(task.ssh_port, task.port) || "-";
-  const username = firstText(task.ssh_username, task.ssh_user, task.login_user, DEFAULT_SSH_USERNAME);
+  const username = firstText(task.ssh_username, task.ssh_user, task.login_user, defaultUsername);
   const password = firstText(task.ssh_password, task.password, nestedUserName(task)) || "-";
 
   return {

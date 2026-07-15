@@ -23,6 +23,7 @@ export default {
           successSoft: "oklch(0.96 0.035 150)",
           successRing: "oklch(0.83 0.08 150)",
           warning: "oklch(0.46 0.12 78)",
+          warningText: "oklch(0.40 0.13 78)",
           warningSoft: "oklch(0.96 0.055 78)",
           warningRing: "oklch(0.86 0.11 78)",
           danger: "oklch(0.50 0.18 25)",

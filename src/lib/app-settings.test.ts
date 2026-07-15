@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_APP_SETTINGS, normalizeAppSettings, parseAppSettings, stringifyAppSettings } from "./app-settings";
+import { DEFAULT_APP_SETTINGS, DEFAULT_SSH_SETTINGS, normalizeAppSettings, parseAppSettings, stringifyAppSettings } from "./app-settings";
 import { DEFAULT_RUN_LOG_LIMIT, DEFAULT_RUN_LOG_RETENTION_DAYS } from "./run-logs";
 
 describe("app settings", () => {
@@ -33,6 +33,7 @@ describe("app settings", () => {
       desktopClosePrompt: true,
       runLogLimit: DEFAULT_RUN_LOG_LIMIT,
       runLogRetentionDays: DEFAULT_RUN_LOG_RETENTION_DAYS,
+      ssh: DEFAULT_SSH_SETTINGS,
     });
   });
 
@@ -50,6 +51,7 @@ describe("app settings", () => {
       desktopClosePrompt: true,
       runLogLimit: DEFAULT_RUN_LOG_LIMIT,
       runLogRetentionDays: DEFAULT_RUN_LOG_RETENTION_DAYS,
+      ssh: DEFAULT_SSH_SETTINGS,
     });
   });
 

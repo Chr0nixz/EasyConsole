@@ -2,6 +2,8 @@ import { isTauri } from "@tauri-apps/api/core";
 
 import { i18nText } from "./i18n-text";
 import type {
+  KnownHostEntry,
+  PortForwardStatus,
   RuntimeHttpRequest,
   RuntimeHttpResponse,
   RuntimeKind,
@@ -12,6 +14,9 @@ import type {
   RuntimeSystemNotificationResult,
   RuntimeTransport,
   RuntimeWebSocket,
+  SftpEntry,
+  SftpProgress,
+  SshHistoryEntry,
   SshSessionEvent,
   UploadProgress,
 } from "./types";
@@ -426,6 +431,9 @@ export const browserRuntime: RuntimeTransport = {
   async copyText(text) {
     await window.navigator.clipboard.writeText(text);
   },
+  async readClipboardText() {
+    return window.navigator.clipboard.readText();
+  },
   requestSystemNotificationPermission,
   notifySystem,
   openExternal(url) {
@@ -463,11 +471,122 @@ export const browserRuntime: RuntimeTransport = {
       handler(event.payload);
     });
   },
+  async listKnownHosts() {
+    if (runtimeKind === "web") return [];
+    return invokeTauriCommand<KnownHostEntry[]>("list_known_hosts", {});
+  },
+  async removeKnownHost(hostPort) {
+    if (runtimeKind === "web") return;
+    await invokeTauriCommand("remove_known_host", { hostPort });
+  },
+  async clearKnownHosts() {
+    if (runtimeKind === "web") return;
+    await invokeTauriCommand("clear_known_hosts", {});
+  },
   openSystemSshTerminal(request) {
     return invokeTauriCommand("open_system_ssh_terminal", { request });
   },
   openVscodeSsh(request) {
     return invokeTauriCommand("open_vscode_ssh", { request });
+  },
+  sftpList(sessionId, path) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand<SftpEntry[]>("sftp_list", { sessionId, path });
+  },
+  sftpUpload(sessionId, localPath, remotePath) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand("sftp_upload", { sessionId, localPath, remotePath });
+  },
+  sftpDownload(sessionId, remotePath, localPath) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand("sftp_download", { sessionId, remotePath, localPath });
+  },
+  sftpDelete(sessionId, path) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand("sftp_delete", { sessionId, path });
+  },
+  sftpRename(sessionId, oldPath, newPath) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand("sftp_rename", { sessionId, oldPath, newPath });
+  },
+  sftpMkdir(sessionId, path) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand("sftp_mkdir", { sessionId, path });
+  },
+  async onSftpProgress(sessionId, handler) {
+    if (runtimeKind === "web") requireDesktopSsh();
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<SshSessionEvent>("ssh-session-event", (event) => {
+      if (event.payload.sessionId !== sessionId || event.payload.kind !== "sftp-progress") return;
+      try {
+        const progress = JSON.parse(event.payload.data ?? "{}") as SftpProgress;
+        handler(progress);
+      } catch {
+        // ignore malformed progress events
+      }
+    });
+  },
+  startPortForward(sessionId, rule) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持端口转发", "Port forwarding is not supported in this environment")));
+    return invokeTauriCommand("ssh_start_port_forward", { sessionId, rule });
+  },
+  stopPortForward(sessionId, ruleId) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持端口转发", "Port forwarding is not supported in this environment")));
+    return invokeTauriCommand("ssh_stop_port_forward", { sessionId, ruleId });
+  },
+  async onPortForwardStatus(sessionId, handler) {
+    if (runtimeKind === "web") requireDesktopSsh();
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<SshSessionEvent>("ssh-session-event", (event) => {
+      if (event.payload.sessionId !== sessionId || event.payload.kind !== "port-forward-status") return;
+      try {
+        const status = JSON.parse(event.payload.data ?? "{}") as PortForwardStatus;
+        handler(status);
+      } catch {
+        // ignore malformed status events
+      }
+    });
+  },
+  async listSshHistory() {
+    if (runtimeKind === "web") {
+      try {
+        const raw = window.localStorage.getItem("easy-console-ssh-history");
+        return raw ? (JSON.parse(raw) as SshHistoryEntry[]) : [];
+      } catch {
+        return [];
+      }
+    }
+    return invokeTauriCommand<SshHistoryEntry[]>("list_ssh_history", {});
+  },
+  async addSshHistory(entry) {
+    if (runtimeKind === "web") {
+      try {
+        const raw = window.localStorage.getItem("easy-console-ssh-history");
+        const existing = raw ? (JSON.parse(raw) as SshHistoryEntry[]) : [];
+        const filtered = existing.filter(
+          (h) => !(h.host === entry.host && h.port === entry.port && h.username === entry.username),
+        );
+        const newEntry: SshHistoryEntry = {
+          ...entry,
+          id: `hist-${Date.now()}`,
+          connectedAt: Date.now(),
+        };
+        filtered.unshift(newEntry);
+        const trimmed = filtered.slice(0, 20);
+        window.localStorage.setItem("easy-console-ssh-history", JSON.stringify(trimmed));
+      } catch {
+        // ignore storage errors
+      }
+      return;
+    }
+    await invokeTauriCommand("add_ssh_history", entry);
+  },
+  async clearSshHistory() {
+    if (runtimeKind === "web") {
+      window.localStorage.removeItem("easy-console-ssh-history");
+      return;
+    }
+    await invokeTauriCommand("clear_ssh_history", {});
   },
   setDesktopCloseToTray(enabled) {
     if (runtimeKind !== "desktop") return Promise.resolve();

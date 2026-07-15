@@ -43,6 +43,7 @@ function createRuntime(responseData: unknown) {
       throw new Error("not implemented");
     },
     async copyText() {},
+    async readClipboardText() { return ""; },
     async requestSystemNotificationPermission() {
       return "unsupported";
     },
@@ -61,8 +62,24 @@ function createRuntime(responseData: unknown) {
     async onSshSessionEvent() {
       return () => {};
     },
+    async listKnownHosts() { return []; },
+    async removeKnownHost() {},
+    async clearKnownHosts() {},
     async openSystemSshTerminal() {},
     async openVscodeSsh() {},
+    async sftpList() { return []; },
+    async sftpUpload() {},
+    async sftpDownload() {},
+    async sftpDelete() {},
+    async sftpRename() {},
+    async sftpMkdir() {},
+    async onSftpProgress() { return () => {}; },
+    async startPortForward() {},
+    async stopPortForward() {},
+    async onPortForwardStatus() { return () => {}; },
+    async listSshHistory() { return []; },
+    async addSshHistory() {},
+    async clearSshHistory() {},
     async setDesktopCloseToTray() {},
     async setDesktopClosePrompt() {},
     async cancelDesktopClosePrompt() {},

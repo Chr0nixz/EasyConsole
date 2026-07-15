@@ -11,8 +11,12 @@ use tauri_plugin_opener::OpenerExt;
 #[cfg(desktop)]
 use std::process::Command;
 use russh::keys::ssh_key::{self, HashAlg};
+use russh::keys::PrivateKeyWithHashAlg;
 use russh::{client, ChannelMsg};
+use russh_sftp::client::SftpSession;
+use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use uuid::Uuid;
 #[cfg(desktop)]
 use {
@@ -54,6 +58,11 @@ struct SshConnectionRequest {
     task_name: Option<String>,
     cols: Option<u32>,
     rows: Option<u32>,
+    connect_timeout_sec: Option<u64>,
+    keepalive_interval_sec: Option<u64>,
+    term_type: Option<String>,
+    ssh_key_path: Option<String>,
+    auth_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -65,10 +74,90 @@ struct SshSessionEvent {
     message: Option<String>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct KnownHostEntry {
+    host_port: String,
+    fingerprint: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SshHistoryEntryValue {
+    id: String,
+    host: String,
+    port: String,
+    username: String,
+    task_name: String,
+    connected_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SftpEntryValue {
+    name: String,
+    long_name: String,
+    is_dir: bool,
+    is_file: bool,
+    is_symlink: bool,
+    size: u64,
+    modified_at: i64,
+    permissions: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PortForwardRuleValue {
+    id: String,
+    #[serde(rename = "type")]
+    forward_type: String,
+    local_host: String,
+    local_port: u16,
+    remote_host: String,
+    remote_port: u16,
+    #[allow(dead_code)]
+    enabled: bool,
+}
+
 enum SshCommand {
     Write(String),
     Resize { cols: u32, rows: u32 },
     Close,
+    SftpList {
+        path: String,
+        response: oneshot::Sender<Result<Vec<SftpEntryValue>, String>>,
+    },
+    SftpUpload {
+        local_path: String,
+        remote_path: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    SftpDownload {
+        remote_path: String,
+        local_path: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    SftpDelete {
+        path: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    SftpRename {
+        old_path: String,
+        new_path: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    SftpMkdir {
+        path: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    StartPortForward {
+        rule: PortForwardRuleValue,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    StopPortForward {
+        rule_id: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 #[derive(Default)]
@@ -727,6 +816,101 @@ async fn prepare_vscode_ssh(
     Ok(alias)
 }
 
+async fn socks5_handshake(
+    stream: &mut tokio::net::TcpStream,
+) -> Result<(String, u16), String> {
+    // Greeting: version(1) + num_methods(1) + methods(N)
+    let mut greeting = [0u8; 2];
+    stream
+        .read_exact(&mut greeting)
+        .await
+        .map_err(|e| format!("SOCKS5 读取问候失败：{e}"))?;
+    if greeting[0] != 5 {
+        return Err("SOCKS5 版本不匹配".to_string());
+    }
+    let mut methods = vec![0u8; greeting[1] as usize];
+    stream
+        .read_exact(&mut methods)
+        .await
+        .map_err(|e| format!("SOCKS5 读取方法失败：{e}"))?;
+    // Reply: no auth
+    stream
+        .write_all(&[5, 0])
+        .await
+        .map_err(|e| format!("SOCKS5 写入方法回复失败：{e}"))?;
+
+    // Request: version(1) + cmd(1) + rsv(1) + atyp(1) + addr + port(2)
+    let mut header = [0u8; 4];
+    stream
+        .read_exact(&mut header)
+        .await
+        .map_err(|e| format!("SOCKS5 读取请求失败：{e}"))?;
+    if header[0] != 5 {
+        return Err("SOCKS5 请求版本不匹配".to_string());
+    }
+    if header[1] != 1 {
+        // Only CONNECT supported
+        let _ = stream
+            .write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0])
+            .await;
+        return Err("SOCKS5 仅支持 CONNECT 命令".to_string());
+    }
+    let dest_host = match header[3] {
+        1 => {
+            // IPv4
+            let mut addr = [0u8; 4];
+            stream
+                .read_exact(&mut addr)
+                .await
+                .map_err(|e| format!("SOCKS5 读取 IPv4 地址失败：{e}"))?;
+            format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3])
+        }
+        3 => {
+            // Domain
+            let mut len_buf = [0u8; 1];
+            stream
+                .read_exact(&mut len_buf)
+                .await
+                .map_err(|e| format!("SOCKS5 读取域名长度失败：{e}"))?;
+            let mut domain = vec![0u8; len_buf[0] as usize];
+            stream
+                .read_exact(&mut domain)
+                .await
+                .map_err(|e| format!("SOCKS5 读取域名失败：{e}"))?;
+            String::from_utf8_lossy(&domain).to_string()
+        }
+        4 => {
+            // IPv6
+            let mut addr = [0u8; 16];
+            stream
+                .read_exact(&mut addr)
+                .await
+                .map_err(|e| format!("SOCKS5 读取 IPv6 地址失败：{e}"))?;
+            format!("[{:x}]", u128::from_be_bytes(addr))
+        }
+        _ => {
+            let _ = stream
+                .write_all(&[5, 8, 0, 1, 0, 0, 0, 0, 0, 0])
+                .await;
+            return Err("SOCKS5 不支持的地址类型".to_string());
+        }
+    };
+    let mut port_buf = [0u8; 2];
+    stream
+        .read_exact(&mut port_buf)
+        .await
+        .map_err(|e| format!("SOCKS5 读取端口失败：{e}"))?;
+    let dest_port = u16::from_be_bytes(port_buf);
+
+    // Reply: success
+    stream
+        .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
+        .await
+        .map_err(|e| format!("SOCKS5 写入回复失败：{e}"))?;
+
+    Ok((dest_host, dest_port))
+}
+
 async fn run_russh_session(
     app: AppHandle,
     session_id: String,
@@ -742,10 +926,20 @@ async fn run_russh_session(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "SSH Password 为空，无法自动登录".to_string())?
-        .to_string();
+        .map(str::to_string);
+    let auth_mode = request.auth_mode.as_deref().unwrap_or("password");
     let cols = request.cols.unwrap_or(DEFAULT_COLS).max(1);
     let rows = request.rows.unwrap_or(DEFAULT_ROWS).max(1);
+    let keepalive = Duration::from_secs(request.keepalive_interval_sec.unwrap_or(20));
+    let connect_timeout = Duration::from_secs(request.connect_timeout_sec.unwrap_or(15));
+    let term_type = request.term_type.as_deref().unwrap_or("xterm-256color");
+
+    // In password mode, password is required. In key mode, it's optional (used as passphrase).
+    if auth_mode == "password" {
+        if password.is_none() {
+            return Err("SSH Password 为空，无法自动登录".to_string());
+        }
+    }
 
     emit_session_event(
         &app,
@@ -757,7 +951,7 @@ async fn run_russh_session(
 
     let config = Arc::new(client::Config {
         inactivity_timeout: None,
-        keepalive_interval: Some(Duration::from_secs(20)),
+        keepalive_interval: Some(keepalive),
         keepalive_max: 0,
         ..<_>::default()
     });
@@ -767,27 +961,47 @@ async fn run_russh_session(
         port,
     };
     let mut session = tokio::time::timeout(
-        Duration::from_secs(15),
+        connect_timeout,
         client::connect(config, (host.as_str(), port), handler),
     )
     .await
     .map_err(|_| "SSH 连接超时，请检查网络和主机是否可达".to_string())?
     .map_err(|error| format!("SSH 连接失败：{error}"))?;
 
-    let auth = session
-        .authenticate_password(username, password)
-        .await
-        .map_err(|error| format!("SSH 认证失败：{error}"))?;
-    if !auth.success() {
-        return Err("SSH 认证失败：用户名或密码不正确".to_string());
+    let auth_success = if auth_mode == "key" {
+        let key_path = request.ssh_key_path.as_deref()
+            .ok_or_else(|| "SSH 密钥路径为空".to_string())?;
+        let passphrase = password.as_deref();
+        let key_pair = russh::keys::load_secret_key(key_path, passphrase)
+            .map_err(|e| format!("SSH 密钥加载失败：{e}"))?;
+        let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(key_pair), Some(HashAlg::Sha256));
+        session.authenticate_publickey(&username, key_with_hash).await
+            .map_err(|error| format!("SSH 密钥认证失败：{error}"))?
+    } else {
+        let pwd = password.as_deref()
+            .ok_or_else(|| "SSH Password 为空，无法自动登录".to_string())?;
+        session.authenticate_password(&username, pwd).await
+            .map_err(|error| format!("SSH 认证失败：{error}"))?
+    };
+    if !auth_success.success() {
+        return Err(if auth_mode == "key" {
+            "SSH 密钥认证失败：密钥被拒绝".to_string()
+        } else {
+            "SSH 认证失败：用户名或密码不正确".to_string()
+        });
     }
+
+    // Wrap in Arc after authentication so it can be shared with spawned port
+    // forwarding tasks. Authentication methods require &mut self, so the Arc
+    // must come after all mutable calls.
+    let session = Arc::new(session);
 
     let mut channel = session
         .channel_open_session()
         .await
         .map_err(|error| format!("SSH 会话打开失败：{error}"))?;
     channel
-        .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
+        .request_pty(false, term_type, cols, rows, 0, 0, &[])
         .await
         .map_err(|error| format!("SSH PTY 请求失败：{error}"))?;
     channel
@@ -806,6 +1020,8 @@ async fn run_russh_session(
     let mut output_buffer = String::new();
     let mut flush_interval = tokio::time::interval(Duration::from_millis(16));
     flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut sftp_session: Option<SftpSession> = None;
+    let mut port_forward_handles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -827,10 +1043,313 @@ async fn run_russh_session(
                         if !output_buffer.is_empty() {
                             emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
                         }
+                        sftp_session.take();
+                        for (_, handle) in port_forward_handles.drain() {
+                            handle.abort();
+                        }
                         let _ = channel.eof().await;
                         let _ = channel.close().await;
                         let _ = session.disconnect(russh::Disconnect::ByApplication, "", "en").await;
                         break;
+                    }
+                    Some(SshCommand::SftpList { path, response }) => {
+                        let result = async {
+                            if sftp_session.is_none() {
+                                let sftp_channel = session.channel_open_session().await
+                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                sftp_channel.request_subsystem(true, "sftp").await
+                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
+                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                            }
+                            let sftp = sftp_session.as_ref().unwrap();
+                            let mut entries = Vec::new();
+                            let mut read_dir = sftp.read_dir(&path).await
+                                .map_err(|e| format!("SFTP 列目录失败：{e}"))?;
+                            while let Some(entry) = read_dir.next() {
+                                let name = entry.file_name();
+                                let file_type = entry.file_type();
+                                let metadata = entry.metadata();
+                                let size = metadata.size.unwrap_or(0);
+                                let modified_at = metadata.mtime.map(|t| (t as i64) * 1000).unwrap_or(0);
+                                let perms = metadata.permissions.unwrap_or(0);
+                                let permissions = format!("{perms:04o}");
+                                let is_dir = file_type.is_dir();
+                                let is_file = file_type.is_file();
+                                let is_symlink = file_type.is_symlink();
+                                let long_name = format!("{} {} {}", permissions, size, name);
+                                entries.push(SftpEntryValue { name, long_name, is_dir, is_file, is_symlink, size, modified_at, permissions });
+                            }
+                            Ok::<Vec<SftpEntryValue>, String>(entries)
+                        }.await;
+                        match result {
+                            Ok(entries) => { let _ = response.send(Ok(entries)); }
+                            Err(e) => {
+                                sftp_session.take();
+                                let _ = response.send(Err(e));
+                            }
+                        }
+                    }
+                    Some(SshCommand::SftpUpload { local_path, remote_path, response }) => {
+                        let result = async {
+                            if sftp_session.is_none() {
+                                let sftp_channel = session.channel_open_session().await
+                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                sftp_channel.request_subsystem(true, "sftp").await
+                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
+                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                            }
+                            let sftp = sftp_session.as_ref().unwrap();
+                            let data = tokio::fs::read(&local_path).await
+                                .map_err(|e| format!("读取本地文件失败：{e}"))?;
+                            let total = data.len() as u64;
+                            emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":0,"total":{total}}}"#)), None);
+                            sftp.write(&remote_path, &data).await
+                                .map_err(|e| format!("SFTP 上传失败：{e}"))?;
+                            emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":{total},"total":{total}}}"#)), None);
+                            Ok::<(), String>(())
+                        }.await;
+                        match result {
+                            Ok(()) => { let _ = response.send(Ok(())); }
+                            Err(e) => {
+                                sftp_session.take();
+                                let _ = response.send(Err(e));
+                            }
+                        }
+                    }
+                    Some(SshCommand::SftpDownload { remote_path, local_path, response }) => {
+                        let result = async {
+                            if sftp_session.is_none() {
+                                let sftp_channel = session.channel_open_session().await
+                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                sftp_channel.request_subsystem(true, "sftp").await
+                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
+                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                            }
+                            let sftp = sftp_session.as_ref().unwrap();
+                            let data = sftp.read(&remote_path).await
+                                .map_err(|e| format!("SFTP 下载失败：{e}"))?;
+                            let total = data.len() as u64;
+                            emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":{total},"total":{total}}}"#)), None);
+                            tokio::fs::write(&local_path, &data).await
+                                .map_err(|e| format!("写入本地文件失败：{e}"))?;
+                            Ok::<(), String>(())
+                        }.await;
+                        match result {
+                            Ok(()) => { let _ = response.send(Ok(())); }
+                            Err(e) => {
+                                sftp_session.take();
+                                let _ = response.send(Err(e));
+                            }
+                        }
+                    }
+                    Some(SshCommand::SftpDelete { path, response }) => {
+                        let result = async {
+                            if sftp_session.is_none() {
+                                let sftp_channel = session.channel_open_session().await
+                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                sftp_channel.request_subsystem(true, "sftp").await
+                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
+                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                            }
+                            let sftp = sftp_session.as_ref().unwrap();
+                            let metadata = sftp.metadata(&path).await
+                                .map_err(|e| format!("SFTP 获取文件信息失败：{e}"))?;
+                            if metadata.is_dir() {
+                                sftp.remove_dir(&path).await
+                                    .map_err(|e| format!("SFTP 删除目录失败：{e}"))?;
+                            } else {
+                                sftp.remove_file(&path).await
+                                    .map_err(|e| format!("SFTP 删除文件失败：{e}"))?;
+                            }
+                            Ok::<(), String>(())
+                        }.await;
+                        match result {
+                            Ok(()) => { let _ = response.send(Ok(())); }
+                            Err(e) => {
+                                sftp_session.take();
+                                let _ = response.send(Err(e));
+                            }
+                        }
+                    }
+                    Some(SshCommand::SftpRename { old_path, new_path, response }) => {
+                        let result = async {
+                            if sftp_session.is_none() {
+                                let sftp_channel = session.channel_open_session().await
+                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                sftp_channel.request_subsystem(true, "sftp").await
+                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
+                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                            }
+                            let sftp = sftp_session.as_ref().unwrap();
+                            sftp.rename(&old_path, &new_path).await
+                                .map_err(|e| format!("SFTP 重命名失败：{e}"))?;
+                            Ok::<(), String>(())
+                        }.await;
+                        match result {
+                            Ok(()) => { let _ = response.send(Ok(())); }
+                            Err(e) => {
+                                sftp_session.take();
+                                let _ = response.send(Err(e));
+                            }
+                        }
+                    }
+                    Some(SshCommand::SftpMkdir { path, response }) => {
+                        let result = async {
+                            if sftp_session.is_none() {
+                                let sftp_channel = session.channel_open_session().await
+                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                sftp_channel.request_subsystem(true, "sftp").await
+                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
+                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                            }
+                            let sftp = sftp_session.as_ref().unwrap();
+                            sftp.create_dir(&path).await
+                                .map_err(|e| format!("SFTP 创建目录失败：{e}"))?;
+                            Ok::<(), String>(())
+                        }.await;
+                        match result {
+                            Ok(()) => { let _ = response.send(Ok(())); }
+                            Err(e) => {
+                                sftp_session.take();
+                                let _ = response.send(Err(e));
+                            }
+                        }
+                    }
+                    Some(SshCommand::StartPortForward { rule, response }) => {
+                        let rule_id = rule.id.clone();
+                        if rule.forward_type == "remote" {
+                            let _ = response.send(Err("远程端口转发 (-R) 暂不支持".to_string()));
+                            continue;
+                        }
+                        if port_forward_handles.contains_key(&rule_id) {
+                            let _ = response.send(Err("端口转发规则已在运行".to_string()));
+                            continue;
+                        }
+                        let session_clone = session.clone();
+                        let app_clone = app.clone();
+                        let session_id_clone = session_id.clone();
+                        let rule_clone = rule.clone();
+                        let handle = tokio::spawn(async move {
+                            let listener = match tokio::net::TcpListener::bind((
+                                rule_clone.local_host.as_str(),
+                                rule_clone.local_port,
+                            ))
+                            .await
+                            {
+                                Ok(l) => l,
+                                Err(e) => {
+                                    emit_session_event(
+                                        &app_clone,
+                                        &session_id_clone,
+                                        "port-forward-status",
+                                        Some(
+                                            serde_json::json!({
+                                                "ruleId": rule_clone.id,
+                                                "active": false,
+                                                "error": format!("{e}"),
+                                            })
+                                            .to_string(),
+                                        ),
+                                        None,
+                                    );
+                                    return;
+                                }
+                            };
+                            emit_session_event(
+                                &app_clone,
+                                &session_id_clone,
+                                "port-forward-status",
+                                Some(
+                                    serde_json::json!({
+                                        "ruleId": rule_clone.id,
+                                        "active": true,
+                                    })
+                                    .to_string(),
+                                ),
+                                None,
+                            );
+                            let is_dynamic = rule_clone.forward_type == "dynamic";
+                            let remote_host = rule_clone.remote_host.clone();
+                            let remote_port = rule_clone.remote_port;
+                            loop {
+                                let (mut tcp_stream, peer_addr) = match listener.accept().await {
+                                    Ok(conn) => conn,
+                                    Err(_) => break,
+                                };
+                                let session = session_clone.clone();
+                                let app = app_clone.clone();
+                                let session_id = session_id_clone.clone();
+                                let rule_id = rule_clone.id.clone();
+                                let remote_host = remote_host.clone();
+                                tokio::spawn(async move {
+                                    let (dest_host, dest_port) = if is_dynamic {
+                                        match socks5_handshake(&mut tcp_stream).await {
+                                            Ok(result) => result,
+                                            Err(_) => return,
+                                        }
+                                    } else {
+                                        (remote_host, remote_port)
+                                    };
+                                    let channel = match session
+                                        .channel_open_direct_tcpip(
+                                            dest_host.as_str(),
+                                            dest_port.into(),
+                                            peer_addr.ip().to_string(),
+                                            peer_addr.port().into(),
+                                        )
+                                        .await
+                                    {
+                                        Ok(ch) => ch,
+                                        Err(e) => {
+                                            emit_session_event(
+                                                &app,
+                                                &session_id,
+                                                "port-forward-status",
+                                                Some(
+                                                    serde_json::json!({
+                                                        "ruleId": rule_id,
+                                                        "active": false,
+                                                        "error": format!("{e}"),
+                                                    })
+                                                    .to_string(),
+                                                ),
+                                                None,
+                                            );
+                                            return;
+                                        }
+                                    };
+                                    let mut channel_stream = channel.into_stream();
+                                    let _ = copy_bidirectional(&mut tcp_stream, &mut channel_stream).await;
+                                });
+                            }
+                        });
+                        port_forward_handles.insert(rule_id, handle);
+                        let _ = response.send(Ok(()));
+                    }
+                    Some(SshCommand::StopPortForward { rule_id, response }) => {
+                        if let Some(handle) = port_forward_handles.remove(&rule_id) {
+                            handle.abort();
+                        }
+                        emit_session_event(
+                            &app,
+                            &session_id,
+                            "port-forward-status",
+                            Some(
+                                serde_json::json!({
+                                    "ruleId": rule_id,
+                                    "active": false,
+                                })
+                                .to_string(),
+                            ),
+                            None,
+                        );
+                        let _ = response.send(Ok(()));
                     }
                 }
             }
@@ -939,6 +1458,18 @@ fn send_session_command(
     sender
         .send(command)
         .map_err(|_| "SSH 会话已关闭".to_string())
+}
+
+async fn send_session_command_with_response<T>(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: &str,
+    build_command: impl FnOnce(oneshot::Sender<Result<T, String>>) -> SshCommand,
+) -> Result<T, String> {
+    let (tx, rx) = oneshot::channel();
+    let command = build_command(tx);
+    send_session_command(state, session_id, command)?;
+    rx.await
+        .map_err(|_| "SSH 命令响应通道已关闭".to_string())?
 }
 
 fn runtime_storage_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1232,6 +1763,199 @@ fn ssh_close(state: State<'_, Arc<SshSessionState>>, session_id: String) -> Resu
     send_session_command(state, &session_id, SshCommand::Close)
 }
 
+#[tauri::command]
+async fn sftp_list(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    path: String,
+) -> Result<Vec<SftpEntryValue>, String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::SftpList {
+        path,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sftp_upload(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    local_path: String,
+    remote_path: String,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::SftpUpload {
+        local_path,
+        remote_path,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sftp_download(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    remote_path: String,
+    local_path: String,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::SftpDownload {
+        remote_path,
+        local_path,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sftp_delete(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    path: String,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::SftpDelete {
+        path,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sftp_rename(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::SftpRename {
+        old_path,
+        new_path,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sftp_mkdir(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    path: String,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::SftpMkdir {
+        path,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn ssh_start_port_forward(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    rule: PortForwardRuleValue,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| {
+        SshCommand::StartPortForward { rule, response }
+    })
+    .await
+}
+
+#[tauri::command]
+async fn ssh_stop_port_forward(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    rule_id: String,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| {
+        SshCommand::StopPortForward { rule_id, response }
+    })
+    .await
+}
+
+#[tauri::command]
+fn list_known_hosts(app: AppHandle) -> Result<Vec<KnownHostEntry>, String> {
+    let path = app_data_file(&app, "known-ssh-hosts.json")?;
+    let known_hosts = load_string_map(&path)?;
+    Ok(known_hosts
+        .iter()
+        .map(|(k, v)| KnownHostEntry {
+            host_port: k.clone(),
+            fingerprint: v.clone(),
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn remove_known_host(app: AppHandle, host_port: String) -> Result<(), String> {
+    let path = app_data_file(&app, "known-ssh-hosts.json")?;
+    let mut known_hosts = load_string_map(&path)?;
+    known_hosts.remove(&host_port);
+    write_string_map(&path, &known_hosts)
+}
+
+#[tauri::command]
+fn clear_known_hosts(app: AppHandle) -> Result<(), String> {
+    let path = app_data_file(&app, "known-ssh-hosts.json")?;
+    write_string_map(&path, &HashMap::new())
+}
+
+const MAX_SSH_HISTORY_ENTRIES: usize = 20;
+
+fn load_ssh_history(path: &Path) -> Result<Vec<SshHistoryEntryValue>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(path).map_err(|error| format!("无法读取 SSH 历史：{error}"))?;
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str(&text).map_err(|error| format!("SSH 历史格式无法识别：{error}"))
+}
+
+fn write_ssh_history(path: &Path, entries: &[SshHistoryEntryValue]) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(entries).map_err(|error| format!("SSH 历史序列化失败：{error}"))?;
+    fs::write(path, text).map_err(|error| format!("无法写入 SSH 历史：{error}"))
+}
+
+#[tauri::command]
+fn list_ssh_history(app: AppHandle) -> Result<Vec<SshHistoryEntryValue>, String> {
+    let path = app_data_file(&app, "ssh-history.json")?;
+    load_ssh_history(&path)
+}
+
+#[tauri::command]
+fn add_ssh_history(
+    app: AppHandle,
+    host: String,
+    port: String,
+    username: String,
+    task_name: String,
+) -> Result<(), String> {
+    let path = app_data_file(&app, "ssh-history.json")?;
+    let mut entries = load_ssh_history(&path)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    entries.retain(|e| !(e.host == host && e.port == port && e.username == username));
+    entries.insert(0, SshHistoryEntryValue {
+        id: format!("hist-{now}"),
+        host,
+        port,
+        username,
+        task_name,
+        connected_at: now,
+    });
+    entries.sort_by(|a, b| b.connected_at.cmp(&a.connected_at));
+    entries.truncate(MAX_SSH_HISTORY_ENTRIES);
+    write_ssh_history(&path, &entries)
+}
+
+#[tauri::command]
+fn clear_ssh_history(app: AppHandle) -> Result<(), String> {
+    let path = app_data_file(&app, "ssh-history.json")?;
+    write_ssh_history(&path, &[])
+}
+
 #[cfg(desktop)]
 #[tauri::command]
 fn open_system_ssh_terminal(request: SshConnectionRequest) -> Result<(), String> {
@@ -1491,6 +2215,20 @@ pub fn run() {
         ssh_write,
         ssh_resize,
         ssh_close,
+        sftp_list,
+        sftp_upload,
+        sftp_download,
+        sftp_delete,
+        sftp_rename,
+        sftp_mkdir,
+        ssh_start_port_forward,
+        ssh_stop_port_forward,
+        list_known_hosts,
+        remove_known_host,
+        clear_known_hosts,
+        list_ssh_history,
+        add_ssh_history,
+        clear_ssh_history,
         #[cfg(mobile)]
         install_apk,
         #[cfg(desktop)]

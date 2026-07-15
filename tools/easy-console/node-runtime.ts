@@ -105,6 +105,9 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     async copyText() {
       return unsupported("Clipboard");
     },
+    async readClipboardText() {
+      return unsupported("Clipboard");
+    },
     async requestSystemNotificationPermission() {
       return "unsupported";
     },
@@ -135,11 +138,59 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     async onSshSessionEvent() {
       return unsupported("SSH session events");
     },
+    async listKnownHosts() {
+      return [];
+    },
+    async removeKnownHost() {
+      return unsupported("Known hosts management");
+    },
+    async clearKnownHosts() {
+      return unsupported("Known hosts management");
+    },
     async openSystemSshTerminal() {
       return unsupported("System SSH terminal");
     },
     async openVscodeSsh() {
       return unsupported("VS Code SSH");
+    },
+    async sftpList() {
+      return unsupported("SFTP");
+    },
+    async sftpUpload() {
+      return unsupported("SFTP");
+    },
+    async sftpDownload() {
+      return unsupported("SFTP");
+    },
+    async sftpDelete() {
+      return unsupported("SFTP");
+    },
+    async sftpRename() {
+      return unsupported("SFTP");
+    },
+    async sftpMkdir() {
+      return unsupported("SFTP");
+    },
+    async onSftpProgress() {
+      return unsupported("SFTP progress");
+    },
+    async startPortForward() {
+      return unsupported("Port forwarding");
+    },
+    async stopPortForward() {
+      return unsupported("Port forwarding");
+    },
+    async onPortForwardStatus() {
+      return unsupported("Port forwarding status");
+    },
+    async listSshHistory() {
+      return [];
+    },
+    async addSshHistory() {
+      return unsupported("SSH history");
+    },
+    async clearSshHistory() {
+      return unsupported("SSH history");
     },
     async setDesktopCloseToTray() {},
     async setDesktopClosePrompt() {},
