@@ -489,6 +489,10 @@ export const browserRuntime: RuntimeTransport = {
   openVscodeSsh(request) {
     return invokeTauriCommand("open_vscode_ssh", { request });
   },
+  openSshWindow(request) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持弹出独立窗口", "Popping out to a standalone window is not supported in this environment")));
+    return invokeTauriCommand("open_ssh_window", { request });
+  },
   sftpList(sessionId, path) {
     if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
     return invokeTauriCommand<SftpEntry[]>("sftp_list", { sessionId, path });

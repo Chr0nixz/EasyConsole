@@ -46,3 +46,7 @@ src-tauri/gen/android/app/src/main/assets/
 
 # Sensitive signing material
 src-tauri/*.keystore.b64
+
+# Agent working artifacts
+.impeccable/
+.trae/

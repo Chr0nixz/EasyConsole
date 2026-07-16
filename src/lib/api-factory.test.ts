@@ -67,6 +67,7 @@ function createRuntime(responseData: unknown) {
     async clearKnownHosts() {},
     async openSystemSshTerminal() {},
     async openVscodeSsh() {},
+    async openSshWindow() {},
     async sftpList() { return []; },
     async sftpUpload() {},
     async sftpDownload() {},

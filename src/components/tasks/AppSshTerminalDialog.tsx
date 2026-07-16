@@ -1,7 +1,8 @@
-import { AlertCircle, Check, Circle, Maximize2, Minimize2, Plus, Terminal, X } from "lucide-react";
+import { AlertCircle, Check, Circle, ExternalLink, Maximize2, Minimize2, Plus, Terminal, X } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent as ReactFormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
+import { browserRuntime } from "../../lib/runtime";
 import { useI18n } from "../../lib/i18n";
 import { useConfirmAction } from "../../lib/use-confirm-action";
 import type { SshConnectionRequest } from "../../lib/types";
@@ -67,6 +68,52 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
   const [newHost, setNewHost] = useState("");
   const [newPort, setNewPort] = useState("22");
   const [newUsername, setNewUsername] = useState("");
+  const [dialogSize, setDialogSize] = useState<{ width: number; height: number } | null>(null);
+  const resizeStateRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
+
+  const startResize = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const panel = dialogRef.current?.querySelector<HTMLElement>(".app-terminal-modal-panel");
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    resizeStateRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startW: rect.width,
+      startH: rect.height,
+    };
+    document.body.style.cursor = "nwse-resize";
+    document.body.style.userSelect = "none";
+  }, []);
+
+  useEffect(() => {
+    const onMouseMove = (event: MouseEvent) => {
+      const rs = resizeStateRef.current;
+      if (!rs) return;
+      const dx = event.clientX - rs.startX;
+      const dy = event.clientY - rs.startY;
+      const maxWidth = window.innerWidth - 32;
+      const maxHeight = window.innerHeight - 32;
+      const width = Math.min(Math.max(rs.startW + dx, 480), maxWidth);
+      const height = Math.min(Math.max(rs.startH + dy, 320), maxHeight);
+      setDialogSize({ width, height });
+    };
+    const onMouseUp = () => {
+      if (!resizeStateRef.current) return;
+      resizeStateRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      // Trigger terminal fit after resize ends.
+      window.dispatchEvent(new Event("resize"));
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
 
   const openTab = useCallback((tabRequest: SshConnectionRequest) => {
     const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `tab-${Date.now()}`;
@@ -136,6 +183,17 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       closeTab(id);
     }
   }, [tabs, text, confirmAction, closeTab]);
+
+  // Pop the active tab out to a standalone window. The new window establishes
+  // its own SSH session; the original tab is closed to avoid duplicates.
+  const handlePopOut = useCallback(() => {
+    const active = tabs.find((tab) => tab.id === activeTabId);
+    if (!active) return;
+    void browserRuntime
+      .openSshWindow(active.request)
+      .then(() => closeTab(active.id))
+      .catch(() => {});
+  }, [tabs, activeTabId, closeTab]);
 
   // Wrap dialog close with a confirmation guard when live sessions exist.
   const requestCloseDialog = useCallback(() => {
@@ -298,7 +356,13 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
         aria-labelledby={titleId}
         onKeyDown={handleDialogKeyDown}
       >
-        <div className="app-terminal-modal-panel flex max-h-[calc(100vh-5rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-app-terminalBg">
+        <div
+          className={cn(
+            "app-terminal-modal-panel relative flex flex-col overflow-hidden rounded-lg bg-app-terminalBg",
+            dialogSize ? "" : "max-h-[calc(100vh-5rem)] w-full max-w-5xl",
+          )}
+          style={dialogSize ?? undefined}
+        >
           <div className="flex h-12 shrink-0 items-center justify-between border-b border-app-terminalBorder bg-app-terminalPanel px-4">
             <div className="flex min-w-0 items-center gap-2 text-app-terminalText">
               <Terminal className="h-4 w-4 shrink-0 text-app-terminalAccent" />
@@ -308,6 +372,19 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
               </h2>
             </div>
             <div className="flex items-center gap-1">
+              {browserRuntime.supportsInAppSsh ? (
+                <button
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1 disabled:opacity-40"
+                  type="button"
+                  title={text("弹出为独立窗口", "Pop out to standalone window")}
+                  aria-label={text("弹出为独立窗口", "Pop out to standalone window")}
+                  onClick={handlePopOut}
+                  disabled={!activeTab}
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  <span className="sr-only">{text("弹出为独立窗口", "Pop out to standalone window")}</span>
+                </button>
+              ) : null}
               <button
                 className="flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1"
                 type="button"
@@ -438,7 +515,10 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
           ) : null}
 
           <div
-            className="flex h-[min(80vh,780px)] min-h-0 flex-1 flex-col"
+            className={cn(
+              "flex min-h-0 flex-1 flex-col",
+              dialogSize ? "" : "h-[min(80vh,780px)]",
+            )}
             role="tabpanel"
             aria-labelledby={activeTabId ? `ssh-tab-${activeTabId}` : undefined}
           >
@@ -451,6 +531,19 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
                 onStatusChange={(status) => updateTabStatus(tab.id, status)}
               />
             ))}
+          </div>
+
+          {/* Resize handle (bottom-right corner drag) */}
+          <div
+            className="absolute bottom-0 right-0 z-10 flex h-4 w-4 cursor-nwse-resize items-end justify-end"
+            onMouseDown={startResize}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={text("拖拽调整大小", "Drag to resize")}
+          >
+            <svg width="8" height="8" viewBox="0 0 8 8" fill="none" className="text-app-terminalMuted">
+              <path d="M7 1L1 7M7 4L4 7" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
+            </svg>
           </div>
         </div>
       </div>

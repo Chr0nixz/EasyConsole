@@ -46,7 +46,7 @@ const DEFAULT_ROWS: u32 = 32;
 #[cfg(desktop)]
 const VSCODE_KEY_NAME: &str = "easyconsole_vscode_ed25519";
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(not(desktop), allow(dead_code))]
 struct SshConnectionRequest {
@@ -911,6 +911,25 @@ async fn socks5_handshake(
     Ok((dest_host, dest_port))
 }
 
+/// Resolve a user-supplied SFTP path that may use the "~" home shortcut.
+/// SFTP protocol does not expand "~" (that's a shell convention), so we
+/// canonicalize(".") once to get the absolute home directory and substitute.
+async fn resolve_sftp_path(sftp: &SftpSession, path: &str) -> Result<String, String> {
+    if path == "~" || path == "~/" {
+        return sftp.canonicalize(".").await.map_err(|e| format!("SFTP 解析家目录失败：{e}"));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = sftp.canonicalize(".").await.map_err(|e| format!("SFTP 解析家目录失败：{e}"))?;
+        let rest = rest.trim_start_matches('/');
+        return Ok(if home.ends_with('/') {
+            format!("{home}{rest}")
+        } else {
+            format!("{home}/{rest}")
+        });
+    }
+    Ok(path.to_string())
+}
+
 async fn run_russh_session(
     app: AppHandle,
     session_id: String,
@@ -1063,8 +1082,9 @@ async fn run_russh_session(
                                     .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
                             }
                             let sftp = sftp_session.as_ref().unwrap();
+                            let effective_path = resolve_sftp_path(sftp, &path).await?;
                             let mut entries = Vec::new();
-                            let mut read_dir = sftp.read_dir(&path).await
+                            let mut read_dir = sftp.read_dir(&effective_path).await
                                 .map_err(|e| format!("SFTP 列目录失败：{e}"))?;
                             while let Some(entry) = read_dir.next() {
                                 let name = entry.file_name();
@@ -1101,6 +1121,7 @@ async fn run_russh_session(
                                     .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
                             }
                             let sftp = sftp_session.as_ref().unwrap();
+                            let remote_path = resolve_sftp_path(sftp, &remote_path).await?;
                             let data = tokio::fs::read(&local_path).await
                                 .map_err(|e| format!("读取本地文件失败：{e}"))?;
                             let total = data.len() as u64;
@@ -1129,6 +1150,7 @@ async fn run_russh_session(
                                     .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
                             }
                             let sftp = sftp_session.as_ref().unwrap();
+                            let remote_path = resolve_sftp_path(sftp, &remote_path).await?;
                             let data = sftp.read(&remote_path).await
                                 .map_err(|e| format!("SFTP 下载失败：{e}"))?;
                             let total = data.len() as u64;
@@ -1156,6 +1178,7 @@ async fn run_russh_session(
                                     .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
                             }
                             let sftp = sftp_session.as_ref().unwrap();
+                            let path = resolve_sftp_path(sftp, &path).await?;
                             let metadata = sftp.metadata(&path).await
                                 .map_err(|e| format!("SFTP 获取文件信息失败：{e}"))?;
                             if metadata.is_dir() {
@@ -1186,6 +1209,8 @@ async fn run_russh_session(
                                     .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
                             }
                             let sftp = sftp_session.as_ref().unwrap();
+                            let old_path = resolve_sftp_path(sftp, &old_path).await?;
+                            let new_path = resolve_sftp_path(sftp, &new_path).await?;
                             sftp.rename(&old_path, &new_path).await
                                 .map_err(|e| format!("SFTP 重命名失败：{e}"))?;
                             Ok::<(), String>(())
@@ -1209,6 +1234,7 @@ async fn run_russh_session(
                                     .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
                             }
                             let sftp = sftp_session.as_ref().unwrap();
+                            let path = resolve_sftp_path(sftp, &path).await?;
                             sftp.create_dir(&path).await
                                 .map_err(|e| format!("SFTP 创建目录失败：{e}"))?;
                             Ok::<(), String>(())
@@ -1763,6 +1789,76 @@ fn ssh_close(state: State<'_, Arc<SshSessionState>>, session_id: String) -> Resu
     send_session_command(state, &session_id, SshCommand::Close)
 }
 
+/// Open a standalone SSH terminal window. The connection request is passed
+/// via URL hash fragment so the new webview can bootstrap its own session
+/// independently of the main window.
+#[cfg(desktop)]
+#[tauri::command]
+fn open_ssh_window(app: AppHandle, request: SshConnectionRequest) -> Result<(), String> {
+    let label = format!(
+        "ssh-{}",
+        request
+            .task_id
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| Uuid::new_v4().to_string())
+    );
+
+    // If a window with this label already exists, just focus it.
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    let json = serde_json::to_string(&request)
+        .map_err(|e| format!("SSH 请求序列化失败：{e}"))?;
+    // Manually percent-encode the JSON so it survives in a URL hash fragment.
+    // Only encode characters that are problematic in URLs.
+    let encoded: String = json
+        .chars()
+        .map(|c| match c {
+            '"' => "%22".to_string(),
+            '{' => "%7B".to_string(),
+            '}' => "%7D".to_string(),
+            '[' => "%5B".to_string(),
+            ']' => "%5D".to_string(),
+            ' ' => "%20".to_string(),
+            '#' => "%23".to_string(),
+            '&' => "%26".to_string(),
+            '+' => "%2B".to_string(),
+            '/' => "%2F".to_string(),
+            '?' => "%3F".to_string(),
+            _ => c.to_string(),
+        })
+        .collect();
+    let url = format!("index.html#/ssh-terminal?data={encoded}");
+
+    let title = format!(
+        "SSH - {}",
+        request
+            .task_name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&request.host)
+    );
+
+    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
+        .title(&title)
+        .inner_size(960.0, 640.0)
+        .min_inner_size(480.0, 320.0)
+        .resizable(true)
+        .decorations(true)
+        .always_on_top(false)
+        .skip_taskbar(false)
+        .visible(true)
+        .focused(true)
+        .build()
+        .map_err(|e| format!("SSH 窗口创建失败：{e}"))?;
+
+    Ok(())
+}
+
 #[tauri::command]
 async fn sftp_list(
     state: State<'_, Arc<SshSessionState>>,
@@ -2223,6 +2319,8 @@ pub fn run() {
         sftp_mkdir,
         ssh_start_port_forward,
         ssh_stop_port_forward,
+        #[cfg(desktop)]
+        open_ssh_window,
         list_known_hosts,
         remove_known_host,
         clear_known_hosts,

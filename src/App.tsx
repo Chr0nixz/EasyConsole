@@ -86,6 +86,7 @@ const LoginPage = lazy(() => import("./pages/LoginPage").then((module) => ({ def
 const RunLogsPage = lazy(() => import("./pages/RunLogsPage").then((module) => ({ default: module.RunLogsPage })));
 const ScheduledTasksPage = lazy(() => import("./pages/ScheduledTasksPage").then((module) => ({ default: module.ScheduledTasksPage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
+const SshTerminalPage = lazy(() => import("./pages/SshTerminalPage").then((module) => ({ default: module.SshTerminalPage })));
 const StoragePage = lazy(() => import("./pages/StoragePage").then((module) => ({ default: module.StoragePage })));
 const TaskTemplatesPage = lazy(() => import("./pages/TaskTemplatesPage").then((module) => ({ default: module.TaskTemplatesPage })));
 const TasksPage = lazy(() => import("./pages/TasksPage").then((module) => ({ default: module.TasksPage })));
@@ -102,6 +103,7 @@ export function App() {
             <DeepLinkHandler />
             <Routes>
               <Route path="/tray-menu" element={<TrayMenu />} />
+              <Route path="/ssh-terminal" element={<SshTerminalPage />} />
               <Route path="/login" element={<LoginPage />} />
               <Route path="/login/settings" element={<SettingsPage standalone />} />
               <Route

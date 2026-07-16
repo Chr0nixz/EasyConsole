@@ -381,6 +381,7 @@ export type RuntimeTransport = {
   clearKnownHosts(): Promise<void>;
   openSystemSshTerminal(request: SshConnectionRequest): Promise<void>;
   openVscodeSsh(request: SshConnectionRequest): Promise<void>;
+  openSshWindow(request: SshConnectionRequest): Promise<void>;
   sftpList(sessionId: string, path: string): Promise<SftpEntry[]>;
   sftpUpload(sessionId: string, localPath: string, remotePath: string): Promise<void>;
   sftpDownload(sessionId: string, remotePath: string, localPath: string): Promise<void>;
