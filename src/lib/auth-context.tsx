@@ -48,6 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const savedAccountsRef = useRef<SavedLoginAccount[]>([]);
   const refreshAttemptedRef = useRef(false);
   const loginSavedRef = useRef<((accountId: string) => Promise<void>) | null>(null);
+  const reloginInProgressRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -182,101 +183,106 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [persistSavedAccounts]);
 
   const loginSaved = useCallback(async (accountId: string) => {
-    const startedAt = Date.now();
-    const account = savedAccountsRef.current.find((item) => item.id === accountId);
-    if (!account) throw new Error(i18nText("保存的账号不存在", "Saved account does not exist"));
-
-    apiClient.setToken(account.token);
-    await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, account.token);
-
-    let next: UserInfo;
-    let activeToken: string = account.token;
+    reloginInProgressRef.current = true;
     try {
-      // Fast path: the saved token is still valid.
-      next = await authApi.userInfo();
-    } catch (tokenError) {
-      // Token expired or rejected. Try to silently re-login with the stored
-      // password, if we have one. Otherwise surface the original failure.
-      const password = account.encryptedPassword
-        ? await decryptPassword(account.encryptedPassword).catch(() => "")
-        : "";
-      if (!password) {
-        apiClient.setToken(null);
-        await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
-        setToken(null);
-        setUser(null);
-        writeAuthLog({
-          level: "error",
-          action: "auth.loginSaved",
-          result: "failure",
-          title: i18nText("保存账号登录失败", "Saved account sign-in failed"),
-          userName: account.username,
-          durationMs: Date.now() - startedAt,
-          error: tokenError instanceof Error ? tokenError.message : i18nText("保存账号登录失败", "Saved account sign-in failed"),
-        });
-        throw new Error(
-          tokenError instanceof Error
-            ? i18nText(`保存的登录已失效：${tokenError.message}`, `Saved sign-in expired: ${tokenError.message}`)
-            : i18nText("保存的登录已失效，请重新输入密码", "Saved sign-in expired. Enter the password again."),
-        );
-      }
+      const startedAt = Date.now();
+      const account = savedAccountsRef.current.find((item) => item.id === accountId);
+      if (!account) throw new Error(i18nText("保存的账号不存在", "Saved account does not exist"));
 
+      apiClient.setToken(account.token);
+      await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, account.token);
+
+      let next: UserInfo;
+      let activeToken: string = account.token;
       try {
-        const result = await authApi.login({ username: account.username, password });
-        if (!result.token) throw new Error(i18nText("登录响应未包含 token", "Sign-in response did not include a token"));
-        activeToken = result.token;
-        apiClient.setToken(activeToken);
-        await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, activeToken);
+        // Fast path: the saved token is still valid.
         next = await authApi.userInfo();
-      } catch (reloginError) {
-        apiClient.setToken(null);
-        await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
-        setToken(null);
-        setUser(null);
-        writeAuthLog({
-          level: "error",
-          action: "auth.loginSaved",
-          result: "failure",
-          title: i18nText("保存账号登录失败", "Saved account sign-in failed"),
-          userName: account.username,
-          durationMs: Date.now() - startedAt,
-          error: reloginError instanceof Error ? reloginError.message : i18nText("保存账号登录失败", "Saved account sign-in failed"),
-        });
-        throw new Error(
-          reloginError instanceof Error
-            ? i18nText(`保存的登录已失效：${reloginError.message}`, `Saved sign-in expired: ${reloginError.message}`)
-            : i18nText("保存的登录已失效，请重新输入密码", "Saved sign-in expired. Enter the password again."),
-        );
-      }
-    }
+      } catch (tokenError) {
+        // Token expired or rejected. Try to silently re-login with the stored
+        // password, if we have one. Otherwise surface the original failure.
+        const password = account.encryptedPassword
+          ? await decryptPassword(account.encryptedPassword).catch(() => "")
+          : "";
+        if (!password) {
+          apiClient.setToken(null);
+          await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
+          setToken(null);
+          setUser(null);
+          writeAuthLog({
+            level: "error",
+            action: "auth.loginSaved",
+            result: "failure",
+            title: i18nText("保存账号登录失败", "Saved account sign-in failed"),
+            userName: account.username,
+            durationMs: Date.now() - startedAt,
+            error: tokenError instanceof Error ? tokenError.message : i18nText("保存账号登录失败", "Saved account sign-in failed"),
+          });
+          throw new Error(
+            tokenError instanceof Error
+              ? i18nText(`保存的登录已失效：${tokenError.message}`, `Saved sign-in expired: ${tokenError.message}`)
+              : i18nText("保存的登录已失效，请重新输入密码", "Saved sign-in expired. Enter the password again."),
+          );
+        }
 
-    // Re-encrypt the password with a fresh salt/IV so the same ciphertext is
-    // not reused indefinitely. We re-derive from the decrypted plaintext.
-    let nextEncryptedPassword = account.encryptedPassword;
-    if (account.encryptedPassword) {
-      const plaintext = await decryptPassword(account.encryptedPassword).catch(() => "");
-      if (plaintext) {
-        nextEncryptedPassword = await encryptPassword(plaintext).catch(() => account.encryptedPassword);
+        try {
+          const result = await authApi.login({ username: account.username, password });
+          if (!result.token) throw new Error(i18nText("登录响应未包含 token", "Sign-in response did not include a token"));
+          activeToken = result.token;
+          apiClient.setToken(activeToken);
+          await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, activeToken);
+          next = await authApi.userInfo();
+        } catch (reloginError) {
+          apiClient.setToken(null);
+          await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
+          setToken(null);
+          setUser(null);
+          writeAuthLog({
+            level: "error",
+            action: "auth.loginSaved",
+            result: "failure",
+            title: i18nText("保存账号登录失败", "Saved account sign-in failed"),
+            userName: account.username,
+            durationMs: Date.now() - startedAt,
+            error: reloginError instanceof Error ? reloginError.message : i18nText("保存账号登录失败", "Saved account sign-in failed"),
+          });
+          throw new Error(
+            reloginError instanceof Error
+              ? i18nText(`保存的登录已失效：${reloginError.message}`, `Saved sign-in expired: ${reloginError.message}`)
+              : i18nText("保存的登录已失效，请重新输入密码", "Saved sign-in expired. Enter the password again."),
+          );
+        }
       }
-    }
 
-    const nextAccount = createSavedLoginAccount({
-      username: account.username,
-      token: activeToken,
-      user: next,
-      encryptedPassword: nextEncryptedPassword,
-    });
-    await persistSavedAccounts(upsertSavedAccount(savedAccountsRef.current, nextAccount));
-    setToken(activeToken);
-    setUser(next);
-    writeAuthLog({
-      level: "info",
-      action: "auth.loginSaved",
-      result: "success",
-      title: i18nText("保存账号登录成功", "Saved account signed in"),
-      userName: account.username,
-      durationMs: Date.now() - startedAt,
-    });
+      // Re-encrypt the password with a fresh salt/IV so the same ciphertext is
+      // not reused indefinitely. We re-derive from the decrypted plaintext.
+      let nextEncryptedPassword = account.encryptedPassword;
+      if (account.encryptedPassword) {
+        const plaintext = await decryptPassword(account.encryptedPassword).catch(() => "");
+        if (plaintext) {
+          nextEncryptedPassword = await encryptPassword(plaintext).catch(() => account.encryptedPassword);
+        }
+      }
+
+      const nextAccount = createSavedLoginAccount({
+        username: account.username,
+        token: activeToken,
+        user: next,
+        encryptedPassword: nextEncryptedPassword,
+      });
+      await persistSavedAccounts(upsertSavedAccount(savedAccountsRef.current, nextAccount));
+      setToken(activeToken);
+      setUser(next);
+      writeAuthLog({
+        level: "info",
+        action: "auth.loginSaved",
+        result: "success",
+        title: i18nText("保存账号登录成功", "Saved account signed in"),
+        userName: account.username,
+        durationMs: Date.now() - startedAt,
+      });
+    } finally {
+      reloginInProgressRef.current = false;
+    }
   }, [persistSavedAccounts]);
 
   // Keep loginSavedRef in sync so the startup auto-relogin effect can call the
@@ -350,8 +356,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const handler = () => {
-      // Only trigger logout if refresh was not attempted (refresh handler handles GET retries).
-      // Non-GET 401s and refresh failures still reach here.
+      // Suppress logout during loginSaved auto-relogin. The loginSaved flow
+      // handles token-expired internally (decrypts password and re-logs in).
+      // Without this guard, the UNAUTHORIZED_EVENT emitted by api-client's
+      // failed token-refresh races with loginSaved and clears the freshly
+      // restored session.
+      if (reloginInProgressRef.current) return;
       void logout();
     };
     window.addEventListener(UNAUTHORIZED_EVENT, handler);
