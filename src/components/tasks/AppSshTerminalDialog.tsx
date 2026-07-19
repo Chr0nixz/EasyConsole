@@ -359,7 +359,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
         <div
           className={cn(
             "app-terminal-modal-panel relative flex flex-col overflow-hidden rounded-lg bg-app-terminalBg",
-            dialogSize ? "" : "max-h-[calc(100vh-5rem)] w-full max-w-5xl",
+            dialogSize ? "shadow-popover" : "max-h-[calc(100vh-5rem)] w-full max-w-5xl",
           )}
           style={dialogSize ?? undefined}
         >
@@ -533,9 +533,12 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
             ))}
           </div>
 
-          {/* Resize handle (bottom-right corner drag) */}
+          {/* Resize handle (bottom-right corner drag). The handle sits above
+              the xterm canvas/textarea (which would otherwise swallow the
+              mousedown), and is sized larger than its visible grip so the
+              hit target is comfortable while keeping the visual subtle. */}
           <div
-            className="absolute bottom-0 right-0 z-10 flex h-4 w-4 cursor-nwse-resize items-end justify-end"
+            className="absolute bottom-0 right-0 z-50 flex h-5 w-5 cursor-nwse-resize items-end justify-end"
             onMouseDown={startResize}
             role="separator"
             aria-orientation="vertical"

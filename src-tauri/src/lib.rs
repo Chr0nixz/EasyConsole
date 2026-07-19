@@ -54,6 +54,7 @@ struct SshConnectionRequest {
     port: Option<String>,
     username: Option<String>,
     password: Option<String>,
+    command: Option<String>,
     task_id: Option<String>,
     task_name: Option<String>,
     cols: Option<u32>,
@@ -163,6 +164,17 @@ enum SshCommand {
 #[derive(Default)]
 struct SshSessionState {
     sessions: Mutex<HashMap<String, mpsc::UnboundedSender<SshCommand>>>,
+}
+
+/// Pending SSH connection requests for popped-out windows, keyed by window
+/// label. The main window calls `open_ssh_window`, which stores the request
+/// here; the new window retrieves it via `get_ssh_window_request` after its
+/// React app mounts. This avoids fragile URL hash encoding and event
+/// timing races (Tauri emits before the frontend `listen` registers).
+#[cfg(desktop)]
+#[derive(Default)]
+struct PendingSshWindows {
+    requests: Mutex<HashMap<String, SshConnectionRequest>>,
 }
 
 #[cfg(desktop)]
@@ -1789,12 +1801,20 @@ fn ssh_close(state: State<'_, Arc<SshSessionState>>, session_id: String) -> Resu
     send_session_command(state, &session_id, SshCommand::Close)
 }
 
-/// Open a standalone SSH terminal window. The connection request is passed
-/// via URL hash fragment so the new webview can bootstrap its own session
-/// independently of the main window.
+/// Open a standalone SSH terminal window. The connection request is stashed
+/// in `PendingSshWindows` keyed by the new window's label; the popped-out
+/// window retrieves it via `get_ssh_window_request` after its React app
+/// mounts. This avoids fragile URL hash encoding/decoding (especially around
+/// `?` inside hash fragments), keeps `password` out of the URL, and sidesteps
+/// the event-timing race where Tauri emits before the frontend `listen`
+/// has registered.
 #[cfg(desktop)]
 #[tauri::command]
-fn open_ssh_window(app: AppHandle, request: SshConnectionRequest) -> Result<(), String> {
+fn open_ssh_window(
+    app: AppHandle,
+    state: State<'_, Arc<PendingSshWindows>>,
+    request: SshConnectionRequest,
+) -> Result<(), String> {
     let label = format!(
         "ssh-{}",
         request
@@ -1811,29 +1831,6 @@ fn open_ssh_window(app: AppHandle, request: SshConnectionRequest) -> Result<(), 
         return Ok(());
     }
 
-    let json = serde_json::to_string(&request)
-        .map_err(|e| format!("SSH 请求序列化失败：{e}"))?;
-    // Manually percent-encode the JSON so it survives in a URL hash fragment.
-    // Only encode characters that are problematic in URLs.
-    let encoded: String = json
-        .chars()
-        .map(|c| match c {
-            '"' => "%22".to_string(),
-            '{' => "%7B".to_string(),
-            '}' => "%7D".to_string(),
-            '[' => "%5B".to_string(),
-            ']' => "%5D".to_string(),
-            ' ' => "%20".to_string(),
-            '#' => "%23".to_string(),
-            '&' => "%26".to_string(),
-            '+' => "%2B".to_string(),
-            '/' => "%2F".to_string(),
-            '?' => "%3F".to_string(),
-            _ => c.to_string(),
-        })
-        .collect();
-    let url = format!("index.html#/ssh-terminal?data={encoded}");
-
     let title = format!(
         "SSH - {}",
         request
@@ -1843,7 +1840,13 @@ fn open_ssh_window(app: AppHandle, request: SshConnectionRequest) -> Result<(), 
             .unwrap_or(&request.host)
     );
 
-    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
+    // Stash the request so the new window can pull it by label.
+    {
+        let mut map = state.requests.lock().map_err(|e| format!("锁失败：{e}"))?;
+        map.insert(label.clone(), request);
+    }
+
+    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html#/ssh-terminal".into()))
         .title(&title)
         .inner_size(960.0, 640.0)
         .min_inner_size(480.0, 320.0)
@@ -1857,6 +1860,19 @@ fn open_ssh_window(app: AppHandle, request: SshConnectionRequest) -> Result<(), 
         .map_err(|e| format!("SSH 窗口创建失败：{e}"))?;
 
     Ok(())
+}
+
+/// Called by a popped-out SSH window to retrieve its pending connection
+/// request. The request is removed from the pending map on first read so
+/// it cannot be replayed.
+#[cfg(desktop)]
+#[tauri::command]
+fn get_ssh_window_request(
+    state: State<'_, Arc<PendingSshWindows>>,
+    label: String,
+) -> Result<Option<SshConnectionRequest>, String> {
+    let mut map = state.requests.lock().map_err(|e| format!("锁失败：{e}"))?;
+    Ok(map.remove(&label))
 }
 
 #[tauri::command]
@@ -2194,6 +2210,8 @@ pub fn run() {
 
     #[cfg(desktop)]
     let desktop_state = Arc::new(DesktopRuntimeState::default());
+    #[cfg(desktop)]
+    let pending_ssh_windows = Arc::new(PendingSshWindows::default());
 
     log::info!("creating Tauri builder");
     let mut builder = tauri::Builder::default()
@@ -2203,6 +2221,7 @@ pub fn run() {
     {
         builder = builder
             .manage(Arc::clone(&desktop_state))
+            .manage(Arc::clone(&pending_ssh_windows))
             .plugin(tauri_plugin_process::init())
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_deep_link::init())
@@ -2321,6 +2340,8 @@ pub fn run() {
         ssh_stop_port_forward,
         #[cfg(desktop)]
         open_ssh_window,
+        #[cfg(desktop)]
+        get_ssh_window_request,
         list_known_hosts,
         remove_known_host,
         clear_known_hosts,

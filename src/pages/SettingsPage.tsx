@@ -1,6 +1,29 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, BellRing, Download, ExternalLink, RefreshCw, RotateCcw, Save, Settings2, Terminal, Trash2, Upload } from "lucide-react";
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  ArrowLeft,
+  BellRing,
+  DatabaseBackup,
+  Download,
+  ExternalLink,
+  Globe,
+  History,
+  KeyRound,
+  Network,
+  Palette,
+  PanelTopClose,
+  Plug,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  ScrollText,
+  Settings2,
+  ShieldCheck,
+  Terminal,
+  Trash2,
+  Upload,
+} from "lucide-react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
@@ -109,6 +132,47 @@ const sshThemeOptions: Array<{ theme: SshTerminalTheme; zh: string; en: string }
   { theme: "hacker", zh: "黑客", en: "Hacker" },
   { theme: "custom", zh: "自定义", en: "Custom" },
 ];
+
+type LucideIcon = typeof Settings2;
+
+function SectionHeader({
+  icon: Icon,
+  title,
+  description,
+  actions,
+}: {
+  icon: LucideIcon;
+  title: string;
+  description?: string;
+  actions?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">
+      <div className="flex min-w-0 items-center gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-app-border bg-app-panel text-app-accent">
+          <Icon className="h-4 w-4" />
+        </div>
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-app-text">{title}</h2>
+          {description ? <p className="mt-1 text-xs leading-5 text-app-muted">{description}</p> : null}
+        </div>
+      </div>
+      {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+    </div>
+  );
+}
+
+function SubSectionHeading({ icon: Icon, label, trailing }: { icon: LucideIcon; label: string; trailing?: ReactNode }) {
+  return (
+    <div className="mb-3 flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-app-muted">
+        <Icon className="h-3.5 w-3.5 text-app-accent" />
+        <span>{label}</span>
+      </div>
+      {trailing}
+    </div>
+  );
+}
 
 export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const toast = useToast();
@@ -584,30 +648,26 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     <>
     <form className="space-y-5" onSubmit={onSubmit}>
       <Panel>
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-md border border-app-border bg-app-panel text-app-accent">
-              <Settings2 className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <h2 className="text-sm font-semibold">{t("settings.runtimeTitle")}</h2>
-              <p className="mt-1 text-xs text-app-muted">{t("settings.runtimeDescription")}</p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button disabled={saving} type="button" variant="secondary" onClick={resetToDefault}>
-              <RotateCcw className="h-4 w-4" />
-              {t("settings.resetDefault")}
-            </Button>
-            <Button disabled={saving} type="button" variant="secondary" onClick={() => void testConnection()}>
-              {text("测试连接", "Test")}
-            </Button>
-            <Button disabled={saving} type="submit">
-              <Save className="h-4 w-4" />
-              {saving ? t("settings.saving") : t("settings.saveSettings")}
-            </Button>
-          </div>
-        </div>
+        <SectionHeader
+          icon={Settings2}
+          title={t("settings.runtimeTitle")}
+          description={t("settings.runtimeDescription")}
+          actions={
+            <>
+              <Button disabled={saving} type="button" variant="secondary" onClick={resetToDefault}>
+                <RotateCcw className="h-4 w-4" />
+                {t("settings.resetDefault")}
+              </Button>
+              <Button disabled={saving} type="button" variant="secondary" onClick={() => void testConnection()}>
+                {text("测试连接", "Test")}
+              </Button>
+              <Button disabled={saving} type="submit">
+                <Save className="h-4 w-4" />
+                {saving ? t("settings.saving") : t("settings.saveSettings")}
+              </Button>
+            </>
+          }
+        />
 
         <div className="grid gap-5 p-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="space-y-4">
@@ -640,36 +700,44 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
           </div>
 
-          <div className="rounded-lg border border-app-border bg-app-panel p-3">
-            <div className="text-xs font-medium text-app-muted">{t("settings.derivedTitle")}</div>
+          <aside className="rounded-lg border border-app-border bg-app-panel/60 p-3">
+            <div className="flex items-center gap-2 text-xs font-medium text-app-muted">
+              <Globe className="h-3.5 w-3.5 text-app-accent" />
+              {t("settings.derivedTitle")}
+            </div>
             <div className="mt-3 space-y-3 text-xs">
               <div>
-                <div className="mb-1 text-app-muted">WebSSH</div>
-                <code className="block overflow-x-auto whitespace-nowrap rounded-md bg-app-surface px-2.5 py-2 font-mono text-app-text">
+                <div className="mb-1 flex items-center gap-1.5 text-app-muted">
+                  <span className="h-1.5 w-1.5 rounded-full bg-app-accent" />
+                  WebSSH
+                </div>
+                <code className="block overflow-x-auto whitespace-nowrap rounded-md bg-app-surface px-2.5 py-2 font-mono text-app-text ring-1 ring-inset ring-app-border">
                   {derivedWebsshUrl}
                 </code>
               </div>
               <div>
-                <div className="mb-1 text-app-muted">{t("settings.scope")}</div>
+                <div className="mb-1 flex items-center gap-1.5 text-app-muted">
+                  <span className="h-1.5 w-1.5 rounded-full bg-app-muted" />
+                  {t("settings.scope")}
+                </div>
                 <p className="leading-5 text-app-muted">
                   {t("settings.scopeDescription")}
                 </p>
               </div>
             </div>
-          </div>
+          </aside>
         </div>
       </Panel>
 
       {browserRuntime.supportsTray ? (
         <Panel>
-          <div className="border-b border-app-border px-4 py-3">
-            <h2 className="text-sm font-semibold">{text("窗口关闭", "Window Close")}</h2>
-            <p className="mt-1 text-xs text-app-muted">
-              {text("控制桌面端点击关闭按钮后的确认和托盘行为。", "Control confirmation and tray behavior when closing the desktop window.")}
-            </p>
-          </div>
+          <SectionHeader
+            icon={PanelTopClose}
+            title={text("窗口关闭", "Window Close")}
+            description={text("控制桌面端点击关闭按钮后的确认和托盘行为。", "Control confirmation and tray behavior when closing the desktop window.")}
+          />
           <div className="grid gap-3 p-4 sm:grid-cols-2">
-            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface">
               <input
                 className="mt-1"
                 type="checkbox"
@@ -683,7 +751,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 </span>
               </span>
             </label>
-            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface">
               <input
                 className="mt-1"
                 type="checkbox"
@@ -703,17 +771,15 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
 
       {browserRuntime.supportsInAppSsh ? (
         <Panel>
-          <div className="border-b border-app-border px-4 py-3">
-            <div className="flex items-center gap-2">
-              <Terminal className="h-4 w-4 text-app-accent" />
-              <h2 className="text-sm font-semibold">{t("settings.sshTitle")}</h2>
-            </div>
-            <p className="mt-1 text-xs text-app-muted">{t("settings.sshDescription")}</p>
-          </div>
+          <SectionHeader
+            icon={Terminal}
+            title={t("settings.sshTitle")}
+            description={t("settings.sshDescription")}
+          />
 
-          <div className="space-y-5 p-4">
+          <div className="space-y-6 p-4">
             <div>
-              <h3 className="mb-3 text-xs font-medium text-app-muted">{t("settings.sshConnection")}</h3>
+              <SubSectionHeading icon={Plug} label={t("settings.sshConnection")} />
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <label className="block text-sm">
                   <span className="mb-1 block text-app-muted">{t("settings.sshDefaultUsername")}</span>
@@ -749,7 +815,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             </div>
 
             <div>
-              <h3 className="mb-3 text-xs font-medium text-app-muted">{t("settings.sshAuth")}</h3>
+              <SubSectionHeading icon={KeyRound} label={t("settings.sshAuth")} />
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="block text-sm">
                   <span className="mb-1 block text-app-muted">{t("settings.sshAuthMode")}</span>
@@ -772,7 +838,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             </div>
 
             <div>
-              <h3 className="mb-3 text-xs font-medium text-app-muted">{t("settings.sshTerminal")}</h3>
+              <SubSectionHeading icon={Palette} label={t("settings.sshTerminal")} />
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <label className="block text-sm">
                   <span className="mb-1 block text-app-muted">{t("settings.sshFontPreset")}</span>
@@ -864,15 +930,16 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             </div>
 
             <div>
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-xs font-medium text-app-muted">{t("settings.sshKnownHosts")}</h3>
-                {knownHosts.length > 0 ? (
+              <SubSectionHeading
+                icon={ShieldCheck}
+                label={t("settings.sshKnownHosts")}
+                trailing={knownHosts.length > 0 ? (
                   <Button type="button" variant="secondary" onClick={clearAllKnownHosts}>
                     <Trash2 className="h-3.5 w-3.5" />
                     {t("settings.sshClearAllHosts")}
                   </Button>
                 ) : null}
-              </div>
+              />
               {knownHostsLoading ? (
                 <div className="py-4 text-center text-xs text-app-muted">...</div>
               ) : knownHosts.length === 0 ? (
@@ -880,7 +947,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               ) : (
                 <div className="space-y-1">
                   {knownHosts.map((host) => (
-                    <div key={host.hostPort} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs">
+                    <div key={host.hostPort} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs transition-colors hover:border-app-accent/40 hover:bg-app-surface">
                       <div className="min-w-0 flex-1">
                         <div className="font-mono text-app-text">{host.hostPort}</div>
                         <div className="truncate font-mono text-app-muted">{host.fingerprint}</div>
@@ -895,15 +962,16 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             </div>
 
             <div>
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-xs font-medium text-app-muted">{t("settings.sshHistory")}</h3>
-                {sshHistory.length > 0 ? (
+              <SubSectionHeading
+                icon={History}
+                label={t("settings.sshHistory")}
+                trailing={sshHistory.length > 0 ? (
                   <Button type="button" variant="secondary" onClick={clearAllSshHistory}>
                     <Trash2 className="h-3.5 w-3.5" />
                     {t("settings.sshClearHistory")}
                   </Button>
                 ) : null}
-              </div>
+              />
               {sshHistoryLoading ? (
                 <div className="py-4 text-center text-xs text-app-muted">...</div>
               ) : sshHistory.length === 0 ? (
@@ -911,7 +979,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               ) : (
                 <div className="space-y-1">
                   {sshHistory.map((entry) => (
-                    <div key={entry.id} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs">
+                    <div key={entry.id} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs transition-colors hover:border-app-accent/40 hover:bg-app-surface">
                       <div className="min-w-0 flex-1">
                         <div className="font-mono text-app-text">{entry.host}:{entry.port || "22"}</div>
                         <div className="truncate text-app-muted">
@@ -928,12 +996,15 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             </div>
 
             <div>
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-xs font-medium text-app-muted">{t("settings.sshPortForwards")}</h3>
-                <Button type="button" variant="secondary" onClick={() => setShowPortForwardForm((prev) => !prev)}>
-                  {t("settings.sshPortForwardAdd")}
-                </Button>
-              </div>
+              <SubSectionHeading
+                icon={Network}
+                label={t("settings.sshPortForwards")}
+                trailing={
+                  <Button type="button" variant="secondary" onClick={() => setShowPortForwardForm((prev) => !prev)}>
+                    {t("settings.sshPortForwardAdd")}
+                  </Button>
+                }
+              />
               {showPortForwardForm ? (
                 <div className="mb-3 space-y-3 rounded-md border border-app-border bg-app-panel p-3">
                   <label className="block text-sm">
@@ -988,10 +1059,10 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               ) : (
                 <div className="space-y-1">
                   {form.ssh.portForwards.map((rule) => (
-                    <div key={rule.id} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs">
+                    <div key={rule.id} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs transition-colors hover:border-app-accent/40 hover:bg-app-surface">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="rounded bg-app-surface px-1.5 py-0.5 font-mono text-[10px] text-app-accent">
+                          <span className="rounded bg-app-accentSoft px-1.5 py-0.5 font-mono text-[10px] font-medium text-app-accent">
                             {rule.type === "local" ? "-L" : rule.type === "remote" ? "-R" : "-D"}
                           </span>
                           <span className="font-mono text-app-text">
@@ -1034,34 +1105,35 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
 
       {browserRuntime.supportsUpdater ? (
       <Panel>
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold">{text("应用更新", "App Updates")}</h2>
-            <p className="mt-1 text-xs text-app-muted">
-              {browserRuntime.isMobile
-                ? text("从 GitHub Release 检查 APK 更新。", "Checks for APK updates from GitHub Release.")
-                : text("桌面端从 GitHub Release 检查稳定版更新。", "The desktop app checks stable updates from GitHub Release.")}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              disabled={!browserRuntime.supportsUpdater || appUpdate.state.status === "checking" || appUpdate.state.status === "downloading"}
-              type="button"
-              variant="secondary"
-              onClick={() => void appUpdate.checkForUpdates(true)}
-            >
-              <RefreshCw className="h-4 w-4" />
-              {appUpdate.state.status === "checking" ? text("检查中", "Checking") : text("检查更新", "Check")}
-            </Button>
-            <Button type="button" variant="secondary" onClick={appUpdate.openReleasePage}>
-              <ExternalLink className="h-4 w-4" />
-              GitHub
-            </Button>
-          </div>
-        </div>
+        <SectionHeader
+          icon={Activity}
+          title={text("应用更新", "App Updates")}
+          description={
+            browserRuntime.isMobile
+              ? text("从 GitHub Release 检查 APK 更新。", "Checks for APK updates from GitHub Release.")
+              : text("桌面端从 GitHub Release 检查稳定版更新。", "The desktop app checks stable updates from GitHub Release.")
+          }
+          actions={
+            <>
+              <Button
+                disabled={!browserRuntime.supportsUpdater || appUpdate.state.status === "checking" || appUpdate.state.status === "downloading"}
+                type="button"
+                variant="secondary"
+                onClick={() => void appUpdate.checkForUpdates(true)}
+              >
+                <RefreshCw className="h-4 w-4" />
+                {appUpdate.state.status === "checking" ? text("检查中", "Checking") : text("检查更新", "Check")}
+              </Button>
+              <Button type="button" variant="secondary" onClick={appUpdate.openReleasePage}>
+                <ExternalLink className="h-4 w-4" />
+                GitHub
+              </Button>
+            </>
+          }
+        />
         <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="space-y-3">
-            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface">
               <input
                 className="mt-1"
                 type="checkbox"
@@ -1082,15 +1154,21 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             ) : null}
             {appUpdate.state.error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{appUpdate.state.error}</div> : null}
           </div>
-          <div className="min-w-0 rounded-lg border border-app-border bg-app-panel p-3 text-xs">
+          <aside className="min-w-0 rounded-lg border border-app-border bg-app-panel/60 p-3 text-xs">
             <div className="grid gap-3">
               <div>
-                <div className="mb-1 text-app-muted">{text("当前版本", "Current version")}</div>
+                <div className="mb-1 flex items-center gap-1.5 text-app-muted">
+                  <span className="h-1.5 w-1.5 rounded-full bg-app-accent" />
+                  {text("当前版本", "Current version")}
+                </div>
                 <code className="font-mono text-app-text">{appUpdate.state.currentVersion ?? appUpdate.state.info?.currentVersion ?? "-"}</code>
               </div>
               <div>
-                <div className="mb-1 text-app-muted">{text("更新源", "Update source")}</div>
-                <code className="block max-w-full break-all rounded-md bg-app-surface px-2.5 py-2 font-mono leading-5 text-app-text">
+                <div className="mb-1 flex items-center gap-1.5 text-app-muted">
+                  <span className="h-1.5 w-1.5 rounded-full bg-app-muted" />
+                  {text("更新源", "Update source")}
+                </div>
+                <code className="block max-w-full break-all rounded-md bg-app-surface px-2.5 py-2 font-mono leading-5 text-app-text ring-1 ring-inset ring-app-border">
                   {browserRuntime.isMobile ? GITHUB_API_RELEASE_URL : APP_UPDATE_ENDPOINT_URL}
                 </code>
               </div>
@@ -1100,20 +1178,17 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 </div>
               ) : null}
             </div>
-          </div>
+          </aside>
         </div>
       </Panel>
       ) : null}
 
       <Panel>
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold">{text("运行日志保留策略", "Run Log Retention")}</h2>
-            <p className="mt-1 text-xs text-app-muted">
-              {text("设置运行日志的最大条数与保留天数。超出后自动清理最早的记录。", "Set the maximum number of run log entries and retention days. Older entries are pruned automatically.")}
-            </p>
-          </div>
-        </div>
+        <SectionHeader
+          icon={ScrollText}
+          title={text("运行日志保留策略", "Run Log Retention")}
+          description={text("设置运行日志的最大条数与保留天数。超出后自动清理最早的记录。", "Set the maximum number of run log entries and retention days. Older entries are pruned automatically.")}
+        />
         <div className="grid gap-4 p-4 sm:grid-cols-2">
           <label className="block text-sm">
             <span className="mb-1 block text-app-muted">{text("最大条数", "Max entries")}</span>
@@ -1137,30 +1212,29 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       </Panel>
 
       <Panel>
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold">{text("本地数据备份", "Local Data Backup")}</h2>
-            <p className="mt-1 text-xs text-app-muted">
-              {text("导出或恢复设置、任务模板、计划任务和运行日志。登录凭据默认不会包含。", "Export or restore settings, task templates, scheduled tasks, and run logs. Credentials are excluded by default.")}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-2 text-xs text-app-muted">
-              <input type="checkbox" checked={includeSecrets} onChange={(event) => setIncludeSecrets(event.target.checked)} />
-              {text("包含登录凭据", "Include credentials")}
-            </label>
-            <Button type="button" variant="secondary" onClick={() => void exportBackup()}>
-              <Download className="h-4 w-4" />
-              {text("导出", "Export")}
-            </Button>
-            <label className="app-interactive inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-app-border bg-app-surface px-3 text-sm font-medium text-app-text hover:bg-app-panel [@media(pointer:coarse)]:min-h-11">
-              <Upload className="h-4 w-4" />
-              {text("导入", "Import")}
-              <input className="sr-only" type="file" accept="application/json,.json" onChange={(event) => void readImportFile(event)} />
-            </label>
-          </div>
-        </div>
-        <div className="border-b border-app-border bg-app-panel/50 px-4 py-3">
+        <SectionHeader
+          icon={DatabaseBackup}
+          title={text("本地数据备份", "Local Data Backup")}
+          description={text("导出或恢复设置、任务模板、计划任务和运行日志。登录凭据默认不会包含。", "Export or restore settings, task templates, scheduled tasks, and run logs. Credentials are excluded by default.")}
+          actions={
+            <>
+              <label className="flex items-center gap-2 text-xs text-app-muted">
+                <input type="checkbox" checked={includeSecrets} onChange={(event) => setIncludeSecrets(event.target.checked)} />
+                {text("包含登录凭据", "Include credentials")}
+              </label>
+              <Button type="button" variant="secondary" onClick={() => void exportBackup()}>
+                <Download className="h-4 w-4" />
+                {text("导出", "Export")}
+              </Button>
+              <label className="app-interactive inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-app-border bg-app-surface px-3 text-sm font-medium text-app-text hover:bg-app-panel [@media(pointer:coarse)]:min-h-11">
+                <Upload className="h-4 w-4" />
+                {text("导入", "Import")}
+                <input className="sr-only" type="file" accept="application/json,.json" onChange={(event) => void readImportFile(event)} />
+              </label>
+            </>
+          }
+        />
+        <div className="border-b border-app-border bg-app-panel/40 px-4 py-3">
           <label className="block text-sm">
             <span className="mb-1 block text-xs text-app-muted">
               {text("加密密码（可选，留空则导出明文）", "Encryption password (optional, leave empty for plaintext)")}
@@ -1181,37 +1255,47 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       </Panel>
 
       <Panel>
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold">{text("重要事件通知", "Important Event Notifications")}</h2>
-            <p className="mt-1 text-xs text-app-muted">
-              {text("为每类事件选择关闭、应用内通知或系统通知。", "Choose off, in-app, or system notifications for each event.")}
-            </p>
-          </div>
-          <Button disabled={saving} type="button" variant="secondary" onClick={sendTestNotification}>
-            <BellRing className="h-4 w-4" />
-            {text("测试通知", "Test notification")}
-          </Button>
-        </div>
+        <SectionHeader
+          icon={BellRing}
+          title={text("重要事件通知", "Important Event Notifications")}
+          description={text("为每类事件选择关闭、应用内通知或系统通知。", "Choose off, in-app, or system notifications for each event.")}
+          actions={
+            <Button disabled={saving} type="button" variant="secondary" onClick={sendTestNotification}>
+              <BellRing className="h-4 w-4" />
+              {text("测试通知", "Test notification")}
+            </Button>
+          }
+        />
         <div className="divide-y divide-app-border">
-          {notificationEvents.map((item) => (
-            <div key={item.event} className="grid gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_12rem] sm:items-center">
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-app-text">{text(item.zh, item.en)}</div>
-                <div className="mt-1 text-xs leading-5 text-app-muted">{text(item.descriptionZh, item.descriptionEn)}</div>
+          {notificationEvents.map((item) => {
+            const tone =
+              item.event === "task.success"
+                ? "bg-app-success"
+                : item.event === "task.failure"
+                  ? "bg-app-danger"
+                  : "bg-app-warning";
+            return (
+              <div key={item.event} className="grid gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_12rem] sm:items-center">
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${tone}`} aria-hidden />
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-app-text">{text(item.zh, item.en)}</div>
+                    <div className="mt-1 text-xs leading-5 text-app-muted">{text(item.descriptionZh, item.descriptionEn)}</div>
+                  </div>
+                </div>
+                <Select
+                  value={form.notificationPreferences[item.event]}
+                  onChange={(event) => updateNotificationPreference(item.event, event.target.value as NotificationMode)}
+                >
+                  {notificationModeOptions.map((option) => (
+                    <option key={option.mode} value={option.mode}>
+                      {text(option.zh, option.en)}
+                    </option>
+                  ))}
+                </Select>
               </div>
-              <Select
-                value={form.notificationPreferences[item.event]}
-                onChange={(event) => updateNotificationPreference(item.event, event.target.value as NotificationMode)}
-              >
-                {notificationModeOptions.map((option) => (
-                  <option key={option.mode} value={option.mode}>
-                    {text(option.zh, option.en)}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </Panel>
 

@@ -313,6 +313,11 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         unlisten = await browserRuntime.onSshSessionEvent(sessionId, (event) => {
           if (event.kind === "output" && event.data) {
             activeTerminal.write(event.data);
+            // xterm only auto-scrolls when the viewport is already at the
+            // bottom; if the user scrolled up (or the viewport was nudged by
+            // a resize/fit cycle), writes would stack above the fold. Force
+            // scroll to bottom on every output so the prompt stays visible.
+            activeTerminal.scrollToBottom();
             if (isRecordingRef.current) {
               logBufferRef.current.push(event.data);
             }
