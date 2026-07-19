@@ -153,6 +153,9 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     async openVscodeSsh() {
       return unsupported("VS Code SSH");
     },
+    async openSshWindow() {
+      return unsupported("Standalone SSH window");
+    },
     async sftpList() {
       return unsupported("SFTP");
     },
