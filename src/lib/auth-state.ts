@@ -16,6 +16,8 @@ export type AuthState = {
   token: string | null;
   user: UserInfo | null;
   ready: boolean;
+  /** True while startup is restoring a persisted session / remembered password. */
+  restoringSession: boolean;
   savedAccounts: SavedLoginAccount[];
   login(username: string, password: string, options?: LoginOptions): Promise<void>;
   loginSaved(accountId: string): Promise<void>;

@@ -3,11 +3,30 @@ import { describe, expect, it } from "vitest";
 import {
   createSavedLoginAccount,
   hasStoredPassword,
+  migrateSavedAccountsToSecureStorage,
   parseSavedAccounts,
   removeSavedAccount,
+  SAVED_ACCOUNTS_STORAGE_KEY,
   stringifySavedAccounts,
   upsertSavedAccount,
 } from "./saved-accounts";
+import { createLayeredSecureStorage } from "./secure-storage";
+import type { RuntimeStorage } from "./types";
+
+function createMemoryStorage(initial: Record<string, string> = {}): RuntimeStorage {
+  const data = new Map(Object.entries(initial));
+  return {
+    async get(key) {
+      return data.has(key) ? data.get(key)! : null;
+    },
+    async set(key, value) {
+      data.set(key, value);
+    },
+    async remove(key) {
+      data.delete(key);
+    },
+  };
+}
 
 describe("saved accounts", () => {
   it("creates a stable account record from login result", () => {
@@ -86,5 +105,29 @@ describe("saved accounts", () => {
     const second = createSavedLoginAccount({ username: "bob", token: "2" });
 
     expect(removeSavedAccount([first, second], first.id)).toEqual([second]);
+  });
+
+  it("migrates plaintext accounts without deleting the only fallback copy", async () => {
+    const account = createSavedLoginAccount({
+      username: "alice",
+      token: "Bearer x",
+      encryptedPassword: "enc",
+    });
+    const raw = stringifySavedAccounts([account]);
+    const plaintext = createMemoryStorage({ [SAVED_ACCOUNTS_STORAGE_KEY]: raw });
+    const brokenKeychain: RuntimeStorage = {
+      async get() {
+        return null;
+      },
+      async set() {
+        throw new Error("blob too large");
+      },
+      async remove() {},
+    };
+    const secure = createLayeredSecureStorage(brokenKeychain, plaintext);
+
+    await migrateSavedAccountsToSecureStorage(plaintext, secure);
+    expect(await secure.get(SAVED_ACCOUNTS_STORAGE_KEY)).toBe(raw);
+    expect(parseSavedAccounts(await secure.get(SAVED_ACCOUNTS_STORAGE_KEY))).toHaveLength(1);
   });
 });

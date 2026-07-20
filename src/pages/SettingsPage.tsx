@@ -3,6 +3,7 @@ import {
   Activity,
   ArrowLeft,
   BellRing,
+  ChevronDown,
   DatabaseBackup,
   Download,
   ExternalLink,
@@ -29,22 +30,29 @@ import { Link } from "react-router-dom";
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
 import { setApiBaseUrl } from "../lib/api";
 import {
-  APP_SETTINGS_STORAGE_KEY,
   DEFAULT_APP_SETTINGS,
   DEFAULT_CUSTOM_COLORS,
   DEFAULT_SSH_SETTINGS,
+  GLOBAL_SETTINGS_ACCOUNT_ID,
   getRuntimeSettings,
   type ImportantNotificationEvent,
   normalizeAppSettings,
   type NotificationMode,
+  resetAccountAppSettings,
+  saveAccountSettings,
   setRuntimeSettings,
   SSH_FONT_PRESETS,
-  stringifyAppSettings,
   type AppSettings,
   type SshAuthMode,
   type SshCustomColors,
   type SshTerminalTheme,
+  writeAccountSettingsStore,
+  readAccountSettingsStore,
+  parseAccountSettingsStore,
+  getAccountAppSettings,
 } from "../lib/app-settings";
+import { useAuth } from "../lib/use-auth";
+import { resolveSavedAccountId } from "../lib/saved-accounts";
 import { APP_UPDATE_ENDPOINT_URL, GITHUB_API_RELEASE_URL } from "../lib/app-update";
 import { useAppUpdate } from "../lib/app-update-context";
 import { deriveWebsshUrl } from "../lib/webssh";
@@ -174,9 +182,56 @@ function SubSectionHeading({ icon: Icon, label, trailing }: { icon: LucideIcon; 
   );
 }
 
+function CollapsibleSubSection({
+  icon: Icon,
+  label,
+  trailing,
+  badge,
+  defaultOpen = false,
+  open: openProp,
+  onOpenChange,
+  children,
+}: {
+  icon: LucideIcon;
+  label: string;
+  trailing?: ReactNode;
+  badge?: ReactNode;
+  defaultOpen?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  children: ReactNode;
+}) {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  const open = openProp ?? uncontrolledOpen;
+  function setOpen(next: boolean) {
+    onOpenChange?.(next);
+    if (openProp === undefined) setUncontrolledOpen(next);
+  }
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          className="flex min-w-0 items-center gap-2 text-xs font-medium uppercase tracking-wide text-app-muted transition-colors hover:text-app-text"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? "" : "-rotate-90"}`} />
+          <Icon className="h-3.5 w-3.5 shrink-0 text-app-accent" />
+          <span className="truncate">{label}</span>
+          {badge}
+        </button>
+        {trailing}
+      </div>
+      {open ? <div className="mt-3">{children}</div> : null}
+    </div>
+  );
+}
+
 export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const toast = useToast();
   const { t, text } = useI18n();
+  const auth = useAuth();
   const appUpdate = useAppUpdate();
   const runLogger = useRunLogger();
   const queryClient = useQueryClient();
@@ -197,12 +252,18 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const [sshHistory, setSshHistory] = useState<SshHistoryEntry[]>([]);
   const [sshHistoryLoading, setSshHistoryLoading] = useState(false);
   const [showPortForwardForm, setShowPortForwardForm] = useState(false);
+  const [portForwardsOpen, setPortForwardsOpen] = useState(false);
   const [pfType, setPfType] = useState<PortForwardType>("local");
   const [pfLocalHost, setPfLocalHost] = useState("127.0.0.1");
   const [pfLocalPort, setPfLocalPort] = useState("");
   const [pfRemoteHost, setPfRemoteHost] = useState("");
   const [pfRemotePort, setPfRemotePort] = useState("");
   const [pfEnabled, setPfEnabled] = useState(true);
+
+  const settingsAccountId = useMemo(() => {
+    if (!auth.user) return GLOBAL_SETTINGS_ACCOUNT_ID;
+    return resolveSavedAccountId(auth.user.username ?? auth.user.name ?? "", auth.user);
+  }, [auth.user]);
 
   const normalized = useMemo(() => normalizeAppSettings(form), [form]);
   const derivedWebsshUrl = useMemo(() => {
@@ -214,6 +275,10 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     }
   }, [normalized.apiBaseUrl, t]);
 
+  useEffect(() => {
+    setForm(getRuntimeSettings());
+  }, [settingsAccountId]);
+
   async function saveSettings(nextSettings: AppSettings, successTitle: string) {
     const nextError = validate(nextSettings, t);
     setError(nextError);
@@ -222,7 +287,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     setSaving(true);
     try {
       applySettings(nextSettings);
-      await browserRuntime.storage.set(APP_SETTINGS_STORAGE_KEY, stringifyAppSettings(nextSettings));
+      await saveAccountSettings(browserRuntime.storage, settingsAccountId, nextSettings);
       queryClient.clear();
       setForm(nextSettings);
       toast.success(successTitle, t("settings.saveDescription"));
@@ -232,7 +297,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         action: "settings.save",
         result: "success",
         title: successTitle,
-        metadata: nextSettings,
+        metadata: { ...nextSettings, settingsAccountId },
       });
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : t("settings.saveFailed"));
@@ -259,7 +324,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       setSaving(true);
       try {
         applySettings(DEFAULT_APP_SETTINGS);
-        await browserRuntime.storage.remove(APP_SETTINGS_STORAGE_KEY);
+        const store = await readAccountSettingsStore(browserRuntime.storage);
+        await writeAccountSettingsStore(browserRuntime.storage, resetAccountAppSettings(store, settingsAccountId));
         queryClient.clear();
         setForm(DEFAULT_APP_SETTINGS);
         setError(null);
@@ -270,6 +336,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           action: "settings.reset",
           result: "success",
           title: t("settings.resetDone"),
+          metadata: { settingsAccountId },
         });
       } catch (resetError) {
         setError(resetError instanceof Error ? resetError.message : t("settings.resetFailed"));
@@ -621,8 +688,16 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     if (!importBackup) return;
     const sections = [...importSections, ...(importSecrets ? secretBackupSections.filter((section) => importBackup.items[section] !== undefined) : [])];
     await importLocalDataBackup(browserRuntime.storage, importBackup, sections);
-    const nextSettings = normalizeAppSettings(importBackup.items.settings as Partial<AppSettings>);
-    if (sections.includes("settings")) applySettings(nextSettings);
+    if (sections.includes("settings") && importBackup.items.settings) {
+      const store = parseAccountSettingsStore(
+        typeof importBackup.items.settings === "string"
+          ? importBackup.items.settings
+          : JSON.stringify(importBackup.items.settings),
+      );
+      const nextSettings = getAccountAppSettings(store, settingsAccountId);
+      applySettings(nextSettings);
+      setForm(nextSettings);
+    }
     queryClient.clear();
     toast.success(text("本地数据已导入", "Local data imported"), text("部分设置需要刷新后完全生效", "Some settings need a refresh to fully apply"));
     setImportBackup(null);
@@ -777,13 +852,23 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             description={t("settings.sshDescription")}
           />
 
-          <div className="space-y-6 p-4">
+          <div className="space-y-4 p-4">
             <div>
               <SubSectionHeading icon={Plug} label={t("settings.sshConnection")} />
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <label className="block text-sm">
                   <span className="mb-1 block text-app-muted">{t("settings.sshDefaultUsername")}</span>
                   <Input value={form.ssh.defaultUsername} onChange={(e) => updateSshField("defaultUsername", e.target.value)} />
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{t("settings.sshDefaultPassword")}</span>
+                  <Input
+                    type="password"
+                    autoComplete="new-password"
+                    value={form.ssh.defaultPassword}
+                    placeholder={t("settings.sshDefaultPasswordPlaceholder")}
+                    onChange={(e) => updateSshField("defaultPassword", e.target.value)}
+                  />
                 </label>
                 <label className="block text-sm">
                   <span className="mb-1 block text-app-muted">{t("settings.sshDefaultPort")}</span>
@@ -880,7 +965,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 </label>
               </div>
               {form.ssh.terminal.theme === "custom" ? (
-                <div className="mt-3 rounded-md border border-app-border bg-app-panel p-3">
+                <div className="mt-3 max-h-56 overflow-y-auto rounded-md border border-app-border bg-app-panel p-3">
                   <div className="mb-2 flex items-center justify-between">
                     <span className="text-xs font-medium text-app-muted">{t("settings.sshThemeCustom")}</span>
                     <Button type="button" variant="secondary" onClick={() => updateSshTerminalField("customColors", DEFAULT_CUSTOM_COLORS)}>
@@ -929,23 +1014,27 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               ) : null}
             </div>
 
-            <div>
-              <SubSectionHeading
-                icon={ShieldCheck}
-                label={t("settings.sshKnownHosts")}
-                trailing={knownHosts.length > 0 ? (
-                  <Button type="button" variant="secondary" onClick={clearAllKnownHosts}>
-                    <Trash2 className="h-3.5 w-3.5" />
-                    {t("settings.sshClearAllHosts")}
-                  </Button>
-                ) : null}
-              />
+            <CollapsibleSubSection
+              icon={ShieldCheck}
+              label={t("settings.sshKnownHosts")}
+              badge={knownHosts.length > 0 ? (
+                <span className="rounded bg-app-accentSoft px-1.5 py-0.5 font-mono text-[10px] font-medium normal-case tracking-normal text-app-accent">
+                  {knownHosts.length}
+                </span>
+              ) : null}
+              trailing={knownHosts.length > 0 ? (
+                <Button type="button" variant="secondary" onClick={clearAllKnownHosts}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  {t("settings.sshClearAllHosts")}
+                </Button>
+              ) : null}
+            >
               {knownHostsLoading ? (
-                <div className="py-4 text-center text-xs text-app-muted">...</div>
+                <div className="py-2 text-center text-xs text-app-muted">...</div>
               ) : knownHosts.length === 0 ? (
-                <div className="py-4 text-center text-xs text-app-muted">{t("settings.sshKnownHostsEmpty")}</div>
+                <div className="py-2 text-center text-xs text-app-muted">{t("settings.sshKnownHostsEmpty")}</div>
               ) : (
-                <div className="space-y-1">
+                <div className="max-h-40 space-y-1 overflow-y-auto">
                   {knownHosts.map((host) => (
                     <div key={host.hostPort} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs transition-colors hover:border-app-accent/40 hover:bg-app-surface">
                       <div className="min-w-0 flex-1">
@@ -959,25 +1048,29 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                   ))}
                 </div>
               )}
-            </div>
+            </CollapsibleSubSection>
 
-            <div>
-              <SubSectionHeading
-                icon={History}
-                label={t("settings.sshHistory")}
-                trailing={sshHistory.length > 0 ? (
-                  <Button type="button" variant="secondary" onClick={clearAllSshHistory}>
-                    <Trash2 className="h-3.5 w-3.5" />
-                    {t("settings.sshClearHistory")}
-                  </Button>
-                ) : null}
-              />
+            <CollapsibleSubSection
+              icon={History}
+              label={t("settings.sshHistory")}
+              badge={sshHistory.length > 0 ? (
+                <span className="rounded bg-app-accentSoft px-1.5 py-0.5 font-mono text-[10px] font-medium normal-case tracking-normal text-app-accent">
+                  {sshHistory.length}
+                </span>
+              ) : null}
+              trailing={sshHistory.length > 0 ? (
+                <Button type="button" variant="secondary" onClick={clearAllSshHistory}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  {t("settings.sshClearHistory")}
+                </Button>
+              ) : null}
+            >
               {sshHistoryLoading ? (
-                <div className="py-4 text-center text-xs text-app-muted">...</div>
+                <div className="py-2 text-center text-xs text-app-muted">...</div>
               ) : sshHistory.length === 0 ? (
-                <div className="py-4 text-center text-xs text-app-muted">{t("settings.sshHistoryEmpty")}</div>
+                <div className="py-2 text-center text-xs text-app-muted">{t("settings.sshHistoryEmpty")}</div>
               ) : (
-                <div className="space-y-1">
+                <div className="max-h-40 space-y-1 overflow-y-auto">
                   {sshHistory.map((entry) => (
                     <div key={entry.id} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs transition-colors hover:border-app-accent/40 hover:bg-app-surface">
                       <div className="min-w-0 flex-1">
@@ -993,18 +1086,31 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                   ))}
                 </div>
               )}
-            </div>
+            </CollapsibleSubSection>
 
-            <div>
-              <SubSectionHeading
-                icon={Network}
-                label={t("settings.sshPortForwards")}
-                trailing={
-                  <Button type="button" variant="secondary" onClick={() => setShowPortForwardForm((prev) => !prev)}>
-                    {t("settings.sshPortForwardAdd")}
-                  </Button>
-                }
-              />
+            <CollapsibleSubSection
+              icon={Network}
+              label={t("settings.sshPortForwards")}
+              open={portForwardsOpen}
+              onOpenChange={setPortForwardsOpen}
+              badge={form.ssh.portForwards.length > 0 ? (
+                <span className="rounded bg-app-accentSoft px-1.5 py-0.5 font-mono text-[10px] font-medium normal-case tracking-normal text-app-accent">
+                  {form.ssh.portForwards.length}
+                </span>
+              ) : null}
+              trailing={
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => {
+                    setPortForwardsOpen(true);
+                    setShowPortForwardForm((prev) => !prev);
+                  }}
+                >
+                  {t("settings.sshPortForwardAdd")}
+                </Button>
+              }
+            >
               {showPortForwardForm ? (
                 <div className="mb-3 space-y-3 rounded-md border border-app-border bg-app-panel p-3">
                   <label className="block text-sm">
@@ -1055,9 +1161,9 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 </div>
               ) : null}
               {form.ssh.portForwards.length === 0 ? (
-                <div className="py-4 text-center text-xs text-app-muted">{t("settings.sshPortForwardEmpty")}</div>
+                <div className="py-2 text-center text-xs text-app-muted">{t("settings.sshPortForwardEmpty")}</div>
               ) : (
-                <div className="space-y-1">
+                <div className="max-h-40 space-y-1 overflow-y-auto">
                   {form.ssh.portForwards.map((rule) => (
                     <div key={rule.id} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs transition-colors hover:border-app-accent/40 hover:bg-app-surface">
                       <div className="min-w-0 flex-1">
@@ -1098,7 +1204,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                   ))}
                 </div>
               )}
-            </div>
+            </CollapsibleSubSection>
           </div>
         </Panel>
       ) : null}

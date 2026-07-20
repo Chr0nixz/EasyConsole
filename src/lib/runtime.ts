@@ -1,6 +1,7 @@
 import { isTauri } from "@tauri-apps/api/core";
 
 import { i18nText } from "./i18n-text";
+import { createLayeredSecureStorage } from "./secure-storage";
 import type {
   KnownHostEntry,
   PortForwardStatus,
@@ -120,35 +121,26 @@ const tauriStorageAdapter: RuntimeStorage = {
 };
 
 // Secure storage uses the OS keychain on desktop (macOS Keychain, Windows
-// Credential Manager, Linux Secret Service) and falls back to the plaintext
-// tauriStorageAdapter when keychain is unavailable. On web there is no OS
-// keychain, so it resolves to localStorageAdapter.
-const tauriSecureStorageAdapter: RuntimeStorage = {
+// Credential Manager, Linux Secret Service) and falls back to tauriStorage when
+// keychain is unavailable or rejects the value (Windows blob size limit).
+// get() must consult the fallback when keychain returns null — not only on
+// thrown errors — or a successful fallback write is lost on the next read.
+const tauriKeychainAdapter: RuntimeStorage = {
   async get(key) {
-    try {
-      return await invokeTauriCommand<string | null>("keychain_get", { key });
-    } catch (error) {
-      console.warn("Keychain get failed, falling back to tauriStorage.", error);
-      return tauriStorageAdapter.get(key);
-    }
+    return invokeTauriCommand<string | null>("keychain_get", { key });
   },
   async set(key, value) {
-    try {
-      await invokeTauriCommand("keychain_set", { key, value });
-    } catch (error) {
-      console.warn("Keychain set failed, falling back to tauriStorage.", error);
-      await tauriStorageAdapter.set(key, value);
-    }
+    await invokeTauriCommand("keychain_set", { key, value });
   },
   async remove(key) {
-    try {
-      await invokeTauriCommand("keychain_remove", { key });
-    } catch (error) {
-      console.warn("Keychain remove failed, falling back to tauriStorage.", error);
-      await tauriStorageAdapter.remove(key);
-    }
+    await invokeTauriCommand("keychain_remove", { key });
   },
 };
+
+const tauriSecureStorageAdapter: RuntimeStorage = createLayeredSecureStorage(
+  tauriKeychainAdapter,
+  tauriStorageAdapter,
+);
 
 function buildUrl(url: string, query?: Record<string, unknown>) {
   const next = new URL(url, window.location.origin);

@@ -19,6 +19,7 @@ vi.mock("../lib/use-auth", () => ({
     token: "Bearer test",
     user: { username: "tester" },
     ready: true,
+    restoringSession: false,
     savedAccounts: [],
     login: vi.fn(),
     loginSaved: vi.fn(),
@@ -65,7 +66,12 @@ vi.mock("../lib/app-settings", () => ({
   APP_SETTINGS_STORAGE_KEY: "test",
   getRuntimeSettings: () => ({ apiUrl: "", monitorDashboardUrl: "" }),
   setRuntimeSettings: vi.fn(),
-  stringifyAppSettings: () => "{}",
+  saveAccountSettings: vi.fn(async () => ({})),
+  GLOBAL_SETTINGS_ACCOUNT_ID: "__global__",
+}));
+
+vi.mock("../lib/saved-accounts", () => ({
+  resolveSavedAccountId: () => "test-account",
 }));
 
 vi.mock("../lib/shell-nav-width", () => ({

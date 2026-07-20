@@ -6,6 +6,7 @@ import { useI18n } from "../../lib/i18n";
 import { browserRuntime } from "../../lib/runtime";
 import { buildTaskSshInfo, toSshConnectionRequest } from "../../lib/ssh-info";
 import type { SshConnectionRequest, Task } from "../../lib/types";
+import { useAuth } from "../../lib/use-auth";
 import { useToast } from "../../lib/use-toast";
 import { Button, Dialog } from "../ui";
 import { AppSshTerminalDialog } from "./AppSshTerminalDialog";
@@ -47,9 +48,14 @@ function InfoRow({
 export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: () => void }) {
   const toast = useToast();
   const { text } = useI18n();
+  const auth = useAuth();
   const [appSshRequest, setAppSshRequest] = useState<SshConnectionRequest | null>(null);
   const [isOpeningVscode, setIsOpeningVscode] = useState(false);
-  const sshInfo = useMemo(() => (task ? buildTaskSshInfo(task) : null), [task]);
+  const loginUsername = auth.user?.username ?? "";
+  const sshInfo = useMemo(
+    () => (task ? buildTaskSshInfo(task, { loginUsername }) : null),
+    [task, loginUsername],
+  );
   const canConnect = Boolean(sshInfo && sshInfo.host !== "-" && sshInfo.command !== "-");
 
   const copyValue = (value: string, label: string) => {
@@ -146,7 +152,7 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
             <div className="grid gap-3 rounded-lg border border-app-border bg-app-panel p-3 text-sm text-app-muted sm:grid-cols-[auto_1fr]">
               <KeyRound className="h-4 w-4 text-app-warning" />
               <p className="leading-5">
-                {text("SSH 信息来自实例列表返回字段。若 Host、Port 或密码为空，请刷新实例列表或查看原始 JSON 确认后端是否返回该字段。", "SSH information comes from fields returned by the instance list. If Host, Port, or password is empty, refresh the instance list or inspect the raw JSON to confirm the backend returned the field.")}
+                {text("SSH 信息来自实例列表返回字段。未返回密码时优先使用当前账号设置中的默认密码，否则使用登录用户名。若 Host 或 Port 为空，请刷新实例列表或查看原始 JSON。", "SSH information comes from fields returned by the instance list. When no password is returned, the current account's default password setting is used, otherwise the login username. If Host or Port is empty, refresh the instance list or inspect the raw JSON.")}
               </p>
               <Terminal className="h-4 w-4 text-app-accent" />
               <p className="leading-5">

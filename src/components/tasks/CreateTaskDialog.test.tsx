@@ -23,6 +23,7 @@ vi.mock("../../lib/use-auth", () => ({
     token: "Bearer test",
     user: { username: "tester" },
     ready: true,
+    restoringSession: false,
     savedAccounts: [],
     login: vi.fn(),
     loginSaved: vi.fn(),

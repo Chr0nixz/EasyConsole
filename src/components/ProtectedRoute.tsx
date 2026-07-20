@@ -10,7 +10,7 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
   const { t } = useI18n();
   const location = useLocation();
 
-  if (!auth.ready) return <LoadingState label={t("login.restoreSession")} />;
+  if (!auth.ready || auth.restoringSession) return <LoadingState label={t("login.restoreSession")} />;
   if (!auth.token) return <Navigate to="/login" state={{ from: location }} replace />;
   return children;
 }

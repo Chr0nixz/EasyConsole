@@ -36,12 +36,19 @@ function getTaskLinkName(task: Task) {
   return firstText(task.name, task.task_name, task.description, getTaskSshId(task));
 }
 
-export function buildTaskSshInfo(task: Task): TaskSshInfo {
+export type BuildTaskSshInfoOptions = {
+  /** Console login username; used as SSH password when the API omits one. */
+  loginUsername?: string;
+};
+
+export function buildTaskSshInfo(task: Task, options?: BuildTaskSshInfoOptions): TaskSshInfo {
   const defaultUsername = getRuntimeSettings().ssh.defaultUsername || FALLBACK_SSH_USERNAME;
   const host = firstText(task.ssh_host, task.host, task.hostname, task.ip) || "-";
   const port = firstText(task.ssh_port, task.port) || "-";
   const username = firstText(task.ssh_username, task.ssh_user, task.login_user, defaultUsername);
-  const password = firstText(task.ssh_password, task.password) || "-";
+  // Platform instances use settings defaultPassword, then console login username.
+  const defaultPassword = getRuntimeSettings().ssh.defaultPassword;
+  const password = firstText(task.ssh_password, task.password, defaultPassword, options?.loginUsername) || "-";
 
   return {
     host,

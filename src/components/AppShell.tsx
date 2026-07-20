@@ -8,12 +8,13 @@ import { CommandPalette } from "./CommandPalette";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { TaskNotificationWatcher } from "./TaskNotificationWatcher";
 import { Button, Dialog } from "./ui";
-import { APP_SETTINGS_STORAGE_KEY, getRuntimeSettings, setRuntimeSettings, stringifyAppSettings } from "../lib/app-settings";
+import { GLOBAL_SETTINGS_ACCOUNT_ID, getRuntimeSettings, saveAccountSettings, setRuntimeSettings } from "../lib/app-settings";
 import { useAppUpdate } from "../lib/app-update-context";
 import { useCommitQueue } from "../lib/commit-queue-context";
 import { downloadStatusText } from "../lib/download-queue";
 import { formatDownloadProgress, useDownloadQueue } from "../lib/download-queue-context";
 import { browserRuntime } from "../lib/runtime";
+import { resolveSavedAccountId } from "../lib/saved-accounts";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useAuth } from "../lib/use-auth";
@@ -348,8 +349,11 @@ export function AppShell() {
         desktopClosePrompt: false,
         desktopCloseToTray: action === "tray",
       };
+      const accountId = auth.user
+        ? resolveSavedAccountId(auth.user.username ?? auth.user.name ?? "", auth.user)
+        : GLOBAL_SETTINGS_ACCOUNT_ID;
       setRuntimeSettings(nextSettings);
-      await browserRuntime.storage.set(APP_SETTINGS_STORAGE_KEY, stringifyAppSettings(nextSettings));
+      await saveAccountSettings(browserRuntime.storage, accountId, nextSettings);
       await browserRuntime.setDesktopClosePrompt(false);
       await browserRuntime.setDesktopCloseToTray(nextSettings.desktopCloseToTray);
     }

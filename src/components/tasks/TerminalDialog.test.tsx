@@ -5,6 +5,21 @@ import { browserRuntime } from "../../lib/runtime";
 import { ToastContext, type ToastContextValue } from "../../lib/use-toast";
 import { TerminalDialog } from "./TerminalDialog";
 
+vi.mock("../../lib/use-auth", () => ({
+  useAuth: () => ({
+    token: "Bearer test",
+    user: { username: "alice" },
+    ready: true,
+    restoringSession: false,
+    savedAccounts: [],
+    login: vi.fn(),
+    loginSaved: vi.fn(),
+    forgetSavedAccount: vi.fn(),
+    logout: vi.fn(),
+    refreshUser: vi.fn(),
+  }),
+}));
+
 const toast: ToastContextValue = {
   notify: vi.fn(),
   success: vi.fn(),

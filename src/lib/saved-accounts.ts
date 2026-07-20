@@ -1,5 +1,6 @@
 import type { UserInfo } from "./types";
 import type { RuntimeStorage } from "./types";
+import { migrateKeyToSecureStorage } from "./secure-storage";
 
 export const SAVED_ACCOUNTS_STORAGE_KEY = "easy-console.saved-accounts";
 const MAX_SAVED_ACCOUNTS = 5;
@@ -43,6 +44,14 @@ export function hasStoredPassword(account: Pick<SavedLoginAccount, "encryptedPas
   return Boolean(account.encryptedPassword);
 }
 
+/** Stable id used for saved accounts and per-account settings. */
+export function resolveSavedAccountId(username: string, user?: UserInfo | null) {
+  const trimmedUsername = username.trim();
+  const userId = user?.id === undefined || user.id === null ? "" : String(user.id);
+  const displayName = asString(user?.username) || asString(user?.name) || trimmedUsername;
+  return normalizeId(userId || trimmedUsername || displayName);
+}
+
 export function createSavedLoginAccount({
   username,
   token,
@@ -51,9 +60,8 @@ export function createSavedLoginAccount({
   encryptedPassword,
 }: SavedLoginAccountInput): SavedLoginAccount {
   const trimmedUsername = username.trim();
-  const userId = user?.id === undefined || user.id === null ? "" : String(user.id);
   const displayName = asString(user?.username) || asString(user?.name) || trimmedUsername;
-  const id = normalizeId(userId || trimmedUsername || displayName);
+  const id = resolveSavedAccountId(trimmedUsername, user);
   const trimmedEncryptedPassword = typeof encryptedPassword === "string" ? encryptedPassword.trim() : "";
 
   return {
@@ -117,20 +125,17 @@ export function removeSavedAccount(accounts: SavedLoginAccount[], accountId: str
 }
 
 /**
- * Migrate saved accounts from plaintext storage to secure storage. Idempotent:
- * if the data already exists in secure storage or the plaintext source is
- * empty, it is a no-op. On success the plaintext copy is removed.
+ * Migrate saved accounts from plaintext storage into secure storage when the
+ * secure path does not already have them.
+ *
+ * Intentionally does **not** delete the plaintext copy. On Windows, secure
+ * storage often falls back to the same plaintext backend when Credential
+ * Manager rejects large blobs; deleting plaintext after a "successful" fallback
+ * write used to wipe the only copy on every restart.
  */
 export async function migrateSavedAccountsToSecureStorage(
   plaintext: RuntimeStorage,
   secure: RuntimeStorage,
 ): Promise<void> {
-  const existing = await secure.get(SAVED_ACCOUNTS_STORAGE_KEY);
-  if (existing) return;
-
-  const raw = await plaintext.get(SAVED_ACCOUNTS_STORAGE_KEY);
-  if (!raw) return;
-
-  await secure.set(SAVED_ACCOUNTS_STORAGE_KEY, raw);
-  await plaintext.remove(SAVED_ACCOUNTS_STORAGE_KEY);
+  await migrateKeyToSecureStorage(plaintext, secure, SAVED_ACCOUNTS_STORAGE_KEY);
 }

@@ -1,3 +1,16 @@
+# EasyConsole v0.4.5
+
+Per-account settings with SSH default password, plus more reliable secure storage and session restore.
+
+## Changes
+
+- **Per-account settings**: App settings are stored independently per signed-in account. Switching accounts loads that account's runtime URLs, notifications, and SSH preferences.
+- **SSH default password**: Settings gains a default password field. When the API omits SSH credentials, the app uses the account setting, then falls back to the login username.
+- **Secure storage layering**: Keychain reads now consult the local fallback when the OS keychain returns empty (fixes Windows Credential Manager blob-size fallback losing saved accounts). Migration no longer deletes the plaintext copy after a fallback write.
+- **Session restore UX**: Startup shows a restore spinner while remembered sessions / passwords are being restored, instead of flashing the login form.
+
+---
+
 # EasyConsole v0.4.4
 
 Harden in-app SSH: fix Windows pop-out deadlock, event races, and credential/host-key edge cases.

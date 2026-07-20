@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const authMock = vi.hoisted(() => ({
   token: null as string | null,
   ready: true,
+  restoringSession: false,
   savedAccounts: [] as Array<{ id: string; username: string; token: string }>,
   login: vi.fn(),
   loginSaved: vi.fn(),

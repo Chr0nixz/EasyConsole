@@ -16,6 +16,8 @@ export type { PortForwardRule, PortForwardType, SshCustomColors } from "./types"
 
 export type SshSettings = {
   defaultUsername: string;
+  /** When empty, SSH falls back to the console login username. */
+  defaultPassword: string;
   defaultPort: number;
   defaultCols: number;
   defaultRows: number;
@@ -60,6 +62,16 @@ export type NotificationPreferences = Record<ImportantNotificationEvent, Notific
 
 export const APP_SETTINGS_STORAGE_KEY = "easy-console.settings";
 
+/** Pre-login / shared seed settings (login page and first-time account bootstrap). */
+export const GLOBAL_SETTINGS_ACCOUNT_ID = "__global__";
+
+export const ACCOUNT_SETTINGS_STORE_VERSION = 2 as const;
+
+export type AccountSettingsStore = {
+  version: typeof ACCOUNT_SETTINGS_STORE_VERSION;
+  byAccount: Record<string, AppSettings>;
+};
+
 export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
   "task.success": "system",
   "task.failure": "system",
@@ -102,6 +114,7 @@ export const SSH_FONT_PRESETS: Array<{ id: string; label: string; value: string 
 
 export const DEFAULT_SSH_SETTINGS: SshSettings = {
   defaultUsername: "ubuntu",
+  defaultPassword: "",
   defaultPort: 22,
   defaultCols: 120,
   defaultRows: 32,
@@ -179,6 +192,11 @@ function normalizeString(value: unknown, fallback: string) {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+/** Preserves empty string (used for optional secrets like default SSH password). */
+function normalizeOptionalString(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
 function normalizeSshTerminalTheme(value: unknown): SshTerminalTheme {
   return value === "dark" || value === "light" || value === "hacker" || value === "custom" ? value : "dark";
 }
@@ -252,6 +270,7 @@ function normalizeSshSettings(value: unknown): SshSettings {
   const defaults = DEFAULT_SSH_SETTINGS;
   return {
     defaultUsername: normalizeString(raw.defaultUsername, defaults.defaultUsername),
+    defaultPassword: normalizeOptionalString(raw.defaultPassword, defaults.defaultPassword),
     defaultPort: normalizePositiveInteger(raw.defaultPort, defaults.defaultPort),
     defaultCols: normalizePositiveInteger(raw.defaultCols, defaults.defaultCols),
     defaultRows: normalizePositiveInteger(raw.defaultRows, defaults.defaultRows),
@@ -305,10 +324,136 @@ export function stringifyAppSettings(settings: Partial<AppSettings>) {
   return JSON.stringify(normalizeAppSettings(settings));
 }
 
+function isAccountSettingsStore(value: unknown): value is AccountSettingsStore {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return record.version === ACCOUNT_SETTINGS_STORE_VERSION && record.byAccount !== null && typeof record.byAccount === "object";
+}
+
+function isLegacyFlatAppSettings(value: unknown): value is Partial<AppSettings> {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.apiBaseUrl === "string" || typeof record.monitorDashboardUrl === "string" || record.ssh !== undefined;
+}
+
+export function createEmptyAccountSettingsStore(): AccountSettingsStore {
+  return { version: ACCOUNT_SETTINGS_STORE_VERSION, byAccount: {} };
+}
+
+export function parseAccountSettingsStore(raw: string | null): AccountSettingsStore {
+  if (!raw) return createEmptyAccountSettingsStore();
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (isAccountSettingsStore(parsed)) {
+      const byAccount: Record<string, AppSettings> = {};
+      for (const [accountId, settings] of Object.entries(parsed.byAccount)) {
+        if (!accountId.trim()) continue;
+        byAccount[accountId] = normalizeAppSettings(settings as Partial<AppSettings>);
+      }
+      return { version: ACCOUNT_SETTINGS_STORE_VERSION, byAccount };
+    }
+    if (isLegacyFlatAppSettings(parsed)) {
+      return {
+        version: ACCOUNT_SETTINGS_STORE_VERSION,
+        byAccount: {
+          [GLOBAL_SETTINGS_ACCOUNT_ID]: normalizeAppSettings(parsed),
+        },
+      };
+    }
+    return createEmptyAccountSettingsStore();
+  } catch {
+    return createEmptyAccountSettingsStore();
+  }
+}
+
+export function stringifyAccountSettingsStore(store: AccountSettingsStore) {
+  const byAccount: Record<string, AppSettings> = {};
+  for (const [accountId, settings] of Object.entries(store.byAccount)) {
+    if (!accountId.trim()) continue;
+    byAccount[accountId] = normalizeAppSettings(settings);
+  }
+  return JSON.stringify({ version: ACCOUNT_SETTINGS_STORE_VERSION, byAccount } satisfies AccountSettingsStore);
+}
+
+export function getAccountAppSettings(store: AccountSettingsStore, accountId: string): AppSettings {
+  const id = accountId.trim() || GLOBAL_SETTINGS_ACCOUNT_ID;
+  const own = store.byAccount[id];
+  if (own) return normalizeAppSettings(own);
+  if (id !== GLOBAL_SETTINGS_ACCOUNT_ID) {
+    const global = store.byAccount[GLOBAL_SETTINGS_ACCOUNT_ID];
+    if (global) return normalizeAppSettings(global);
+  }
+  return DEFAULT_APP_SETTINGS;
+}
+
+export function upsertAccountAppSettings(
+  store: AccountSettingsStore,
+  accountId: string,
+  settings: Partial<AppSettings>,
+): AccountSettingsStore {
+  const id = accountId.trim() || GLOBAL_SETTINGS_ACCOUNT_ID;
+  return {
+    version: ACCOUNT_SETTINGS_STORE_VERSION,
+    byAccount: {
+      ...store.byAccount,
+      [id]: normalizeAppSettings(settings),
+    },
+  };
+}
+
+export function removeAccountAppSettings(store: AccountSettingsStore, accountId: string): AccountSettingsStore {
+  const id = accountId.trim();
+  if (!id || !(id in store.byAccount)) return store;
+  const byAccount = { ...store.byAccount };
+  delete byAccount[id];
+  return { version: ACCOUNT_SETTINGS_STORE_VERSION, byAccount };
+}
+
+export function resetAccountAppSettings(store: AccountSettingsStore, accountId: string): AccountSettingsStore {
+  const id = accountId.trim() || GLOBAL_SETTINGS_ACCOUNT_ID;
+  return upsertAccountAppSettings(store, id, DEFAULT_APP_SETTINGS);
+}
+
 export function setRuntimeSettings(settings: Partial<AppSettings>) {
   runtimeSettings = normalizeAppSettings(settings);
 }
 
 export function getRuntimeSettings() {
   return runtimeSettings;
+}
+
+type SettingsStorage = {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  remove?(key: string): Promise<void>;
+};
+
+export async function readAccountSettingsStore(storage: Pick<SettingsStorage, "get">) {
+  return parseAccountSettingsStore(await storage.get(APP_SETTINGS_STORAGE_KEY));
+}
+
+export async function writeAccountSettingsStore(storage: Pick<SettingsStorage, "set">, store: AccountSettingsStore) {
+  await storage.set(APP_SETTINGS_STORAGE_KEY, stringifyAccountSettingsStore(store));
+}
+
+export async function loadAccountSettings(storage: Pick<SettingsStorage, "get">, accountId: string) {
+  const store = await readAccountSettingsStore(storage);
+  return getAccountAppSettings(store, accountId);
+}
+
+export async function saveAccountSettings(
+  storage: Pick<SettingsStorage, "get" | "set">,
+  accountId: string,
+  settings: Partial<AppSettings>,
+) {
+  const store = await readAccountSettingsStore(storage);
+  const next = upsertAccountAppSettings(store, accountId, settings);
+  await writeAccountSettingsStore(storage, next);
+  return getAccountAppSettings(next, accountId);
+}
+
+export async function deleteAccountSettings(storage: Pick<SettingsStorage, "get" | "set">, accountId: string) {
+  const store = await readAccountSettingsStore(storage);
+  const next = removeAccountAppSettings(store, accountId);
+  await writeAccountSettingsStore(storage, next);
 }

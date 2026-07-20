@@ -45,7 +45,7 @@ export function LoginPage() {
   const hasSavedAccounts = auth.savedAccounts.length > 0;
   const showSavedAccounts = hasSavedAccounts && !showPasswordForm;
 
-  if (!auth.ready) return <LoadingState label={t("login.restoreSession")} />;
+  if (!auth.ready || auth.restoringSession) return <LoadingState label={t("login.restoreSession")} />;
   if (auth.token) return <Navigate to="/dashboard" replace />;
 
   function navigateAfterLogin() {

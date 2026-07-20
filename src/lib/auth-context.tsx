@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { apiClient, authApi } from "./api";
-import { APP_SETTINGS_STORAGE_KEY, parseAppSettings, setRuntimeSettings } from "./app-settings";
+import {
+  APP_SETTINGS_STORAGE_KEY,
+  GLOBAL_SETTINGS_ACCOUNT_ID,
+  deleteAccountSettings,
+  getAccountAppSettings,
+  loadAccountSettings,
+  parseAccountSettingsStore,
+  readAccountSettingsStore,
+  removeAccountAppSettings,
+  setRuntimeSettings,
+  upsertAccountAppSettings,
+  writeAccountSettingsStore,
+} from "./app-settings";
 import { AuthContext, type LoginOptions } from "./auth-state";
 import { TOKEN_STORAGE_KEY, UNAUTHORIZED_EVENT } from "./api-client";
 import { i18nText } from "./i18n-text";
@@ -18,6 +30,7 @@ import {
   type SavedLoginAccount,
   upsertSavedAccount,
 } from "./saved-accounts";
+import { migrateKeyToSecureStorage } from "./secure-storage";
 import type { UserInfo } from "./types";
 
 function writeAuthLog(input: Omit<RunLogInput, "channel" | "source">) {
@@ -28,33 +41,32 @@ function writeAuthLog(input: Omit<RunLogInput, "channel" | "source">) {
   }).catch((error) => console.warn("Failed to write auth run log.", error));
 }
 
-/**
- * Migrate a single key from plaintext storage to secure storage. Idempotent.
- */
-async function migrateKeyToSecureStorage(key: string) {
-  const existing = await browserRuntime.secureStorage.get(key);
-  if (existing) return;
-  const raw = await browserRuntime.storage.get(key);
-  if (!raw) return;
-  await browserRuntime.secureStorage.set(key, raw);
-  await browserRuntime.storage.remove(key);
+async function applyAccountRuntimeSettings(accountId: string) {
+  const settings = await loadAccountSettings(browserRuntime.storage, accountId);
+  setRuntimeSettings(settings);
+  apiClient.setBaseUrl(settings.apiBaseUrl);
+  void browserRuntime.setDesktopCloseToTray(settings.desktopCloseToTray);
+  void browserRuntime.setDesktopClosePrompt(settings.desktopClosePrompt);
+  return settings;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [ready, setReady] = useState(false);
+  const [restoringSession, setRestoringSession] = useState(true);
   const [savedAccounts, setSavedAccounts] = useState<SavedLoginAccount[]>([]);
   const savedAccountsRef = useRef<SavedLoginAccount[]>([]);
   const refreshAttemptedRef = useRef(false);
   const loginSavedRef = useRef<((accountId: string) => Promise<void>) | null>(null);
   const reloginInProgressRef = useRef(false);
+  const sessionRestoreStartedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     // Migrate any plaintext token/savedAccounts from older versions into secure storage.
     Promise.all([
-      migrateKeyToSecureStorage(TOKEN_STORAGE_KEY),
+      migrateKeyToSecureStorage(browserRuntime.storage, browserRuntime.secureStorage, TOKEN_STORAGE_KEY),
       migrateSavedAccountsToSecureStorage(browserRuntime.storage, browserRuntime.secureStorage),
     ])
       .then(() =>
@@ -67,15 +79,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then(
         ([settingsData, savedToken, savedAccountData]) => {
           if (cancelled) return;
-          const settings = parseAppSettings(settingsData);
+          const store = parseAccountSettingsStore(settingsData);
+          const parsedAccounts = parseSavedAccounts(savedAccountData);
+          const bootAccountId = parsedAccounts[0]?.id ?? GLOBAL_SETTINGS_ACCOUNT_ID;
+          const settings = getAccountAppSettings(store, bootAccountId);
           setRuntimeSettings(settings);
           apiClient.setBaseUrl(settings.apiBaseUrl);
-          const parsedAccounts = parseSavedAccounts(savedAccountData);
+          void browserRuntime.setDesktopCloseToTray(settings.desktopCloseToTray);
+          void browserRuntime.setDesktopClosePrompt(settings.desktopClosePrompt);
           savedAccountsRef.current = parsedAccounts;
           setSavedAccounts(parsedAccounts);
           setToken(savedToken);
           apiClient.setToken(savedToken);
           setReady(true);
+          // If there is nothing to restore, stop showing the restore spinner.
+          if (!savedToken && !parsedAccounts.some((account) => account.encryptedPassword)) {
+            setRestoringSession(false);
+          }
         },
         (error) => {
           if (cancelled) return;
@@ -88,45 +108,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             error: error instanceof Error ? error.message : String(error),
           });
           setReady(true);
+          setRestoringSession(false);
         },
       );
     return () => {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    if (!ready || !token || user) return;
-    let cancelled = false;
-    authApi
-      .userInfo()
-      .then((next) => {
-        if (cancelled) return;
-        setUser(next);
-      })
-      .catch(async () => {
-        if (cancelled) return;
-        // Token expired or rejected. Try to silently re-login with the most
-        // recent saved account that has a stored password before kicking the
-        // user back to the login page.
-        const account = savedAccountsRef.current[0];
-        if (account?.encryptedPassword && loginSavedRef.current) {
-          try {
-            await loginSavedRef.current(account.id);
-            return; // loginSaved sets token and user on success
-          } catch {
-            if (cancelled) return;
-            // Fall through to clear token
-          }
-        }
-        void browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
-        apiClient.setToken(null);
-        setToken(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [ready, token, user]);
 
   const refreshUser = useCallback(async () => {
     const next = await authApi.userInfo();
@@ -156,8 +144,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         encryptedPassword: encryptedPassword || undefined,
       });
       await persistSavedAccounts(upsertSavedAccount(savedAccountsRef.current, nextAccount));
+      await applyAccountRuntimeSettings(nextAccount.id);
       setToken(result.token);
       setUser(next);
+      setRestoringSession(false);
       writeAuthLog({
         level: "info",
         action: "auth.login",
@@ -188,6 +178,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const startedAt = Date.now();
       const account = savedAccountsRef.current.find((item) => item.id === accountId);
       if (!account) throw new Error(i18nText("保存的账号不存在", "Saved account does not exist"));
+
+      // Apply this account's settings (including API base URL) before auth calls.
+      await applyAccountRuntimeSettings(accountId);
 
       apiClient.setToken(account.token);
       await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, account.token);
@@ -270,8 +263,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         encryptedPassword: nextEncryptedPassword,
       });
       await persistSavedAccounts(upsertSavedAccount(savedAccountsRef.current, nextAccount));
+      // Account id can change when userinfo returns a backend id for the first time.
+      if (nextAccount.id !== accountId) {
+        const store = await readAccountSettingsStore(browserRuntime.storage);
+        const previous = store.byAccount[accountId];
+        let nextStore = store;
+        if (previous && !store.byAccount[nextAccount.id]) {
+          nextStore = upsertAccountAppSettings(nextStore, nextAccount.id, previous);
+        }
+        nextStore = removeAccountAppSettings(nextStore, accountId);
+        await writeAccountSettingsStore(browserRuntime.storage, nextStore);
+        await applyAccountRuntimeSettings(nextAccount.id);
+      }
       setToken(activeToken);
       setUser(next);
+      setRestoringSession(false);
       writeAuthLog({
         level: "info",
         action: "auth.loginSaved",
@@ -291,8 +297,73 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loginSavedRef.current = loginSaved;
   }, [loginSaved]);
 
+  useEffect(() => {
+    if (!ready || user || sessionRestoreStartedRef.current) return;
+    const hasRememberedPassword = savedAccountsRef.current.some((account) => account.encryptedPassword);
+    if (!token && !hasRememberedPassword) {
+      setRestoringSession(false);
+      return;
+    }
+    // Wait until loginSaved is wired; otherwise the first ready tick can miss silent restore.
+    if (!loginSavedRef.current) return;
+
+    sessionRestoreStartedRef.current = true;
+    let cancelled = false;
+
+    async function restoreSession() {
+      setRestoringSession(true);
+      try {
+        if (token) {
+          try {
+            const next = await authApi.userInfo();
+            if (cancelled) return;
+            setUser(next);
+            return;
+          } catch {
+            if (cancelled) return;
+            // Token expired or rejected. Try silent re-login with a stored password.
+            const account =
+              savedAccountsRef.current.find((item) => item.encryptedPassword) ?? savedAccountsRef.current[0];
+            if (account?.encryptedPassword && loginSavedRef.current) {
+              try {
+                await loginSavedRef.current(account.id);
+                return;
+              } catch {
+                if (cancelled) return;
+              }
+            }
+            void browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
+            apiClient.setToken(null);
+            setToken(null);
+            return;
+          }
+        }
+
+        // No persisted token, but a remembered password is available.
+        const account = savedAccountsRef.current.find((item) => item.encryptedPassword);
+        if (account && loginSavedRef.current) {
+          try {
+            await loginSavedRef.current(account.id);
+          } catch {
+            // Stay on the login page; saved accounts remain available for one-click retry.
+          }
+        }
+      } finally {
+        if (!cancelled) setRestoringSession(false);
+      }
+    }
+
+    void restoreSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, token, user, loginSaved]);
+
   const forgetSavedAccount = useCallback(async (accountId: string) => {
     await persistSavedAccounts(removeSavedAccount(savedAccountsRef.current, accountId));
+    await deleteAccountSettings(browserRuntime.storage, accountId).catch((error) => {
+      console.warn("Failed to remove per-account settings.", error);
+    });
   }, [persistSavedAccounts]);
 
   const logout = useCallback(async () => {
@@ -301,6 +372,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
     setToken(null);
     setUser(null);
+    setRestoringSession(false);
+    await applyAccountRuntimeSettings(GLOBAL_SETTINGS_ACCOUNT_ID).catch((error) => {
+      console.warn("Failed to restore global settings after logout.", error);
+    });
     writeAuthLog({
       level: "info",
       action: "auth.logout",
@@ -369,8 +444,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [logout]);
 
   const value = useMemo(
-    () => ({ token, user, ready, savedAccounts, login, loginSaved, forgetSavedAccount, logout, refreshUser }),
-    [token, user, ready, savedAccounts, login, loginSaved, forgetSavedAccount, logout, refreshUser],
+    () => ({ token, user, ready, restoringSession, savedAccounts, login, loginSaved, forgetSavedAccount, logout, refreshUser }),
+    [token, user, ready, restoringSession, savedAccounts, login, loginSaved, forgetSavedAccount, logout, refreshUser],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
