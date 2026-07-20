@@ -42,6 +42,7 @@ export type Task = UnknownRecord & {
   cpu?: number;
   gpu?: number;
   memory?: number;
+  price?: string | number;
   ip?: string;
   host?: string;
   hostname?: string;
@@ -241,6 +242,7 @@ export type TaskTemplate = {
   taskNamePrefix: string;
   batchCount: number;
   imageId: string;
+  price?: string | number;
   cpu: number;
   gpu: number;
   memory: number;
@@ -380,6 +382,7 @@ export type RuntimeTransport = {
   listKnownHosts(): Promise<KnownHostEntry[]>;
   removeKnownHost(hostPort: string): Promise<void>;
   clearKnownHosts(): Promise<void>;
+  confirmKnownHost(promptId: string, accept: boolean): Promise<void>;
   openSystemSshTerminal(request: SshConnectionRequest): Promise<void>;
   openVscodeSsh(request: SshConnectionRequest): Promise<void>;
   openSshWindow(request: SshConnectionRequest): Promise<void>;
@@ -464,9 +467,16 @@ export type SshConnectionRequest = {
 
 export type SshSessionEvent = {
   sessionId: string;
-  kind: "status" | "output" | "error" | "closed" | "sftp-progress" | "port-forward-status";
+  kind: "status" | "output" | "error" | "closed" | "sftp-progress" | "port-forward-status" | "host-key-prompt";
   data?: string;
   message?: string;
+};
+
+export type SshHostKeyPrompt = {
+  promptId: string;
+  host: string;
+  port: number;
+  fingerprint: string;
 };
 
 export type KnownHostEntry = {

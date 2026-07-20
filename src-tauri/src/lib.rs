@@ -27,6 +27,7 @@ use {
 };
 
 const SSH_SESSION_EVENT: &str = "ssh-session-event";
+const HOST_KEY_PROMPT_TIMEOUT_SECS: u64 = 120;
 #[cfg(desktop)]
 const DESKTOP_RUN_DUE_EVENT: &str = "desktop-run-due-scheduled-tasks";
 #[cfg(desktop)]
@@ -188,9 +189,33 @@ struct DesktopRuntimeState {
 #[derive(Clone)]
 struct EasyConsoleSshClient {
     app: AppHandle,
+    session_id: String,
     host: String,
     port: u16,
     host_key_error: Arc<Mutex<Option<String>>>,
+    /// When false, unknown hosts are rejected without prompting (e.g. VS Code setup).
+    allow_host_key_prompt: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HostKeyDecision {
+    Match,
+    Unknown { fingerprint: String },
+    Mismatch { fingerprint: String },
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostKeyPromptPayload {
+    prompt_id: String,
+    host: String,
+    port: u16,
+    fingerprint: String,
+}
+
+fn pending_host_key_prompts() -> &'static Mutex<HashMap<String, oneshot::Sender<bool>>> {
+    static CELL: OnceLock<Mutex<HashMap<String, oneshot::Sender<bool>>>> = OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 impl client::Handler for EasyConsoleSshClient {
@@ -200,9 +225,9 @@ impl client::Handler for EasyConsoleSshClient {
         &mut self,
         server_public_key: &ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        match verify_known_host(&self.app, &self.host, self.port, server_public_key) {
-            Ok(true) => Ok(true),
-            Ok(false) => {
+        match evaluate_known_host(&self.app, &self.host, self.port, server_public_key) {
+            Ok(HostKeyDecision::Match) => Ok(true),
+            Ok(HostKeyDecision::Mismatch { .. }) => {
                 if let Ok(mut guard) = self.host_key_error.lock() {
                     *guard = Some(format!(
                         "SSH 主机密钥与已知记录不符（{}:{}）。如确认主机已更换密钥，请在设置中删除该 known host 后重试。",
@@ -210,6 +235,80 @@ impl client::Handler for EasyConsoleSshClient {
                     ));
                 }
                 Ok(false)
+            }
+            Ok(HostKeyDecision::Unknown { fingerprint }) => {
+                if !self.allow_host_key_prompt {
+                    if let Ok(mut guard) = self.host_key_error.lock() {
+                        *guard = Some(format!(
+                            "尚未信任 SSH 主机 {}:{}。请先通过应用内 SSH 确认指纹后再重试。",
+                            self.host, self.port
+                        ));
+                    }
+                    return Ok(false);
+                }
+                let prompt_id = Uuid::new_v4().to_string();
+                let (tx, rx) = oneshot::channel();
+                if let Ok(mut pending) = pending_host_key_prompts().lock() {
+                    pending.insert(prompt_id.clone(), tx);
+                } else {
+                    if let Ok(mut guard) = self.host_key_error.lock() {
+                        *guard = Some("无法等待主机密钥确认：内部状态已损坏".to_string());
+                    }
+                    return Ok(false);
+                }
+
+                let payload = HostKeyPromptPayload {
+                    prompt_id: prompt_id.clone(),
+                    host: self.host.clone(),
+                    port: self.port,
+                    fingerprint: fingerprint.clone(),
+                };
+                let data = serde_json::to_string(&payload).ok();
+                emit_session_event(
+                    &self.app,
+                    &self.session_id,
+                    "host-key-prompt",
+                    data,
+                    Some(format!(
+                        "首次连接 {}:{}，请确认主机指纹后继续。",
+                        self.host, self.port
+                    )),
+                );
+
+                let accepted = match tokio::time::timeout(
+                    Duration::from_secs(HOST_KEY_PROMPT_TIMEOUT_SECS),
+                    rx,
+                )
+                .await
+                {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(_)) => false,
+                    Err(_) => {
+                        if let Ok(mut pending) = pending_host_key_prompts().lock() {
+                            pending.remove(&prompt_id);
+                        }
+                        false
+                    }
+                };
+
+                if !accepted {
+                    if let Ok(mut guard) = self.host_key_error.lock() {
+                        *guard = Some(format!(
+                            "已拒绝或超时未确认 SSH 主机密钥（{}:{}）。",
+                            self.host, self.port
+                        ));
+                    }
+                    return Ok(false);
+                }
+
+                if let Err(message) = persist_known_host(&self.app, &self.host, self.port, &fingerprint)
+                {
+                    if let Ok(mut guard) = self.host_key_error.lock() {
+                        *guard = Some(format!("无法保存 SSH 主机密钥：{message}"));
+                    }
+                    return Ok(false);
+                }
+                Ok(true)
             }
             Err(message) => {
                 if let Ok(mut guard) = self.host_key_error.lock() {
@@ -243,40 +342,73 @@ fn load_string_map(path: &Path) -> Result<HashMap<String, String>, String> {
 
 fn write_string_map(path: &Path, data: &HashMap<String, String>) -> Result<(), String> {
     let text = serde_json::to_string_pretty(data).map_err(|error| format!("本地数据序列化失败：{error}"))?;
-    fs::write(path, text).map_err(|error| format!("无法写入本地数据：{error}"))
+    let parent = path
+        .parent()
+        .ok_or_else(|| "无法定位本地数据目录".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "无法定位本地数据文件名".to_string())?;
+    let tmp_path = parent.join(format!("{file_name}.tmp"));
+    let bak_path = parent.join(format!("{file_name}.bak"));
+
+    fs::write(&tmp_path, &text).map_err(|error| format!("无法写入本地数据临时文件：{error}"))?;
+
+    if path.exists() {
+        let _ = fs::remove_file(&bak_path);
+        fs::rename(path, &bak_path).map_err(|error| format!("无法备份本地数据：{error}"))?;
+    }
+
+    match fs::rename(&tmp_path, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if bak_path.exists() {
+                let _ = fs::rename(&bak_path, path);
+            }
+            let _ = fs::remove_file(&tmp_path);
+            Err(format!("无法提交本地数据写入：{error}"))
+        }
+    }
 }
 
 fn known_host_key(host: &str, port: u16) -> String {
     format!("{host}:{port}")
 }
 
-fn trust_on_first_use(
-    known_hosts: &mut HashMap<String, String>,
-    key: String,
-    fingerprint: String,
-) -> bool {
-    if let Some(known_fingerprint) = known_hosts.get(&key) {
-        return known_fingerprint == &fingerprint;
+fn evaluate_host_key(
+    known_hosts: &HashMap<String, String>,
+    key: &str,
+    fingerprint: &str,
+) -> HostKeyDecision {
+    match known_hosts.get(key) {
+        Some(known_fingerprint) if known_fingerprint == fingerprint => HostKeyDecision::Match,
+        Some(_) => HostKeyDecision::Mismatch {
+            fingerprint: fingerprint.to_string(),
+        },
+        None => HostKeyDecision::Unknown {
+            fingerprint: fingerprint.to_string(),
+        },
     }
-    known_hosts.insert(key, fingerprint);
-    true
 }
 
-fn verify_known_host(
+fn evaluate_known_host(
     app: &AppHandle,
     host: &str,
     port: u16,
     server_public_key: &ssh_key::PublicKey,
-) -> Result<bool, String> {
+) -> Result<HostKeyDecision, String> {
     let fingerprint = server_public_key.fingerprint(HashAlg::Sha256).to_string();
     let path = app_data_file(app, "known-ssh-hosts.json")?;
-    let mut known_hosts = load_string_map(&path)?;
+    let known_hosts = load_string_map(&path)?;
     let key = known_host_key(host, port);
-    let trusted = trust_on_first_use(&mut known_hosts, key, fingerprint);
-    if trusted {
-        write_string_map(&path, &known_hosts)?;
-    }
-    Ok(trusted)
+    Ok(evaluate_host_key(&known_hosts, &key, &fingerprint))
+}
+
+fn persist_known_host(app: &AppHandle, host: &str, port: u16, fingerprint: &str) -> Result<(), String> {
+    let path = app_data_file(app, "known-ssh-hosts.json")?;
+    let mut known_hosts = load_string_map(&path)?;
+    known_hosts.insert(known_host_key(host, port), fingerprint.to_string());
+    write_string_map(&path, &known_hosts)
 }
 
 fn emit_session_event(
@@ -774,9 +906,11 @@ async fn install_vscode_public_key(
     let host_key_error = Arc::new(Mutex::new(None));
     let handler = EasyConsoleSshClient {
         app: app.clone(),
+        session_id: "vscode-setup".to_string(),
         host: host.clone(),
         port,
         host_key_error: Arc::clone(&host_key_error),
+        allow_host_key_prompt: false,
     };
     let mut session = tokio::time::timeout(
         Duration::from_secs(15),
@@ -1021,9 +1155,11 @@ async fn run_russh_session(
     let host_key_error = Arc::new(Mutex::new(None));
     let handler = EasyConsoleSshClient {
         app: app.clone(),
+        session_id: session_id.clone(),
         host: host.clone(),
         port,
         host_key_error: Arc::clone(&host_key_error),
+        allow_host_key_prompt: true,
     };
     let mut session = tokio::time::timeout(
         connect_timeout,
@@ -2050,6 +2186,18 @@ fn list_known_hosts(app: AppHandle) -> Result<Vec<KnownHostEntry>, String> {
 }
 
 #[tauri::command]
+fn confirm_known_host(prompt_id: String, accept: bool) -> Result<(), String> {
+    let sender = pending_host_key_prompts()
+        .lock()
+        .map_err(|_| "无法确认主机密钥：内部状态已损坏".to_string())?
+        .remove(&prompt_id)
+        .ok_or_else(|| "主机密钥确认请求已失效或超时".to_string())?;
+    sender
+        .send(accept)
+        .map_err(|_| "主机密钥确认通道已关闭".to_string())
+}
+
+#[tauri::command]
 fn remove_known_host(app: AppHandle, host_port: String) -> Result<(), String> {
     let path = app_data_file(&app, "known-ssh-hosts.json")?;
     let mut known_hosts = load_string_map(&path)?;
@@ -2396,6 +2544,7 @@ pub fn run() {
         #[cfg(desktop)]
         get_ssh_window_request,
         list_known_hosts,
+        confirm_known_host,
         remove_known_host,
         clear_known_hosts,
         list_ssh_history,
@@ -2501,13 +2650,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trust_on_first_use_records_and_rejects_changed_fingerprint() {
+    fn known_host_key_uses_host_port() {
+        assert_eq!(known_host_key("example.com", 22), "example.com:22");
+        assert_eq!(known_host_key("127.0.0.1", 2222), "127.0.0.1:2222");
+    }
+
+    #[test]
+    fn evaluate_host_key_distinguishes_unknown_match_and_mismatch() {
         let mut known_hosts = HashMap::new();
         let key = known_host_key("example.com", 22);
 
-        assert!(trust_on_first_use(&mut known_hosts, key.clone(), "SHA256:first".to_string()));
-        assert!(trust_on_first_use(&mut known_hosts, key.clone(), "SHA256:first".to_string()));
-        assert!(!trust_on_first_use(&mut known_hosts, key, "SHA256:changed".to_string()));
+        assert_eq!(
+            evaluate_host_key(&known_hosts, &key, "SHA256:first"),
+            HostKeyDecision::Unknown {
+                fingerprint: "SHA256:first".to_string()
+            }
+        );
+
+        known_hosts.insert(key.clone(), "SHA256:first".to_string());
+        assert_eq!(
+            evaluate_host_key(&known_hosts, &key, "SHA256:first"),
+            HostKeyDecision::Match
+        );
+        assert_eq!(
+            evaluate_host_key(&known_hosts, &key, "SHA256:changed"),
+            HostKeyDecision::Mismatch {
+                fingerprint: "SHA256:changed".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn evaluate_host_key_treats_empty_map_as_unknown() {
+        let known_hosts = HashMap::new();
+        assert_eq!(
+            evaluate_host_key(&known_hosts, "host:22", "SHA256:abc"),
+            HostKeyDecision::Unknown {
+                fingerprint: "SHA256:abc".to_string()
+            }
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import type { RuntimeStorage, UnknownRecord } from "./types";
+import { updateStorageValue } from "./storage-mutex";
 
 export const RUN_LOGS_STORAGE_KEY = "easy-console.runLogs";
 export const DEFAULT_RUN_LOG_LIMIT = 1000;
@@ -183,19 +184,23 @@ export async function loadRunLogs(storage: RuntimeStorage, options: RunLogStoreO
 
 export async function saveRunLogs(storage: RuntimeStorage, items: RunLogEntry[], options: RunLogStoreOptions = {}) {
   const pruned = pruneRunLogs(items, options);
-  await storage.set(RUN_LOGS_STORAGE_KEY, JSON.stringify(pruned));
+  await updateStorageValue(storage, RUN_LOGS_STORAGE_KEY, () => JSON.stringify(pruned));
   return pruned;
 }
 
 export async function appendRunLog(storage: RuntimeStorage, input: RunLogInput, options: RunLogStoreOptions = {}) {
-  const current = await loadRunLogs(storage, options);
-  const next = pruneRunLogs([createRunLogEntry(input, options), ...current], options);
-  await storage.set(RUN_LOGS_STORAGE_KEY, JSON.stringify(next));
-  return next[0];
+  let created: RunLogEntry | undefined;
+  await updateStorageValue(storage, RUN_LOGS_STORAGE_KEY, (raw) => {
+    const current = pruneRunLogs(parseRunLogs(raw), options);
+    const next = pruneRunLogs([createRunLogEntry(input, options), ...current], options);
+    created = next[0];
+    return JSON.stringify(next);
+  });
+  return created!;
 }
 
 export async function clearRunLogs(storage: RuntimeStorage) {
-  await storage.set(RUN_LOGS_STORAGE_KEY, JSON.stringify([]));
+  await updateStorageValue(storage, RUN_LOGS_STORAGE_KEY, () => JSON.stringify([]));
 }
 
 export function filterRunLogs(items: RunLogEntry[], filter: RunLogFilter = {}) {

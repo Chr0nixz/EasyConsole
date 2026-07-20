@@ -13,10 +13,16 @@ export type ImportantTaskStatusNotification = {
 };
 
 const SUCCESS_STATUS = 6;
-const FAILURE_STATUSES = new Set([7, 8]);
+/** Failed (7) and abnormal (8) — promote log access in the task action strip. */
+export const FAILURE_STATUSES = new Set([7, 8]);
 
 export function getTaskNotificationId(task: Pick<Task, "id" | "task_id">) {
   return String(task.task_id ?? task.id);
+}
+
+export function needsLogAttention(task: Pick<Task, "status">) {
+  const status = Number(task.status);
+  return Number.isFinite(status) && FAILURE_STATUSES.has(status);
 }
 
 export function getImportantTaskStatusNotification(

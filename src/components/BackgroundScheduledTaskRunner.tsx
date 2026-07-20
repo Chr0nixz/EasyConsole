@@ -5,7 +5,8 @@ import { instanceApi } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { appendRunLog } from "../lib/run-logs";
 import { browserRuntime } from "../lib/runtime";
-import { isScheduleDue, loadScheduledTasks, resetStaleRunningTasks, saveScheduledTasks, scheduleNextRun, sortScheduledTasks, updateScheduledTask } from "../lib/scheduled-tasks";
+import { isScheduleDue, mutateScheduledTasks, resetStaleRunningTasks, scheduleNextRun, sortScheduledTasks, updateScheduledTask } from "../lib/scheduled-tasks";
+import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import type { ScheduledTask } from "../lib/types";
 import { errorMessage } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
@@ -51,10 +52,8 @@ export function BackgroundScheduledTaskRunner() {
   useEffect(() => {
     let disposed = false;
 
-    async function persist(items: ScheduledTask[]) {
-      const sorted = sortScheduledTasks(items);
-      await saveScheduledTasks(browserRuntime.storage, sorted);
-      return sorted;
+    async function persistUpdate(updater: (items: ScheduledTask[]) => ScheduledTask[]) {
+      return mutateScheduledTasks(browserRuntime.storage, (current) => sortScheduledTasks(updater(current)));
     }
 
     async function executeDueTasks() {
@@ -62,22 +61,17 @@ export function BackgroundScheduledTaskRunner() {
       runningRef.current = true;
       try {
         // Reset tasks stuck in "running" (e.g. from a previous crash) before evaluating.
-        let items = resetStaleRunningTasks(sortScheduledTasks(await loadScheduledTasks(browserRuntime.storage)));
-        items = await persist(items);
+        const items = await persistUpdate((current) => resetStaleRunningTasks(current));
         const due = items.filter((item) => isScheduleDue(item));
         for (const task of due) {
           if (disposed) return;
-          items = await persist(updateScheduledTask(items, { ...task, status: "running", lastError: undefined }));
+          await persistUpdate((current) => updateScheduledTask(current, { ...task, status: "running", lastError: undefined }));
           try {
             await instanceApi.createTask(task.payload);
             const completedTask: ScheduledTask = { ...task, status: "done", lastRunAt: new Date().toISOString(), lastError: undefined };
             const nextTask = scheduleNextRun(completedTask);
-            if (nextTask) {
-              items = await persist(updateScheduledTask(items, nextTask));
-            } else {
-              items = await persist(updateScheduledTask(items, completedTask));
-            }
-            queryClient.invalidateQueries({ queryKey: ["tasks"] });
+            await persistUpdate((current) => updateScheduledTask(current, nextTask ?? completedTask));
+            invalidateTaskQueries(queryClient);
             toast.success(text("定时任务已执行", "Scheduled task executed"), task.name);
             void appendRunLog(browserRuntime.storage, {
               source: "scheduled-task",
@@ -90,7 +84,7 @@ export function BackgroundScheduledTaskRunner() {
               targetId: task.id,
             });
           } catch (error) {
-            items = await persist(updateScheduledTask(items, {
+            await persistUpdate((current) => updateScheduledTask(current, {
               ...task,
               status: "failed",
               lastRunAt: new Date().toISOString(),

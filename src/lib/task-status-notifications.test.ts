@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getImportantTaskStatusNotification } from "./task-status-notifications";
+import { getImportantTaskStatusNotification, needsLogAttention } from "./task-status-notifications";
 import type { Task } from "./types";
 
 describe("task status notifications", () => {
@@ -41,5 +41,11 @@ describe("task status notifications", () => {
   it("ignores unchanged and non-terminal status updates", () => {
     expect(getImportantTaskStatusNotification({ id: 1, name: "train", status: 2 } as Task, 1)).toBeNull();
     expect(getImportantTaskStatusNotification({ id: 1, name: "train", status: 6 } as Task, 6)).toBeNull();
+  });
+
+  it("marks failed and abnormal tasks as needing log attention", () => {
+    expect(needsLogAttention({ status: 7 })).toBe(true);
+    expect(needsLogAttention({ status: 8 })).toBe(true);
+    expect(needsLogAttention({ status: 2 })).toBe(false);
   });
 });

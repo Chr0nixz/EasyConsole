@@ -13,6 +13,11 @@ const SHORTCUTS: ShortcutItem[] = [
   { keys: "?", labelKey: "shell.shortcutsShortcuts" },
   { keys: "← / →", labelKey: "shell.shortcutsResize" },
   { keys: "Enter", labelKey: "shell.shortcutsReset" },
+  { keys: "j / k · ↑ / ↓", labelKey: "shell.shortcutsTaskMove" },
+  { keys: "Enter", labelKey: "shell.shortcutsTaskOpen" },
+  { keys: "l", labelKey: "shell.shortcutsTaskLog" },
+  { keys: "t", labelKey: "shell.shortcutsTaskTerminal" },
+  { keys: "r", labelKey: "shell.shortcutsTaskRelease" },
 ];
 
 export function ShortcutsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -22,7 +27,7 @@ export function ShortcutsDialog({ open, onClose }: { open: boolean; onClose: () 
       <div className="p-4">
         <ul className="space-y-2">
           {SHORTCUTS.map((item) => (
-            <li key={item.keys} className="flex items-center justify-between gap-3 text-sm">
+            <li key={item.labelKey} className="flex items-center justify-between gap-3 text-sm">
               <span className="text-app-text">{t(item.labelKey)}</span>
               <kbd className="shrink-0 rounded border border-app-border bg-app-panel px-2 py-0.5 font-mono text-xs text-app-muted">
                 {item.keys}

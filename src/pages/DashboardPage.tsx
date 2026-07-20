@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Activity, Clock, Coins, RefreshCw, Server, type LucideIcon } from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
@@ -195,7 +196,13 @@ export function DashboardPage() {
               {recentTasks.map((task) => (
                 <article key={String(task.id)} className="space-y-2 px-4 py-3">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-medium">{getTaskName(task)}</span>
+                    <Link
+                      to={`/tasks/${task.id}`}
+                      className="truncate font-medium text-app-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/40"
+                      aria-label={text(`查看实例 ${getTaskName(task)} 详情`, `View details for ${getTaskName(task)}`)}
+                    >
+                      {getTaskName(task)}
+                    </Link>
                     <StatusBadge status={task.status} />
                   </div>
                   <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
@@ -230,7 +237,15 @@ export function DashboardPage() {
                 <tbody>
                   {recentTasks.map((task) => (
                     <tr key={String(task.id)} className="border-t border-app-border">
-                      <td className="px-3 py-2 font-medium">{getTaskName(task)}</td>
+                      <td className="px-3 py-2 font-medium">
+                        <Link
+                          to={`/tasks/${task.id}`}
+                          className="text-app-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/40"
+                          aria-label={text(`查看实例 ${getTaskName(task)} 详情`, `View details for ${getTaskName(task)}`)}
+                        >
+                          {getTaskName(task)}
+                        </Link>
+                      </td>
                       <td className="px-3 py-2">
                         <StatusBadge status={task.status} />
                       </td>

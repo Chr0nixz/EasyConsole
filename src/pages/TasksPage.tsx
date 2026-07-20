@@ -7,12 +7,14 @@ import {
   type RowSelectionState,
   type VisibilityState,
 } from "@tanstack/react-table";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ActivitySquare,
   Braces,
-  Copy,
+  CopyPlus,
   Download,
   FileText,
+  KeyRound,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -27,13 +29,16 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { EmptyState, ErrorState, SearchXIcon, TableSkeleton } from "../components/DataState";
+import { needsLogAttention } from "../lib/task-status-notifications";
+
+import { EmptyState, ErrorState, LoadingState, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
+import { AppSshTerminalDialog } from "../components/tasks/AppSshTerminalDialog";
 import { TaskInstanceName } from "../components/tasks/TaskInstanceName";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
 import { instanceApi } from "../lib/api";
@@ -64,7 +69,9 @@ import {
   toTaskApiQuery,
   type TaskListQueryState,
 } from "../lib/task-list-query";
-import type { Task } from "../lib/types";
+import { resolveTaskTerminalAction, willOpenAppSshSession } from "../lib/task-terminal";
+import { invalidateTaskQueries, TASK_SNAPSHOT_QUERY_KEY } from "../lib/task-snapshot-query";
+import type { SshConnectionRequest, Task } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useAuth } from "../lib/use-auth";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
@@ -107,7 +114,11 @@ const columnLabels: Record<string, { zh: string; en: string }> = {
   releaseCondition: { zh: "释放条件", en: "Release condition" },
   deleted: { zh: "删除状态", en: "Delete status" },
 };
-const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_2rem_2rem_5rem_2rem] items-center gap-1";
+const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_4rem_2rem] items-center gap-1";
+const MENU_ITEM_CLASS =
+  "flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel disabled:cursor-not-allowed disabled:opacity-50 [@media(pointer:coarse)]:min-h-11";
+const CHECKBOX_HIT_CLASS =
+  "inline-flex min-h-6 min-w-6 cursor-pointer items-center justify-center [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11";
 const commitPodFields = ["description", "pod_name", "podName", "pod", "k8s_pod_name", "k8sPodName"];
 
 function resourceText(task: Task) {
@@ -144,9 +155,9 @@ function getTaskCommitUser(task: Task) {
 
 function buildTaskCommitPayload(task: Task) {
   const podName = getTaskCommitPodName(task);
-  if (!podName) throw new Error(i18nText("后端未返回 pod 标识，无法 Commit。请刷新实例列表或查看原始 JSON。", "The backend did not return a pod identifier, so Commit cannot continue. Refresh the instance list or inspect the raw JSON."));
+  if (!podName) throw new Error(i18nText("后端未返回 pod 标识，无法提交镜像。请刷新实例列表或查看原始 JSON。", "The backend did not return a pod identifier, so commit cannot continue. Refresh the instance list or inspect the raw JSON."));
   const user = getTaskCommitUser(task);
-  if (!user) throw new Error(i18nText("后端未返回用户信息，无法 Commit。请刷新实例列表或查看原始 JSON。", "The backend did not return user information, so Commit cannot continue. Refresh the instance list or inspect the raw JSON."));
+  if (!user) throw new Error(i18nText("后端未返回用户信息，无法提交镜像。请刷新实例列表或查看原始 JSON。", "The backend did not return user information, so commit cannot continue. Refresh the instance list or inspect the raw JSON."));
   return { user, pod_name: podName };
 }
 
@@ -184,14 +195,37 @@ function ActionHeader() {
   const { text } = useI18n();
   return (
     <div className={`${ACTION_GRID_CLASS} text-center text-xs text-app-muted`}>
-      <span>{text("监控", "Monitor")}</span>
-      <span>{text("日志", "Logs")}</span>
-      <span>{text("终端", "Terminal")}</span>
-      <span>{text("复制", "Copy")}</span>
+      <span>{text("终端/连接", "SSH")}</span>
+      <span>{text("监控", "Mon.")}</span>
       <span>{text("释放/删除", "Release/Delete")}</span>
       <span>{text("更多", "More")}</span>
     </div>
   );
+}
+
+function autoRefreshIntervalLabel(intervalMs: number, locale: string) {
+  const option = autoRefreshOptions.find((item) => item.value === intervalMs);
+  if (!option) return `${Math.round(intervalMs / 1000)}s`;
+  return locale === "en-US" ? option.en : option.zh;
+}
+
+function formatRelativeUpdatedAt(
+  updatedAt: number,
+  now: number,
+  text: (zh: string, en: string) => string,
+) {
+  const deltaMs = Math.max(0, now - updatedAt);
+  if (deltaMs < 5_000) return text("刚刚", "Just now");
+  if (deltaMs < 60_000) {
+    const seconds = Math.max(1, Math.floor(deltaMs / 1_000));
+    return text(`${seconds} 秒前`, `${seconds}s ago`);
+  }
+  if (deltaMs < 3_600_000) {
+    const minutes = Math.max(1, Math.floor(deltaMs / 60_000));
+    return text(`${minutes} 分钟前`, `${minutes}m ago`);
+  }
+  const hours = Math.max(1, Math.floor(deltaMs / 3_600_000));
+  return text(`${hours} 小时前`, `${hours}h ago`);
 }
 
 async function loadColumnVisibility(): Promise<VisibilityState> {
@@ -254,6 +288,12 @@ export function MoreActionsMenu({
   task,
   isPinned,
   canEdit,
+  promoteLog = false,
+  showSshInfo = true,
+  onLog,
+  onClone,
+  onSshInfo,
+  onMonitor,
   onRaw,
   onDownload,
   onCommit,
@@ -264,12 +304,20 @@ export function MoreActionsMenu({
   task: Task;
   isPinned: boolean;
   canEdit: boolean;
+  /** When true, logs are on the action strip; expose monitor in More instead. */
+  promoteLog?: boolean;
+  onLog: (task: Task) => void;
+  onClone: (task: Task) => void;
+  onSshInfo: (task: Task) => void;
+  onMonitor?: (task: Task) => void;
   onRaw: (task: Task) => void;
   onDownload: (task: Task) => void;
   onCommit: (task: Task) => void;
   onEdit: (task: Task) => void;
   onSaveTemplate: (task: Task) => void;
   onTogglePin: (task: Task) => void;
+  /** When false, hide connection info in More (already on the action strip). */
+  showSshInfo?: boolean;
 }) {
   const { text } = useI18n();
   const menuId = useId();
@@ -293,6 +341,109 @@ export function MoreActionsMenu({
     items[nextIndex].focus();
   }, []);
 
+  const menuSections = useMemo(() => {
+    type MenuItem = {
+      key: string;
+      label: string;
+      icon: ReactNode;
+      disabled?: boolean;
+      title?: string;
+      onSelect: () => void;
+    };
+
+    const running = isRunningTask(task);
+    const logItem: MenuItem = {
+      key: "log",
+      label: text("日志", "Logs"),
+      icon: <FileText className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onLog(task),
+    };
+    const monitorItem: MenuItem | null =
+      promoteLog && onMonitor
+        ? {
+            key: "monitor",
+            label: text("监控", "Monitor"),
+            icon: <ActivitySquare className="h-4 w-4 text-app-muted" />,
+            onSelect: () => onMonitor(task),
+          }
+        : null;
+    const sshInfoItem: MenuItem | null = showSshInfo
+      ? {
+          key: "ssh-info",
+          label: text("连接信息", "Connection info"),
+          icon: <KeyRound className="h-4 w-4 text-app-muted" />,
+          onSelect: () => onSshInfo(task),
+        }
+      : null;
+
+    // Normal rows: monitor on the strip, logs in More. Failed/abnormal: logs on the strip, monitor in More.
+    const connect: MenuItem[] = promoteLog
+      ? [logItem, ...(monitorItem ? [monitorItem] : []), ...(sshInfoItem ? [sshInfoItem] : [])]
+      : [logItem, ...(sshInfoItem ? [sshInfoItem] : [])];
+
+    const lifecycle: MenuItem[] = [
+      {
+        key: "clone",
+        label: text("克隆", "Clone"),
+        icon: <CopyPlus className="h-4 w-4 text-app-muted" />,
+        onSelect: () => onClone(task),
+      },
+    ];
+    if (canEdit) {
+      lifecycle.push({
+        key: "edit",
+        label: text("编辑", "Edit"),
+        icon: <Pencil className="h-4 w-4 text-app-muted" />,
+        onSelect: () => onEdit(task),
+      });
+    }
+    lifecycle.push({
+      key: "commit",
+      label: text("提交镜像", "Commit image"),
+      icon: <Upload className="h-4 w-4 text-app-muted" />,
+      disabled: !running,
+      title: running
+        ? text("提交镜像", "Commit image")
+        : text("仅运行中实例可提交镜像", "Only running instances can be committed"),
+      onSelect: () => onCommit(task),
+    });
+
+    const local: MenuItem[] = [
+      {
+        key: "download",
+        label: text("下载", "Download"),
+        icon: <Download className="h-4 w-4 text-app-muted" />,
+        onSelect: () => onDownload(task),
+      },
+      {
+        key: "template",
+        label: text("存为模板", "Save as template"),
+        icon: <Save className="h-4 w-4 text-app-muted" />,
+        onSelect: () => onSaveTemplate(task),
+      },
+      {
+        key: "pin",
+        label: isPinned ? text("取消置顶", "Unpin") : text("置顶", "Pin"),
+        icon: isPinned ? <PinOff className="h-4 w-4 text-app-muted" /> : <Pin className="h-4 w-4 text-app-muted" />,
+        onSelect: () => onTogglePin(task),
+      },
+      {
+        key: "raw",
+        label: text("原始 JSON", "Raw JSON"),
+        icon: <Braces className="h-4 w-4 text-app-muted" />,
+        onSelect: () => onRaw(task),
+      },
+    ];
+
+    return [
+      { id: "connect", items: connect },
+      { id: "lifecycle", items: lifecycle },
+      { id: "local", items: local },
+    ] as const;
+  }, [canEdit, isPinned, onClone, onCommit, onDownload, onEdit, onLog, onMonitor, onRaw, onSaveTemplate, onSshInfo, onTogglePin, promoteLog, showSshInfo, task, text]);
+
+  const menuItems = useMemo(() => menuSections.flatMap((section) => section.items), [menuSections]);
+
   useEffect(() => {
     if (!open) return undefined;
 
@@ -300,8 +451,8 @@ export function MoreActionsMenu({
       const rect = triggerRef.current?.getBoundingClientRect();
       if (!rect) return;
 
-      const width = 160;
-      const estimatedHeight = 112;
+      const width = 176;
+      const estimatedHeight = Math.min(320, 8 + menuItems.length * 32 + (menuSections.length - 1) * 9);
       const margin = 8;
       const left = Math.min(Math.max(margin, rect.right - width), window.innerWidth - width - margin);
       const top =
@@ -335,7 +486,7 @@ export function MoreActionsMenu({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", handleScroll, true);
     };
-  }, [closeMenu, open]);
+  }, [closeMenu, menuItems.length, menuSections.length, open]);
 
   useEffect(() => {
     if (!open || !menuPosition) return;
@@ -413,112 +564,42 @@ export function MoreActionsMenu({
           <div
             id={menuId}
             ref={menuRef}
-            className="fixed z-[100] w-40 rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
+            className="fixed z-[100] max-h-[min(20rem,calc(100vh-1rem))] w-44 overflow-y-auto rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
             role="menu"
             aria-label={text(`实例操作 ${getTaskName(task)}`, `Instance actions for ${getTaskName(task)}`)}
             style={{ left: menuPosition.left, top: menuPosition.top }}
             onKeyDown={handleMenuKeyDown}
           >
-            {canEdit ? (
-              <button
-                ref={(element) => {
-                  menuItemRefs.current[0] = element;
-                }}
-                className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
-                role="menuitem"
-                tabIndex={-1}
-                type="button"
-                onClick={() => {
-                  closeMenu();
-                  onEdit(task);
-                }}
-              >
-                <Pencil className="h-4 w-4 text-app-muted" />
-                {text("编辑", "Edit")}
-              </button>
-            ) : null}
-            <button
-              ref={(element) => {
-                menuItemRefs.current[canEdit ? 1 : 0] = element;
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
-              role="menuitem"
-              tabIndex={-1}
-              type="button"
-              onClick={() => {
-                closeMenu();
-                onDownload(task);
-              }}
-            >
-              <Download className="h-4 w-4 text-app-muted" />
-              {text("下载", "Download")}
-            </button>
-            <button
-              ref={(element) => {
-                menuItemRefs.current[canEdit ? 2 : 1] = element;
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!isRunningTask(task)}
-              role="menuitem"
-              tabIndex={-1}
-              title={isRunningTask(task) ? text("提交镜像", "Commit") : text("仅运行中实例可 Commit", "Only running instances can be committed")}
-              type="button"
-              onClick={() => {
-                closeMenu();
-                onCommit(task);
-              }}
-            >
-              <Upload className="h-4 w-4 text-app-muted" />
-              {text("提交镜像", "Commit")}
-            </button>
-            <button
-              ref={(element) => {
-                menuItemRefs.current[canEdit ? 3 : 2] = element;
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
-              role="menuitem"
-              tabIndex={-1}
-              type="button"
-              onClick={() => {
-                closeMenu();
-                onSaveTemplate(task);
-              }}
-            >
-              <Save className="h-4 w-4 text-app-muted" />
-              {text("存为模板", "Save as template")}
-            </button>
-            <button
-              ref={(element) => {
-                menuItemRefs.current[canEdit ? 4 : 3] = element;
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
-              role="menuitem"
-              tabIndex={-1}
-              type="button"
-              onClick={() => {
-                closeMenu();
-                onTogglePin(task);
-              }}
-            >
-              {isPinned ? <PinOff className="h-4 w-4 text-app-muted" /> : <Pin className="h-4 w-4 text-app-muted" />}
-              {isPinned ? text("取消置顶", "Unpin") : text("置顶", "Pin")}
-            </button>
-            <button
-              ref={(element) => {
-                menuItemRefs.current[canEdit ? 5 : 4] = element;
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
-              role="menuitem"
-              tabIndex={-1}
-              type="button"
-              onClick={() => {
-                closeMenu();
-                onRaw(task);
-              }}
-            >
-              <Braces className="h-4 w-4 text-app-muted" />
-              {text("原始 JSON", "Raw JSON")}
-            </button>
+            {menuSections.map((section, sectionIndex) => (
+              <div key={section.id}>
+                {sectionIndex > 0 ? <div className="my-1 border-t border-app-border" role="separator" /> : null}
+                {section.items.map((item) => {
+                  const index = menuItems.findIndex((candidate) => candidate.key === item.key);
+                  return (
+                    <button
+                      key={item.key}
+                      ref={(element) => {
+                        menuItemRefs.current[index] = element;
+                      }}
+                      className={MENU_ITEM_CLASS}
+                      disabled={item.disabled}
+                      role="menuitem"
+                      tabIndex={-1}
+                      title={item.title}
+                      type="button"
+                      onClick={() => {
+                        if (item.disabled) return;
+                        closeMenu();
+                        item.onSelect();
+                      }}
+                    >
+                      {item.icon}
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
           </div>,
           document.body,
         )
@@ -529,6 +610,7 @@ export function MoreActionsMenu({
 
 export function TasksPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const toast = useToast();
   const { locale, text } = useI18n();
   const runLogger = useRunLogger();
@@ -543,7 +625,8 @@ export function TasksPage() {
   const [cloneTask, setCloneTask] = useState<Task | null>(null);
   const [editTask, setEditTask] = useState<Task | null>(null);
   const [logTask, setLogTask] = useState<Task | null>(null);
-  const [terminalTask, setTerminalTask] = useState<Task | null>(null);
+  const [sshInfoTask, setSshInfoTask] = useState<Task | null>(null);
+  const [appSshRequest, setAppSshRequest] = useState<SshConnectionRequest | null>(null);
   const [rawTask, setRawTask] = useState<Task | null>(null);
   const [columnSettingsOpen, setColumnSettingsOpen] = useState(false);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(defaultColumnVisibility);
@@ -551,8 +634,15 @@ export function TasksPage() {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(DEFAULT_AUTO_REFRESH_INTERVAL);
   const [pinnedTaskIds, setPinnedTaskIds] = useState<string[]>([]);
-  const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
-  const viewOptionsRef = useRef<HTMLDivElement>(null);
+  const [autoRefreshMenuOpen, setAutoRefreshMenuOpen] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [activeRowIndex, setActiveRowIndex] = useState(0);
+  const autoRefreshMenuId = useId();
+  const autoRefreshMenuRef = useRef<HTMLDivElement>(null);
+  const autoRefreshTriggerRef = useRef<HTMLButtonElement>(null);
+  const autoRefreshMenuListRef = useRef<HTMLDivElement>(null);
+  const autoRefreshItemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const autoRefreshInitialFocusRef = useRef(0);
 
   const updateTaskQuery = useCallback((patch: Partial<TaskListQueryState>) => {
     const next = { ...queryState, ...patch };
@@ -587,7 +677,7 @@ export function TasksPage() {
         targetName: getTaskName(task),
         targetId: task.id,
       });
-      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      invalidateTaskQueries(queryClient);
     },
     onError: (error, task) => {
       toast.error(text("实例删除失败", "Instance deletion failed"), `${getTaskName(task)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
@@ -617,7 +707,7 @@ export function TasksPage() {
         targetName: getTaskName(task),
         targetId: task.id,
       });
-      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      invalidateTaskQueries(queryClient);
     },
     onError: (error, task) => {
       toast.error(text("实例释放失败", "Instance release failed"), `${getTaskName(task)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
@@ -686,7 +776,7 @@ export function TasksPage() {
         metadata: { count: tasks.length, ids: tasks.map((task) => task.id) },
       });
       setRowSelection({});
-      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      invalidateTaskQueries(queryClient);
     },
     onError: (error) => {
       toast.error(text("批量删除失败", "Batch deletion failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
@@ -716,7 +806,7 @@ export function TasksPage() {
         metadata: { count: tasks.length, ids: tasks.map((task) => task.id) },
       });
       setRowSelection({});
-      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      invalidateTaskQueries(queryClient);
     },
     onError: (error) => {
       toast.error(text("批量释放失败", "Batch release failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
@@ -732,7 +822,7 @@ export function TasksPage() {
   });
 
   const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending;
-  const autoRefreshPaused = batchPending || createOpen || Boolean(editTask) || Boolean(logTask) || Boolean(terminalTask) || Boolean(rawTask) || columnSettingsOpen;
+  const autoRefreshPaused = batchPending || createOpen || Boolean(editTask) || Boolean(logTask) || Boolean(sshInfoTask) || Boolean(appSshRequest) || Boolean(rawTask) || columnSettingsOpen;
   const query = useQuery({
     queryKey: taskQueryKey(queryState),
     queryFn: () => instanceApi.tasks(toTaskApiQuery(queryState)),
@@ -744,7 +834,7 @@ export function TasksPage() {
   // task status snapshots without polling the same endpoint in parallel.
   useEffect(() => {
     if (query.data) {
-      queryClient.setQueryData(["task-notification-watch"], query.data);
+      queryClient.setQueryData(TASK_SNAPSHOT_QUERY_KEY, query.data);
     }
   }, [query.data, queryClient]);
 
@@ -810,6 +900,22 @@ export function TasksPage() {
     setCreateOpen(true);
   };
 
+  const openSshInfo = useCallback((task: Task) => {
+    setSshInfoTask(task);
+  }, []);
+
+  const openTerminal = useCallback((task: Task) => {
+    const action = resolveTaskTerminalAction(task, {
+      loginUsername: auth.user?.username ?? "",
+      supportsInAppSsh: browserRuntime.supportsInAppSsh,
+    });
+    if (action.type === "app-ssh") {
+      setAppSshRequest(action.request);
+      return;
+    }
+    setSshInfoTask(task);
+  }, [auth.user?.username]);
+
   const closeCreateTask = () => {
     setCreateOpen(false);
     setCloneTask(null);
@@ -826,7 +932,10 @@ export function TasksPage() {
   const confirmReleaseTask = useCallback((task: Task) => {
     confirm({
       title: text("确认释放实例", "Confirm Instance Release"),
-      description: text(`将释放 ${getTaskName(task)}。释放后实例会停止运行，请确认当前任务状态。`, `Release ${getTaskName(task)}. The instance will stop running after release. Confirm the current task state.`),
+      description: text(
+        `将释放 ${getTaskName(task)}。释放会停止实例并回收计算资源；适用于运行中/排队等可释放状态。此操作不可从 EasyConsole 撤销。`,
+        `Release ${getTaskName(task)}. Release stops the instance and reclaims compute resources; use it for releasable states (running, queued, etc.). EasyConsole cannot undo this.`,
+      ),
       confirmLabel: text("释放", "Release"),
       tone: "danger",
       run: () => releaseMutation.mutateAsync(task),
@@ -836,7 +945,10 @@ export function TasksPage() {
   const confirmDeleteTask = useCallback((task: Task) => {
     confirm({
       title: text("确认删除实例", "Confirm Instance Deletion"),
-      description: text(`将删除 ${getTaskName(task)}。此操作不可从 EasyConsole 撤销。`, `Delete ${getTaskName(task)}. EasyConsole cannot undo this operation.`),
+      description: text(
+        `将删除 ${getTaskName(task)}。删除用于已结束等不可释放实例，从列表中移除记录；与「释放」不同，不会先停止仍在运行的任务。此操作不可从 EasyConsole 撤销。`,
+        `Delete ${getTaskName(task)}. Delete removes finished / non-releasable instances from the list. Unlike Release, it is not for stopping a still-running task. EasyConsole cannot undo this.`,
+      ),
       confirmLabel: text("删除", "Delete"),
       tone: "danger",
       run: () => deleteMutation.mutateAsync(task),
@@ -848,13 +960,13 @@ export function TasksPage() {
     try {
       payload = buildTaskCommitPayload(task);
     } catch (error) {
-      toast.error(text("Commit 失败", "Commit failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
+      toast.error(text("提交镜像失败", "Commit image failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
       return;
     }
     confirm({
-      title: text("确认 Commit 实例", "Confirm Instance Commit"),
+      title: text("确认提交镜像", "Confirm Commit Image"),
       description: text(`将把 ${getTaskName(task)} 的当前运行环境提交为镜像。此操作可能需要一段时间，请确认实例内文件状态已经稳定。`, `Commit the current runtime environment of ${getTaskName(task)} as an image. This may take some time; confirm files inside the instance are stable.`),
-      confirmLabel: text("提交镜像", "Commit"),
+      confirmLabel: text("提交镜像", "Commit image"),
       run: () => {
         commitQueue.enqueue({
           taskName: getTaskName(task),
@@ -891,22 +1003,26 @@ export function TasksPage() {
       columnHelper.display({
         id: "select",
         header: ({ table }) => (
-          <input
-            aria-label={text("选择当前页实例", "Select current page instances")}
-            className="h-4 w-4 accent-app-accent"
-            type="checkbox"
-            checked={table.getIsAllPageRowsSelected()}
-            onChange={table.getToggleAllPageRowsSelectedHandler()}
-          />
+          <label className={CHECKBOX_HIT_CLASS}>
+            <input
+              aria-label={text("选择当前页实例", "Select current page instances")}
+              className="h-4 w-4 accent-app-accent"
+              type="checkbox"
+              checked={table.getIsAllPageRowsSelected()}
+              onChange={table.getToggleAllPageRowsSelectedHandler()}
+            />
+          </label>
         ),
         cell: ({ row }) => (
-          <input
-            aria-label={text(`选择实例 ${getTaskName(row.original)}`, `Select instance ${getTaskName(row.original)}`)}
-            className="h-4 w-4 accent-app-accent"
-            type="checkbox"
-            checked={row.getIsSelected()}
-            onChange={row.getToggleSelectedHandler()}
-          />
+          <label className={CHECKBOX_HIT_CLASS}>
+            <input
+              aria-label={text(`选择实例 ${getTaskName(row.original)}`, `Select instance ${getTaskName(row.original)}`)}
+              className="h-4 w-4 accent-app-accent"
+              type="checkbox"
+              checked={row.getIsSelected()}
+              onChange={row.getToggleSelectedHandler()}
+            />
+          </label>
         ),
       }),
       columnHelper.accessor((row) => getTaskName(row), {
@@ -919,8 +1035,8 @@ export function TasksPage() {
               <div className="flex items-start gap-1.5">
                 {pinned ? <Pin className="mt-1 h-3.5 w-3.5 shrink-0 text-app-accent" aria-label={text("已置顶", "Pinned")} /> : null}
                 <div>
-                  <TaskInstanceName name={getValue()} />
-                  <div className="mt-0.5 text-xs text-app-text">#{row.original.id}</div>
+                  <TaskInstanceName name={getValue()} taskId={row.original.id} />
+                  <div className="mt-0.5 text-xs text-app-muted">#{row.original.id}</div>
                 </div>
               </div>
             </div>
@@ -989,25 +1105,57 @@ export function TasksPage() {
         cell: ({ row }) => {
           const task = row.original;
           const release = isReleasableTask(task);
+          const opensAppSsh = willOpenAppSshSession(task, {
+            loginUsername: auth.user?.username ?? "",
+            supportsInAppSsh: browserRuntime.supportsInAppSsh,
+          });
+          const terminalLabel = opensAppSsh ? text("终端", "Terminal") : text("连接信息", "Connection info");
+          const promoteLog = needsLogAttention(task);
           return (
             <div className={ACTION_GRID_CLASS}>
-              <Button aria-label={text(`打开 ${getTaskName(task)} 的监控`, `Open monitor for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("监控", "Monitor")} onClick={() => openMonitorDashboard(task)}>
-                <ActivitySquare className="h-4 w-4" />
+              <Button
+                aria-label={
+                  opensAppSsh
+                    ? text(`打开 ${getTaskName(task)} 的终端`, `Open terminal for ${getTaskName(task)}`)
+                    : text(`查看 ${getTaskName(task)} 的连接信息`, `View connection info for ${getTaskName(task)}`)
+                }
+                className="h-8 w-8 px-0"
+                variant="ghost"
+                title={terminalLabel}
+                onClick={() => openTerminal(task)}
+              >
+                {opensAppSsh ? <Terminal className="h-4 w-4" /> : <KeyRound className="h-4 w-4" />}
               </Button>
-              <Button aria-label={text(`查看 ${getTaskName(task)} 的日志`, `View logs for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("日志", "Logs")} onClick={() => setLogTask(task)}>
-                <FileText className="h-4 w-4" />
-              </Button>
-              <Button aria-label={text(`打开 ${getTaskName(task)} 的终端`, `Open terminal for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("终端", "Terminal")} onClick={() => setTerminalTask(task)}>
-                <Terminal className="h-4 w-4" />
-              </Button>
-              <Button aria-label={text(`复制 ${getTaskName(task)} 的配置`, `Copy configuration for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("复制", "Copy")} onClick={() => openCloneTask(task)}>
-                <Copy className="h-4 w-4" />
-              </Button>
+              {promoteLog ? (
+                <Button
+                  aria-label={text(`打开 ${getTaskName(task)} 的日志`, `Open logs for ${getTaskName(task)}`)}
+                  className="h-8 w-8 px-0 text-app-danger"
+                  title={text("日志", "Logs")}
+                  variant="ghost"
+                  onClick={() => setLogTask(task)}
+                >
+                  <FileText className="h-4 w-4" />
+                </Button>
+              ) : (
+                <Button
+                  aria-label={text(`打开 ${getTaskName(task)} 的监控`, `Open monitor for ${getTaskName(task)}`)}
+                  className={["h-8 w-8 px-0", isRunningTask(task) ? "text-app-accent" : ""].join(" ")}
+                  title={
+                    isRunningTask(task)
+                      ? text("监控（运行中）", "Monitor (running)")
+                      : text("监控", "Monitor")
+                  }
+                  variant="ghost"
+                  onClick={() => openMonitorDashboard(task)}
+                >
+                  <ActivitySquare className="h-4 w-4" />
+                </Button>
+              )}
               {release ? (
                 <Button
-                  className="h-8 w-20 justify-center px-2 text-app-warning hover:text-app-warning"
+                  className="h-8 w-16 justify-center px-1.5 text-app-muted hover:text-app-warning"
                   disabled={releaseMutation.isPending}
-                  title={text("释放", "Release")}
+                  title={text("释放：停止实例并回收资源", "Release: stop instance and reclaim resources")}
                   variant="ghost"
                   onClick={() => confirmReleaseTask(task)}
                 >
@@ -1016,9 +1164,9 @@ export function TasksPage() {
                 </Button>
               ) : (
                 <Button
-                  className="h-8 w-20 justify-center px-2 text-app-danger hover:text-app-danger"
+                  className="h-8 w-16 justify-center px-1.5 text-app-muted hover:text-app-danger"
                   disabled={deleteMutation.isPending}
-                  title={text("删除", "Delete")}
+                  title={text("删除：移除不可释放实例", "Delete: remove a non-releasable instance")}
                   variant="ghost"
                   onClick={() => confirmDeleteTask(task)}
                 >
@@ -1029,12 +1177,18 @@ export function TasksPage() {
               <MoreActionsMenu
                 canEdit={getTaskEditableState() !== false}
                 isPinned={isTaskPinned(pinnedTaskIds, task)}
+                promoteLog={promoteLog}
+                showSshInfo={opensAppSsh}
                 task={task}
+                onClone={openCloneTask}
                 onCommit={confirmCommitTask}
                 onDownload={handleDownloadTask}
                 onEdit={openEditTask}
+                onLog={setLogTask}
+                onMonitor={openMonitorDashboard}
                 onRaw={setRawTask}
                 onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
+                onSshInfo={openSshInfo}
                 onTogglePin={handleTogglePin}
               />
             </div>
@@ -1042,7 +1196,7 @@ export function TasksPage() {
         },
       }),
     ],
-    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, handleTogglePin, locale, pinnedTaskIds, releaseMutation.isPending, saveTemplateMutation, text],
+    [auth.user?.username, confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, handleTogglePin, locale, openSshInfo, openTerminal, pinnedTaskIds, releaseMutation.isPending, saveTemplateMutation, text],
   );
 
   const table = useReactTable({
@@ -1058,6 +1212,19 @@ export function TasksPage() {
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
   });
+
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const tableRows = table.getRowModel().rows;
+  const rowVirtualizer = useVirtualizer({
+    count: tableRows.length,
+    getScrollElement: () => tableScrollRef.current,
+    estimateSize: () => 44,
+    overscan: 10,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0;
+  const paddingBottom =
+    virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0;
 
   const settingsHydratedRef = useRef(false);
   useEffect(() => {
@@ -1108,14 +1275,122 @@ export function TasksPage() {
   }, [queryState.page, queryState.pageSize, queryState.keyword, queryState.status]);
 
   useEffect(() => {
-    if (!viewOptionsOpen) return undefined;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 5_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    setActiveRowIndex((index) => {
+      if (filteredTasks.length === 0) return 0;
+      return Math.min(index, filteredTasks.length - 1);
+    });
+  }, [filteredTasks.length]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      const isTyping =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+      if (isTyping) return;
+      if (
+        createOpen ||
+        Boolean(editTask) ||
+        Boolean(logTask) ||
+        Boolean(sshInfoTask) ||
+        Boolean(appSshRequest) ||
+        Boolean(rawTask) ||
+        columnSettingsOpen ||
+        autoRefreshMenuOpen
+      ) {
+        return;
+      }
+      if (filteredTasks.length === 0) return;
+
+      const key = event.key.toLowerCase();
+      if (key === "j" || key === "arrowdown") {
+        event.preventDefault();
+        setActiveRowIndex((index) => Math.min(index + 1, filteredTasks.length - 1));
+        return;
+      }
+      if (key === "k" || key === "arrowup") {
+        event.preventDefault();
+        setActiveRowIndex((index) => Math.max(index - 1, 0));
+        return;
+      }
+
+      const task = filteredTasks[activeRowIndex];
+      if (!task) return;
+
+      if (key === "enter") {
+        event.preventDefault();
+        navigate(`/tasks/${task.id}`);
+        return;
+      }
+      if (key === "l") {
+        event.preventDefault();
+        setLogTask(task);
+        return;
+      }
+      if (key === "t") {
+        event.preventDefault();
+        openTerminal(task);
+        return;
+      }
+      if (key === "r" && isReleasableTask(task)) {
+        event.preventDefault();
+        confirmReleaseTask(task);
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [
+    activeRowIndex,
+    appSshRequest,
+    autoRefreshMenuOpen,
+    columnSettingsOpen,
+    confirmReleaseTask,
+    createOpen,
+    editTask,
+    filteredTasks,
+    logTask,
+    navigate,
+    openTerminal,
+    rawTask,
+    sshInfoTask,
+  ]);
+
+  const closeAutoRefreshMenu = useCallback((restoreFocus = false) => {
+    setAutoRefreshMenuOpen(false);
+    if (restoreFocus) {
+      window.setTimeout(() => autoRefreshTriggerRef.current?.focus(), 0);
+    }
+  }, []);
+
+  const focusAutoRefreshMenuItem = useCallback((index: number) => {
+    const items = autoRefreshItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
+    if (items.length === 0) return;
+    const nextIndex = ((index % items.length) + items.length) % items.length;
+    items[nextIndex]?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!autoRefreshMenuOpen) return undefined;
     const handlePointerDown = (event: PointerEvent) => {
-      if (!viewOptionsRef.current?.contains(event.target as Node)) {
-        setViewOptionsOpen(false);
+      if (!autoRefreshMenuRef.current?.contains(event.target as Node)) {
+        closeAutoRefreshMenu();
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setViewOptionsOpen(false);
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        closeAutoRefreshMenu(true);
+      }
     };
     document.addEventListener("pointerdown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
@@ -1123,22 +1398,85 @@ export function TasksPage() {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [viewOptionsOpen]);
+  }, [autoRefreshMenuOpen, closeAutoRefreshMenu]);
+
+  useEffect(() => {
+    if (!autoRefreshMenuOpen) return;
+    window.setTimeout(() => focusAutoRefreshMenuItem(autoRefreshInitialFocusRef.current), 0);
+  }, [autoRefreshMenuOpen, focusAutoRefreshMenuItem]);
+
+  const handleAutoRefreshTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    autoRefreshInitialFocusRef.current = event.key === "ArrowUp" ? -1 : 0;
+    setAutoRefreshMenuOpen(true);
+  };
+
+  const handleAutoRefreshMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const items = autoRefreshItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
+    const currentIndex = items.findIndex((item) => item === document.activeElement);
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeAutoRefreshMenu(true);
+      return;
+    }
+
+    if (event.key === "Tab") {
+      closeAutoRefreshMenu();
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusAutoRefreshMenuItem(currentIndex + 1);
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusAutoRefreshMenuItem(currentIndex - 1);
+      return;
+    }
+
+    if (event.key === "Home") {
+      event.preventDefault();
+      focusAutoRefreshMenuItem(0);
+      return;
+    }
+
+    if (event.key === "End") {
+      event.preventDefault();
+      focusAutoRefreshMenuItem(items.length - 1);
+    }
+  };
+
+  const listUpdatedLabel = query.isFetching
+    ? text("刷新中", "Refreshing")
+    : query.dataUpdatedAt
+      ? formatRelativeUpdatedAt(query.dataUpdatedAt, nowMs, text)
+      : null;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
           <div className="relative w-full sm:w-auto">
-            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" />
+            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" aria-hidden="true" />
             <Input
+              aria-label={text("搜索实例名称", "Search instance name")}
               className="w-full pl-9 sm:w-64"
               placeholder={text("搜索实例名称", "Search instance name")}
               value={keywordInput}
               onChange={(event) => setKeywordInput(event.target.value)}
             />
           </div>
-          <Select className="w-32" value={queryState.status} onChange={(event) => updateTaskQuery({ status: event.target.value })}>
+          <Select
+            aria-label={text("按状态筛选", "Filter by status")}
+            className="w-32"
+            value={queryState.status}
+            onChange={(event) => updateTaskQuery({ status: event.target.value })}
+          >
             <option value="">{text("全部状态", "All statuses")}</option>
             {Object.entries(locale === "en-US" ? taskStatusTextEn : taskStatusText).map(([value, label]) => (
               <option key={value} value={value}>
@@ -1146,60 +1484,107 @@ export function TasksPage() {
               </option>
             ))}
           </Select>
-          <Button variant="secondary" onClick={() => query.refetch()}>
-            <RefreshCw className="h-4 w-4" />
+          <Button disabled={query.isFetching} variant="secondary" onClick={() => void query.refetch()}>
+            <RefreshCw className={["h-4 w-4", query.isFetching ? "animate-spin" : ""].join(" ")} aria-hidden="true" />
             {text("刷新", "Refresh")}
           </Button>
-          <div ref={viewOptionsRef} className="relative">
+          <div ref={autoRefreshMenuRef} className="relative flex items-center gap-2">
             <Button
-              aria-expanded={viewOptionsOpen}
-              aria-haspopup="dialog"
+              ref={autoRefreshTriggerRef}
+              aria-controls={autoRefreshMenuOpen ? autoRefreshMenuId : undefined}
+              aria-expanded={autoRefreshMenuOpen}
+              aria-haspopup="menu"
+              aria-pressed={autoRefresh}
+              className={
+                autoRefresh
+                  ? autoRefreshPaused
+                    ? "border-app-warning/40 text-app-warning hover:bg-app-warningSoft"
+                    : "border-app-accent/40 text-app-accent hover:bg-app-accentSoft"
+                  : undefined
+              }
+              title={
+                autoRefresh
+                  ? autoRefreshPaused
+                    ? text("自动刷新已暂停（面板打开时）", "Auto refresh paused (panel open)")
+                    : text(`每 ${autoRefreshIntervalLabel(autoRefreshInterval, locale)} 自动刷新`, `Auto refresh every ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`)
+                  : text("自动刷新间隔", "Auto refresh interval")
+              }
+              type="button"
               variant="secondary"
-              onClick={() => setViewOptionsOpen((v) => !v)}
+              onClick={() => {
+                autoRefreshInitialFocusRef.current = 0;
+                setAutoRefreshMenuOpen((open) => !open);
+              }}
+              onKeyDown={handleAutoRefreshTriggerKeyDown}
             >
-              <Settings2 className="h-4 w-4" />
-              {text("视图", "View")}
-              {autoRefresh ? <span className="h-1.5 w-1.5 rounded-full bg-app-accent" /> : null}
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              {autoRefresh
+                ? autoRefreshPaused
+                  ? text(`已暂停 · ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`, `Paused · ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`)
+                  : text(`自动 · ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`, `Auto · ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`)
+                : text("自动刷新", "Auto refresh")}
             </Button>
-            {viewOptionsOpen ? (
-              <div role="dialog" aria-label={text("视图选项", "View options")} className="absolute right-0 top-full z-30 mt-1 w-72 rounded-lg border border-app-border bg-app-surface p-3 shadow-popover">
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="flex cursor-pointer items-center gap-2 text-sm text-app-text">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 accent-app-accent"
-                        checked={autoRefresh}
-                        onChange={(event) => setAutoRefresh(event.target.checked)}
-                      />
-                      {text("自动刷新", "Auto refresh")}
-                    </label>
-                    <Select
-                      className="h-7 w-24 border-0 bg-app-panel px-2 text-xs"
-                      disabled={!autoRefresh}
-                      value={String(autoRefreshInterval)}
-                      onChange={(event) => setAutoRefreshInterval(Number(event.target.value))}
+            {listUpdatedLabel ? (
+              <span className="hidden text-xs text-app-muted sm:inline" aria-live="polite">
+                {listUpdatedLabel}
+              </span>
+            ) : null}
+            {autoRefreshMenuOpen ? (
+              <div
+                id={autoRefreshMenuId}
+                ref={autoRefreshMenuListRef}
+                role="menu"
+                aria-label={text("自动刷新间隔", "Auto refresh interval")}
+                className="absolute left-0 top-full z-30 mt-1 w-40 rounded-lg border border-app-border bg-app-surface p-1 shadow-popover"
+                onKeyDown={handleAutoRefreshMenuKeyDown}
+              >
+                <button
+                  ref={(element) => {
+                    autoRefreshItemRefs.current[0] = element;
+                  }}
+                  className={MENU_ITEM_CLASS}
+                  role="menuitemradio"
+                  aria-checked={!autoRefresh}
+                  tabIndex={-1}
+                  type="button"
+                  onClick={() => {
+                    setAutoRefresh(false);
+                    closeAutoRefreshMenu();
+                  }}
+                >
+                  {text("关闭", "Off")}
+                </button>
+                {autoRefreshOptions.map((option, optionIndex) => {
+                  const selected = autoRefresh && autoRefreshInterval === option.value;
+                  const itemIndex = optionIndex + 1;
+                  return (
+                    <button
+                      key={option.value}
+                      ref={(element) => {
+                        autoRefreshItemRefs.current[itemIndex] = element;
+                      }}
+                      className={MENU_ITEM_CLASS}
+                      role="menuitemradio"
+                      aria-checked={selected}
+                      tabIndex={-1}
+                      type="button"
+                      onClick={() => {
+                        setAutoRefresh(true);
+                        setAutoRefreshInterval(option.value);
+                        closeAutoRefreshMenu();
+                      }}
                     >
-                      {autoRefreshOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {locale === "en-US" ? option.en : option.zh}
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-                  {autoRefresh && autoRefreshPaused ? (
-                    <div className="text-xs text-app-warning">{text("自动刷新已暂停（对话框打开时）", "Auto refresh paused (dialog open)")}</div>
-                  ) : null}
-                  <div className="border-t border-app-border pt-3">
-                    <Button className="w-full" variant="secondary" onClick={() => { setColumnSettingsOpen(true); setViewOptionsOpen(false); }}>
-                      <Settings2 className="h-4 w-4" />
-                      {text("列设置", "Columns")}
-                    </Button>
-                  </div>
-                </div>
+                      {locale === "en-US" ? option.en : option.zh}
+                    </button>
+                  );
+                })}
               </div>
             ) : null}
           </div>
+          <Button variant="secondary" onClick={() => setColumnSettingsOpen(true)}>
+            <Settings2 className="h-4 w-4" />
+            {text("列设置", "Columns")}
+          </Button>
         </div>
         <Button className="w-full sm:w-auto" onClick={openCreateTask}>
           <Plus className="h-4 w-4" />
@@ -1209,10 +1594,18 @@ export function TasksPage() {
 
       {selectedTasks.length > 0 ? (
         <Panel className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
-          <div className="text-sm text-app-muted">
-            {text("已选", "Selected")} <span className="font-medium text-app-text">{selectedTasks.length}</span> {text("个实例", "instances")}
-            {selectedReleasableTasks.length > 0 ? text(`，可释放 ${selectedReleasableTasks.length} 个`, `, releasable ${selectedReleasableTasks.length}`) : ""}
-            {selectedNonReleasableTasks.length > 0 ? text(`，不可释放 ${selectedNonReleasableTasks.length} 个`, `, non-releasable ${selectedNonReleasableTasks.length}`) : ""}
+          <div className="min-w-0 space-y-0.5 text-sm text-app-muted">
+            <div>
+              {text("已选", "Selected")} <span className="font-medium text-app-text">{selectedTasks.length}</span> {text("个实例", "instances")}
+              {selectedReleasableTasks.length > 0 ? text(`，可释放 ${selectedReleasableTasks.length} 个`, `, releasable ${selectedReleasableTasks.length}`) : ""}
+              {selectedNonReleasableTasks.length > 0 ? text(`，不可释放 ${selectedNonReleasableTasks.length} 个`, `, non-releasable ${selectedNonReleasableTasks.length}`) : ""}
+            </div>
+            <p className="text-xs text-app-muted">
+              {text(
+                "释放：停止并回收可释放实例。删除：移除不可释放（通常已结束）实例，不可撤销。",
+                "Release: stop and reclaim releasable instances. Delete: remove non-releasable (usually finished) instances; cannot undo.",
+              )}
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {selectedReleasableTasks.length > 0 ? (
@@ -1256,25 +1649,35 @@ export function TasksPage() {
           <>
           {browserRuntime.isMobile ? (
           <div className="divide-y divide-app-border">
-            {table.getRowModel().rows.map((row) => {
+            {table.getRowModel().rows.map((row, rowIndex) => {
               const task = row.original;
               const release = isReleasableTask(task);
               const taskName = getTaskName(task);
               return (
-                <article key={row.id} className="space-y-3 px-3 py-3" aria-labelledby={`task-card-${row.id}`}>
+                <article
+                  key={row.id}
+                  className={[
+                    "space-y-3 px-3 py-3",
+                    isRunningTask(task) ? "bg-app-infoSoft/40" : "",
+                    activeRowIndex === rowIndex ? "bg-app-accentSoft/50 ring-1 ring-inset ring-app-accent/30" : "",
+                  ].join(" ")}
+                  aria-labelledby={`task-card-${row.id}`}
+                >
                   <div className="flex items-start gap-3">
-                    <input
-                      aria-label={text(`选择 ${taskName}`, `Select ${taskName}`)}
-                      className="mt-1 h-4 w-4 shrink-0 accent-app-accent"
-                      type="checkbox"
-                      checked={row.getIsSelected()}
-                      onChange={row.getToggleSelectedHandler()}
-                    />
+                    <label className={`${CHECKBOX_HIT_CLASS} mt-0.5 shrink-0`}>
+                      <input
+                        aria-label={text(`选择 ${taskName}`, `Select ${taskName}`)}
+                        className="h-4 w-4 accent-app-accent"
+                        type="checkbox"
+                        checked={row.getIsSelected()}
+                        onChange={row.getToggleSelectedHandler()}
+                      />
+                    </label>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 id={`task-card-${row.id}`} className="flex min-w-0 flex-1 items-center gap-1.5">
                           {isTaskPinned(pinnedTaskIds, task) ? <Pin className="h-3.5 w-3.5 shrink-0 text-app-accent" aria-label={text("已置顶", "Pinned")} /> : null}
-                          <span className="min-w-0 flex-1"><TaskInstanceName compact name={taskName} /></span>
+                          <span className="min-w-0 flex-1"><TaskInstanceName compact name={taskName} taskId={task.id} /></span>
                         </h3>
                         <StatusBadge status={task.status} />
                       </div>
@@ -1304,47 +1707,100 @@ export function TasksPage() {
                     </div>
                   </dl>
                   <div className="flex flex-wrap gap-1.5">
-                    <Button aria-label={text(`打开 ${taskName} 的监控`, `Open monitor for ${taskName}`)} className="h-9 px-2" variant="ghost" title={text("监控", "Monitor")} onClick={() => openMonitorDashboard(task)}>
-                      <ActivitySquare className="h-4 w-4" />
-                      {text("监控", "Monitor")}
-                    </Button>
-                    <Button aria-label={text(`查看 ${taskName} 的日志`, `View logs for ${taskName}`)} className="h-9 px-2" variant="ghost" title={text("日志", "Logs")} onClick={() => setLogTask(task)}>
-                      <FileText className="h-4 w-4" />
-                      {text("日志", "Logs")}
-                    </Button>
-                    <Button aria-label={text(`打开 ${taskName} 的终端`, `Open terminal for ${taskName}`)} className="h-9 px-2" variant="ghost" title={text("终端", "Terminal")} onClick={() => setTerminalTask(task)}>
-                      <Terminal className="h-4 w-4" />
-                      {text("终端", "Terminal")}
-                    </Button>
-                    {release ? (
-                      <Button className="h-9 px-2 text-app-warning hover:text-app-warning" disabled={releaseMutation.isPending} title={text("释放", "Release")} variant="ghost" onClick={() => confirmReleaseTask(task)}>
-                        <Power className="h-4 w-4" />
-                        {text("释放", "Release")}
-                      </Button>
-                    ) : (
-                      <Button className="h-9 px-2 text-app-danger hover:text-app-danger" disabled={deleteMutation.isPending} title={text("删除", "Delete")} variant="ghost" onClick={() => confirmDeleteTask(task)}>
-                        <Trash2 className="h-4 w-4" />
-                        {text("删除", "Delete")}
-                      </Button>
-                    )}
-                    <MoreActionsMenu
-                      canEdit={getTaskEditableState() !== false}
-                      isPinned={isTaskPinned(pinnedTaskIds, task)}
-                      task={task}
-                      onCommit={confirmCommitTask}
-                      onDownload={handleDownloadTask}
-                      onEdit={openEditTask}
-                      onRaw={setRawTask}
-                      onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
-                      onTogglePin={handleTogglePin}
-                    />
+                    {(() => {
+                      const opensAppSsh = willOpenAppSshSession(task, {
+                        loginUsername: auth.user?.username ?? "",
+                        supportsInAppSsh: browserRuntime.supportsInAppSsh,
+                      });
+                      const terminalLabel = opensAppSsh ? text("终端", "Terminal") : text("连接信息", "Connection info");
+                      const promoteLog = needsLogAttention(task);
+                      return (
+                        <>
+                        <Button
+                          aria-label={
+                            opensAppSsh
+                              ? text(`打开 ${taskName} 的终端`, `Open terminal for ${taskName}`)
+                              : text(`查看 ${taskName} 的连接信息`, `View connection info for ${taskName}`)
+                          }
+                          className="h-9 px-2"
+                          variant="ghost"
+                          title={terminalLabel}
+                          onClick={() => openTerminal(task)}
+                        >
+                          {opensAppSsh ? <Terminal className="h-4 w-4" /> : <KeyRound className="h-4 w-4" />}
+                          {terminalLabel}
+                        </Button>
+                        {promoteLog ? (
+                          <Button
+                            className="h-9 px-2 text-app-danger"
+                            title={text("日志", "Logs")}
+                            variant="ghost"
+                            onClick={() => setLogTask(task)}
+                          >
+                            <FileText className="h-4 w-4" />
+                            {text("日志", "Logs")}
+                          </Button>
+                        ) : isRunningTask(task) ? (
+                          <Button
+                            className="h-9 px-2 text-app-accent"
+                            title={text("监控", "Monitor")}
+                            variant="ghost"
+                            onClick={() => openMonitorDashboard(task)}
+                          >
+                            <ActivitySquare className="h-4 w-4" />
+                            {text("监控", "Monitor")}
+                          </Button>
+                        ) : null}
+                        {release ? (
+                          <Button
+                            className="h-9 px-2 text-app-muted hover:text-app-warning"
+                            disabled={releaseMutation.isPending}
+                            title={text("释放：停止实例并回收资源", "Release: stop instance and reclaim resources")}
+                            variant="ghost"
+                            onClick={() => confirmReleaseTask(task)}
+                          >
+                            <Power className="h-4 w-4" />
+                            {text("释放", "Release")}
+                          </Button>
+                        ) : (
+                          <Button
+                            className="h-9 px-2 text-app-muted hover:text-app-danger"
+                            disabled={deleteMutation.isPending}
+                            title={text("删除：移除不可释放实例", "Delete: remove a non-releasable instance")}
+                            variant="ghost"
+                            onClick={() => confirmDeleteTask(task)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            {text("删除", "Delete")}
+                          </Button>
+                        )}
+                        <MoreActionsMenu
+                          canEdit={getTaskEditableState() !== false}
+                          isPinned={isTaskPinned(pinnedTaskIds, task)}
+                          promoteLog={promoteLog}
+                          showSshInfo={opensAppSsh}
+                          task={task}
+                          onClone={openCloneTask}
+                          onCommit={confirmCommitTask}
+                          onDownload={handleDownloadTask}
+                          onEdit={openEditTask}
+                          onLog={setLogTask}
+                          onMonitor={openMonitorDashboard}
+                          onRaw={setRawTask}
+                          onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
+                          onSshInfo={openSshInfo}
+                          onTogglePin={handleTogglePin}
+                        />
+                        </>
+                      );
+                    })()}
                   </div>
                 </article>
               );
             })}
           </div>
           ) : (
-          <TableRegion label={text("任务实例表格", "Task instances table")}>
+          <TableRegion ref={tableScrollRef} label={text("任务实例表格", "Task instances table")}>
             <table className="w-max min-w-full table-auto border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 {table.getHeaderGroups().map((headerGroup) => (
@@ -1354,9 +1810,9 @@ export function TasksPage() {
                         key={header.id}
                         scope="col"
                         className={[
-                          "whitespace-nowrap border-b border-app-border px-3 py-2 font-medium",
+                          "sticky top-0 z-10 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 font-medium",
                           isActionsColumn(header.column.id)
-                            ? "sticky right-0 z-20 bg-app-panel shadow-stickyColumn"
+                            ? "sticky right-0 z-20 shadow-stickyColumn"
                             : "",
                         ].join(" ")}
                       >
@@ -1367,23 +1823,55 @@ export function TasksPage() {
                 ))}
               </thead>
               <tbody>
-                {table.getRowModel().rows.map((row) => (
-                  <tr key={row.id} className="relative border-b border-app-border last:border-0 hover:z-20 hover:bg-app-panel/60">
-                    {row.getVisibleCells().map((cell) => (
-                      <td
-                        key={cell.id}
-                        className={[
-                          "whitespace-nowrap px-3 py-2 align-middle",
-                          isActionsColumn(cell.column.id)
-                            ? "sticky right-0 z-30 bg-app-surface shadow-stickyColumn"
-                            : "",
-                        ].join(" ")}
-                      >
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
+                {paddingTop > 0 ? (
+                  <tr aria-hidden="true">
+                    <td colSpan={table.getVisibleLeafColumns().length} style={{ height: paddingTop, padding: 0, border: 0 }} />
                   </tr>
-                ))}
+                ) : null}
+                {virtualRows.map((virtualRow) => {
+                  const row = tableRows[virtualRow.index];
+                  return (
+                    <tr
+                      key={row.id}
+                      data-index={virtualRow.index}
+                      ref={rowVirtualizer.measureElement}
+                      className={[
+                        "relative border-b border-app-border last:border-0 hover:z-20",
+                        activeRowIndex === virtualRow.index
+                          ? "bg-app-accentSoft/50 ring-1 ring-inset ring-app-accent/25"
+                          : isRunningTask(row.original)
+                            ? "bg-app-infoSoft/40 hover:bg-app-panel/60"
+                            : "hover:bg-app-panel/60",
+                      ].join(" ")}
+                    >
+                      {row.getVisibleCells().map((cell) => (
+                        <td
+                          key={cell.id}
+                          className={[
+                            "whitespace-nowrap px-3 py-2 align-middle",
+                            isActionsColumn(cell.column.id)
+                              ? [
+                                  "sticky right-0 z-30 shadow-stickyColumn",
+                                  activeRowIndex === virtualRow.index
+                                    ? "bg-app-accentSoft/50"
+                                    : isRunningTask(row.original)
+                                      ? "bg-app-infoSoft/40"
+                                      : "bg-app-surface",
+                                ].join(" ")
+                              : "",
+                          ].join(" ")}
+                        >
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+                {paddingBottom > 0 ? (
+                  <tr aria-hidden="true">
+                    <td colSpan={table.getVisibleLeafColumns().length} style={{ height: paddingBottom, padding: 0, border: 0 }} />
+                  </tr>
+                ) : null}
               </tbody>
             </table>
           </TableRegion>
@@ -1430,14 +1918,20 @@ export function TasksPage() {
         </div>
       </div>
 
-      <Suspense fallback={null}>
+      <Suspense fallback={<LoadingState />}>
         <CreateTaskDialog initialTask={cloneTask} open={createOpen} onClose={closeCreateTask} />
         <CreateTaskDialog mode="edit" editTaskId={editTask?.id} initialTask={editTask} open={Boolean(editTask)} onClose={closeEditTask} />
         <TaskLogDialog task={logTask} onClose={() => setLogTask(null)} />
+        <TerminalDialog
+          task={sshInfoTask}
+          onClose={() => setSshInfoTask(null)}
+          onOpenAppSsh={(request) => {
+            setSshInfoTask(null);
+            setAppSshRequest(request);
+          }}
+        />
       </Suspense>
-      <Suspense fallback={null}>
-        <TerminalDialog task={terminalTask} onClose={() => setTerminalTask(null)} />
-      </Suspense>
+      <AppSshTerminalDialog request={appSshRequest} onClose={() => setAppSshRequest(null)} />
       <Dialog open={Boolean(rawTask)} title={text(`实例原始 JSON ${rawTask ? getTaskName(rawTask) : ""}`, `Instance Raw JSON ${rawTask ? getTaskName(rawTask) : ""}`)} onClose={() => setRawTask(null)} width="max-w-4xl">
         <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
           {asJson(rawTask)}

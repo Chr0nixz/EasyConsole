@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import { I18nProvider } from "../../lib/i18n";
@@ -24,11 +25,13 @@ const baseTemplate: TaskTemplate = {
   updatedAt: "2026-05-23T00:00:00.000Z",
 };
 
-function renderName(name: string) {
+function renderName(name: string, taskId?: string | number) {
   return render(
-    <I18nProvider>
-      <TaskInstanceName name={name} />
-    </I18nProvider>,
+    <MemoryRouter>
+      <I18nProvider>
+        <TaskInstanceName name={name} taskId={taskId} />
+      </I18nProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -38,6 +41,12 @@ describe("TaskInstanceName", () => {
 
     expect(screen.getByText("manual-task")).toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("links plain task names to the detail page when taskId is provided", () => {
+    renderName("manual-task", 42);
+    expect(screen.getByRole("link", { name: /View details for manual-task/ })).toHaveAttribute("href", "/tasks/42");
   });
 
   it("collapses template prefix by default and toggles full name", () => {
@@ -45,10 +54,11 @@ describe("TaskInstanceName", () => {
     const fullName = `dev-${marker}-202605230800-1`;
     const suffix = "202605230800-1";
 
-    renderName(fullName);
+    renderName(fullName, 7);
 
     const toggle = screen.getByRole("button", { name: /Expand full name \(template prefix: dev\)/ });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("link", { name: /View details for/ })).toHaveAttribute("href", "/tasks/7");
     expect(screen.getByText(suffix)).toBeInTheDocument();
 
     fireEvent.click(toggle);

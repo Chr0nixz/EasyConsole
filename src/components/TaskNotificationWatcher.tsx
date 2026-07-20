@@ -7,12 +7,10 @@ import { getRuntimeSettings } from "../lib/app-settings";
 import { i18nText } from "../lib/i18n-text";
 import { browserRuntime } from "../lib/runtime";
 import { getImportantTaskStatusNotification, getTaskNotificationId, type ImportantTaskStatusNotification } from "../lib/task-status-notifications";
+import { TASK_SNAPSHOT_POLL_INTERVAL, taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
 import type { TaskStatus } from "../lib/types";
 import { useAuth } from "../lib/use-auth";
 import { useToast } from "../lib/use-toast";
-
-const TASK_NOTIFICATION_WATCH_INTERVAL = 10_000;
-const TASK_NOTIFICATION_PAGE_SIZE = 100;
 
 export function TaskNotificationWatcher() {
   const auth = useAuth();
@@ -27,10 +25,9 @@ export function TaskNotificationWatcher() {
   const onTasksPage = Boolean(useMatch("/tasks"));
 
   const query = useQuery({
-    queryKey: ["task-notification-watch"],
-    queryFn: () => instanceApi.tasks({ page: 1, page_size: TASK_NOTIFICATION_PAGE_SIZE }),
+    ...taskSnapshotQueryOptions(instanceApi),
     enabled: Boolean(auth.token),
-    refetchInterval: onTasksPage ? false : TASK_NOTIFICATION_WATCH_INTERVAL,
+    refetchInterval: onTasksPage ? false : TASK_SNAPSHOT_POLL_INTERVAL,
     refetchIntervalInBackground: true,
   });
 

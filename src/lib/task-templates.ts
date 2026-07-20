@@ -1,6 +1,7 @@
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName } from "./format";
 import { i18nText } from "./i18n-text";
 import { normalizeStoragePath } from "./remote-storage";
+import { updateStorageValue } from "./storage-mutex";
 import type { CreateTaskPayload, RuntimeStorage, Task, TaskTemplate, TaskTemplateVariable, UnknownRecord } from "./types";
 
 export const TASK_TEMPLATES_STORAGE_KEY = "easy-console.taskTemplates";
@@ -150,6 +151,7 @@ function normalizeTemplate(raw: unknown): TaskTemplate | null {
     cpu: positiveNumber(raw.cpu, 4),
     gpu: nonNegativeInteger(raw.gpu, 0),
     memory: positiveInteger(raw.memory, 16),
+    price: positiveNumber(raw.price, 1),
     storagePath: normalizeStoragePath(stringValue(raw.storagePath, "/")),
     mountPath: stringValue(raw.mountPath, "/home/ubuntu"),
     releaseCondition: condition,
@@ -177,7 +179,7 @@ export async function loadTaskTemplates(storage: RuntimeStorage) {
 }
 
 export async function saveTaskTemplates(storage: RuntimeStorage, templates: TaskTemplate[]) {
-  await storage.set(TASK_TEMPLATES_STORAGE_KEY, JSON.stringify(templates));
+  await updateStorageValue(storage, TASK_TEMPLATES_STORAGE_KEY, () => JSON.stringify(templates));
 }
 
 export function createTaskTemplate(input: EditableTaskTemplate, date = new Date()): TaskTemplate {
@@ -240,6 +242,7 @@ export function taskToEditableTaskTemplate(task: Task, username = ""): EditableT
     cpu: positiveNumber(task.cpu, 4),
     gpu: nonNegativeInteger(task.gpu, 0),
     memory: positiveInteger(task.memory, 16),
+    price: positiveNumber(task.price, 1),
     storagePath: normalizeStoragePath(stringValue(task.storage_path, username ? `/${username}` : "/")),
     mountPath: stringValue(task.mount_path, username ? `/home/ubuntu/${username}` : "/home/ubuntu"),
     releaseCondition,
@@ -307,7 +310,7 @@ export function taskTemplateToPayloads(
   return Array.from({ length: template.batchCount }, (_, index) => {
     const payload: CreateTaskPayload = {
       name: formatTemplateTaskName(template, index, template.batchCount, date),
-      price: 1,
+      price: template.price ?? 1,
       cpu: template.cpu,
       gpu: template.gpu > 0 ? template.gpu : undefined,
       memory: template.memory,

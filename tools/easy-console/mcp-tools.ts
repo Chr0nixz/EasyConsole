@@ -14,6 +14,7 @@ import {
   commitImage,
   createScheduledTaskRecord,
   createTask,
+  createTaskTemplateRecord,
   deleteScheduledTask,
   deleteStoragePath,
   deleteTask,
@@ -41,15 +42,21 @@ import {
   listTasks,
   mkdirStorage,
   monitorUrl,
+  pauseScheduledTaskRecord,
   readStorageText,
   refreshToken,
   releaseTask,
+  releaseTasks,
+  resumeScheduledTaskRecord,
   runScheduledTask,
   setDefaultImage,
   uploadLocalFile,
+  updateScheduledTaskRecord,
   updateTask,
+  updateTaskTemplateRecord,
   userInfo,
 } from "./operations";
+import type { EditableTaskTemplate } from "../../src/lib/task-templates";
 
 type JsonId = string | number;
 type InputSchema = Record<string, z.ZodType>;
@@ -155,6 +162,19 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       },
       handler(context, input) {
         return releaseTask(context.api, asId(input.taskId), asConfirm(input.confirm));
+      },
+    },
+    {
+      name: "easyconsole_task_release_batch",
+      description: "Release multiple EasyConsole tasks. Requires confirm=true to execute.",
+      inputSchema: {
+        taskIds: z.array(idSchema),
+        confirm: z.boolean().optional(),
+      },
+      handler(context, input) {
+        const ids = input.taskIds;
+        if (!Array.isArray(ids)) throw new Error("taskIds must be an array.");
+        return releaseTasks(context.api, ids as JsonId[], asConfirm(input.confirm));
       },
     },
     {
@@ -457,14 +477,46 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       },
     },
     {
+      name: "easyconsole_template_create",
+      description: "Create a local task template. Requires confirm=true to execute.",
+      inputSchema: {
+        template: z.record(z.string(), z.unknown()),
+        confirm: z.boolean().optional(),
+      },
+      handler(context, input) {
+        return createTaskTemplateRecord(context.storage, asRecord(input.template) as unknown as EditableTaskTemplate, asConfirm(input.confirm));
+      },
+    },
+    {
+      name: "easyconsole_template_update",
+      description: "Update a local task template. Requires confirm=true to execute.",
+      inputSchema: {
+        templateId: z.string(),
+        template: z.record(z.string(), z.unknown()),
+        confirm: z.boolean().optional(),
+      },
+      handler(context, input) {
+        return updateTaskTemplateRecord(
+          context.storage,
+          String(input.templateId),
+          asRecord(input.template) as unknown as EditableTaskTemplate,
+          asConfirm(input.confirm),
+        );
+      },
+    },
+    {
       name: "easyconsole_template_apply",
       description: "Apply a task template to create tasks. Requires confirm=true to execute.",
       inputSchema: {
         templateId: z.string(),
+        variableValues: z.record(z.string(), z.string()).optional(),
         confirm: z.boolean().optional(),
       },
       handler(context, input) {
-        return applyTaskTemplate(context.storage, context.api, String(input.templateId), asConfirm(input.confirm));
+        const variableValues = input.variableValues
+          ? (asRecord(input.variableValues) as Record<string, string>)
+          : undefined;
+        return applyTaskTemplate(context.storage, context.api, String(input.templateId), asConfirm(input.confirm), variableValues);
       },
     },
     {
@@ -504,6 +556,49 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
           payload: buildCreateTaskPayload(asRecord(input.payload)),
           recurrence: input.recurrence as unknown as Parameters<typeof createScheduledTaskRecord>[1]["recurrence"],
         });
+      },
+    },
+    {
+      name: "easyconsole_schedule_update",
+      description: "Update a local scheduled task. Requires confirm=true to execute.",
+      inputSchema: {
+        taskId: z.string(),
+        patch: z.record(z.string(), z.unknown()),
+        confirm: z.boolean().optional(),
+      },
+      handler(context, input) {
+        const patch = asRecord(input.patch);
+        if (patch.payload && typeof patch.payload === "object") {
+          patch.payload = buildCreateTaskPayload(asRecord(patch.payload));
+        }
+        return updateScheduledTaskRecord(
+          context.storage,
+          String(input.taskId),
+          patch as Parameters<typeof updateScheduledTaskRecord>[2],
+          asConfirm(input.confirm),
+        );
+      },
+    },
+    {
+      name: "easyconsole_schedule_pause",
+      description: "Pause a pending scheduled task. Requires confirm=true to execute.",
+      inputSchema: {
+        taskId: z.string(),
+        confirm: z.boolean().optional(),
+      },
+      handler(context, input) {
+        return pauseScheduledTaskRecord(context.storage, String(input.taskId), asConfirm(input.confirm));
+      },
+    },
+    {
+      name: "easyconsole_schedule_resume",
+      description: "Resume a paused or failed scheduled task. Requires confirm=true to execute.",
+      inputSchema: {
+        taskId: z.string(),
+        confirm: z.boolean().optional(),
+      },
+      handler(context, input) {
+        return resumeScheduledTaskRecord(context.storage, String(input.taskId), asConfirm(input.confirm));
       },
     },
     {

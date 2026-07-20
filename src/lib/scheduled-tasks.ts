@@ -1,4 +1,5 @@
 import { computeNextRunTime, isRecurring } from "./task-recurrence";
+import { updateStorageValue } from "./storage-mutex";
 import type { CreateTaskPayload, RuntimeStorage, ScheduledTask, TaskRecurrence } from "./types";
 
 export const SCHEDULED_TASKS_STORAGE_KEY = "easy-console.scheduledTasks";
@@ -63,13 +64,41 @@ function normalizeSchedule(raw: unknown): ScheduledTask | null {
 export async function loadScheduledTasks(storage: RuntimeStorage) {
   const raw = await storage.get(SCHEDULED_TASKS_STORAGE_KEY);
   if (!raw) return [];
-  const parsed = JSON.parse(raw) as unknown;
-  if (!Array.isArray(parsed)) return [];
-  return parsed.map(normalizeSchedule).filter((item): item is ScheduledTask => Boolean(item));
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(normalizeSchedule).filter((item): item is ScheduledTask => Boolean(item));
+  } catch {
+    return [];
+  }
 }
 
-export function saveScheduledTasks(storage: RuntimeStorage, items: ScheduledTask[]) {
-  return storage.set(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(items));
+export async function saveScheduledTasks(storage: RuntimeStorage, items: ScheduledTask[]) {
+  await updateStorageValue(storage, SCHEDULED_TASKS_STORAGE_KEY, () => JSON.stringify(items));
+}
+
+/** Atomic load→modify→save for scheduled task lists (used by background runner). */
+export async function mutateScheduledTasks(
+  storage: RuntimeStorage,
+  updater: (items: ScheduledTask[]) => ScheduledTask[] | Promise<ScheduledTask[]>,
+) {
+  let next: ScheduledTask[] = [];
+  await updateStorageValue(storage, SCHEDULED_TASKS_STORAGE_KEY, async (raw) => {
+    let current: ScheduledTask[] = [];
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          current = parsed.map(normalizeSchedule).filter((item): item is ScheduledTask => Boolean(item));
+        }
+      } catch {
+        current = [];
+      }
+    }
+    next = await updater(current);
+    return JSON.stringify(next);
+  });
+  return next;
 }
 
 export function createScheduledTask(input: {
@@ -114,13 +143,24 @@ export function isScheduleDue(task: ScheduledTask, now = new Date()) {
 
 export function sortScheduledTasks(items: ScheduledTask[]) {
   return [...items].sort((left, right) => {
-    const statusScore = (status: ScheduledTask["status"]) => (status === "pending" || status === "running" ? 0 : 1);
+    const statusScore = (status: ScheduledTask["status"]) =>
+      status === "pending" || status === "running" || status === "paused" ? 0 : 1;
     return statusScore(left.status) - statusScore(right.status) || Date.parse(left.scheduleTime) - Date.parse(right.scheduleTime);
   });
 }
 
 export function updateScheduledTask(items: ScheduledTask[], next: ScheduledTask) {
   return items.map((item) => (item.id === next.id ? { ...next, updatedAt: nowIso() } : item));
+}
+
+export function pauseScheduledTask(task: ScheduledTask): ScheduledTask {
+  if (task.status !== "pending") return task;
+  return { ...task, status: "paused", updatedAt: nowIso() };
+}
+
+export function resumeScheduledTask(task: ScheduledTask): ScheduledTask {
+  if (task.status !== "paused" && task.status !== "failed") return task;
+  return { ...task, status: "pending", lastError: undefined, updatedAt: nowIso() };
 }
 
 /**

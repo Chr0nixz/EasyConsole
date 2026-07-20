@@ -160,6 +160,7 @@ describe("easy-console MCP tools", () => {
     const expectedTools = [
       "easyconsole_task_update",
       "easyconsole_task_delete_batch",
+      "easyconsole_task_release_batch",
       "easyconsole_task_check_name",
       "easyconsole_task_download",
       "easyconsole_dashboard_stats",
@@ -175,10 +176,15 @@ describe("easy-console MCP tools", () => {
       "easyconsole_account_change_password",
       "easyconsole_account_refresh_token",
       "easyconsole_template_list",
+      "easyconsole_template_create",
+      "easyconsole_template_update",
       "easyconsole_template_apply",
       "easyconsole_template_delete",
       "easyconsole_schedule_list",
       "easyconsole_schedule_create",
+      "easyconsole_schedule_update",
+      "easyconsole_schedule_pause",
+      "easyconsole_schedule_resume",
       "easyconsole_schedule_run",
       "easyconsole_schedule_delete",
       "easyconsole_backup_export",
@@ -202,6 +208,36 @@ describe("easy-console MCP tools", () => {
       taskIds: [1, 2, 3],
     });
     expect(result).toMatchObject({ dryRun: true, action: "task.deleteBatch" });
+  });
+
+  it("returns dry-run for task_release_batch without confirm", async () => {
+    const result = await invokeMcpToolDefinition(getTool("easyconsole_task_release_batch"), createFakeContext(), {
+      taskIds: [1, 2, 3],
+    });
+    expect(result).toMatchObject({ dryRun: true, action: "task.releaseBatch" });
+  });
+
+  it("releases multiple tasks with confirm", async () => {
+    let releaseCount = 0;
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [], raw: [] }),
+        taskLog: async () => "",
+        createTask: async () => ({}),
+        operateTask: async () => {
+          releaseCount += 1;
+          return { released: true };
+        },
+        deleteTask: async () => ({}),
+        deleteTasks: async () => ({}),
+      },
+    });
+    const result = await invokeMcpToolDefinition(getTool("easyconsole_task_release_batch"), context, {
+      taskIds: [1, 2],
+      confirm: true,
+    });
+    expect(result).toMatchObject({ dryRun: false, action: "task.releaseBatch", result: { count: 2 } });
+    expect(releaseCount).toBe(2);
   });
 
   it("checks task name via task_check_name", async () => {

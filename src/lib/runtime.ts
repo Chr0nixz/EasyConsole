@@ -541,6 +541,10 @@ export const browserRuntime: RuntimeTransport = {
     if (runtimeKind === "web") return;
     await invokeTauriCommand("clear_known_hosts", {});
   },
+  async confirmKnownHost(promptId, accept) {
+    if (runtimeKind === "web") return;
+    await invokeTauriCommand("confirm_known_host", { promptId, accept });
+  },
   openSystemSshTerminal(request) {
     return invokeTauriCommand("open_system_ssh_terminal", { request });
   },

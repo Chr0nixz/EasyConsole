@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -19,9 +20,11 @@ import { DashboardPage } from "./DashboardPage";
 function renderDashboard() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <DashboardPage />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <DashboardPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -38,6 +41,7 @@ describe("DashboardPage", () => {
 
     await waitFor(() => expect(screen.getAllByText("demo").length).toBeGreaterThanOrEqual(1));
 
+    expect(screen.getByRole("link", { name: /查看实例 demo 详情|View details for demo/ })).toHaveAttribute("href", "/tasks/1");
     expect(screen.queryByText("/instance/console")).not.toBeInTheDocument();
     expect(screen.queryByText("/instance/statics")).not.toBeInTheDocument();
     expect(screen.queryByText(/run_task_count/)).not.toBeInTheDocument();

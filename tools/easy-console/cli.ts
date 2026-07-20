@@ -13,6 +13,7 @@ import {
   commitImage,
   createScheduledTaskRecord,
   createTask,
+  createTaskTemplateRecord,
   deleteScheduledTask,
   deleteStoragePath,
   deleteTask,
@@ -40,15 +41,21 @@ import {
   listTasks,
   mkdirStorage,
   monitorUrl,
+  pauseScheduledTaskRecord,
   readStorageText,
   refreshToken,
   releaseTask,
+  releaseTasks,
+  resumeScheduledTaskRecord,
   runScheduledTask,
   setDefaultImage,
   uploadLocalFile,
+  updateScheduledTaskRecord,
   updateTask,
+  updateTaskTemplateRecord,
   userInfo,
 } from "./operations";
+import type { EditableTaskTemplate } from "../../src/lib/task-templates";
 
 export type CliRunResult = {
   exitCode: number;
@@ -358,6 +365,18 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
+  const taskReleaseBatch = task.command("release-batch").description("Release multiple tasks");
+  taskReleaseBatch.argument("<ids>", "Comma-separated task ids");
+  taskReleaseBatch.option("--yes", "Execute instead of dry-run");
+  taskReleaseBatch.action((ids: string) =>
+    run(taskReleaseBatch, (context) => {
+      const options = taskReleaseBatch.opts<{ yes?: boolean }>();
+      const taskIds = ids.split(",").map((id) => parseId(id.trim())).filter(Boolean);
+      if (taskIds.length === 0) throw new Error("Provide at least one task id.");
+      return releaseTasks(context.api, taskIds, options.yes);
+    })(),
+  );
+
   const taskDelete = task.command("delete").description("Delete a task");
   taskDelete.argument("<taskId>", "Task id");
   taskDelete.option("--yes", "Execute instead of dry-run");
@@ -629,13 +648,40 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   const templateList = template.command("list").description("List local task templates");
   templateList.action(run(templateList, (context) => listTaskTemplates(context.storage)));
 
+  const templateCreate = template.command("create").description("Create a local task template");
+  templateCreate.requiredOption("--template-json <json>", "Editable task template JSON");
+  templateCreate.option("--yes", "Execute instead of dry-run");
+  templateCreate.action(
+    run(templateCreate, (context) => {
+      const options = templateCreate.opts<{ templateJson: string; yes?: boolean }>();
+      const input = parseJsonRecord(options.templateJson) as unknown as EditableTaskTemplate;
+      return createTaskTemplateRecord(context.storage, input, options.yes);
+    }),
+  );
+
+  const templateUpdate = template.command("update").description("Update a local task template");
+  templateUpdate.argument("<templateId>", "Template id");
+  templateUpdate.requiredOption("--template-json <json>", "Editable task template JSON");
+  templateUpdate.option("--yes", "Execute instead of dry-run");
+  templateUpdate.action((templateId: string) =>
+    run(templateUpdate, (context) => {
+      const options = templateUpdate.opts<{ templateJson: string; yes?: boolean }>();
+      const input = parseJsonRecord(options.templateJson) as unknown as EditableTaskTemplate;
+      return updateTaskTemplateRecord(context.storage, templateId, input, options.yes);
+    })(),
+  );
+
   const templateApply = template.command("apply").description("Apply a task template to create tasks");
   templateApply.argument("<templateId>", "Template id");
+  templateApply.option("--variables-json <json>", "Template variable values JSON object");
   templateApply.option("--yes", "Execute instead of dry-run");
   templateApply.action((templateId: string) =>
     run(templateApply, (context) => {
-      const options = templateApply.opts<{ yes?: boolean }>();
-      return applyTaskTemplate(context.storage, context.api, templateId, options.yes);
+      const options = templateApply.opts<{ yes?: boolean; variablesJson?: string }>();
+      const variableValues = options.variablesJson
+        ? (parseJsonRecord(options.variablesJson) as Record<string, string>)
+        : undefined;
+      return applyTaskTemplate(context.storage, context.api, templateId, options.yes, variableValues);
     })(),
   );
 
@@ -678,6 +724,41 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
         recurrence,
       });
     }),
+  );
+
+  const scheduleUpdate = schedule.command("update").description("Update a local scheduled task");
+  scheduleUpdate.argument("<taskId>", "Scheduled task id");
+  scheduleUpdate.requiredOption("--schedule-json <json>", "Partial scheduled task JSON (name/description/scheduleTime/payload/recurrence)");
+  scheduleUpdate.option("--yes", "Execute instead of dry-run");
+  scheduleUpdate.action((taskId: string) =>
+    run(scheduleUpdate, (context) => {
+      const options = scheduleUpdate.opts<{ scheduleJson: string; yes?: boolean }>();
+      const patch = parseJsonRecord(options.scheduleJson);
+      if (patch.payload && typeof patch.payload === "object") {
+        patch.payload = buildCreateTaskPayload(patch.payload as UnknownRecord);
+      }
+      return updateScheduledTaskRecord(context.storage, taskId, patch as Parameters<typeof updateScheduledTaskRecord>[2], options.yes);
+    })(),
+  );
+
+  const schedulePause = schedule.command("pause").description("Pause a pending scheduled task");
+  schedulePause.argument("<taskId>", "Scheduled task id");
+  schedulePause.option("--yes", "Execute instead of dry-run");
+  schedulePause.action((taskId: string) =>
+    run(schedulePause, (context) => {
+      const options = schedulePause.opts<{ yes?: boolean }>();
+      return pauseScheduledTaskRecord(context.storage, taskId, options.yes);
+    })(),
+  );
+
+  const scheduleResume = schedule.command("resume").description("Resume a paused or failed scheduled task");
+  scheduleResume.argument("<taskId>", "Scheduled task id");
+  scheduleResume.option("--yes", "Execute instead of dry-run");
+  scheduleResume.action((taskId: string) =>
+    run(scheduleResume, (context) => {
+      const options = scheduleResume.opts<{ yes?: boolean }>();
+      return resumeScheduledTaskRecord(context.storage, taskId, options.yes);
+    })(),
   );
 
   const scheduleRun = schedule.command("run").description("Manually run a scheduled task now");

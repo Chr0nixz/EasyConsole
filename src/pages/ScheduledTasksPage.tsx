@@ -1,14 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, FolderOpen, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { CalendarClock, FolderOpen, Pause, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { FieldError, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
+import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
 import { Button, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
+import { parsePositivePrice } from "../lib/resource-price";
 import { normalizeStoragePath } from "../lib/remote-storage";
 import { browserRuntime } from "../lib/runtime";
 import { cn } from "../lib/utils";
@@ -16,18 +18,21 @@ import {
   createScheduledTask,
   isScheduleDue,
   loadScheduledTasks,
+  pauseScheduledTask,
+  resumeScheduledTask,
   saveScheduledTasks,
   sortScheduledTasks,
   updateScheduledTask,
 } from "../lib/scheduled-tasks";
 import { describeRecurrence } from "../lib/task-recurrence";
+import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, ScheduledTask, ScheduledTaskStatus, TaskRecurrence, TaskRecurrenceType } from "../lib/types";
 import { useAuth } from "../lib/use-auth";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
-const DEFAULT_PRICE = 1;
+const DEFAULT_PRICE = "1";
 const DEFAULT_CPU = "4";
 const DEFAULT_GPU = "0";
 const DEFAULT_MEMORY = "16";
@@ -83,6 +88,11 @@ function formatScheduleTime(value: string) {
   return value.replace("T", " ").slice(0, 16);
 }
 
+function toDateTimeLocalInput(value?: string | null) {
+  if (!value) return "";
+  return value.replace(" ", "T").slice(0, 16);
+}
+
 export function ScheduledTasksPage() {
   const auth = useAuth();
   const toast = useToast();
@@ -96,12 +106,14 @@ export function ScheduledTasksPage() {
   const [loadError, setLoadError] = useState<Error | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
   const [storagePickerTarget, setStoragePickerTarget] = useState<StoragePickerTarget | null>(null);
   const [name, setName] = useState(formatTaskDefaultName());
   const [description, setDescription] = useState("");
   const [scheduleTime, setScheduleTime] = useState(formatDateTimeLocalInput(addHours(new Date(), 1)).slice(0, 16));
   const [imageId, setImageId] = useState("");
+  const [price, setPrice] = useState(DEFAULT_PRICE);
   const [cpu, setCpu] = useState(DEFAULT_CPU);
   const [gpu, setGpu] = useState(DEFAULT_GPU);
   const [memory, setMemory] = useState(DEFAULT_MEMORY);
@@ -124,6 +136,7 @@ export function ScheduledTasksPage() {
     if (!name.trim()) errors.name = text("任务名称不能为空", "Task name is required");
     if (!scheduleTime) errors.scheduleTime = text("请选择计划执行时间", "Select a scheduled execution time");
     if (!imageId) errors.image = text("请选择镜像", "Select an image");
+    if (parsePositivePrice(price) === null) errors.price = text("价格必须大于 0", "Price must be greater than 0");
     if (parsePositiveNumber(cpu) === null) errors.cpu = text("CPU 必须大于 0", "CPU must be greater than 0");
     if (parseNonNegativeInteger(gpu) === null) errors.gpu = text("GPU 必须是非负整数", "GPU must be a non-negative integer");
     if (parsePositiveInteger(memory) === null) errors.memory = text("内存必须是正整数", "Memory must be a positive integer");
@@ -132,7 +145,7 @@ export function ScheduledTasksPage() {
     if (cond === 3 && !workDirectory.trim()) errors.workDirectory = text("请填写工作目录", "Enter the working directory");
     if (cond === 3 && !scriptPath.trim()) errors.scriptPath = text("请填写脚本路径", "Enter the script path");
     return errors;
-  }, [cpu, gpu, imageId, memory, name, releaseCondition, releaseTime, scheduleTime, scriptPath, text, workDirectory]);
+  }, [cpu, gpu, imageId, memory, name, price, releaseCondition, releaseTime, scheduleTime, scriptPath, text, workDirectory]);
 
   useEffect(() => {
     void loadScheduledTasks(browserRuntime.storage)
@@ -169,8 +182,58 @@ export function ScheduledTasksPage() {
     if (releaseCondition === "2") setReleaseTime(getDefaultReleaseTime(value));
   }
 
+  function resetForm() {
+    setEditingId(null);
+    setName(formatTaskDefaultName());
+    setDescription("");
+    setScheduleTime(formatDateTimeLocalInput(addHours(new Date(), 1)).slice(0, 16));
+    setPrice(DEFAULT_PRICE);
+    setCpu(DEFAULT_CPU);
+    setGpu(DEFAULT_GPU);
+    setMemory(DEFAULT_MEMORY);
+    setReleaseCondition("1");
+    setReleaseTime("");
+    setStoragePath(`/${username}`);
+    setMountPath(`/home/ubuntu/${username}`);
+    setWorkDirectory("");
+    setScriptPath("");
+    setRecurrenceType("once");
+    setRecurrenceIntervalSec("3600");
+    setRecurrenceCron("");
+    setFormError(null);
+    setStoragePickerTarget(null);
+    resetTouched();
+    if (imageOptions[0]) setImageId(String(imageOptions[0].id));
+  }
+
+  function beginEdit(item: ScheduledTask) {
+    const payload = item.payload;
+    setEditingId(item.id);
+    setName(item.name);
+    setDescription(item.description ?? "");
+    setScheduleTime(toDateTimeLocalInput(item.scheduleTime));
+    setImageId(String(payload.img ?? ""));
+    setPrice(String(payload.price ?? DEFAULT_PRICE));
+    setCpu(String(payload.cpu ?? DEFAULT_CPU));
+    setGpu(String(payload.gpu ?? DEFAULT_GPU));
+    setMemory(String(payload.memory ?? DEFAULT_MEMORY));
+    setReleaseCondition(String(payload.releace_conditions ?? "1"));
+    setReleaseTime(toDateTimeLocalInput(payload.releace_time));
+    setStoragePath(String(payload.storage_path ?? `/${username}`));
+    setMountPath(String(payload.mount_path ?? `/home/ubuntu/${username}`));
+    setWorkDirectory(String(payload.work_directory ?? ""));
+    setScriptPath(String(payload.script_path ?? ""));
+    const recurrence = item.recurrence;
+    setRecurrenceType(recurrence?.type ?? "once");
+    setRecurrenceIntervalSec(String(recurrence?.intervalSec ?? 3600));
+    setRecurrenceCron(recurrence?.cron ?? "");
+    setFormError(null);
+    setStoragePickerTarget(null);
+    resetTouched();
+  }
+
   function buildPayload(): CreateTaskPayload | null {
-    touchAll(["name", "scheduleTime", "image", "cpu", "gpu", "memory", "releaseTime", "workDirectory", "scriptPath"]);
+    touchAll(["name", "scheduleTime", "image", "price", "cpu", "gpu", "memory", "releaseTime", "workDirectory", "scriptPath"]);
     const taskName = name.trim();
     if (!taskName) {
       setFormError(text("任务名称不能为空", "Task name is required"));
@@ -189,9 +252,14 @@ export function ScheduledTasksPage() {
       setFormError(text("请选择镜像", "Select an image"));
       return null;
     }
+    const priceValue = parsePositivePrice(price);
     const cpuValue = parsePositiveNumber(cpu);
     const gpuValue = parseNonNegativeInteger(gpu);
     const memoryValue = parsePositiveInteger(memory);
+    if (priceValue === null) {
+      setFormError(text("价格必须大于 0", "Price must be greater than 0"));
+      return null;
+    }
     if (cpuValue === null) {
       setFormError(text("CPU 必须大于 0", "CPU must be greater than 0"));
       return null;
@@ -215,7 +283,7 @@ export function ScheduledTasksPage() {
     }
 
     return {
-      price: DEFAULT_PRICE,
+      price: priceValue,
       name: taskName,
       cpu: cpuValue,
       gpu: gpuValue > 0 ? gpuValue : undefined,
@@ -230,7 +298,7 @@ export function ScheduledTasksPage() {
     };
   }
 
-  const createMutation = useMutation({
+  const saveMutation = useMutation({
     mutationFn: async (event: FormEvent) => {
       event.preventDefault();
       setFormError(null);
@@ -245,6 +313,26 @@ export function ScheduledTasksPage() {
       } else if (recurrenceType !== "once") {
         recurrence = { type: recurrenceType };
       }
+
+      if (editingId) {
+        const existing = items.find((item) => item.id === editingId);
+        if (!existing) throw new Error(text("定时任务不存在", "Scheduled task not found"));
+        const nextStatus: ScheduledTaskStatus =
+          existing.status === "done" || existing.status === "failed" ? "pending" : existing.status === "running" ? "pending" : existing.status;
+        const updated: ScheduledTask = {
+          ...existing,
+          name: payload.name,
+          description: description.trim() || undefined,
+          scheduleTime,
+          payload,
+          recurrence,
+          status: nextStatus,
+          lastError: nextStatus === "pending" ? undefined : existing.lastError,
+        };
+        await persist(updateScheduledTask(items, updated));
+        return updated;
+      }
+
       const scheduled = createScheduledTask({
         name: payload.name,
         description: description.trim() || undefined,
@@ -257,33 +345,31 @@ export function ScheduledTasksPage() {
     },
     onSuccess: (scheduled) => {
       if (!scheduled) return;
-      toast.success(text("定时任务已保存", "Scheduled task saved"), text(`${scheduled.name}，${formatScheduleTime(scheduled.scheduleTime)} 执行`, `${scheduled.name}, runs at ${formatScheduleTime(scheduled.scheduleTime)}`));
+      const title = editingId ? text("定时任务已更新", "Scheduled task updated") : text("定时任务已保存", "Scheduled task saved");
+      toast.success(title, text(`${scheduled.name}，${formatScheduleTime(scheduled.scheduleTime)} 执行`, `${scheduled.name}, runs at ${formatScheduleTime(scheduled.scheduleTime)}`));
       void runLogger.log({
         source: "scheduled-task",
         level: "info",
-        action: "scheduledTask.save",
+        action: editingId ? "scheduledTask.update" : "scheduledTask.save",
         result: "success",
-        title: text("定时任务已保存", "Scheduled task saved"),
+        title,
         targetName: scheduled.name,
         targetId: scheduled.id,
         metadata: { scheduleTime: scheduled.scheduleTime },
       });
-      setName(formatTaskDefaultName());
-      setDescription("");
-      setScheduleTime(formatDateTimeLocalInput(addHours(new Date(), 1)).slice(0, 16));
-      setRecurrenceType("once");
-      setRecurrenceIntervalSec("3600");
-      setRecurrenceCron("");
-      resetTouched();
+      resetForm();
     },
     onError: (error) => {
-      toast.error(text("定时任务保存失败", "Failed to save scheduled task"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
+      toast.error(
+        editingId ? text("定时任务更新失败", "Failed to update scheduled task") : text("定时任务保存失败", "Failed to save scheduled task"),
+        error instanceof Error ? error.message : text("请稍后重试", "Try again later"),
+      );
       void runLogger.log({
         source: "scheduled-task",
         level: "error",
-        action: "scheduledTask.save",
+        action: editingId ? "scheduledTask.update" : "scheduledTask.save",
         result: "failure",
-        title: text("定时任务保存失败", "Failed to save scheduled task"),
+        title: editingId ? text("定时任务更新失败", "Failed to update scheduled task") : text("定时任务保存失败", "Failed to save scheduled task"),
         targetName: name.trim(),
         error: errorMessage(error, text("定时任务保存失败", "Failed to save scheduled task")),
       });
@@ -302,7 +388,7 @@ export function ScheduledTasksPage() {
           await instanceApi.createTask(target.payload);
           next = updateScheduledTask(next, { ...target, status: "done", lastRunAt: new Date().toISOString(), lastError: undefined });
           await persist(next);
-          queryClient.invalidateQueries({ queryKey: ["tasks"] });
+          invalidateTaskQueries(queryClient);
           toast.success(text("定时任务已执行", "Scheduled task executed"), target.name);
           void runLogger.log({
             source: "scheduled-task",
@@ -345,12 +431,93 @@ export function ScheduledTasksPage() {
       description: text(`将删除 ${item.name}。已创建的实例不受影响。`, `Delete ${item.name}. Created instances are not affected.`),
       confirmLabel: text("删除", "Delete"),
       tone: "danger",
-      run: () => persist(items.filter((current) => current.id !== item.id)),
+      run: async () => {
+        if (editingId === item.id) resetForm();
+        await persist(items.filter((current) => current.id !== item.id));
+      },
     });
   }
 
   function retryItem(item: ScheduledTask) {
     void executeTargets([{ ...item, status: "pending" }]);
+  }
+
+  async function pauseItem(item: ScheduledTask) {
+    const next = pauseScheduledTask(item);
+    if (next === item) return;
+    await persist(updateScheduledTask(items, next));
+    toast.success(text("定时任务已暂停", "Scheduled task paused"), item.name);
+  }
+
+  async function resumeItem(item: ScheduledTask) {
+    const next = resumeScheduledTask(item);
+    if (next === item) return;
+    await persist(updateScheduledTask(items, next));
+    toast.success(text("定时任务已恢复", "Scheduled task resumed"), item.name);
+  }
+
+  function renderItemActions(item: ScheduledTask) {
+    return (
+      <>
+        <Button
+          className="h-8 px-2"
+          disabled={item.status === "running"}
+          title={text("编辑", "Edit")}
+          type="button"
+          variant="ghost"
+          onClick={() => beginEdit(item)}
+        >
+          <Pencil className="h-4 w-4" />
+          {text("编辑", "Edit")}
+        </Button>
+        {item.status === "pending" ? (
+          <Button
+            className="h-8 px-2"
+            title={text("暂停", "Pause")}
+            type="button"
+            variant="ghost"
+            onClick={() => void pauseItem(item)}
+          >
+            <Pause className="h-4 w-4" />
+            {text("暂停", "Pause")}
+          </Button>
+        ) : null}
+        {item.status === "paused" || item.status === "failed" ? (
+          <Button
+            className="h-8 px-2"
+            title={text("恢复", "Resume")}
+            type="button"
+            variant="ghost"
+            onClick={() => void resumeItem(item)}
+          >
+            <Play className="h-4 w-4" />
+            {text("恢复", "Resume")}
+          </Button>
+        ) : null}
+        <Button
+          className="h-8 px-2"
+          disabled={isExecuting || item.status === "running"}
+          title={text("立即执行", "Run now")}
+          type="button"
+          variant="ghost"
+          onClick={() => retryItem(item)}
+        >
+          <Play className="h-4 w-4" />
+          {text("执行", "Run")}
+        </Button>
+        <Button
+          aria-label={text(`删除定时任务 ${item.name}`, `Delete scheduled task ${item.name}`)}
+          className="h-8 w-8 px-0 text-app-danger hover:text-app-danger"
+          title={text("删除", "Delete")}
+          type="button"
+          variant="ghost"
+          onClick={() => deleteItem(item)}
+        >
+          <Trash2 className="h-4 w-4" />
+          <span className="sr-only">{text("删除", "Delete")}</span>
+        </Button>
+      </>
+    );
   }
 
   const dueCount = items.filter((item) => isScheduleDue(item)).length;
@@ -382,10 +549,18 @@ export function ScheduledTasksPage() {
       {systemImages.isError ? <ErrorState error={systemImages.error} /> : null}
 
       <Panel>
-        <form className="space-y-4 p-4" onSubmit={(event) => createMutation.mutate(event)}>
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <CalendarClock className="h-4 w-4 text-app-accent" />
-            {text("新建计划", "New Plan")}
+        <form className="space-y-4 p-4" onSubmit={(event) => saveMutation.mutate(event)}>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm font-semibold">
+            <div className="flex items-center gap-2">
+              <CalendarClock className="h-4 w-4 text-app-accent" />
+              {editingId ? text("编辑计划", "Edit Plan") : text("新建计划", "New Plan")}
+            </div>
+            {editingId ? (
+              <Button type="button" variant="secondary" onClick={resetForm}>
+                <X className="h-4 w-4" />
+                {text("取消编辑", "Cancel edit")}
+              </Button>
+            ) : null}
           </div>
           <div className="grid gap-4 md:grid-cols-3">
             <label className="block text-sm">
@@ -437,6 +612,18 @@ export function ScheduledTasksPage() {
             <span className="mb-1 block text-app-muted">{text("备注", "Notes")}</span>
             <Textarea className="min-h-16 w-full" value={description} onChange={(event) => setDescription(event.target.value)} />
           </label>
+          <ResourcePriceFields
+            price={price}
+            priceError={fieldErrors.price}
+            priceTouched={touchedFields.has("price")}
+            onPriceBlur={() => markTouched("price")}
+            onPriceChange={setPrice}
+            onApplySpec={({ cpu: nextCpu, gpu: nextGpu, memory: nextMemory }) => {
+              setCpu(nextCpu);
+              handleGpuChange(nextGpu);
+              setMemory(nextMemory);
+            }}
+          />
           <div className="grid gap-4 md:grid-cols-3">
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">CPU</span>
@@ -516,10 +703,15 @@ export function ScheduledTasksPage() {
             </div>
           ) : null}
           {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
-          <div className="flex justify-end">
-            <Button disabled={createMutation.isPending}>
-              <Plus className="h-4 w-4" />
-              {text("保存定时任务", "Save scheduled task")}
+          <div className="flex justify-end gap-2">
+            {editingId ? (
+              <Button type="button" variant="secondary" onClick={resetForm}>
+                {text("取消", "Cancel")}
+              </Button>
+            ) : null}
+            <Button disabled={saveMutation.isPending}>
+              {editingId ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+              {editingId ? text("保存修改", "Save changes") : text("保存定时任务", "Save scheduled task")}
             </Button>
           </div>
         </form>
@@ -564,28 +756,7 @@ export function ScheduledTasksPage() {
                       </div>
                     </dl>
                     <div className="flex flex-wrap gap-1.5">
-                      <Button
-                        className="h-8 px-2"
-                        disabled={isExecuting || item.status === "running"}
-                        title={text("立即执行", "Run now")}
-                        type="button"
-                        variant="ghost"
-                        onClick={() => retryItem(item)}
-                      >
-                        <Play className="h-4 w-4" />
-                        {text("执行", "Run")}
-                      </Button>
-                      <Button
-                        aria-label={text(`删除定时任务 ${item.name}`, `Delete scheduled task ${item.name}`)}
-                        className="h-8 w-8 px-0 text-app-danger hover:text-app-danger"
-                        title={text("删除", "Delete")}
-                        type="button"
-                        variant="ghost"
-                        onClick={() => deleteItem(item)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        <span className="sr-only">{text("删除", "Delete")}</span>
-                      </Button>
+                      {renderItemActions(item)}
                     </div>
                   </article>
                 ))}
@@ -625,29 +796,8 @@ export function ScheduledTasksPage() {
                           {item.lastError ? <span className="text-app-danger">{item.lastError}</span> : item.lastRunAt ? formatScheduleTime(item.lastRunAt) : "-"}
                         </td>
                         <td className="sticky right-0 z-10 bg-app-surface px-3 py-2 align-middle shadow-stickyColumn">
-                          <div className="flex justify-end gap-1">
-                            <Button
-                              className="h-8 px-2"
-                              disabled={isExecuting || item.status === "running"}
-                              title={text("立即执行", "Run now")}
-                              type="button"
-                              variant="ghost"
-                              onClick={() => retryItem(item)}
-                            >
-                              <Play className="h-4 w-4" />
-                              {text("执行", "Run")}
-                            </Button>
-                            <Button
-                              aria-label={text(`删除定时任务 ${item.name}`, `Delete scheduled task ${item.name}`)}
-                              className="h-8 w-8 px-0 text-app-danger hover:text-app-danger"
-                              title={text("删除", "Delete")}
-                              type="button"
-                              variant="ghost"
-                              onClick={() => deleteItem(item)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                              <span className="sr-only">{text("删除", "Delete")}</span>
-                            </Button>
+                          <div className="flex flex-wrap justify-end gap-1">
+                            {renderItemActions(item)}
                           </div>
                         </td>
                       </tr>

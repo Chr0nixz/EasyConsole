@@ -140,8 +140,8 @@ export class ApiClient {
     }
 
     if (response.status === 401) {
-      // Only retry GET requests (safe/idempotent) with a refresh handler, and only once.
-      if (method === "GET" && this.refreshTokenHandler && !options._retried) {
+      // Any method may retry once after a successful token refresh (single-flight via queue).
+      if (this.refreshTokenHandler && !options._retried) {
         return this.queueForRetry<T>(method, path, { ...options, _retried: true });
       }
       emitUnauthorized();

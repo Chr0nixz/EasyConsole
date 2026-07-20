@@ -107,6 +107,18 @@ describe("TerminalDialog", () => {
     expect(screen.queryByRole("button", { name: "系统终端" })).not.toBeInTheDocument();
   });
 
+  it("keeps copyable SSH fields labeled without uppercase tracking eyebrows", () => {
+    setDesktopRuntime(false);
+    renderDialog();
+
+    const hostLabel = screen.getByText("主机");
+    expect(hostLabel.className).not.toMatch(/uppercase/);
+    expect(hostLabel.className).not.toMatch(/tracking-wide/);
+    expect(screen.getByText("端口")).toBeInTheDocument();
+    expect(screen.getByText("用户名")).toBeInTheDocument();
+    expect(screen.getByText("密码")).toBeInTheDocument();
+  });
+
   it("shows desktop SSH entry points in the desktop runtime", async () => {
     setDesktopRuntime(true);
     const openSystemSshTerminal = vi.spyOn(browserRuntime, "openSystemSshTerminal").mockResolvedValue(undefined);

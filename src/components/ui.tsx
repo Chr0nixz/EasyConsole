@@ -90,13 +90,15 @@ export function Panel({ children, className }: { children: ReactNode; className?
   return <section className={cn("app-surface-enter rounded-lg border border-app-border bg-app-surface shadow-shell", className)}>{children}</section>;
 }
 
-export function TableRegion({ children, label, className }: { children: ReactNode; label: string; className?: string }) {
-  return (
-    <div className={cn("app-table-region overflow-auto", className)} role="region" aria-label={label} tabIndex={0}>
-      {children}
-    </div>
-  );
-}
+export const TableRegion = forwardRef<HTMLDivElement, { children: ReactNode; label: string; className?: string }>(
+  function TableRegion({ children, label, className }, ref) {
+    return (
+      <div ref={ref} className={cn("app-table-region overflow-auto", className)} role="region" aria-label={label} tabIndex={0}>
+        {children}
+      </div>
+    );
+  },
+);
 
 let dialogScrollLockCount = 0;
 
@@ -191,6 +193,7 @@ export function Dialog({
     >
       <div
         ref={dialogRef}
+        tabIndex={-1}
         className={cn("app-modal-panel max-h-[calc(100vh-2rem)] w-full overflow-hidden rounded-lg bg-app-surface sm:max-h-[calc(100vh-5rem)]", width)}
       >
         <div className="flex h-12 items-center justify-between border-b border-app-border px-4">
@@ -201,6 +204,121 @@ export function Dialog({
           </button>
         </div>
         <div className="max-h-[calc(100vh-5rem)] overflow-auto sm:max-h-[calc(100vh-8rem)]">{children}</div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+export function Drawer({
+  open,
+  title,
+  children,
+  onClose,
+  width = "max-w-xl",
+  closeOnOverlayClick = true,
+}: {
+  open: boolean;
+  title: string;
+  children: ReactNode;
+  onClose: () => void;
+  width?: string;
+  closeOnOverlayClick?: boolean;
+}) {
+  const titleId = useId();
+  const { t } = useI18n();
+  const drawerRef = useRef<HTMLDivElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    dialogScrollLockCount += 1;
+    if (dialogScrollLockCount === 1) {
+      document.body.style.overflow = "hidden";
+    }
+
+    window.setTimeout(() => getFocusableElements(drawerRef.current)[0]?.focus(), 0);
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+
+      const focusable = getFocusableElements(drawerRef.current);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        drawerRef.current?.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const activeElement = document.activeElement;
+
+      if (event.shiftKey && activeElement === first) {
+        event.preventDefault();
+        last.focus();
+        return;
+      }
+
+      if (!event.shiftKey && activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      dialogScrollLockCount = Math.max(0, dialogScrollLockCount - 1);
+      if (dialogScrollLockCount === 0) {
+        document.body.style.overflow = "";
+      }
+      previousFocusRef.current?.focus();
+    };
+  }, [onClose, open]);
+
+  if (!open) return null;
+
+  const handleOverlayClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (!closeOnOverlayClick || event.target !== event.currentTarget) return;
+    onClose();
+  };
+
+  return createPortal(
+    <div
+      className="app-drawer-overlay fixed inset-0 z-50 flex justify-end"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      onMouseDown={handleOverlayClick}
+    >
+      <div
+        ref={drawerRef}
+        tabIndex={-1}
+        className={cn(
+          "app-drawer-panel flex h-full w-full flex-col overflow-hidden border-l border-app-border bg-app-surface shadow-shell",
+          width,
+        )}
+      >
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-app-border px-4">
+          <h2 id={titleId} className="truncate text-sm font-semibold text-app-text">{title}</h2>
+          <button
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+            type="button"
+            onClick={onClose}
+          >
+            <X className="h-4 w-4" />
+            <span className="sr-only">{t("common.close")}</span>
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto">{children}</div>
       </div>
     </div>,
     document.body,

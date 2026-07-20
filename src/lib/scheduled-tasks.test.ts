@@ -4,6 +4,8 @@ import {
   createScheduledTask,
   isScheduleDue,
   loadScheduledTasks,
+  pauseScheduledTask,
+  resumeScheduledTask,
   saveScheduledTasks,
   sortScheduledTasks,
   updateScheduledTask,
@@ -50,19 +52,37 @@ describe("scheduled tasks", () => {
     expect(await loadScheduledTasks(storage)).toEqual([task]);
   });
 
+  it("returns empty list for corrupt JSON", async () => {
+    const storage = createMemoryStorage();
+    await storage.set("easy-console.scheduledTasks", "{not-json");
+    await expect(loadScheduledTasks(storage)).resolves.toEqual([]);
+  });
+
   it("detects due pending tasks only", () => {
     const now = new Date("2026-05-24T10:01:00");
 
     expect(isScheduleDue(makeTask({ scheduleTime: "2026-05-24T10:00", status: "pending" }), now)).toBe(true);
     expect(isScheduleDue(makeTask({ scheduleTime: "2026-05-24T10:02", status: "pending" }), now)).toBe(false);
     expect(isScheduleDue(makeTask({ scheduleTime: "2026-05-24T10:00", status: "done" }), now)).toBe(false);
+    expect(isScheduleDue(makeTask({ scheduleTime: "2026-05-24T10:00", status: "paused" }), now)).toBe(false);
+  });
+
+  it("pauses pending tasks and resumes paused or failed tasks", () => {
+    expect(pauseScheduledTask(makeTask({ status: "pending" })).status).toBe("paused");
+    expect(pauseScheduledTask(makeTask({ status: "running" })).status).toBe("running");
+    expect(resumeScheduledTask(makeTask({ status: "paused" })).status).toBe("pending");
+    expect(resumeScheduledTask(makeTask({ status: "failed", lastError: "boom" }))).toMatchObject({
+      status: "pending",
+      lastError: undefined,
+    });
   });
 
   it("keeps active schedules before completed schedules", () => {
     const done = makeTask({ id: "done", status: "done", scheduleTime: "2026-05-24T09:00" });
     const pending = makeTask({ id: "pending", status: "pending", scheduleTime: "2026-05-24T10:00" });
+    const paused = makeTask({ id: "paused", status: "paused", scheduleTime: "2026-05-24T11:00" });
 
-    expect(sortScheduledTasks([done, pending]).map((task) => task.id)).toEqual(["pending", "done"]);
+    expect(sortScheduledTasks([done, paused, pending]).map((task) => task.id)).toEqual(["pending", "paused", "done"]);
   });
 
   it("updates one schedule without mutating the rest", () => {

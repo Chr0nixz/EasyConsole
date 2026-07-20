@@ -28,7 +28,7 @@ import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState, type
 import { Link } from "react-router-dom";
 
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
-import { setApiBaseUrl } from "../lib/api";
+import { authApi, setApiBaseUrl } from "../lib/api";
 import {
   DEFAULT_APP_SETTINGS,
   DEFAULT_CUSTOM_COLORS,
@@ -259,6 +259,11 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const [pfRemoteHost, setPfRemoteHost] = useState("");
   const [pfRemotePort, setPfRemotePort] = useState("");
   const [pfEnabled, setPfEnabled] = useState(true);
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
 
   const settingsAccountId = useMemo(() => {
     if (!auth.user) return GLOBAL_SETTINGS_ACCOUNT_ID;
@@ -278,6 +283,49 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   useEffect(() => {
     setForm(getRuntimeSettings());
   }, [settingsAccountId]);
+
+  async function onChangePassword() {
+    setPasswordError(null);
+    if (!oldPassword || !newPassword) {
+      setPasswordError(text("请填写当前密码与新密码", "Enter the current and new passwords"));
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError(text("两次输入的新密码不一致", "New password confirmation does not match"));
+      return;
+    }
+    setChangingPassword(true);
+    try {
+      await authApi.changePassword({ old_password: oldPassword, new_password: newPassword });
+      setOldPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      toast.success(
+        text("密码已修改", "Password changed"),
+        text("请使用新密码重新登录；已保存账号不会自动更新密文。", "Sign in again with the new password; saved accounts are not updated automatically."),
+      );
+      void runLogger.log({
+        source: "settings",
+        level: "info",
+        action: "account.changePassword",
+        result: "success",
+        title: text("密码已修改", "Password changed"),
+      });
+    } catch (changeError) {
+      const message = changeError instanceof Error ? changeError.message : text("修改密码失败", "Failed to change password");
+      setPasswordError(message);
+      void runLogger.log({
+        source: "settings",
+        level: "error",
+        action: "account.changePassword",
+        result: "failure",
+        title: text("修改密码失败", "Failed to change password"),
+        error: errorMessage(changeError, text("修改密码失败", "Failed to change password")),
+      });
+    } finally {
+      setChangingPassword(false);
+    }
+  }
 
   async function saveSettings(nextSettings: AppSettings, successTitle: string) {
     const nextError = validate(nextSettings, t);
@@ -789,6 +837,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 <code className="block overflow-x-auto whitespace-nowrap rounded-md bg-app-surface px-2.5 py-2 font-mono text-app-text ring-1 ring-inset ring-app-border">
                   {derivedWebsshUrl}
                 </code>
+                <p className="mt-1.5 leading-5 text-app-muted">{t("settings.websshHint")}</p>
               </div>
               <div>
                 <div className="mb-1 flex items-center gap-1.5 text-app-muted">
@@ -803,6 +852,57 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           </aside>
         </div>
       </Panel>
+
+      {auth.user ? (
+        <Panel>
+          <SectionHeader
+            icon={KeyRound}
+            title={text("修改密码", "Change Password")}
+            description={text("修改当前登录账号密码。成功后请用新密码重新登录；本地已保存账号不会自动更新。", "Change the current account password. Sign in again with the new password afterward; saved accounts are not updated automatically.")}
+          />
+          <div className="grid gap-4 p-4 sm:grid-cols-3">
+            <label className="block text-sm">
+              <span className="mb-1 block font-medium text-app-text">{text("当前密码", "Current password")}</span>
+              <Input
+                autoComplete="current-password"
+                className="w-full"
+                onChange={(event) => setOldPassword(event.target.value)}
+                type="password"
+                value={oldPassword}
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block font-medium text-app-text">{text("新密码", "New password")}</span>
+              <Input
+                autoComplete="new-password"
+                className="w-full"
+                onChange={(event) => setNewPassword(event.target.value)}
+                type="password"
+                value={newPassword}
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block font-medium text-app-text">{text("确认新密码", "Confirm new password")}</span>
+              <Input
+                autoComplete="new-password"
+                className="w-full"
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                type="password"
+                value={confirmPassword}
+              />
+            </label>
+            {passwordError ? (
+              <div className="sm:col-span-3 rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{passwordError}</div>
+            ) : null}
+            <div className="sm:col-span-3">
+              <Button disabled={changingPassword} type="button" onClick={() => void onChangePassword()}>
+                <KeyRound className="h-4 w-4" />
+                {changingPassword ? text("提交中", "Submitting") : text("修改密码", "Change password")}
+              </Button>
+            </div>
+          </div>
+        </Panel>
+      ) : null}
 
       {browserRuntime.supportsTray ? (
         <Panel>

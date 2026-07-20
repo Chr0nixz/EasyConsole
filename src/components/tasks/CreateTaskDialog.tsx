@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ErrorState } from "../DataState";
 import { FieldError, FormSection, useFormFieldErrors } from "../form-fields";
 import { RemoteStoragePicker } from "../storage/RemoteStoragePicker";
+import { ResourcePriceFields } from "./ResourcePriceFields";
 import { Button, Dialog, Input, Select } from "../ui";
 import { imageApi, instanceApi } from "../../lib/api";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../../lib/batch";
@@ -13,11 +14,13 @@ import { useToast } from "../../lib/use-toast";
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../../lib/format";
 import { cn } from "../../lib/utils";
 import { useI18n } from "../../lib/i18n";
+import { parsePositivePrice } from "../../lib/resource-price";
 import { normalizeStoragePath } from "../../lib/remote-storage";
+import { invalidateTaskQueries } from "../../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, Task } from "../../lib/types";
 import { errorMessage, useRunLogger } from "../../lib/use-run-logger";
 
-const DEFAULT_PRICE = 1;
+const DEFAULT_PRICE = "1";
 const DEFAULT_CPU = "4";
 const DEFAULT_GPU = "0";
 const DEFAULT_MEMORY = "16";
@@ -131,6 +134,7 @@ export function CreateTaskDialog({
   const systemImages = useQuery({ queryKey: ["images", "system", "task-create"], queryFn: () => imageApi.system({}), enabled: open });
   const [name, setName] = useState("");
   const [imageId, setImageId] = useState("");
+  const [price, setPrice] = useState(DEFAULT_PRICE);
   const [cpu, setCpu] = useState(DEFAULT_CPU);
   const [gpu, setGpu] = useState(DEFAULT_GPU);
   const [memory, setMemory] = useState(DEFAULT_MEMORY);
@@ -149,6 +153,7 @@ export function CreateTaskDialog({
     const errors: Record<string, string> = {};
     if (!name.trim()) errors.name = text("任务名称不能为空", "Task name is required");
     if (!imageId) errors.image = text("请选择镜像", "Select an image");
+    if (parsePositivePrice(price) === null) errors.price = text("价格必须大于 0", "Price must be greater than 0");
     if (parsePositiveNumber(cpu) === null) errors.cpu = text("CPU 必须大于 0", "CPU must be greater than 0");
     if (parseNonNegativeInteger(gpu) === null) errors.gpu = text("GPU 必须是非负整数", "GPU must be a non-negative integer");
     if (parsePositiveInteger(memory) === null) errors.memory = text("内存必须是正整数", "Memory must be a positive integer");
@@ -161,7 +166,7 @@ export function CreateTaskDialog({
       errors.batchCount = text(`数量必须在 1-${MAX_BATCH_COUNT} 之间`, `Count must be 1-${MAX_BATCH_COUNT}`);
     }
     return errors;
-  }, [batchCount, cpu, gpu, imageId, memory, name, releaseCondition, releaseTime, scriptPath, text, workDirectory]);
+  }, [batchCount, cpu, gpu, imageId, memory, name, price, releaseCondition, releaseTime, scriptPath, text, workDirectory]);
 
   const imageOptions = useMemo(() => [...(images.data?.items ?? []), ...(systemImages.data?.items ?? [])], [images.data, systemImages.data]);
   const hasSelectedImageOption = imageOptions.some((image) => String(image.id) === imageId);
@@ -171,6 +176,7 @@ export function CreateTaskDialog({
     if (open) {
       setName(isEditMode ? (initialTask?.name ?? "") : formatTaskDefaultName());
       setImageId(String(getTaskImageId(initialTask)));
+      setPrice(String(initialTask?.price ?? DEFAULT_PRICE));
       setCpu(String(initialTask?.cpu ?? DEFAULT_CPU));
       setGpu(String(initialTask?.gpu ?? DEFAULT_GPU));
       setMemory(String(initialTask?.memory ?? DEFAULT_MEMORY));
@@ -230,7 +236,7 @@ export function CreateTaskDialog({
           targetName: firstName,
           targetId: editTaskId,
         });
-        queryClient.invalidateQueries({ queryKey: ["tasks"] });
+        invalidateTaskQueries(queryClient);
         onClose();
         return;
       }
@@ -247,7 +253,7 @@ export function CreateTaskDialog({
         targetName: firstName,
         metadata: { count: payloads.length, names: payloads.map((payload) => payload.name) },
       });
-      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      invalidateTaskQueries(queryClient);
       onClose();
     },
     onError: (error) => {
@@ -282,7 +288,7 @@ export function CreateTaskDialog({
   function submit(event: FormEvent) {
     event.preventDefault();
     setFormError(null);
-    touchAll(["name", "image", "cpu", "gpu", "memory", "batchCount", "releaseTime", "workDirectory", "scriptPath"]);
+    touchAll(["name", "image", "price", "cpu", "gpu", "memory", "batchCount", "releaseTime", "workDirectory", "scriptPath"]);
     const taskName = name.trim();
     if (!taskName) {
       setFormError(text("任务名称不能为空", "Task name is required"));
@@ -290,6 +296,11 @@ export function CreateTaskDialog({
     }
     if (!imageId) {
       setFormError(text("请选择镜像", "Select an image"));
+      return;
+    }
+    const priceValue = parsePositivePrice(price);
+    if (priceValue === null) {
+      setFormError(text("价格必须大于 0", "Price must be greater than 0"));
       return;
     }
     const cpuValue = parsePositiveNumber(cpu);
@@ -322,7 +333,7 @@ export function CreateTaskDialog({
 
     const sharedPayload = {
       ...(isEditMode ? {} : getCloneCreateFields(initialTask)),
-      price: DEFAULT_PRICE,
+      price: priceValue,
       cpu: cpuValue,
       gpu: gpuValue > 0 ? gpuValue : undefined,
       memory: memoryValue,
@@ -414,6 +425,18 @@ export function CreateTaskDialog({
           </FormSection>
 
           <FormSection title={text("资源配置", "Resources")} divided>
+            <ResourcePriceFields
+              price={price}
+              priceError={fieldErrors.price}
+              priceTouched={touchedFields.has("price")}
+              onPriceBlur={() => markTouched("price")}
+              onPriceChange={setPrice}
+              onApplySpec={({ cpu: nextCpu, gpu: nextGpu, memory: nextMemory }) => {
+                setCpu(nextCpu);
+                handleGpuChange(nextGpu);
+                setMemory(nextMemory);
+              }}
+            />
             <div className="grid gap-4 md:grid-cols-3">
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">CPU</span>

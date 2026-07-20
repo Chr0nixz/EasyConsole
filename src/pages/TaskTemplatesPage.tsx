@@ -5,13 +5,16 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { FieldError, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
+import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
 import { Button, Dialog, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { getReleaseConditionText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
+import { parsePositivePrice } from "../lib/resource-price";
 import { normalizeStoragePath } from "../lib/remote-storage";
 import { browserRuntime } from "../lib/runtime";
+import { invalidateTaskQueries, taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
 import { cn } from "../lib/utils";
 import {
   createTaskTemplate,
@@ -26,7 +29,7 @@ import {
   updateTaskTemplate,
   type EditableTaskTemplate,
 } from "../lib/task-templates";
-import type { ImageItem, Task, TaskTemplate } from "../lib/types";
+import type { ImageItem, TaskTemplate } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useAuth } from "../lib/use-auth";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
@@ -37,9 +40,8 @@ type StoragePickerTarget = "storage" | "workDirectory" | "scriptPath";
 const DEFAULT_CPU = 4;
 const DEFAULT_GPU = 0;
 const DEFAULT_MEMORY = 16;
+const DEFAULT_PRICE = 1;
 const RUNNING_TASK_STATUS = 2;
-const RUNNING_TASK_PAGE_SIZE = 200;
-const MAX_RUNNING_TASK_PAGES = 20;
 
 function getImageOptionLabel(image: ImageItem) {
   const name = image.name ?? image.image_name ?? String(image.id);
@@ -61,6 +63,7 @@ function getDefaultTemplate(username: string, imageId = ""): EditableTaskTemplat
     cpu: DEFAULT_CPU,
     gpu: DEFAULT_GPU,
     memory: DEFAULT_MEMORY,
+    price: DEFAULT_PRICE,
     storagePath: `/${username}`,
     mountPath: `/home/ubuntu/${username}`,
     releaseCondition: 1,
@@ -78,17 +81,6 @@ function formatResource(template: TaskTemplate) {
 function parseFormNumber(value: string, fallback: number) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
-}
-
-async function fetchRunningTasks() {
-  const tasks: Task[] = [];
-  for (let page = 1; page <= MAX_RUNNING_TASK_PAGES; page += 1) {
-    const result = await instanceApi.tasks({ page, page_size: RUNNING_TASK_PAGE_SIZE, status: RUNNING_TASK_STATUS });
-    tasks.push(...result.items);
-    if (typeof result.total === "number" && tasks.length >= result.total) break;
-    if (result.items.length < RUNNING_TASK_PAGE_SIZE) break;
-  }
-  return tasks;
 }
 
 function TemplateDialog({
@@ -129,6 +121,7 @@ function TemplateDialog({
     if (!form.name.trim()) errors.name = text("模板名称不能为空", "Template name is required");
     if (!form.taskNamePrefix.trim()) errors.taskNamePrefix = text("实例名称前缀不能为空", "Instance name prefix is required");
     if (!form.imageId.trim()) errors.image = text("请选择镜像", "Select an image");
+    if (parsePositivePrice(String(form.price ?? "")) === null) errors.price = text("价格必须大于 0", "Price must be greater than 0");
     if (form.cpu <= 0) errors.cpu = text("CPU 必须大于 0", "CPU must be greater than 0");
     if (!Number.isInteger(form.gpu) || form.gpu < 0) errors.gpu = text("GPU 必须是非负整数", "GPU must be a non-negative integer");
     if (!Number.isInteger(form.memory) || form.memory <= 0) errors.memory = text("内存必须是正整数", "Memory must be a positive integer");
@@ -146,7 +139,7 @@ function TemplateDialog({
   function submit(event: FormEvent) {
     event.preventDefault();
     setFormError(null);
-    touchAll(["name", "taskNamePrefix", "image", "cpu", "gpu", "memory", "batchCount", "releaseAfterHours", "workDirectory", "scriptPath"]);
+    touchAll(["name", "taskNamePrefix", "image", "price", "cpu", "gpu", "memory", "batchCount", "releaseAfterHours", "workDirectory", "scriptPath"]);
 
     const name = form.name.trim();
     const taskNamePrefix = form.taskNamePrefix.trim();
@@ -161,6 +154,11 @@ function TemplateDialog({
     }
     if (!imageId) {
       setFormError(text("请选择镜像", "Select an image"));
+      return;
+    }
+    const priceValue = parsePositivePrice(String(form.price ?? ""));
+    if (priceValue === null) {
+      setFormError(text("价格必须大于 0", "Price must be greater than 0"));
       return;
     }
     if (form.cpu <= 0) {
@@ -194,6 +192,7 @@ function TemplateDialog({
       description: form.description?.trim(),
       taskNamePrefix,
       imageId,
+      price: priceValue,
       storagePath: normalizeStoragePath(form.storagePath.trim() || `/${username}`),
       mountPath: form.mountPath.trim() || `/home/ubuntu/${username}`,
       workDirectory: form.workDirectory?.trim(),
@@ -268,6 +267,18 @@ function TemplateDialog({
             <FieldError message={touchedFields.has("batchCount") ? fieldErrors.batchCount : undefined} />
           </label>
         </div>
+        <ResourcePriceFields
+          price={String(form.price ?? DEFAULT_PRICE)}
+          priceError={fieldErrors.price}
+          priceTouched={touchedFields.has("price")}
+          onPriceBlur={() => markTouched("price")}
+          onPriceChange={(next) => update("price", parseFormNumber(next, DEFAULT_PRICE))}
+          onApplySpec={({ cpu: nextCpu, gpu: nextGpu, memory: nextMemory }) => {
+            update("cpu", parseFormNumber(nextCpu, DEFAULT_CPU));
+            update("gpu", parseFormNumber(nextGpu, DEFAULT_GPU));
+            update("memory", parseFormNumber(nextMemory, DEFAULT_MEMORY));
+          }}
+        />
         <div className="grid gap-4 md:grid-cols-3">
           <label className="block text-sm">
             <span className="mb-1 block text-app-muted">CPU</span>
@@ -606,11 +617,10 @@ export function TaskTemplatesPage() {
   });
   const imageOptions = useMemo(() => imageQuery.data ?? [], [imageQuery.data]);
   const runningTasksQuery = useQuery({
-    queryKey: ["task-template-running-counts"],
-    queryFn: fetchRunningTasks,
+    ...taskSnapshotQueryOptions(instanceApi),
     enabled: !loading,
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: false,
+    refetchInterval: false,
+    select: (data) => data.items.filter((task) => Number(task.status) === RUNNING_TASK_STATUS),
   });
   const runningCountByTemplateId = useMemo(() => {
     const runningTasks = runningTasksQuery.data ?? [];
@@ -680,8 +690,7 @@ export function TaskTemplatesPage() {
         targetId: template.id,
         metadata: { count: payloads.length, names: payloads.map((payload) => payload.name) },
       });
-      queryClient.invalidateQueries({ queryKey: ["tasks"] });
-      queryClient.invalidateQueries({ queryKey: ["task-template-running-counts"] });
+      invalidateTaskQueries(queryClient);
       setTemplates((current) => {
         const next = current.map((item) => (item.id === template.id ? recordTaskTemplateUsage(item) : item));
         void saveTaskTemplates(browserRuntime.storage, next);

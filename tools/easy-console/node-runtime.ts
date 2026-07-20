@@ -148,6 +148,9 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     async clearKnownHosts() {
       return unsupported("Known hosts management");
     },
+    async confirmKnownHost() {
+      return unsupported("Known hosts confirmation");
+    },
     async openSystemSshTerminal() {
       return unsupported("System SSH terminal");
     },

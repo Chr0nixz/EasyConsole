@@ -1,3 +1,21 @@
+# EasyConsole v0.4.6
+
+Audit remediation release: safer task workflows, coordinated polling, richer command palette / CLI coverage, and SSH first-connect confirmation.
+
+## Changes
+
+- **Task navigation & shortcuts**: Dashboard and lists link to `/tasks/:id`; task table gains j/k row focus plus Enter / l / t / r actions; Web no longer duplicates “connection info” in More when it is already the primary action.
+- **Command palette**: Matched tasks expand into detail, logs, terminal, and release actions (detail opens with `?tab=`).
+- **Task snapshot coordination**: Shared `TASK_SNAPSHOT_QUERY_KEY` so Watcher / Detail / Templates share one poll path and invalidate together.
+- **Create / schedule / templates**: Resource and price fields wired through create, edit, scheduled tasks, and templates.
+- **Reliability**: Tauri storage writes are atomic; browser storage uses a mutex; scheduled-task load failures are caught; API clients refresh on arbitrary-method 401; notifications cover the full `fetchAllTasks` set.
+- **SSH TOFU**: Unknown hosts prompt before writing known-host fingerprints; mismatches still reject with a clear Settings recovery path.
+- **Performance & UX**: Task table virtualization, streaming MD5 for uploads, truncated task logs, Settings password change, and clearer web-only SSH copy (no WebSSH UI by product decision).
+- **CLI / MCP**: Template create/update, schedule update/pause/resume with variable apply, and batch release.
+- **Tests**: Page smoke coverage for Settings / Storage / Images, plus Rust known-host helpers.
+
+---
+
 # EasyConsole v0.4.5
 
 Per-account settings with SSH default password, plus more reliable secure storage and session restore.

@@ -5,12 +5,21 @@ import { buildMonitorDashboardUrl, DEFAULT_MONITOR_DASHBOARD_URL } from "../../s
 import type { EasyConsoleApi } from "../../src/lib/api-factory";
 import { exportLocalDataBackup, importLocalDataBackup, parseLocalDataBackup, type LocalDataBackupSection } from "../../src/lib/local-data-backup";
 import { normalizeStoragePath } from "../../src/lib/remote-storage";
-import { createScheduledTask, loadScheduledTasks, saveScheduledTasks } from "../../src/lib/scheduled-tasks";
-import { loadTaskTemplates, saveTaskTemplates, taskTemplateToPayloads } from "../../src/lib/task-templates";
+import { createScheduledTask, loadScheduledTasks, pauseScheduledTask, resumeScheduledTask, saveScheduledTasks, scheduleNextRun, updateScheduledTask } from "../../src/lib/scheduled-tasks";
+import {
+  createTaskTemplate,
+  loadTaskTemplates,
+  recordTaskTemplateUsage,
+  saveTaskTemplates,
+  taskTemplateToPayloads,
+  updateTaskTemplate,
+  type EditableTaskTemplate,
+} from "../../src/lib/task-templates";
 import type {
   CreateTaskPayload,
   ImageCommitPayload,
   RuntimeStorage,
+  ScheduledTask,
   Task,
   TaskQuery,
   TaskRecurrence,
@@ -124,6 +133,21 @@ export function createTask(api: EasyConsoleApi, payload: CreateTaskPayload, conf
 
 export function releaseTask(api: EasyConsoleApi, taskId: string | number, confirm?: boolean) {
   return maybeMutate("task.release", { id: taskId }, confirm, () => api.instanceApi.operateTask(taskId));
+}
+
+const BATCH_RELEASE_DELAY_MS = 350;
+
+export function releaseTasks(api: EasyConsoleApi, taskIds: Array<string | number>, confirm?: boolean) {
+  return maybeMutate("task.releaseBatch", { ids: taskIds }, confirm, async () => {
+    const results: unknown[] = [];
+    for (let index = 0; index < taskIds.length; index += 1) {
+      if (index > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, BATCH_RELEASE_DELAY_MS));
+      }
+      results.push(await api.instanceApi.operateTask(taskIds[index]));
+    }
+    return { count: taskIds.length, results };
+  });
 }
 
 export function deleteTask(api: EasyConsoleApi, taskId: string | number, confirm?: boolean) {
@@ -294,18 +318,59 @@ export async function listTaskTemplates(storage: RuntimeStorage) {
   return loadTaskTemplates(storage);
 }
 
-export async function applyTaskTemplate(storage: RuntimeStorage, api: EasyConsoleApi, templateId: string, confirm?: boolean) {
+export async function createTaskTemplateRecord(storage: RuntimeStorage, input: EditableTaskTemplate, confirm?: boolean) {
+  return maybeMutate("template.create", { name: input.name }, confirm, async () => {
+    const templates = await loadTaskTemplates(storage);
+    const created = createTaskTemplate(input);
+    await saveTaskTemplates(storage, [...templates, created]);
+    return created;
+  });
+}
+
+export async function updateTaskTemplateRecord(
+  storage: RuntimeStorage,
+  templateId: string,
+  input: EditableTaskTemplate,
+  confirm?: boolean,
+) {
+  const templates = await loadTaskTemplates(storage);
+  const existing = templates.find((item) => item.id === templateId);
+  if (!existing) throw new Error(`Task template not found: ${templateId}`);
+  return maybeMutate("template.update", { templateId, templateName: existing.name }, confirm, async () => {
+    const updated = updateTaskTemplate(existing, input);
+    await saveTaskTemplates(
+      storage,
+      templates.map((item) => (item.id === templateId ? updated : item)),
+    );
+    return updated;
+  });
+}
+
+export async function applyTaskTemplate(
+  storage: RuntimeStorage,
+  api: EasyConsoleApi,
+  templateId: string,
+  confirm?: boolean,
+  variableValues?: Record<string, string>,
+) {
   const templates = await loadTaskTemplates(storage);
   const template = templates.find((item) => item.id === templateId);
   if (!template) throw new Error(`Task template not found: ${templateId}`);
-  const payloads = taskTemplateToPayloads(template);
-  return maybeMutate("template.apply", { templateId, templateName: template.name, count: payloads.length }, confirm, async () => {
-    const results: unknown[] = [];
-    for (const payload of payloads) {
-      results.push(await api.instanceApi.createTask(payload));
-    }
-    return { created: results.length, results };
-  });
+  const payloads = taskTemplateToPayloads(template, undefined, variableValues);
+  return maybeMutate(
+    "template.apply",
+    { templateId, templateName: template.name, count: payloads.length, variableValues },
+    confirm,
+    async () => {
+      const results: unknown[] = [];
+      for (const payload of payloads) {
+        results.push(await api.instanceApi.createTask(payload));
+      }
+      const next = templates.map((item) => (item.id === templateId ? recordTaskTemplateUsage(item) : item));
+      await saveTaskTemplates(storage, next);
+      return { created: results.length, results };
+    },
+  );
 }
 
 export async function deleteTaskTemplate(storage: RuntimeStorage, templateId: string, confirm?: boolean) {
@@ -341,11 +406,77 @@ export async function createScheduledTaskRecord(
   return task;
 }
 
+export async function updateScheduledTaskRecord(
+  storage: RuntimeStorage,
+  taskId: string,
+  patch: Partial<Pick<ScheduledTask, "name" | "description" | "scheduleTime" | "payload" | "recurrence">>,
+  confirm?: boolean,
+) {
+  const items = await loadScheduledTasks(storage);
+  const task = items.find((item) => item.id === taskId);
+  if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
+  const next: ScheduledTask = {
+    ...task,
+    ...patch,
+    payload: patch.payload ?? task.payload,
+  };
+  return maybeMutate("schedule.update", { taskId, taskName: task.name, patch }, confirm, async () => {
+    const updated = updateScheduledTask(items, next);
+    await saveScheduledTasks(storage, updated);
+    return updated.find((item) => item.id === taskId) ?? next;
+  });
+}
+
+export async function pauseScheduledTaskRecord(storage: RuntimeStorage, taskId: string, confirm?: boolean) {
+  const items = await loadScheduledTasks(storage);
+  const task = items.find((item) => item.id === taskId);
+  if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
+  return maybeMutate("schedule.pause", { taskId, taskName: task.name }, confirm, async () => {
+    const paused = pauseScheduledTask(task);
+    await saveScheduledTasks(storage, updateScheduledTask(items, paused));
+    return paused;
+  });
+}
+
+export async function resumeScheduledTaskRecord(storage: RuntimeStorage, taskId: string, confirm?: boolean) {
+  const items = await loadScheduledTasks(storage);
+  const task = items.find((item) => item.id === taskId);
+  if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
+  return maybeMutate("schedule.resume", { taskId, taskName: task.name }, confirm, async () => {
+    const resumed = resumeScheduledTask(task);
+    await saveScheduledTasks(storage, updateScheduledTask(items, resumed));
+    return resumed;
+  });
+}
+
 export async function runScheduledTask(storage: RuntimeStorage, api: EasyConsoleApi, taskId: string, confirm?: boolean) {
   const items = await loadScheduledTasks(storage);
   const task = items.find((item) => item.id === taskId);
   if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
-  return maybeMutate("schedule.run", { taskId, taskName: task.name }, confirm, () => api.instanceApi.createTask(task.payload));
+  return maybeMutate("schedule.run", { taskId, taskName: task.name }, confirm, async () => {
+    let next = updateScheduledTask(items, { ...task, status: "running", lastError: undefined });
+    await saveScheduledTasks(storage, next);
+    try {
+      const result = await api.instanceApi.createTask(task.payload);
+      const afterRun = scheduleNextRun({ ...task, lastRunAt: new Date().toISOString() }) ?? {
+        ...task,
+        status: "done" as const,
+        lastRunAt: new Date().toISOString(),
+      };
+      next = updateScheduledTask(next, afterRun);
+      await saveScheduledTasks(storage, next);
+      return { result, task: afterRun };
+    } catch (error) {
+      const failed = {
+        ...task,
+        status: "failed" as const,
+        lastRunAt: new Date().toISOString(),
+        lastError: error instanceof Error ? error.message : String(error),
+      };
+      await saveScheduledTasks(storage, updateScheduledTask(next, failed));
+      throw error;
+    }
+  });
 }
 
 export async function deleteScheduledTask(storage: RuntimeStorage, taskId: string, confirm?: boolean) {

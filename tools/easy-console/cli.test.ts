@@ -185,6 +185,41 @@ describe("easy-console cli", () => {
     expect(payload.data).toMatchObject({ dryRun: true, action: "task.deleteBatch" });
   });
 
+  it("returns dry-run for task release-batch without --yes", async () => {
+    const result = await runCli(["--json", "task", "release-batch", "1,2,3"], {
+      createContext: async () => createFakeContext(),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout) as { data: { dryRun: boolean; action: string } };
+    expect(payload.data).toMatchObject({ dryRun: true, action: "task.releaseBatch" });
+  });
+
+  it("releases multiple tasks with --yes", async () => {
+    let releaseCount = 0;
+    const result = await runCli(["--json", "task", "release-batch", "1,2", "--yes"], {
+      createContext: async () =>
+        createFakeContext({
+          instanceApi: {
+            tasks: async () => ({ items: [], raw: [] }),
+            taskLog: async () => "",
+            createTask: async () => ({}),
+            operateTask: async () => {
+              releaseCount += 1;
+              return { released: true };
+            },
+            deleteTask: async () => ({}),
+            deleteTasks: async () => ({}),
+          },
+        }),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout) as { data: { dryRun: boolean; action: string; result: { count: number } } };
+    expect(payload.data).toMatchObject({ dryRun: false, action: "task.releaseBatch", result: { count: 2 } });
+    expect(releaseCount).toBe(2);
+  });
+
   it("checks task name availability", async () => {
     const result = await runCli(["--json", "task", "check-name", "my-task"], {
       createContext: async () => createFakeContext(),
@@ -345,6 +380,38 @@ describe("easy-console cli", () => {
     expect(payload.data).toMatchObject({ dryRun: true, action: "template.apply" });
   });
 
+  it("returns dry-run for template create and update without --yes", async () => {
+    const templateJson = JSON.stringify({
+      name: "demo",
+      taskNamePrefix: "demo",
+      batchCount: 1,
+      imageId: "1",
+      cpu: 4,
+      gpu: 0,
+      memory: 16,
+      price: 1,
+      storagePath: "/",
+      mountPath: "/home/ubuntu",
+      releaseCondition: 1,
+    });
+    const createResult = await runCli(["--json", "template", "create", "--template-json", templateJson], {
+      createContext: async () => createFakeContext(),
+    });
+    expect(createResult.exitCode).toBe(0);
+    expect(JSON.parse(createResult.stdout).data).toMatchObject({ dryRun: true, action: "template.create" });
+
+    const context = createFakeContext();
+    await context.storage.set(
+      TASK_TEMPLATES_STORAGE_KEY,
+      JSON.stringify([{ ...JSON.parse(templateJson), id: "tpl-1", usageCount: 0, createdAt: "t", updatedAt: "t" }]),
+    );
+    const updateResult = await runCli(["--json", "template", "update", "tpl-1", "--template-json", templateJson], {
+      createContext: async () => context,
+    });
+    expect(updateResult.exitCode).toBe(0);
+    expect(JSON.parse(updateResult.stdout).data).toMatchObject({ dryRun: true, action: "template.update" });
+  });
+
   it("returns dry-run for schedule run without --yes", async () => {
     const context = createFakeContext();
     // Pre-seed a scheduled task
@@ -388,6 +455,35 @@ describe("easy-console cli", () => {
     expect(result.exitCode).toBe(0);
     const payload = JSON.parse(result.stdout) as { data: { dryRun: boolean; action: string } };
     expect(payload.data).toMatchObject({ dryRun: true, action: "schedule.delete" });
+  });
+
+  it("returns dry-run for schedule update/pause/resume without --yes", async () => {
+    const context = createFakeContext();
+    await context.storage.set(
+      SCHEDULED_TASKS_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: "sch-1",
+          name: "job",
+          scheduleTime: new Date().toISOString(),
+          status: "pending",
+          payload: { name: "t" },
+          createdAt: "t",
+          updatedAt: "t",
+        },
+      ]),
+    );
+
+    const update = await runCli(["--json", "schedule", "update", "sch-1", "--schedule-json", JSON.stringify({ name: "renamed" })], {
+      createContext: async () => context,
+    });
+    expect(JSON.parse(update.stdout).data).toMatchObject({ dryRun: true, action: "schedule.update" });
+
+    const pause = await runCli(["--json", "schedule", "pause", "sch-1"], { createContext: async () => context });
+    expect(JSON.parse(pause.stdout).data).toMatchObject({ dryRun: true, action: "schedule.pause" });
+
+    const resume = await runCli(["--json", "schedule", "resume", "sch-1"], { createContext: async () => context });
+    expect(JSON.parse(resume.stdout).data).toMatchObject({ dryRun: true, action: "schedule.resume" });
   });
 
   it("creates a local scheduled task", async () => {

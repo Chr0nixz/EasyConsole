@@ -1,4 +1,5 @@
 import type { RuntimeStorage } from "./types";
+import { updateStorageValue } from "./storage-mutex";
 
 export const UPLOAD_RESUME_STORAGE_KEY = "easy-console.upload-resume";
 
@@ -30,12 +31,7 @@ function normalizeRecord(raw: unknown): UploadResumeRecord | null {
   };
 }
 
-export function makeFileKey(file: File): string {
-  return `${file.name}-${file.size}-${file.lastModified}`;
-}
-
-async function loadAllRecords(storage: RuntimeStorage): Promise<Map<string, UploadResumeRecord>> {
-  const raw = await storage.get(UPLOAD_RESUME_STORAGE_KEY);
+function parseRecordsFromRaw(raw: string | null): Map<string, UploadResumeRecord> {
   if (!raw) return new Map();
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -51,26 +47,33 @@ async function loadAllRecords(storage: RuntimeStorage): Promise<Map<string, Uplo
   }
 }
 
-async function saveAllRecords(storage: RuntimeStorage, records: Map<string, UploadResumeRecord>) {
+function stringifyRecords(records: Map<string, UploadResumeRecord>) {
   const obj: Record<string, UploadResumeRecord> = {};
   for (const [key, value] of records) obj[key] = value;
-  await storage.set(UPLOAD_RESUME_STORAGE_KEY, JSON.stringify(obj));
+  return JSON.stringify(obj);
+}
+
+export function makeFileKey(file: File): string {
+  return `${file.name}-${file.size}-${file.lastModified}`;
 }
 
 export async function loadUploadResume(storage: RuntimeStorage, fileKey: string): Promise<UploadResumeRecord | null> {
-  const records = await loadAllRecords(storage);
-  return records.get(fileKey) ?? null;
+  const raw = await storage.get(UPLOAD_RESUME_STORAGE_KEY);
+  return parseRecordsFromRaw(raw).get(fileKey) ?? null;
 }
 
 export async function saveUploadResume(storage: RuntimeStorage, record: UploadResumeRecord): Promise<void> {
-  const records = await loadAllRecords(storage);
-  records.set(record.fileKey, record);
-  await saveAllRecords(storage, records);
+  await updateStorageValue(storage, UPLOAD_RESUME_STORAGE_KEY, (raw) => {
+    const records = parseRecordsFromRaw(raw);
+    records.set(record.fileKey, record);
+    return stringifyRecords(records);
+  });
 }
 
 export async function clearUploadResume(storage: RuntimeStorage, fileKey: string): Promise<void> {
-  const records = await loadAllRecords(storage);
-  if (records.delete(fileKey)) {
-    await saveAllRecords(storage, records);
-  }
+  await updateStorageValue(storage, UPLOAD_RESUME_STORAGE_KEY, (raw) => {
+    const records = parseRecordsFromRaw(raw);
+    if (!records.delete(fileKey)) return raw;
+    return stringifyRecords(records);
+  });
 }

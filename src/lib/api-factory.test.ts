@@ -66,6 +66,7 @@ function createRuntime(responseData: unknown) {
     async listKnownHosts() { return []; },
     async removeKnownHost() {},
     async clearKnownHosts() {},
+    async confirmKnownHost() {},
     async openSystemSshTerminal() {},
     async openVscodeSsh() {},
     async openSshWindow() {},

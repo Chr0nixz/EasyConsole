@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, FileJson, FileText, Monitor, TerminalSquare } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 
@@ -12,13 +12,24 @@ import { getTaskName } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { buildMonitorDashboardEmbedUrl } from "../lib/monitor-dashboard";
 import { browserRuntime } from "../lib/runtime";
-import type { MonitorMetricSeries } from "../lib/types";
+import { taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
+import type { MonitorMetricSeries, Task } from "../lib/types";
 
 const TaskLogDialog = lazy(() => import("../components/tasks/TaskLogDialog").then((module) => ({ default: module.TaskLogDialog })));
 const TerminalDialog = lazy(() => import("../components/tasks/TerminalDialog").then((module) => ({ default: module.TerminalDialog })));
 
 type Tab = "log" | "monitor" | "ssh" | "raw";
 type MonitorRange = "now-1h" | "now-6h" | "now-24h" | "now-7d";
+
+const DETAIL_TABS: Tab[] = ["log", "monitor", "ssh", "raw"];
+
+function parseDetailTab(value: string | null): Tab {
+  return DETAIL_TABS.includes(value as Tab) ? (value as Tab) : "log";
+}
+
+function findTaskById(items: Task[], id: string) {
+  return items.find((item) => String(item.id) === String(id) || String(item.task_id ?? "") === String(id));
+}
 
 const MONITOR_RANGES: Array<{ value: MonitorRange; zh: string; en: string }> = [
   { value: "now-1h", zh: "近 1 小时", en: "Last 1 hour" },
@@ -53,27 +64,46 @@ function renderSparkline(points: number[]): string {
 
 export function TaskDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { text } = useI18n();
-  const [tab, setTab] = useState<Tab>("log");
+  const [tab, setTab] = useState<Tab>(() => parseDetailTab(searchParams.get("tab")));
   const [logOpen, setLogOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [monitorRange, setMonitorRange] = useState<MonitorRange>("now-1h");
 
-  const query = useQuery({
+  useEffect(() => {
+    setTab(parseDetailTab(searchParams.get("tab")));
+  }, [searchParams]);
+
+  const snapshotQuery = useQuery({
+    ...taskSnapshotQueryOptions(instanceApi),
+    enabled: Boolean(id),
+    refetchInterval: false,
+    select: (data) => (id ? findTaskById(data.items, id) : undefined),
+  });
+
+  // Fallback when the shared snapshot has loaded but does not include this id
+  // (e.g. TasksPage wrote a filtered page into the snapshot cache).
+  const fallbackQuery = useQuery({
     queryKey: ["task-detail", id],
     queryFn: async () => {
       if (!id) throw new Error("Missing task id");
       const result = await instanceApi.tasks({ page: 1, page_size: 500 });
-      const task = result.items.find((item) => String(item.id) === String(id) || String(item.task_id ?? "") === String(id));
-      if (!task) throw new Error(text("任务不存在", "Task not found"));
-      return task;
+      const found = findTaskById(result.items, id);
+      if (!found) throw new Error(text("任务不存在", "Task not found"));
+      return found;
     },
-    enabled: Boolean(id),
-    refetchInterval: 10_000,
+    enabled: Boolean(id) && snapshotQuery.isFetched && !snapshotQuery.data,
   });
 
-  const task = query.data;
+  const task = snapshotQuery.data ?? fallbackQuery.data;
+  const isLoading = snapshotQuery.isLoading || (fallbackQuery.isEnabled && fallbackQuery.isLoading);
+  const isError = Boolean(
+    (snapshotQuery.isFetched && !snapshotQuery.data && fallbackQuery.isError) ||
+      (snapshotQuery.isError && !task),
+  );
+  const queryError = fallbackQuery.error ?? snapshotQuery.error;
   const monitorUrl = useMemo(
     () => (task ? buildMonitorDashboardEmbedUrl(task, { from: monitorRange, to: "now" }) : null),
     [task, monitorRange],
@@ -107,8 +137,8 @@ export function TaskDetailPage() {
     if (tab === "ssh" && task) setTerminalOpen(true);
   }, [tab, task]);
 
-  if (query.isLoading) return <LoadingState />;
-  if (query.isError) return <ErrorState error={query.error} action={<Button onClick={() => navigate("/tasks")}>{text("返回任务列表", "Back to tasks")}</Button>} />;
+  if (isLoading) return <LoadingState />;
+  if (isError) return <ErrorState error={queryError} action={<Button onClick={() => navigate("/tasks")}>{text("返回任务列表", "Back to tasks")}</Button>} />;
   if (!task) return <EmptyState title={text("任务不存在", "Task not found")} action={<Button onClick={() => navigate("/tasks")}>{text("返回任务列表", "Back to tasks")}</Button>} />;
 
   const tabs: Array<{ key: Tab; label: string; icon: typeof FileText }> = [
