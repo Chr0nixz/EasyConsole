@@ -14,6 +14,7 @@ import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDef
 import { cn } from "../../lib/utils";
 import { useI18n } from "../../lib/i18n";
 import { normalizeStoragePath } from "../../lib/remote-storage";
+import { mountPathToRemoteStoragePath, remoteStorageDirectoryToWorkDirectory, resolveTaskReleaseScriptSelection } from "../../lib/task-release-path";
 import type { CreateTaskPayload, ImageItem, Task } from "../../lib/types";
 import { errorMessage, useRunLogger } from "../../lib/use-run-logger";
 
@@ -354,15 +355,43 @@ export function CreateTaskDialog({
     );
   }
 
+  const pickerStoragePath = normalizeStoragePath(storagePath.trim() || `/${username}`);
+  const pickerMountPath = mountPath.trim() || `/home/ubuntu/${username}`;
+  const pickerWorkDirectoryPath = workDirectory.trim()
+    ? mountPathToRemoteStoragePath(workDirectory, pickerStoragePath, pickerMountPath)
+    : storagePath || "/";
   const pickerMode = storagePickerTarget === "scriptPath" ? "file" : "directory";
   const pickerInitialPath =
     storagePickerTarget === "scriptPath"
-      ? workDirectory || storagePath || "/"
+      ? pickerWorkDirectoryPath
       : storagePickerTarget === "workDirectory"
-        ? workDirectory || storagePath || "/"
+        ? pickerWorkDirectoryPath
         : storagePath || "/";
   const pickerTitle =
     storagePickerTarget === "storage" ? text("选择存储目录", "Select storage directory") : storagePickerTarget === "workDirectory" ? text("选择工作目录", "Select working directory") : text("选择脚本文件", "Select script file");
+
+  function handleStoragePickerSelect(path: string) {
+    const selectedStoragePath = normalizeStoragePath(storagePath.trim() || `/${username}`);
+    const selectedMountPath = mountPath.trim() || `/home/ubuntu/${username}`;
+
+    if (storagePickerTarget === "storage") {
+      setStoragePath(path);
+    }
+    if (storagePickerTarget === "workDirectory") {
+      setWorkDirectory(remoteStorageDirectoryToWorkDirectory(path, selectedStoragePath, selectedMountPath));
+    }
+    if (storagePickerTarget === "scriptPath") {
+      const nextPaths = resolveTaskReleaseScriptSelection({
+        selectedFilePath: path,
+        storagePath: selectedStoragePath,
+        mountPath: selectedMountPath,
+        currentWorkDirectory: workDirectory,
+      });
+      setWorkDirectory(nextPaths.workDirectory);
+      setScriptPath(nextPaths.scriptPath);
+    }
+    setStoragePickerTarget(null);
+  }
 
   return (
     <Dialog
@@ -524,12 +553,7 @@ export function CreateTaskDialog({
         open={storagePickerTarget !== null}
         title={pickerTitle}
         onClose={() => setStoragePickerTarget(null)}
-        onSelect={(path) => {
-          if (storagePickerTarget === "storage") setStoragePath(path);
-          if (storagePickerTarget === "workDirectory") setWorkDirectory(path);
-          if (storagePickerTarget === "scriptPath") setScriptPath(path);
-          setStoragePickerTarget(null);
-        }}
+        onSelect={handleStoragePickerSelect}
       />
     </Dialog>
   );
