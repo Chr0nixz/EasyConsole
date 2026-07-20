@@ -358,6 +358,7 @@ export type RuntimeTransport = {
   supportsTray: boolean;
   supportsSystemTerminal: boolean;
   supportsInAppSsh: boolean;
+  supportsSshPopOut: boolean;
   supportsUpdater: boolean;
   supportsFileReveal: boolean;
   storage: RuntimeStorage;

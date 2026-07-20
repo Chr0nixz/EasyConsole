@@ -392,6 +392,57 @@ function requireDesktopSsh(): never {
   throw new Error(i18nText("当前环境不是桌面端，无法使用应用内 SSH", "The current environment is not the desktop app, so in-app SSH is unavailable"));
 }
 
+const SSH_EARLY_EVENT_LIMIT = 64;
+
+type SshSessionEventHandler = (event: SshSessionEvent) => void;
+
+const sshSessionHandlers = new Map<string, SshSessionEventHandler>();
+const sshEarlyEventBuffer = new Map<string, SshSessionEvent[]>();
+let sshGlobalListenPromise: Promise<void> | null = null;
+
+function clearSshSessionEvents(sessionId: string) {
+  sshSessionHandlers.delete(sessionId);
+  sshEarlyEventBuffer.delete(sessionId);
+}
+
+function bufferSshSessionEvent(event: SshSessionEvent) {
+  const queued = sshEarlyEventBuffer.get(event.sessionId) ?? [];
+  if (queued.length >= SSH_EARLY_EVENT_LIMIT) {
+    queued.shift();
+  }
+  queued.push(event);
+  sshEarlyEventBuffer.set(event.sessionId, queued);
+}
+
+function dispatchSshSessionEvent(event: SshSessionEvent) {
+  const handler = sshSessionHandlers.get(event.sessionId);
+  if (handler) {
+    handler(event);
+    return;
+  }
+  bufferSshSessionEvent(event);
+}
+
+async function ensureGlobalSshListen() {
+  if (runtimeKind === "web") return;
+  if (sshGlobalListenPromise) {
+    await sshGlobalListenPromise;
+    return;
+  }
+  sshGlobalListenPromise = (async () => {
+    const { listen } = await import("@tauri-apps/api/event");
+    await listen<SshSessionEvent>("ssh-session-event", (event) => {
+      dispatchSshSessionEvent(event.payload);
+    });
+  })();
+  try {
+    await sshGlobalListenPromise;
+  } catch (error) {
+    sshGlobalListenPromise = null;
+    throw error;
+  }
+}
+
 export const browserRuntime: RuntimeTransport = {
   get isDesktop() {
     return runtimeKind === "desktop";
@@ -415,6 +466,9 @@ export const browserRuntime: RuntimeTransport = {
   },
   get supportsInAppSsh() {
     return runtimeKind !== "web";
+  },
+  get supportsSshPopOut() {
+    return runtimeKind === "desktop";
   },
   get supportsUpdater() {
     return runtimeKind === "desktop" || runtimeKind === "mobile";
@@ -451,7 +505,8 @@ export const browserRuntime: RuntimeTransport = {
     if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("reveal_local_path", { path });
   },
-  openSshSession(request) {
+  async openSshSession(request) {
+    await ensureGlobalSshListen();
     return invokeTauriCommand<string>("open_ssh_session", { request });
   },
   writeSshSession(sessionId, data) {
@@ -460,16 +515,27 @@ export const browserRuntime: RuntimeTransport = {
   resizeSshSession(sessionId, cols, rows) {
     return invokeTauriCommand("ssh_resize", { sessionId, cols, rows });
   },
-  closeSshSession(sessionId) {
-    return invokeTauriCommand("ssh_close", { sessionId });
+  async closeSshSession(sessionId) {
+    try {
+      await invokeTauriCommand("ssh_close", { sessionId });
+    } finally {
+      clearSshSessionEvents(sessionId);
+    }
   },
   async onSshSessionEvent(sessionId, handler) {
     if (runtimeKind === "web") requireDesktopSsh();
-    const { listen } = await import("@tauri-apps/api/event");
-    return listen<SshSessionEvent>("ssh-session-event", (event) => {
-      if (event.payload.sessionId !== sessionId) return;
-      handler(event.payload);
-    });
+    await ensureGlobalSshListen();
+    sshSessionHandlers.set(sessionId, handler);
+    const buffered = sshEarlyEventBuffer.get(sessionId) ?? [];
+    sshEarlyEventBuffer.delete(sessionId);
+    for (const event of buffered) {
+      handler(event);
+    }
+    return () => {
+      if (sshSessionHandlers.get(sessionId) === handler) {
+        clearSshSessionEvents(sessionId);
+      }
+    };
   },
   async listKnownHosts() {
     if (runtimeKind === "web") return [];
@@ -490,7 +556,13 @@ export const browserRuntime: RuntimeTransport = {
     return invokeTauriCommand("open_vscode_ssh", { request });
   },
   openSshWindow(request) {
-    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持弹出独立窗口", "Popping out to a standalone window is not supported in this environment")));
+    if (runtimeKind !== "desktop") {
+      return Promise.reject(
+        new Error(
+          i18nText("当前环境不支持弹出独立窗口", "Popping out to a standalone window is not supported in this environment"),
+        ),
+      );
+    }
     return invokeTauriCommand("open_ssh_window", { request });
   },
   sftpList(sessionId, path) {

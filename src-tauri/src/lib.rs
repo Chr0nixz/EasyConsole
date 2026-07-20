@@ -190,6 +190,7 @@ struct EasyConsoleSshClient {
     app: AppHandle,
     host: String,
     port: u16,
+    host_key_error: Arc<Mutex<Option<String>>>,
 }
 
 impl client::Handler for EasyConsoleSshClient {
@@ -199,7 +200,24 @@ impl client::Handler for EasyConsoleSshClient {
         &mut self,
         server_public_key: &ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(verify_known_host(&self.app, &self.host, self.port, server_public_key).unwrap_or(false))
+        match verify_known_host(&self.app, &self.host, self.port, server_public_key) {
+            Ok(true) => Ok(true),
+            Ok(false) => {
+                if let Ok(mut guard) = self.host_key_error.lock() {
+                    *guard = Some(format!(
+                        "SSH 主机密钥与已知记录不符（{}:{}）。如确认主机已更换密钥，请在设置中删除该 known host 后重试。",
+                        self.host, self.port
+                    ));
+                }
+                Ok(false)
+            }
+            Err(message) => {
+                if let Ok(mut guard) = self.host_key_error.lock() {
+                    *guard = Some(format!("无法校验 SSH 主机密钥：{message}"));
+                }
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -753,10 +771,12 @@ async fn install_vscode_public_key(
         keepalive_max: 0,
         ..<_>::default()
     });
+    let host_key_error = Arc::new(Mutex::new(None));
     let handler = EasyConsoleSshClient {
         app: app.clone(),
         host: host.clone(),
         port,
+        host_key_error: Arc::clone(&host_key_error),
     };
     let mut session = tokio::time::timeout(
         Duration::from_secs(15),
@@ -764,7 +784,14 @@ async fn install_vscode_public_key(
     )
     .await
     .map_err(|_| "SSH 连接超时，无法配置 VS Code 免密，请检查网络和主机是否可达".to_string())?
-    .map_err(|error| format!("SSH 连接失败，无法配置 VS Code 免密：{error}"))?;
+    .map_err(|error| {
+        if let Ok(guard) = host_key_error.lock() {
+            if let Some(message) = guard.as_ref() {
+                return message.clone();
+            }
+        }
+        format!("SSH 连接失败，无法配置 VS Code 免密：{error}")
+    })?;
 
     let auth = session
         .authenticate_password(username, password)
@@ -826,6 +853,11 @@ async fn prepare_vscode_ssh(
     install_vscode_public_key(app, request, &public_key).await?;
     write_vscode_ssh_config(request, &alias, &identity_file)?;
     Ok(alias)
+}
+
+fn format_socks5_ipv6_host(addr: &[u8; 16]) -> String {
+    let ip = std::net::Ipv6Addr::from(*addr);
+    format!("[{ip}]")
 }
 
 async fn socks5_handshake(
@@ -898,7 +930,7 @@ async fn socks5_handshake(
                 .read_exact(&mut addr)
                 .await
                 .map_err(|e| format!("SOCKS5 读取 IPv6 地址失败：{e}"))?;
-            format!("[{:x}]", u128::from_be_bytes(addr))
+            format_socks5_ipv6_host(&addr)
         }
         _ => {
             let _ = stream
@@ -986,10 +1018,12 @@ async fn run_russh_session(
         keepalive_max: 0,
         ..<_>::default()
     });
+    let host_key_error = Arc::new(Mutex::new(None));
     let handler = EasyConsoleSshClient {
         app: app.clone(),
         host: host.clone(),
         port,
+        host_key_error: Arc::clone(&host_key_error),
     };
     let mut session = tokio::time::timeout(
         connect_timeout,
@@ -997,7 +1031,14 @@ async fn run_russh_session(
     )
     .await
     .map_err(|_| "SSH 连接超时，请检查网络和主机是否可达".to_string())?
-    .map_err(|error| format!("SSH 连接失败：{error}"))?;
+    .map_err(|error| {
+        if let Ok(guard) = host_key_error.lock() {
+            if let Some(message) = guard.as_ref() {
+                return message.clone();
+            }
+        }
+        format!("SSH 连接失败：{error}")
+    })?;
 
     let auth_success = if auth_mode == "key" {
         let key_path = request.ssh_key_path.as_deref()
@@ -1808,9 +1849,12 @@ fn ssh_close(state: State<'_, Arc<SshSessionState>>, session_id: String) -> Resu
 /// `?` inside hash fragments), keeps `password` out of the URL, and sidesteps
 /// the event-timing race where Tauri emits before the frontend `listen`
 /// has registered.
+///
+/// Must be `async` on Windows: building a WebView2 window inside a synchronous
+/// command deadlocks the UI thread (blank window + frozen app).
 #[cfg(desktop)]
 #[tauri::command]
-fn open_ssh_window(
+async fn open_ssh_window(
     app: AppHandle,
     state: State<'_, Arc<PendingSshWindows>>,
     request: SshConnectionRequest,
@@ -1825,10 +1869,19 @@ fn open_ssh_window(
             .unwrap_or_else(|| Uuid::new_v4().to_string())
     );
 
-    // If a window with this label already exists, just focus it.
+    // If a window with this label already exists, close it and wait until the
+    // label is free before rebuilding with the new connection request.
     if let Some(existing) = app.get_webview_window(&label) {
-        let _ = existing.set_focus();
-        return Ok(());
+        let _ = existing.close();
+        for _ in 0..40 {
+            if app.get_webview_window(&label).is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        if app.get_webview_window(&label).is_some() {
+            return Err("无法关闭已有的 SSH 窗口，请先手动关闭后再试".to_string());
+        }
     }
 
     let title = format!(
@@ -2455,5 +2508,11 @@ mod tests {
         assert!(trust_on_first_use(&mut known_hosts, key.clone(), "SHA256:first".to_string()));
         assert!(trust_on_first_use(&mut known_hosts, key.clone(), "SHA256:first".to_string()));
         assert!(!trust_on_first_use(&mut known_hosts, key, "SHA256:changed".to_string()));
+    }
+
+    #[test]
+    fn format_socks5_ipv6_host_uses_standard_notation() {
+        let addr = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1).octets();
+        assert_eq!(format_socks5_ipv6_host(&addr), "[2001:db8::1]");
     }
 }

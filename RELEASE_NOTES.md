@@ -1,3 +1,18 @@
+# EasyConsole v0.4.4
+
+Harden in-app SSH: fix Windows pop-out deadlock, event races, and credential/host-key edge cases.
+
+## Changes
+
+- **Fix SSH pop-out freeze**: Made `open_ssh_window` async so Windows WebView2 no longer deadlocks (white screen + frozen app). Same-label rebuild waits for the old window to close.
+- **SSH event race**: Global `ssh-session-event` listener with early event buffering so status/error/output emitted before the frontend handler registers are no longer dropped.
+- **Password mapping**: Stopped treating nested `user.username` as the SSH password when the API omits password fields.
+- **Pop-out gate**: Added `supportsSshPopOut` (desktop-only); pop-out failures surface a toast instead of failing silently.
+- **Known hosts errors**: Host-key IO failures and fingerprint mismatches now return clear Chinese error messages instead of a generic connection failure.
+- **SOCKS5 IPv6**: Dynamic port-forward destinations use standard `Ipv6Addr` formatting.
+
+---
+
 # EasyConsole v0.3.9
 
 Remember passwords for one-click saved-account sign-in, with automatic silent re-login after token expiry.

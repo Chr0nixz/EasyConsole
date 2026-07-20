@@ -13,6 +13,7 @@ function resetCapabilityGetters() {
     supportsTray: false,
     supportsSystemTerminal: false,
     supportsInAppSsh: false,
+    supportsSshPopOut: false,
     supportsUpdater: false,
     supportsFileReveal: false,
   };
@@ -52,6 +53,7 @@ describe("runtime kind resolution", () => {
     expect(browserRuntime.supportsTray).toBe(false);
     expect(browserRuntime.supportsSystemTerminal).toBe(false);
     expect(browserRuntime.supportsInAppSsh).toBe(false);
+    expect(browserRuntime.supportsSshPopOut).toBe(false);
     expect(browserRuntime.supportsUpdater).toBe(false);
     expect(browserRuntime.supportsFileReveal).toBe(false);
   });
@@ -64,6 +66,7 @@ describe("runtime kind resolution", () => {
     Object.defineProperty(browserRuntime, "supportsTray", { get: () => true, configurable: true });
     Object.defineProperty(browserRuntime, "supportsSystemTerminal", { get: () => true, configurable: true });
     Object.defineProperty(browserRuntime, "supportsInAppSsh", { get: () => true, configurable: true });
+    Object.defineProperty(browserRuntime, "supportsSshPopOut", { get: () => true, configurable: true });
     Object.defineProperty(browserRuntime, "supportsUpdater", { get: () => true, configurable: true });
     Object.defineProperty(browserRuntime, "supportsFileReveal", { get: () => true, configurable: true });
 
@@ -73,6 +76,7 @@ describe("runtime kind resolution", () => {
     expect(browserRuntime.runLogChannel).toBe("tauri");
     expect(browserRuntime.supportsTray).toBe(true);
     expect(browserRuntime.supportsInAppSsh).toBe(true);
+    expect(browserRuntime.supportsSshPopOut).toBe(true);
     expect(browserRuntime.supportsUpdater).toBe(true);
   });
 
@@ -84,6 +88,7 @@ describe("runtime kind resolution", () => {
     Object.defineProperty(browserRuntime, "supportsTray", { get: () => false, configurable: true });
     Object.defineProperty(browserRuntime, "supportsSystemTerminal", { get: () => false, configurable: true });
     Object.defineProperty(browserRuntime, "supportsInAppSsh", { get: () => true, configurable: true });
+    Object.defineProperty(browserRuntime, "supportsSshPopOut", { get: () => false, configurable: true });
     Object.defineProperty(browserRuntime, "supportsUpdater", { get: () => false, configurable: true });
     Object.defineProperty(browserRuntime, "supportsFileReveal", { get: () => false, configurable: true });
 
@@ -91,10 +96,11 @@ describe("runtime kind resolution", () => {
     expect(browserRuntime.isMobile).toBe(true);
     expect(browserRuntime.runtimeKind).toBe("mobile");
     expect(browserRuntime.runLogChannel).toBe("mobile");
-    // Mobile supports in-app SSH via russh NDK; tray, updater, system terminal remain desktop-only.
+    // Mobile supports in-app SSH via russh NDK; tray, updater, system terminal, pop-out remain desktop-only.
     expect(browserRuntime.supportsTray).toBe(false);
     expect(browserRuntime.supportsSystemTerminal).toBe(false);
     expect(browserRuntime.supportsInAppSsh).toBe(true);
+    expect(browserRuntime.supportsSshPopOut).toBe(false);
     expect(browserRuntime.supportsUpdater).toBe(false);
     expect(browserRuntime.supportsFileReveal).toBe(false);
   });

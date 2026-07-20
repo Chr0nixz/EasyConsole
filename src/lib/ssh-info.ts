@@ -1,4 +1,4 @@
-import type { SshConnectionRequest, Task, UnknownRecord } from "./types";
+import type { SshConnectionRequest, Task } from "./types";
 import { getRuntimeSettings } from "./app-settings";
 
 const FALLBACK_SSH_USERNAME = "ubuntu";
@@ -13,10 +13,6 @@ export type TaskSshInfo = {
   taskName: string;
 };
 
-function isRecord(value: unknown): value is UnknownRecord {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 function firstText(...values: unknown[]) {
   for (const value of values) {
     if (value === undefined || value === null) continue;
@@ -24,12 +20,6 @@ function firstText(...values: unknown[]) {
     if (text && text !== "None") return text;
   }
   return "";
-}
-
-function nestedUserName(task: Task) {
-  const user = task.user;
-  if (!isRecord(user)) return "";
-  return firstText(user.username, user.name);
 }
 
 function sshCommand(host: string, port: string, username: string) {
@@ -51,7 +41,7 @@ export function buildTaskSshInfo(task: Task): TaskSshInfo {
   const host = firstText(task.ssh_host, task.host, task.hostname, task.ip) || "-";
   const port = firstText(task.ssh_port, task.port) || "-";
   const username = firstText(task.ssh_username, task.ssh_user, task.login_user, defaultUsername);
-  const password = firstText(task.ssh_password, task.password, nestedUserName(task)) || "-";
+  const password = firstText(task.ssh_password, task.password) || "-";
 
   return {
     host,

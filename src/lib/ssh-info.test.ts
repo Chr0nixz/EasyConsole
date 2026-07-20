@@ -18,7 +18,7 @@ describe("ssh info", () => {
       host: "10.0.0.8",
       port: "30222",
       username: "ubuntu",
-      password: "alice",
+      password: "-",
       command: "ssh -p 30222 ubuntu@10.0.0.8",
     });
   });
@@ -41,11 +41,26 @@ describe("ssh info", () => {
       host: "10.0.0.8",
       port: "30222",
       username: "ubuntu",
-      password: "alice",
+      password: undefined,
       command: "ssh -p 30222 ubuntu@10.0.0.8",
       taskId: "task-1",
       taskName: "demo",
     });
+  });
+
+  it("uses explicit SSH password fields when present", () => {
+    const info = buildTaskSshInfo({
+      id: 1,
+      task_id: "task-1",
+      name: "demo",
+      ip: "10.0.0.8",
+      port: 30222,
+      ssh_password: "secret",
+      user: { username: "alice" },
+    });
+
+    expect(info.password).toBe("secret");
+    expect(toSshConnectionRequest(info).password).toBe("secret");
   });
 
   it("keeps missing backend fields explicit", () => {

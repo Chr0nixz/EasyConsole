@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { browserRuntime } from "../../lib/runtime";
 import { useI18n } from "../../lib/i18n";
 import { useConfirmAction } from "../../lib/use-confirm-action";
+import { useToast } from "../../lib/use-toast";
 import type { SshConnectionRequest } from "../../lib/types";
 import { cn } from "../../lib/utils";
 import { Button, Input } from "../ui";
@@ -61,6 +62,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
   const newTabFormRef = useRef<HTMLFormElement | null>(null);
   const tabRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const confirmAction = useConfirmAction();
+  const toast = useToast();
   const [tabs, setTabs] = useState<TabState[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [isMinimized, setIsMinimized] = useState(false);
@@ -192,8 +194,14 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
     void browserRuntime
       .openSshWindow(active.request)
       .then(() => closeTab(active.id))
-      .catch(() => {});
-  }, [tabs, activeTabId, closeTab]);
+      .catch((error: unknown) => {
+        const message =
+          error instanceof Error
+            ? error.message
+            : text("无法弹出独立窗口", "Unable to pop out to a standalone window");
+        toast.error(text("弹出窗口失败", "Failed to pop out window"), message);
+      });
+  }, [tabs, activeTabId, closeTab, text, toast]);
 
   // Wrap dialog close with a confirmation guard when live sessions exist.
   const requestCloseDialog = useCallback(() => {
@@ -372,7 +380,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
               </h2>
             </div>
             <div className="flex items-center gap-1">
-              {browserRuntime.supportsInAppSsh ? (
+              {browserRuntime.supportsSshPopOut ? (
                 <button
                   className="flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1 disabled:opacity-40"
                   type="button"

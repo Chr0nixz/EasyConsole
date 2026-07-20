@@ -15,6 +15,7 @@ function createRuntime(responseData: unknown) {
     supportsTray: false,
     supportsSystemTerminal: false,
     supportsInAppSsh: false,
+    supportsSshPopOut: false,
     supportsUpdater: false,
     supportsFileReveal: false,
     storage: {
