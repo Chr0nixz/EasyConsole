@@ -5,9 +5,8 @@ import type { UserInfo } from "./types";
 
 export type LoginOptions = {
   /**
-   * When true (default), the password is encrypted and stored with the saved
-   * account so loginSaved can silently re-login after token expiry. When false,
-   * only the token is stored (legacy behavior).
+   * When true, the password is encrypted and stored with the saved account so
+   * loginSaved can silently re-login after token expiry. Defaults to false.
    */
   rememberPassword?: boolean;
 };
@@ -22,6 +21,8 @@ export type AuthState = {
   login(username: string, password: string, options?: LoginOptions): Promise<void>;
   loginSaved(accountId: string): Promise<void>;
   forgetSavedAccount(accountId: string): Promise<void>;
+  /** Strip encryptedPassword from a saved account so stale secrets cannot silent-relogin. */
+  clearSavedPassword(accountId: string): Promise<void>;
   logout(): Promise<void>;
   refreshUser(): Promise<void>;
 };

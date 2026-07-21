@@ -22,12 +22,29 @@ import type {
   UserInfo,
 } from "./types";
 
-const UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024;
+export const UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024;
 
 type DownloadRequestOptions = {
   signal?: AbortSignal;
   onProgress?: (progress: UploadProgress) => void;
 };
+
+export type UploadCheckpoint = {
+  uploadId: string;
+  completedIndices: number[];
+  chunkSize: number;
+};
+
+/** First missing chunk byte offset; treats uploadedChunks as an index set (sparse-safe). */
+export function resolveUploadResumeOffset(uploadedChunks: number[], chunkSize: number, fileSize: number): number {
+  if (fileSize <= 0) return 0;
+  const completed = new Set(uploadedChunks.filter((index) => Number.isInteger(index) && index >= 0));
+  const totalChunks = Math.ceil(fileSize / chunkSize);
+  for (let index = 0; index < totalChunks; index += 1) {
+    if (!completed.has(index)) return index * chunkSize;
+  }
+  return fileSize;
+}
 
 export function formatContentRange(range: UploadChunkRange) {
   return `bytes ${range.start}-${range.end}/${range.total}`;
@@ -141,8 +158,8 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
     staticsCostMonth() {
       return apiClient.get<unknown>("/instance/statics_cost/month");
     },
-    async tasks(query: TaskQuery) {
-      const raw = await apiClient.get<unknown>("/instance/task", { query });
+    async tasks(query: TaskQuery, options?: { signal?: AbortSignal }) {
+      const raw = await apiClient.get<unknown>("/instance/task", { query, signal: options?.signal });
       return extractList<Task>(raw);
     },
     createTask(payload: CreateTaskPayload) {
@@ -205,12 +222,12 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
   };
 
   const imageApi = {
-    async list(query?: UnknownRecord) {
-      const raw = await apiClient.get<unknown>("/image/image", { query });
+    async list(query?: UnknownRecord, options?: { signal?: AbortSignal }) {
+      const raw = await apiClient.get<unknown>("/image/image", { query, signal: options?.signal });
       return extractList<ImageItem>(raw);
     },
-    async system(query?: UnknownRecord) {
-      const raw = await apiClient.get<unknown>("/image/image_system", { query });
+    async system(query?: UnknownRecord, options?: { signal?: AbortSignal }) {
+      const raw = await apiClient.get<unknown>("/image/image_system", { query, signal: options?.signal });
       return extractList<ImageItem>(raw);
     },
     detail(id: string | number) {
@@ -323,23 +340,25 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       signal?: AbortSignal,
       resumeFromUploadId?: string,
       onUploadId?: (uploadId: string) => void,
+      onCheckpoint?: (checkpoint: UploadCheckpoint) => void | Promise<void>,
     ) {
       if (file.size === 0) return storageApi.uploadEmptyFile(file, path, onProgress, signal);
 
       let uploadId: string | null = resumeFromUploadId ?? null;
       let startOffset = 0;
+      const completedIndices = new Set<number>();
 
-      // Notify caller of the resume uploadId immediately so it can be persisted for crash recovery.
       if (resumeFromUploadId && onUploadId) onUploadId(resumeFromUploadId);
 
-      // If resuming, try to query which chunks are already uploaded.
       if (resumeFromUploadId) {
         try {
           const status = await storageApi.queryUploadedChunks(resumeFromUploadId);
           if (status && Array.isArray(status.uploadedChunks)) {
-            startOffset = status.uploadedChunks.length * UPLOAD_CHUNK_SIZE;
+            for (const index of status.uploadedChunks) {
+              if (typeof index === "number" && Number.isInteger(index) && index >= 0) completedIndices.add(index);
+            }
+            startOffset = resolveUploadResumeOffset([...completedIndices], UPLOAD_CHUNK_SIZE, file.size);
             if (startOffset >= file.size) {
-              // All chunks already uploaded, just complete.
               const params = new URLSearchParams();
               params.set("upload_id", uploadId!);
               params.set("md5", await md5Blob(file));
@@ -348,7 +367,6 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
             }
           }
         } catch {
-          // Backend doesn't support status query; fall back to uploading from start.
           startOffset = 0;
         }
       }
@@ -356,10 +374,18 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       for (let start = startOffset; start < file.size; start += UPLOAD_CHUNK_SIZE) {
         signal?.throwIfAborted();
         const end = Math.min(start + UPLOAD_CHUNK_SIZE, file.size) - 1;
+        const chunkIndex = Math.floor(start / UPLOAD_CHUNK_SIZE);
         const result = await storageApi.uploadChunk(file, { start, end, total: file.size }, path, uploadId ?? undefined, onProgress, signal);
         if (!uploadId) {
           uploadId = extractUploadId(result);
           if (uploadId && onUploadId) onUploadId(uploadId);
+          if (uploadId && onCheckpoint) {
+            await onCheckpoint({ uploadId, completedIndices: [...completedIndices], chunkSize: UPLOAD_CHUNK_SIZE });
+          }
+        }
+        completedIndices.add(chunkIndex);
+        if (uploadId && onCheckpoint) {
+          await onCheckpoint({ uploadId, completedIndices: [...completedIndices].sort((a, b) => a - b), chunkSize: UPLOAD_CHUNK_SIZE });
         }
       }
       if (!uploadId) throw new Error(i18nText("上传服务未返回 upload_id", "Upload service did not return upload_id"));

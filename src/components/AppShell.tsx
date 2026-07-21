@@ -9,6 +9,7 @@ import { ShortcutsDialog } from "./ShortcutsDialog";
 import { TaskNotificationWatcher } from "./TaskNotificationWatcher";
 import { Button, Dialog } from "./ui";
 import { GLOBAL_SETTINGS_ACCOUNT_ID, getRuntimeSettings, saveAccountSettings, setRuntimeSettings } from "../lib/app-settings";
+import { getTransportBlockReason, subscribeTransportPolicy } from "../lib/api";
 import { useAppUpdate } from "../lib/app-update-context";
 import { useCommitQueue } from "../lib/commit-queue-context";
 import { downloadStatusText } from "../lib/download-queue";
@@ -70,6 +71,7 @@ export function AppShell() {
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [rememberCloseChoice, setRememberCloseChoice] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [transportBlocked, setTransportBlocked] = useState(() => Boolean(getTransportBlockReason()));
   const moreMenuRef = useRef<HTMLDivElement>(null);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
   const moreMenuPreviousFocusRef = useRef<HTMLElement | null>(null);
@@ -138,6 +140,8 @@ export function AppShell() {
       writeStoredShellNavWidth(DEFAULT_SHELL_NAV_WIDTH);
     }
   }
+
+  useEffect(() => subscribeTransportPolicy(() => setTransportBlocked(Boolean(getTransportBlockReason()))), []);
 
   useEffect(() => {
     let lastKeyTime = 0;
@@ -765,6 +769,15 @@ export function AppShell() {
             <span>{text("当前处于离线状态，部分功能不可用", "You are offline — some features are unavailable")}</span>
           </div>
         )}
+        {transportBlocked ? (
+          <div className="flex items-center gap-2 bg-app-dangerSoft px-4 py-1.5 text-sm font-medium text-app-danger" role="alert">
+            <WifiOff className="h-3.5 w-3.5 shrink-0" />
+            <span>{t("shell.transportBlocked")}</span>
+            <Button className="ml-auto h-7 px-2" type="button" variant="secondary" onClick={() => navigate("/settings")}>
+              {t("nav.settings")}
+            </Button>
+          </div>
+        ) : null}
         <main id="main-content" className="app-main-content min-h-0 min-w-0 flex-1 overflow-auto px-3 py-4 pb-32 sm:p-5 sm:pb-32 md:pb-5">
           <div key={location.pathname} className="app-page-enter">
             <Outlet />

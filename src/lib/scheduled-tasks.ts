@@ -3,6 +3,7 @@ import { updateStorageValue } from "./storage-mutex";
 import type { CreateTaskPayload, RuntimeStorage, ScheduledTask, TaskRecurrence } from "./types";
 
 export const SCHEDULED_TASKS_STORAGE_KEY = "easy-console.scheduledTasks";
+export const STALE_LEASE_MS = 15 * 60 * 1000;
 
 function makeId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -45,7 +46,7 @@ function normalizeSchedule(raw: unknown): ScheduledTask | null {
   const name = String(raw.name ?? "");
   const scheduleTime = String(raw.scheduleTime ?? "");
   const status = String(raw.status ?? "pending");
-  if (!id || !name || !scheduleTime || !["pending", "running", "done", "failed", "paused"].includes(status)) return null;
+  if (!id || !name || !scheduleTime || !["pending", "running", "done", "failed", "paused", "needs_review"].includes(status)) return null;
   return {
     id,
     name,
@@ -58,6 +59,9 @@ function normalizeSchedule(raw: unknown): ScheduledTask | null {
     lastRunAt: typeof raw.lastRunAt === "string" ? raw.lastRunAt : undefined,
     lastError: typeof raw.lastError === "string" ? raw.lastError : undefined,
     recurrence: normalizeRecurrence(raw.recurrence),
+    executionKey: typeof raw.executionKey === "string" ? raw.executionKey : undefined,
+    leaseStartedAt: typeof raw.leaseStartedAt === "string" ? raw.leaseStartedAt : undefined,
+    lastRemoteTaskId: typeof raw.lastRemoteTaskId === "string" ? raw.lastRemoteTaskId : undefined,
   };
 }
 
@@ -144,7 +148,7 @@ export function isScheduleDue(task: ScheduledTask, now = new Date()) {
 export function sortScheduledTasks(items: ScheduledTask[]) {
   return [...items].sort((left, right) => {
     const statusScore = (status: ScheduledTask["status"]) =>
-      status === "pending" || status === "running" || status === "paused" ? 0 : 1;
+      status === "pending" || status === "running" || status === "paused" || status === "needs_review" ? 0 : 1;
     return statusScore(left.status) - statusScore(right.status) || Date.parse(left.scheduleTime) - Date.parse(right.scheduleTime);
   });
 }
@@ -159,8 +163,15 @@ export function pauseScheduledTask(task: ScheduledTask): ScheduledTask {
 }
 
 export function resumeScheduledTask(task: ScheduledTask): ScheduledTask {
-  if (task.status !== "paused" && task.status !== "failed") return task;
-  return { ...task, status: "pending", lastError: undefined, updatedAt: nowIso() };
+  if (task.status !== "paused" && task.status !== "failed" && task.status !== "needs_review") return task;
+  return {
+    ...task,
+    status: "pending",
+    lastError: undefined,
+    executionKey: undefined,
+    leaseStartedAt: undefined,
+    updatedAt: nowIso(),
+  };
 }
 
 /**
@@ -185,11 +196,24 @@ export function scheduleNextRun(task: ScheduledTask, now = new Date()): Schedule
 }
 
 /**
- * Reset tasks stuck in "running" state back to "pending" on startup.
- * This handles crashes where a task was running but the process died.
+ * Reconcile tasks stuck in "running" after a crash.
+ * Stale leases become needs_review (never auto-replay createTask).
  */
-export function resetStaleRunningTasks(items: ScheduledTask[]): ScheduledTask[] {
-  return items.map((item) =>
-    item.status === "running" ? { ...item, status: "pending" as const, updatedAt: nowIso() } : item,
-  );
+export function resetStaleRunningTasks(items: ScheduledTask[], now = new Date(), staleMs = STALE_LEASE_MS): ScheduledTask[] {
+  return items.map((item) => {
+    if (item.status !== "running") return item;
+    const started = item.leaseStartedAt ? Date.parse(item.leaseStartedAt) : NaN;
+    const isStale = !Number.isFinite(started) || now.getTime() - started >= staleMs;
+    if (!isStale) return item;
+    return {
+      ...item,
+      status: "needs_review" as const,
+      lastError:
+        item.lastRemoteTaskId && item.executionKey
+          ? `Lease expired after remote create (${item.lastRemoteTaskId}); confirm before replaying.`
+          : "Lease expired while running; result unknown — confirm before replaying.",
+      leaseStartedAt: undefined,
+      updatedAt: nowIso(),
+    };
+  });
 }

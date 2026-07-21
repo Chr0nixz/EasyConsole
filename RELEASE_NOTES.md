@@ -1,3 +1,20 @@
+# EasyConsole v0.4.7
+
+Audit remediations across security, scheduling, uploads, and desktop UX (P0–P2).
+
+## Changes
+
+- **Transport security (P0)**: Production blocks remote cleartext HTTP/WS; loopback and HTTPS/WSS remain allowed. Dev keeps a warning path; CLI/MCP gain `--allow-insecure-http` / `EASY_CONSOLE_ALLOW_INSECURE_HTTP`.
+- **Scheduled tasks (P1)**: Real cron via `croner`, weekday multi-select, execution leases / `needs_review`, and mutate gates (`--yes` / `confirm: true`) for schedule create.
+- **Upload & storage (P1)**: Sparse-safe resume offsets, checkpoints, no false success toasts; Tauri storage merges localStorage fallback; Node local data uses temp+fsync+rename with file locks.
+- **Desktop I/O & polling (P1)**: Streaming SFTP and HTTP download-to-file; visibility-aware task polling with AbortSignal budgets.
+- **Settings / a11y / auth (P2)**: Narrow-screen overflow fixes; labeled selects, task-detail Tabs, dashboard `aria-pressed` and chart summaries; remember-password defaults off with show/hide; change-password clears saved ciphertext.
+- **Tasks table (P2)**: Focus-scoped keyboard navigation, unsaved-change blockers, client-side URL sort, page jump, and `placeholderData` to avoid empty flashes.
+- **SSH terminal (P2)**: Conditional follow-bottom with “new output” affordance; bounded recording buffer.
+- **Perf / architecture (P2)**: Shared React Query keys with AbortSignal; release rolling file logs; `useTaskListController` extracted from TasksPage; app uses a data router for `useBlocker`.
+
+---
+
 # EasyConsole v0.4.6
 
 Audit remediation release: safer task workflows, coordinated polling, richer command palette / CLI coverage, and SSH first-connect confirmation.

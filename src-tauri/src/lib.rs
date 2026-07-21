@@ -1301,6 +1301,7 @@ async fn run_russh_session(
                     }
                     Some(SshCommand::SftpUpload { local_path, remote_path, response }) => {
                         let result = async {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
                             if sftp_session.is_none() {
                                 let sftp_channel = session.channel_open_session().await
                                     .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
@@ -1311,13 +1312,23 @@ async fn run_russh_session(
                             }
                             let sftp = sftp_session.as_ref().unwrap();
                             let remote_path = resolve_sftp_path(sftp, &remote_path).await?;
-                            let data = tokio::fs::read(&local_path).await
+                            let mut local = tokio::fs::File::open(&local_path).await
                                 .map_err(|e| format!("读取本地文件失败：{e}"))?;
-                            let total = data.len() as u64;
+                            let total = local.metadata().await.map(|m| m.len()).unwrap_or(0);
+                            let mut remote = sftp.create(&remote_path).await
+                                .map_err(|e| format!("创建远端文件失败：{e}"))?;
                             emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":0,"total":{total}}}"#)), None);
-                            sftp.write(&remote_path, &data).await
-                                .map_err(|e| format!("SFTP 上传失败：{e}"))?;
-                            emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":{total},"total":{total}}}"#)), None);
+                            let mut buf = vec![0_u8; 64 * 1024];
+                            let mut transferred: u64 = 0;
+                            loop {
+                                let n = local.read(&mut buf).await.map_err(|e| format!("读取本地文件失败：{e}"))?;
+                                if n == 0 { break; }
+                                remote.write_all(&buf[..n]).await.map_err(|e| format!("SFTP 上传失败：{e}"))?;
+                                transferred += n as u64;
+                                emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":{transferred},"total":{total}}}"#)), None);
+                            }
+                            remote.flush().await.map_err(|e| format!("SFTP 刷新失败：{e}"))?;
+                            remote.shutdown().await.map_err(|e| format!("SFTP 关闭失败：{e}"))?;
                             Ok::<(), String>(())
                         }.await;
                         match result {
@@ -1330,6 +1341,7 @@ async fn run_russh_session(
                     }
                     Some(SshCommand::SftpDownload { remote_path, local_path, response }) => {
                         let result = async {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
                             if sftp_session.is_none() {
                                 let sftp_channel = session.channel_open_session().await
                                     .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
@@ -1340,12 +1352,27 @@ async fn run_russh_session(
                             }
                             let sftp = sftp_session.as_ref().unwrap();
                             let remote_path = resolve_sftp_path(sftp, &remote_path).await?;
-                            let data = sftp.read(&remote_path).await
-                                .map_err(|e| format!("SFTP 下载失败：{e}"))?;
-                            let total = data.len() as u64;
-                            emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":{total},"total":{total}}}"#)), None);
-                            tokio::fs::write(&local_path, &data).await
-                                .map_err(|e| format!("写入本地文件失败：{e}"))?;
+                            let mut remote = sftp.open(&remote_path).await
+                                .map_err(|e| format!("打开远端文件失败：{e}"))?;
+                            let total = remote.metadata().await.ok().and_then(|m| m.size).unwrap_or(0);
+                            let part_path = format!("{local_path}.part");
+                            let mut local = tokio::fs::File::create(&part_path).await
+                                .map_err(|e| format!("创建本地临时文件失败：{e}"))?;
+                            emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":0,"total":{total}}}"#)), None);
+                            let mut buf = vec![0_u8; 64 * 1024];
+                            let mut transferred: u64 = 0;
+                            loop {
+                                let n = remote.read(&mut buf).await.map_err(|e| format!("SFTP 下载失败：{e}"))?;
+                                if n == 0 { break; }
+                                local.write_all(&buf[..n]).await.map_err(|e| format!("写入本地文件失败：{e}"))?;
+                                transferred += n as u64;
+                                emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":{transferred},"total":{total}}}"#)), None);
+                            }
+                            local.flush().await.map_err(|e| format!("刷新本地文件失败：{e}"))?;
+                            drop(local);
+                            tokio::fs::rename(&part_path, &local_path).await
+                                .map_err(|e| format!("完成下载重命名失败：{e}"))?;
+                            let _ = remote.shutdown().await;
                             Ok::<(), String>(())
                         }.await;
                         match result {
@@ -2310,6 +2337,43 @@ fn install_apk(app: AppHandle, path: String) -> Result<(), String> {
 
 #[cfg(desktop)]
 #[tauri::command]
+async fn http_download_to_file(url: String, path: String) -> Result<u64, String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let path = validate_local_path(&path)?;
+    let part_path = format!("{}.part", path.display());
+    let response = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|error| format!("下载请求失败：{error}"))?
+        .error_for_status()
+        .map_err(|error| format!("下载响应错误：{error}"))?;
+    let mut stream = response.bytes_stream();
+    let mut file = tokio::fs::File::create(&part_path)
+        .await
+        .map_err(|error| format!("创建临时文件失败：{error}"))?;
+    let mut written: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|error| format!("下载流中断：{error}"))?;
+        file.write_all(&bytes)
+            .await
+            .map_err(|error| format!("写入本地文件失败：{error}"))?;
+        written += bytes.len() as u64;
+    }
+    file.flush()
+        .await
+        .map_err(|error| format!("刷新本地文件失败：{error}"))?;
+    drop(file);
+    tokio::fs::rename(&part_path, &path)
+        .await
+        .map_err(|error| format!("完成下载重命名失败：{error}"))?;
+    Ok(written)
+}
+
+#[cfg(desktop)]
+#[tauri::command]
 fn open_local_path(path: String) -> Result<(), String> {
     let path = validate_local_path(&path)?;
     open_path_with_system(&path)
@@ -2459,12 +2523,24 @@ pub fn run() {
 
     // Register tauri_plugin_log in the plugin chain (not inside setup)
     // to ensure it initializes before the setup closure runs.
-    if cfg!(debug_assertions) {
-        builder = builder.plugin(
-            tauri_plugin_log::Builder::default()
-                .level(log::LevelFilter::Info)
-                .build(),
-        );
+    // Release builds persist rolling files under the OS log directory (Info+).
+    // Never log tokens, passwords, or private keys into these sinks.
+    {
+        let mut log_builder = tauri_plugin_log::Builder::default()
+            .level(log::LevelFilter::Info)
+            .max_file_size(5_000_000)
+            .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+            .target(tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::LogDir {
+                    file_name: Some("easyconsole".into()),
+                },
+            ));
+        if cfg!(debug_assertions) {
+            log_builder = log_builder.target(tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::Stdout,
+            ));
+        }
+        builder = builder.plugin(log_builder.build());
     }
 
     log::info!("all plugins registered, setting up");
@@ -2558,6 +2634,8 @@ pub fn run() {
         open_vscode_ssh,
         #[cfg(desktop)]
         open_local_path,
+        #[cfg(desktop)]
+        http_download_to_file,
         #[cfg(desktop)]
         reveal_local_path,
         #[cfg(desktop)]

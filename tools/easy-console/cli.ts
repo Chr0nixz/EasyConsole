@@ -74,6 +74,7 @@ type GlobalCliOptions = {
   config?: string;
   runLogPath?: string;
   json?: boolean;
+  allowInsecureHttp?: boolean;
 };
 
 function formatError(error: unknown) {
@@ -183,6 +184,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     .option("--token <token>", "Bearer token or raw token")
     .option("--config <path>", "Config file path")
     .option("--run-log-path <path>", "Run log file path")
+    .option("--allow-insecure-http", "Allow remote cleartext HTTP (lab only; prefer HTTPS or http://127.0.0.1 tunnel)")
     .option("--json", "Print { ok, data, error } JSON envelopes");
 
   program.exitOverride();
@@ -214,6 +216,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       token: options.token,
       configPath: options.config,
       runLogPath: options.runLogPath,
+      allowInsecureHttp: options.allowInsecureHttp === true,
     });
   }
 
@@ -705,6 +708,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   scheduleCreate.requiredOption("--payload-json <json>", "Create task JSON payload");
   scheduleCreate.option("--description <text>", "Description");
   scheduleCreate.option("--recurrence-json <json>", "Recurrence JSON");
+  scheduleCreate.option("--yes", "Execute instead of dry-run");
   scheduleCreate.action(
     run(scheduleCreate, async (context) => {
       const options = scheduleCreate.opts<{
@@ -713,16 +717,21 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
         payloadJson: string;
         description?: string;
         recurrenceJson?: string;
+        yes?: boolean;
       }>();
       const payload = buildCreateTaskPayload(parseJsonRecord(options.payloadJson));
       const recurrence = options.recurrenceJson ? (JSON.parse(options.recurrenceJson) as TaskRecurrence) : undefined;
-      return createScheduledTaskRecord(context.storage, {
-        name: options.name,
-        description: options.description,
-        scheduleTime: options.scheduleTime,
-        payload,
-        recurrence,
-      });
+      return createScheduledTaskRecord(
+        context.storage,
+        {
+          name: options.name,
+          description: options.description,
+          scheduleTime: options.scheduleTime,
+          payload,
+          recurrence,
+        },
+        options.yes,
+      );
     }),
   );
 

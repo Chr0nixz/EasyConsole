@@ -10,7 +10,14 @@ import { getRuntimeSettings, type SshTerminalTheme } from "../../lib/app-setting
 import { browserRuntime } from "../../lib/runtime";
 import { saveBlob } from "../../lib/download";
 import { useI18n } from "../../lib/i18n";
+import {
+  appendRecordingChunk,
+  createRecordingBuffer,
+  isNearTerminalBottom,
+  type RecordingBufferState,
+} from "../../lib/ssh-terminal-follow";
 import type { PortForwardRule, PortForwardStatus, SshConnectionRequest, SshHostKeyPrompt } from "../../lib/types";
+import { useToast } from "../../lib/use-toast";
 import { cn } from "../../lib/utils";
 import { Button, Dialog } from "../ui";
 import { SftpPanel } from "./SftpPanel";
@@ -75,6 +82,7 @@ function resolveTerminalTheme(theme: SshTerminalTheme) {
 
 export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTerminalTabProps) {
   const { t, text } = useI18n();
+  const toast = useToast();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const [status, setStatus] = useState(() => text("准备连接", "Ready to connect"));
@@ -91,10 +99,14 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
   const [portForwardStatuses, setPortForwardStatuses] = useState<Record<string, PortForwardStatus>>({});
   const [hostKeyPrompt, setHostKeyPrompt] = useState<SshHostKeyPrompt | null>(null);
   const [hostKeyPending, setHostKeyPending] = useState(false);
+  const [followBottom, setFollowBottom] = useState(true);
+  const [hasNewOutput, setHasNewOutput] = useState(false);
   const ctrlActiveRef = useRef(false);
   const isRecordingRef = useRef(false);
+  const followBottomRef = useRef(true);
   const activeRef = useRef(active);
-  const logBufferRef = useRef<string[]>([]);
+  const recordingBufferRef = useRef<RecordingBufferState>(createRecordingBuffer());
+  const recordingCapNotifiedRef = useRef(false);
   const termRef = useRef<XTermInstance | null>(null);
   const searchAddonRef = useRef<SearchAddonInstance | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -112,6 +124,10 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
   }, [isRecording]);
 
   useEffect(() => {
+    followBottomRef.current = followBottom;
+  }, [followBottom]);
+
+  useEffect(() => {
     onStatusChange(status);
   }, [status, onStatusChange]);
 
@@ -126,10 +142,17 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     }
   }, [active]);
 
+  const scrollTerminalToBottom = useCallback(() => {
+    termRef.current?.scrollToBottom();
+    setFollowBottom(true);
+    setHasNewOutput(false);
+  }, []);
+
   function toggleRecording() {
     if (isRecording) {
-      const buffer = logBufferRef.current.join("");
-      logBufferRef.current = [];
+      const buffer = recordingBufferRef.current.chunks.join("");
+      recordingBufferRef.current = createRecordingBuffer();
+      recordingCapNotifiedRef.current = false;
       setIsRecording(false);
       const settings = getRuntimeSettings().ssh;
       const now = new Date();
@@ -140,7 +163,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         : `ssh-log-${stamp}.log`;
       saveBlob(new Blob([buffer], { type: "text/plain" }), filename);
     } else {
-      logBufferRef.current = [];
+      recordingBufferRef.current = createRecordingBuffer();
+      recordingCapNotifiedRef.current = false;
       setIsRecording(true);
     }
   }
@@ -150,7 +174,10 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     setStatusKind("ready");
     setCanReconnect(false);
     setIsRecording(false);
-    logBufferRef.current = [];
+    setFollowBottom(true);
+    setHasNewOutput(false);
+    recordingBufferRef.current = createRecordingBuffer();
+    recordingCapNotifiedRef.current = false;
   }, [request, text]);
 
   useEffect(() => {
@@ -242,6 +269,13 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         // Search addon not available
       }
       termRef.current = terminal;
+      terminal.onScroll(() => {
+        if (!terminal) return;
+        const nearBottom = isNearTerminalBottom(terminal.buffer.active.viewportY, terminal.buffer.active.baseY);
+        followBottomRef.current = nearBottom;
+        setFollowBottom(nearBottom);
+        if (nearBottom) setHasNewOutput(false);
+      });
       terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
         if (event.type !== "keydown" || !event.ctrlKey || event.altKey || event.metaKey) return true;
         if (event.key === "c" || event.key === "C") {
@@ -315,13 +349,22 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         unlisten = await browserRuntime.onSshSessionEvent(sessionId, (event) => {
           if (event.kind === "output" && event.data) {
             activeTerminal.write(event.data);
-            // xterm only auto-scrolls when the viewport is already at the
-            // bottom; if the user scrolled up (or the viewport was nudged by
-            // a resize/fit cycle), writes would stack above the fold. Force
-            // scroll to bottom on every output so the prompt stays visible.
-            activeTerminal.scrollToBottom();
+            if (followBottomRef.current) {
+              activeTerminal.scrollToBottom();
+            } else {
+              setHasNewOutput(true);
+            }
             if (isRecordingRef.current) {
-              logBufferRef.current.push(event.data);
+              const appended = appendRecordingChunk(recordingBufferRef.current, event.data);
+              if (!appended && recordingBufferRef.current.capped && !recordingCapNotifiedRef.current) {
+                recordingCapNotifiedRef.current = true;
+                isRecordingRef.current = false;
+                setIsRecording(false);
+                toast.info(
+                  text("录制缓冲已满", "Recording buffer full"),
+                  text("已停止追加录制内容；请停止录制以保存已捕获部分。", "Stopped appending; stop recording to save what was captured."),
+                );
+              }
             }
             return;
           }
@@ -415,7 +458,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
       searchAddonRef.current = null;
       terminal?.dispose();
     };
-  }, [request, text, reconnectKey]);
+  }, [request, text, reconnectKey, toast]);
 
   const sendKeySeq = useCallback((rawKey: string, data: string) => {
     const sid = sessionIdRef.current;
@@ -579,7 +622,18 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1">
-        <div ref={containerRef} className="min-h-0 flex-1" />
+        <div className="relative min-h-0 min-w-0 flex-1">
+          <div ref={containerRef} className="h-full min-h-0" />
+          {!followBottom && hasNewOutput ? (
+            <button
+              type="button"
+              className="absolute bottom-3 right-3 z-10 rounded-md bg-app-accent px-2.5 py-1.5 text-xs font-medium text-white shadow-shell hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+              onClick={scrollTerminalToBottom}
+            >
+              {text("有新输出 · 回到底部", "New output · Jump to bottom")}
+            </button>
+          ) : null}
+        </div>
         {showSftp && sessionId ? (
           <div className="w-80 shrink-0 border-l border-app-terminalBorder">
             <SftpPanel sessionId={sessionId} />

@@ -62,6 +62,11 @@ vi.mock("./LanguageSwitch", () => ({
   LanguageSwitch: () => null,
 }));
 
+vi.mock("../lib/api", () => ({
+  getTransportBlockReason: () => null,
+  subscribeTransportPolicy: () => () => {},
+}));
+
 vi.mock("../lib/app-settings", () => ({
   APP_SETTINGS_STORAGE_KEY: "test",
   getRuntimeSettings: () => ({ apiUrl: "", monitorDashboardUrl: "" }),

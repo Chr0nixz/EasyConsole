@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ApiClient, extractToken, joinUrl, normalizeToken, unwrapEnvelope } from "./api-client";
 import { ApiError, type RuntimeHttpRequest, type RuntimeTransport } from "./types";
+import * as transportSecurity from "./transport-security";
 
 function createRuntime() {
   const calls: unknown[] = [];
@@ -200,5 +201,21 @@ describe("api client", () => {
     client.setRefreshTokenHandler(async () => null);
 
     await expect(client.post("/mutate", { value: 1 })).rejects.toThrow(/Token refresh returned null|Sign-in expired|登录已过期/);
+  });
+
+  it("rejects remote cleartext base urls and requests when policy enforces", async () => {
+    const spy = vi.spyOn(transportSecurity, "shouldEnforceSecureRemoteTransport").mockReturnValue(true);
+    try {
+      const { runtime, calls } = createRuntime();
+      const client = new ApiClient(runtime, "https://secure.example/api");
+      expect(() => client.setBaseUrl("http://example.com/api")).toThrow(/HTTPS|明文|cleartext/i);
+      expect(() => client.setBaseUrl("http://127.0.0.1:28080/api")).not.toThrow();
+
+      const insecure = new ApiClient(runtime, "http://example.com/api");
+      await expect(insecure.get("/demo")).rejects.toThrow(/HTTPS|明文|cleartext/i);
+      expect(calls).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

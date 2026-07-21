@@ -90,10 +90,17 @@ export function Panel({ children, className }: { children: ReactNode; className?
   return <section className={cn("app-surface-enter rounded-lg border border-app-border bg-app-surface shadow-shell", className)}>{children}</section>;
 }
 
-export const TableRegion = forwardRef<HTMLDivElement, { children: ReactNode; label: string; className?: string }>(
-  function TableRegion({ children, label, className }, ref) {
+export const TableRegion = forwardRef<HTMLDivElement, { children: ReactNode; label: string; className?: string; "aria-activedescendant"?: string }>(
+  function TableRegion({ children, label, className, "aria-activedescendant": activeDescendant }, ref) {
     return (
-      <div ref={ref} className={cn("app-table-region overflow-auto", className)} role="region" aria-label={label} tabIndex={0}>
+      <div
+        ref={ref}
+        className={cn("app-table-region overflow-auto", className)}
+        role="region"
+        aria-label={label}
+        aria-activedescendant={activeDescendant}
+        tabIndex={0}
+      >
         {children}
       </div>
     );
@@ -109,6 +116,7 @@ export function Dialog({
   onClose,
   width = "max-w-3xl",
   closeOnOverlayClick = true,
+  onOverlayClick,
 }: {
   open: boolean;
   title: string;
@@ -116,6 +124,8 @@ export function Dialog({
   onClose: () => void;
   width?: string;
   closeOnOverlayClick?: boolean;
+  /** When set, overlay clicks call this instead of `onClose` (e.g. confirm discard). */
+  onOverlayClick?: () => void;
 }) {
   const titleId = useId();
   const { t } = useI18n();
@@ -179,7 +189,12 @@ export function Dialog({
   if (!open) return null;
 
   const handleOverlayClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (!closeOnOverlayClick || event.target !== event.currentTarget) return;
+    if (event.target !== event.currentTarget) return;
+    if (onOverlayClick) {
+      onOverlayClick();
+      return;
+    }
+    if (!closeOnOverlayClick) return;
     onClose();
   };
 

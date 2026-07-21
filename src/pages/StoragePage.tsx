@@ -18,7 +18,7 @@ import {
   joinStoragePath,
   remoteStorage,
 } from "../lib/remote-storage";
-import { createUploadQueueItems, summarizeUploadQueue } from "../lib/upload-queue";
+import { createUploadQueueItems, finalizeUploadQueueResult, summarizeUploadQueue } from "../lib/upload-queue";
 import { clearUploadResume, loadUploadResume, makeFileKey, saveUploadResume } from "../lib/upload-resume";
 import type { StorageEntry, UploadQueueItem } from "../lib/types";
 import { browserRuntime } from "../lib/runtime";
@@ -169,9 +169,14 @@ export function StoragePage() {
 
   async function runUploadQueue(items: UploadQueueItem[]) {
     uploadCancelledRef.current = false;
-    setUploadQueue(items);
+    let latestItems = items.map((item) => ({ ...item }));
+    setUploadQueue(latestItems);
+    const patchQueue = (updater: (current: UploadQueueItem[]) => UploadQueueItem[]) => {
+      latestItems = updater(latestItems);
+      setUploadQueue(latestItems);
+    };
     try {
-      const directories = [...new Set(items.filter((item) => item.status !== "skipped").map((item) => item.remoteDirectory))]
+      const directories = [...new Set(latestItems.filter((item) => item.status !== "skipped").map((item) => item.remoteDirectory))]
         .filter((directory) => directory !== "/")
         .sort((left, right) => left.split("/").length - right.split("/").length);
       for (const directory of directories) {
@@ -181,19 +186,18 @@ export function StoragePage() {
           // Existing directories can be reused during recursive uploads.
         }
       }
-      for (const item of items) {
+      for (const item of [...latestItems]) {
         if (item.status === "skipped") continue;
         if (uploadCancelledRef.current) {
-          setUploadQueue((current) =>
+          patchQueue((current) =>
             current.map((queueItem) => (queueItem.status === "queued" ? { ...queueItem, status: "cancelled" } : queueItem)),
           );
           break;
         }
-        setUploadQueue((current) =>
+        patchQueue((current) =>
           current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "uploading", progress: 1, error: undefined } : queueItem)),
         );
 
-        // Check for a previous partial upload to resume from.
         const fileKey = makeFileKey(item.file);
         const resumeRecord = item.resumeFromUploadId ? { uploadId: item.resumeFromUploadId, fileKey } : await loadUploadResume(browserRuntime.storage, fileKey);
         const resumeFromUploadId = resumeRecord?.uploadId;
@@ -206,7 +210,7 @@ export function StoragePage() {
             item.file,
             item.remoteDirectory,
             (progress) => {
-              setUploadQueue((current) =>
+              patchQueue((current) =>
                 current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, progress: progress.percent } : queueItem)),
               );
             },
@@ -215,15 +219,22 @@ export function StoragePage() {
             (uploadId) => {
               capturedUploadId = uploadId;
             },
+            async (checkpoint) => {
+              capturedUploadId = checkpoint.uploadId;
+              await saveUploadResume(browserRuntime.storage, {
+                fileKey,
+                uploadId: checkpoint.uploadId,
+                uploadedChunks: checkpoint.completedIndices,
+                createdAt: new Date().toISOString(),
+              });
+            },
           );
-          // Upload succeeded — clear any resume record for this file.
           await clearUploadResume(browserRuntime.storage, fileKey);
-          setUploadQueue((current) =>
+          patchQueue((current) =>
             current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "done", progress: 100 } : queueItem)),
           );
         } catch (error) {
           const message = error instanceof Error ? error.message : text("上传失败", "Upload failed");
-          // Save resume record if we captured an uploadId, so the next attempt can resume.
           if (capturedUploadId) {
             await saveUploadResume(browserRuntime.storage, {
               fileKey,
@@ -232,23 +243,36 @@ export function StoragePage() {
               createdAt: new Date().toISOString(),
             }).catch(() => undefined);
           }
-          setUploadQueue((current) =>
-            current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: uploadCancelledRef.current ? "cancelled" : "failed", error: uploadCancelledRef.current ? text("已取消", "Cancelled") : message } : queueItem)),
+          patchQueue((current) =>
+            current.map((queueItem) =>
+              queueItem.id === item.id
+                ? { ...queueItem, status: uploadCancelledRef.current ? "cancelled" : "failed", error: uploadCancelledRef.current ? text("已取消", "Cancelled") : message }
+                : queueItem,
+            ),
           );
         } finally {
           uploadAbortRef.current = null;
         }
       }
       queryClient.invalidateQueries({ queryKey: ["storage"] });
-      toast.success(text("上传队列已处理", "Upload queue processed"), text(`${items.length} 个文件`, `${items.length} files`));
+      const result = finalizeUploadQueueResult(latestItems);
+      if (result.failed > 0 || result.cancelled > 0) {
+        toast.error(
+          text("上传队列未全部成功", "Upload queue finished with errors"),
+          text(`成功 ${result.succeeded}，失败 ${result.failed}，取消 ${result.cancelled}`, `${result.succeeded} succeeded, ${result.failed} failed, ${result.cancelled} cancelled`),
+        );
+      } else {
+        toast.success(text("上传队列已处理", "Upload queue processed"), text(`${result.succeeded} 个文件`, `${result.succeeded} files`));
+      }
       void runLogger.log({
         source: "storage",
-        level: "info",
+        level: result.failed > 0 ? "error" : "info",
         action: "storage.upload",
-        result: "success",
-        title: text("上传队列已处理", "Upload queue processed"),
-        metadata: { count: items.length, failed: items.filter((item) => item.status === "failed").length, path },
+        result: result.failed > 0 ? "failure" : "success",
+        title: result.failed > 0 ? text("上传队列未全部成功", "Upload queue finished with errors") : text("上传队列已处理", "Upload queue processed"),
+        metadata: { count: result.items.length, failed: result.failed, cancelled: result.cancelled, succeeded: result.succeeded, path },
       });
+      return result;
     } finally {
       uploadCancelledRef.current = false;
     }

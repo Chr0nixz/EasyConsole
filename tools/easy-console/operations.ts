@@ -5,7 +5,7 @@ import { buildMonitorDashboardUrl, DEFAULT_MONITOR_DASHBOARD_URL } from "../../s
 import type { EasyConsoleApi } from "../../src/lib/api-factory";
 import { exportLocalDataBackup, importLocalDataBackup, parseLocalDataBackup, type LocalDataBackupSection } from "../../src/lib/local-data-backup";
 import { normalizeStoragePath } from "../../src/lib/remote-storage";
-import { createScheduledTask, loadScheduledTasks, pauseScheduledTask, resumeScheduledTask, saveScheduledTasks, scheduleNextRun, updateScheduledTask } from "../../src/lib/scheduled-tasks";
+import { createScheduledTask, loadScheduledTasks, pauseScheduledTask, resumeScheduledTask, saveScheduledTasks, updateScheduledTask } from "../../src/lib/scheduled-tasks";
 import {
   createTaskTemplate,
   loadTaskTemplates,
@@ -399,11 +399,21 @@ export async function createScheduledTaskRecord(
     payload: CreateTaskPayload;
     recurrence?: TaskRecurrence;
   },
+  confirm?: boolean,
 ) {
-  const items = await loadScheduledTasks(storage);
-  const task = createScheduledTask(input);
-  await saveScheduledTasks(storage, [...items, task]);
-  return task;
+  const { previewNextRuns } = await import("../../src/lib/task-recurrence");
+  const draft = createScheduledTask(input);
+  const nextRuns = previewNextRuns(draft, 5).map((date) => date.toISOString());
+  return maybeMutate(
+    "schedule.create",
+    { task: draft, nextRuns },
+    confirm,
+    async () => {
+      const items = await loadScheduledTasks(storage);
+      await saveScheduledTasks(storage, [...items, draft]);
+      return draft;
+    },
+  );
 }
 
 export async function updateScheduledTaskRecord(
@@ -453,26 +463,30 @@ export async function runScheduledTask(storage: RuntimeStorage, api: EasyConsole
   const items = await loadScheduledTasks(storage);
   const task = items.find((item) => item.id === taskId);
   if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
-  return maybeMutate("schedule.run", { taskId, taskName: task.name }, confirm, async () => {
-    let next = updateScheduledTask(items, { ...task, status: "running", lastError: undefined });
+  return maybeMutate("schedule.run", { taskId, taskName: task.name, executionKey: `${task.id}@${task.scheduleTime}` }, confirm, async () => {
+    const { beginScheduledExecution, completeScheduledExecution, failScheduledExecution, makeExecutionKey } = await import("../../src/lib/schedule-execution");
+    const executionKey = makeExecutionKey(task);
+    if (task.lastRemoteTaskId && task.executionKey === executionKey) {
+      return { result: { skipped: true, reason: "execution already completed", remoteTaskId: task.lastRemoteTaskId }, task };
+    }
+    const leased = beginScheduledExecution(task);
+    let next = updateScheduledTask(items, leased);
     await saveScheduledTasks(storage, next);
     try {
       const result = await api.instanceApi.createTask(task.payload);
-      const afterRun = scheduleNextRun({ ...task, lastRunAt: new Date().toISOString() }) ?? {
-        ...task,
-        status: "done" as const,
-        lastRunAt: new Date().toISOString(),
-      };
+      const remoteTaskId =
+        result && typeof result === "object"
+          ? String((result as Record<string, unknown>).id ?? (result as Record<string, unknown>).task_id ?? "") || undefined
+          : undefined;
+      const withRemote = { ...leased, lastRemoteTaskId: remoteTaskId, lastRunAt: new Date().toISOString() };
+      next = updateScheduledTask(next, withRemote);
+      await saveScheduledTasks(storage, next);
+      const afterRun = completeScheduledExecution(withRemote, remoteTaskId);
       next = updateScheduledTask(next, afterRun);
       await saveScheduledTasks(storage, next);
       return { result, task: afterRun };
     } catch (error) {
-      const failed = {
-        ...task,
-        status: "failed" as const,
-        lastRunAt: new Date().toISOString(),
-        lastError: error instanceof Error ? error.message : String(error),
-      };
+      const failed = failScheduledExecution(leased, error instanceof Error ? error.message : String(error));
       await saveScheduledTasks(storage, updateScheduledTask(next, failed));
       throw error;
     }

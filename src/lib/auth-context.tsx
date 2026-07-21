@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { apiClient, authApi } from "./api";
+import { apiClient, authApi, setApiBaseUrl } from "./api";
 import {
   APP_SETTINGS_STORAGE_KEY,
   GLOBAL_SETTINGS_ACCOUNT_ID,
@@ -44,7 +44,7 @@ function writeAuthLog(input: Omit<RunLogInput, "channel" | "source">) {
 async function applyAccountRuntimeSettings(accountId: string) {
   const settings = await loadAccountSettings(browserRuntime.storage, accountId);
   setRuntimeSettings(settings);
-  apiClient.setBaseUrl(settings.apiBaseUrl);
+  setApiBaseUrl(settings.apiBaseUrl);
   void browserRuntime.setDesktopCloseToTray(settings.desktopCloseToTray);
   void browserRuntime.setDesktopClosePrompt(settings.desktopClosePrompt);
   return settings;
@@ -84,7 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const bootAccountId = parsedAccounts[0]?.id ?? GLOBAL_SETTINGS_ACCOUNT_ID;
           const settings = getAccountAppSettings(store, bootAccountId);
           setRuntimeSettings(settings);
-          apiClient.setBaseUrl(settings.apiBaseUrl);
+          setApiBaseUrl(settings.apiBaseUrl);
           void browserRuntime.setDesktopCloseToTray(settings.desktopCloseToTray);
           void browserRuntime.setDesktopClosePrompt(settings.desktopClosePrompt);
           savedAccountsRef.current = parsedAccounts;
@@ -129,7 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (username: string, password: string, options?: LoginOptions) => {
     const startedAt = Date.now();
-    const rememberPassword = options?.rememberPassword !== false;
+    const rememberPassword = options?.rememberPassword === true;
     const result = await authApi.login({ username, password });
     if (!result.token) throw new Error(i18nText("登录响应未包含 token", "Sign-in response did not include a token"));
     apiClient.setToken(result.token);
@@ -366,6 +366,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, [persistSavedAccounts]);
 
+  const clearSavedPassword = useCallback(async (accountId: string) => {
+    const account = savedAccountsRef.current.find((item) => item.id === accountId);
+    if (!account?.encryptedPassword) return;
+    const { encryptedPassword: _removed, ...rest } = account;
+    void _removed;
+    await persistSavedAccounts(upsertSavedAccount(savedAccountsRef.current, rest));
+  }, [persistSavedAccounts]);
+
   const logout = useCallback(async () => {
     const userName = user?.username ?? user?.name;
     apiClient.setToken(null);
@@ -444,8 +452,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [logout]);
 
   const value = useMemo(
-    () => ({ token, user, ready, restoringSession, savedAccounts, login, loginSaved, forgetSavedAccount, logout, refreshUser }),
-    [token, user, ready, restoringSession, savedAccounts, login, loginSaved, forgetSavedAccount, logout, refreshUser],
+    () => ({ token, user, ready, restoringSession, savedAccounts, login, loginSaved, forgetSavedAccount, clearSavedPassword, logout, refreshUser }),
+    [token, user, ready, restoringSession, savedAccounts, login, loginSaved, forgetSavedAccount, clearSavedPassword, logout, refreshUser],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

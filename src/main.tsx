@@ -1,12 +1,11 @@
 import "./styles.css";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { isTauri } from "@tauri-apps/api/core";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, HashRouter } from "react-router-dom";
+import { RouterProvider } from "react-router-dom";
 
-import { App } from "./App";
+import { createAppRouter } from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { RunLoggerProvider } from "./components/RunLoggerProvider";
 import { AuthProvider } from "./lib/auth-context";
@@ -22,7 +21,7 @@ const queryClient = new QueryClient({
   },
 });
 
-const Router = isTauri() ? HashRouter : BrowserRouter;
+const router = createAppRouter();
 
 // Surface unhandled promise rejections and synchronous errors so they show up
 // in the console alongside the ErrorBoundary logs. These do not block rendering.
@@ -44,9 +43,7 @@ initRuntimeKind().finally(() => {
           <I18nProvider>
             <AuthProvider>
               <RunLoggerProvider>
-                <Router>
-                  <App />
-                </Router>
+                <RouterProvider router={router} />
               </RunLoggerProvider>
             </AuthProvider>
           </I18nProvider>

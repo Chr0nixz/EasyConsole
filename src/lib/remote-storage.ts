@@ -1,4 +1,5 @@
 import { storageApi } from "./api";
+import type { UploadCheckpoint } from "./api-factory";
 import { i18nText } from "./i18n-text";
 import type { StorageEntry, StorageQuery, UploadProgress } from "./types";
 
@@ -15,6 +16,7 @@ export type RemoteStorageService = {
     signal?: AbortSignal,
     resumeFromUploadId?: string,
     onUploadId?: (uploadId: string) => void,
+    onCheckpoint?: (checkpoint: UploadCheckpoint) => void | Promise<void>,
   ): Promise<unknown>;
   uploadLocalFiles(files: File[], remoteDirectory: string, onProgress?: (progress: UploadProgress) => void): Promise<unknown>;
   getDirectorySize(path: string): Promise<number>;
@@ -221,8 +223,8 @@ export const remoteStorage: RemoteStorageService = {
   remove(path, isDirectory) {
     return storageApi.delete(normalizeStoragePath(path), isDirectory);
   },
-  uploadLocalFile(file, remoteDirectory, onProgress, signal, resumeFromUploadId, onUploadId) {
-    return storageApi.uploadFile(file, normalizeStoragePath(remoteDirectory), onProgress, signal, resumeFromUploadId, onUploadId);
+  uploadLocalFile(file, remoteDirectory, onProgress, signal, resumeFromUploadId, onUploadId, onCheckpoint) {
+    return storageApi.uploadFile(file, normalizeStoragePath(remoteDirectory), onProgress, signal, resumeFromUploadId, onUploadId, onCheckpoint);
   },
   async uploadLocalFiles(files, remoteDirectory, onProgress) {
     const normalizedRemoteDirectory = normalizeStoragePath(remoteDirectory);

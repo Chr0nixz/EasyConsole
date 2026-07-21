@@ -83,12 +83,16 @@ EASY_CONSOLE_API_BASE_URL=http://116.172.93.164:28080/api
 EASY_CONSOLE_MONITOR_DASHBOARD_URL=http://116.172.93.164:33000/d/da7c4fef-70c7-43eb-8103-31b7d283ca9f/pod-board?orgId=1
 EASY_CONSOLE_TOKEN=Bearer ...
 EASY_CONSOLE_CONFIG=D:\path\to\config.json
+EASY_CONSOLE_ALLOW_INSECURE_HTTP=1
 ```
+
+Production desktop builds reject remote cleartext `http://` / `ws://` API and monitor URLs (HTTPS or loopback tunnel only). Development builds still allow remote HTTP with an in-settings warning. CLI/MCP reject remote cleartext by default; opt in with `--allow-insecure-http` or `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` for lab use. Prefer `https://...` or `http://127.0.0.1:...` (local reverse proxy / VPN tunnel).
 
 Do not commit real account credentials, tokens, or live test secrets.
 
 ## Architecture
 
+- `src/lib/transport-security.ts`: URL transport classification and production cleartext-remote blocking.
 - `src/lib/types.ts`: shared API and runtime types. Keep backend fields tolerant with `UnknownRecord` intersections when the live API is not fully verified.
 - `src/lib/api-client.ts`: generic HTTP client, envelope unwrap, auth header injection, HTTP/business error mapping.
 - `src/lib/api-factory.ts`: typed endpoint wrappers grouped by domain: auth, instance/task, image, storage, resource/price. Reused by web, CLI, and MCP.

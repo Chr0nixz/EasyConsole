@@ -192,7 +192,7 @@ export type CreateTaskPayload = UnknownRecord & {
   script_path?: string;
 };
 
-export type ScheduledTaskStatus = "pending" | "running" | "done" | "failed" | "paused";
+export type ScheduledTaskStatus = "pending" | "running" | "done" | "failed" | "paused" | "needs_review";
 
 export type TaskRecurrenceType = "once" | "daily" | "weekly" | "interval" | "cron";
 
@@ -220,6 +220,12 @@ export type ScheduledTask = {
   lastRunAt?: string;
   lastError?: string;
   recurrence?: TaskRecurrence;
+  /** Stable key for the in-flight or last attempted trigger: `${id}@${scheduleTime}`. */
+  executionKey?: string;
+  /** When the current running lease started (ISO). */
+  leaseStartedAt?: string;
+  /** Remote task id created for the current/last successful execution key. */
+  lastRemoteTaskId?: string;
 };
 
 export type TaskTemplateVariable = {

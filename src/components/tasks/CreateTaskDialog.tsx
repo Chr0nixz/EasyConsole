@@ -14,10 +14,12 @@ import { useToast } from "../../lib/use-toast";
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../../lib/format";
 import { cn } from "../../lib/utils";
 import { useI18n } from "../../lib/i18n";
+import { queryKeys } from "../../lib/query-keys";
 import { parsePositivePrice } from "../../lib/resource-price";
 import { normalizeStoragePath } from "../../lib/remote-storage";
 import { invalidateTaskQueries } from "../../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, Task } from "../../lib/types";
+import { confirmDiscardUnsavedChanges, useUnsavedChanges } from "../../lib/use-unsaved-changes";
 import { errorMessage, useRunLogger } from "../../lib/use-run-logger";
 
 const DEFAULT_PRICE = "1";
@@ -27,6 +29,53 @@ const DEFAULT_MEMORY = "16";
 const MAX_BATCH_COUNT = 50;
 
 type StoragePickerTarget = "storage" | "workDirectory" | "scriptPath";
+
+type FormSnapshot = {
+  name: string;
+  imageId: string;
+  price: string;
+  cpu: string;
+  gpu: string;
+  memory: string;
+  releaseCondition: string;
+  releaseTime: string;
+  storagePath: string;
+  mountPath: string;
+  workDirectory: string;
+  scriptPath: string;
+  batchCount: string;
+};
+
+function buildFormSnapshot({
+  isEditMode,
+  initialTask,
+  username,
+}: {
+  isEditMode: boolean;
+  initialTask?: Task | null;
+  username: string;
+}): FormSnapshot {
+  return {
+    name: isEditMode ? (initialTask?.name ?? "") : formatTaskDefaultName(),
+    imageId: String(getTaskImageId(initialTask)),
+    price: String(initialTask?.price ?? DEFAULT_PRICE),
+    cpu: String(initialTask?.cpu ?? DEFAULT_CPU),
+    gpu: String(initialTask?.gpu ?? DEFAULT_GPU),
+    memory: String(initialTask?.memory ?? DEFAULT_MEMORY),
+    releaseCondition: String(initialTask?.releace_conditions ?? initialTask?.release_condition ?? "1"),
+    releaseTime: formatClonedReleaseTime(initialTask?.releace_time),
+    storagePath: initialTask?.storage_path || `/${username}`,
+    mountPath: initialTask?.mount_path || `/home/ubuntu/${username}`,
+    workDirectory: initialTask?.work_directory ?? "",
+    scriptPath: initialTask?.script_path ?? "",
+    batchCount: "1",
+  };
+}
+
+function isFormDirty(current: FormSnapshot, initial: FormSnapshot | null) {
+  if (!initial) return false;
+  return (Object.keys(initial) as Array<keyof FormSnapshot>).some((key) => current[key] !== initial[key]);
+}
 
 function getImageOptionLabel(image: ImageItem) {
   const name = image.name ?? image.image_name ?? String(image.id);
@@ -130,8 +179,17 @@ export function CreateTaskDialog({
   const { locale, text } = useI18n();
   const runLogger = useRunLogger();
   const queryClient = useQueryClient();
-  const images = useQuery({ queryKey: ["images", "task-create"], queryFn: () => imageApi.list({ page: 1, page_size: 100 }), enabled: open });
-  const systemImages = useQuery({ queryKey: ["images", "system", "task-create"], queryFn: () => imageApi.system({}), enabled: open });
+  const images = useQuery({
+    queryKey: queryKeys.images.list(),
+    queryFn: ({ signal }) => imageApi.list({ page: 1, page_size: 100 }, { signal }),
+    enabled: open,
+  });
+  const systemImages = useQuery({
+    queryKey: queryKeys.images.system(),
+    queryFn: ({ signal }) => imageApi.system({}, { signal }),
+    enabled: open,
+  });
+  const [initialSnapshot, setInitialSnapshot] = useState<FormSnapshot | null>(null);
   const [name, setName] = useState("");
   const [imageId, setImageId] = useState("");
   const [price, setPrice] = useState(DEFAULT_PRICE);
@@ -148,6 +206,33 @@ export function CreateTaskDialog({
   const [batchCount, setBatchCount] = useState("1");
   const [formError, setFormError] = useState<string | null>(null);
   const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
+  const unsavedMessage = text("表单有未保存的更改，确定要关闭吗？", "You have unsaved changes. Discard them and close?");
+
+  const currentSnapshot = useMemo<FormSnapshot>(
+    () => ({
+      name,
+      imageId,
+      price,
+      cpu,
+      gpu,
+      memory,
+      releaseCondition,
+      releaseTime,
+      storagePath,
+      mountPath,
+      workDirectory,
+      scriptPath,
+      batchCount,
+    }),
+    [batchCount, cpu, gpu, imageId, memory, mountPath, name, price, releaseCondition, releaseTime, scriptPath, storagePath, workDirectory],
+  );
+  const dirty = open && isFormDirty(currentSnapshot, initialSnapshot);
+  useUnsavedChanges(dirty, unsavedMessage);
+
+  function requestClose() {
+    if (dirty && !confirmDiscardUnsavedChanges(unsavedMessage)) return;
+    onClose();
+  }
 
   const fieldErrors = useMemo(() => {
     const errors: Record<string, string> = {};
@@ -174,24 +259,28 @@ export function CreateTaskDialog({
 
   useEffect(() => {
     if (open) {
-      setName(isEditMode ? (initialTask?.name ?? "") : formatTaskDefaultName());
-      setImageId(String(getTaskImageId(initialTask)));
-      setPrice(String(initialTask?.price ?? DEFAULT_PRICE));
-      setCpu(String(initialTask?.cpu ?? DEFAULT_CPU));
-      setGpu(String(initialTask?.gpu ?? DEFAULT_GPU));
-      setMemory(String(initialTask?.memory ?? DEFAULT_MEMORY));
-      setReleaseCondition(String(initialTask?.releace_conditions ?? initialTask?.release_condition ?? "1"));
-      setReleaseTime(formatClonedReleaseTime(initialTask?.releace_time));
-      setStoragePath(initialTask?.storage_path || `/${username}`);
-      setMountPath(initialTask?.mount_path || `/home/ubuntu/${username}`);
-      setWorkDirectory(initialTask?.work_directory ?? "");
-      setScriptPath(initialTask?.script_path ?? "");
+      const snapshot = buildFormSnapshot({ isEditMode, initialTask, username });
+      setInitialSnapshot(snapshot);
+      setName(snapshot.name);
+      setImageId(snapshot.imageId);
+      setPrice(snapshot.price);
+      setCpu(snapshot.cpu);
+      setGpu(snapshot.gpu);
+      setMemory(snapshot.memory);
+      setReleaseCondition(snapshot.releaseCondition);
+      setReleaseTime(snapshot.releaseTime);
+      setStoragePath(snapshot.storagePath);
+      setMountPath(snapshot.mountPath);
+      setWorkDirectory(snapshot.workDirectory);
+      setScriptPath(snapshot.scriptPath);
       setStoragePickerTarget(null);
-      setBatchCount("1");
+      setBatchCount(snapshot.batchCount);
       setFormError(null);
       resetTouched();
+    } else {
+      setInitialSnapshot(null);
     }
-  }, [initialTask, open, resetTouched, username]);
+  }, [initialTask, isEditMode, open, resetTouched, username]);
 
   useEffect(() => {
     if (!open || imageId || imageOptions.length === 0) return;
@@ -379,7 +468,9 @@ export function CreateTaskDialog({
     <Dialog
       open={open}
       title={isEditMode ? text("编辑任务", "Edit Task") : initialTask ? text("复制实例", "Clone Instance") : text("新建任务", "New Task")}
-      onClose={onClose}
+      onClose={requestClose}
+      closeOnOverlayClick={false}
+      onOverlayClick={requestClose}
       width="max-w-4xl"
     >
       <form className="p-4" onSubmit={submit}>
@@ -526,7 +617,7 @@ export function CreateTaskDialog({
           {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
           {mutation.isError ? <ErrorState error={mutation.error} /> : null}
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={onClose}>
+            <Button type="button" variant="secondary" onClick={requestClose}>
               {text("取消", "Cancel")}
             </Button>
             <Button disabled={mutation.isPending}>

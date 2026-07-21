@@ -1,81 +1,70 @@
+import { Cron } from "croner";
+
 import type { ScheduledTask, TaskRecurrence } from "./types";
 
-/**
- * Lightweight 5-field cron next-run calculator.
- * Supports: asterisk, numbers, comma, dash (ranges).
- * Does NOT support: step values (e.g. star-slash-5), L, W, #, names.
- */
-
-const CRON_FIELDS = [
-  { min: 0, max: 59 }, // minute
-  { min: 0, max: 23 }, // hour
-  { min: 1, max: 31 }, // day of month
-  { min: 1, max: 12 }, // month
-  { min: 0, max: 6 },  // day of week (0=Sun)
-] as const;
-
-function parseCronField(field: string, fieldIndex: number): Set<number> {
-  const { min, max } = CRON_FIELDS[fieldIndex];
-  const result = new Set<number>();
-  for (const part of field.split(",")) {
-    if (part === "*") {
-      for (let i = min; i <= max; i += 1) result.add(i);
-      continue;
-    }
-    const rangeMatch = part.match(/^(\d+)-(\d+)$/);
-    if (rangeMatch) {
-      const start = Math.max(min, parseInt(rangeMatch[1], 10));
-      const end = Math.min(max, parseInt(rangeMatch[2], 10));
-      for (let i = start; i <= end; i += 1) result.add(i);
-      continue;
-    }
-    const num = parseInt(part, 10);
-    if (Number.isFinite(num) && num >= min && num <= max) {
-      result.add(num);
-    } else {
-      throw new Error(`Invalid cron field "${field}" at position ${fieldIndex + 1}`);
-    }
+export class RecurrenceValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RecurrenceValidationError";
   }
-  return result;
 }
 
-function parseCron(expr: string): [Set<number>, Set<number>, Set<number>, Set<number>, Set<number>] {
-  const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) throw new Error("Cron expression must have exactly 5 fields");
-  return parts.map((p, i) => parseCronField(p, i)) as [Set<number>, Set<number>, Set<number>, Set<number>, Set<number>];
+/** Validate cron expression; throws RecurrenceValidationError on failure. */
+export function assertValidCron(expr: string) {
+  const trimmed = expr.trim();
+  if (!trimmed) throw new RecurrenceValidationError("Cron expression is required");
+  try {
+    // croner uses local timezone by default; catch invalid patterns early.
+    // eslint-disable-next-line no-new
+    new Cron(trimmed, { paused: true });
+  } catch (error) {
+    throw new RecurrenceValidationError(error instanceof Error ? error.message : "Invalid cron expression");
+  }
+}
+
+export function validateRecurrence(recurrence: TaskRecurrence | undefined): void {
+  if (!recurrence || recurrence.type === "once") return;
+  if (recurrence.type === "weekly") {
+    const weekdays = recurrence.weekdays ?? [];
+    if (weekdays.length === 0) {
+      throw new RecurrenceValidationError("Weekly recurrence requires at least one weekday");
+    }
+    if (weekdays.some((day) => !Number.isInteger(day) || day < 0 || day > 6)) {
+      throw new RecurrenceValidationError("Weekdays must be integers from 0 (Sun) to 6 (Sat)");
+    }
+  }
+  if (recurrence.type === "interval") {
+    if (!recurrence.intervalSec || recurrence.intervalSec <= 0) {
+      throw new RecurrenceValidationError("Interval recurrence requires a positive intervalSec");
+    }
+  }
+  if (recurrence.type === "cron") {
+    if (!recurrence.cron?.trim()) throw new RecurrenceValidationError("Cron expression is required");
+    assertValidCron(recurrence.cron);
+  }
 }
 
 function nextCronTime(cron: string, after: Date): Date {
-  const [minutes, hours, doms, months, dows] = parseCron(cron);
-  const result = new Date(after);
-  result.setSeconds(0, 0);
-  // Search up to 366 days ahead
-  for (let i = 0; i < 366 * 24 * 60; i += 1) {
-    result.setMinutes(result.getMinutes() + 1);
-    if (!months.has(result.getMonth() + 1)) continue;
-    if (!doms.has(result.getDate()) && !dows.has(result.getDay())) continue;
-    // cron standard: if both dom and dow are restricted (not *), match either.
-    // We check: if dom field was * OR dow field was *, both must match.
-    // Simplified: if either dom or dow matches, proceed (OR semantics).
-    if (!minutes.has(result.getMinutes())) continue;
-    if (!hours.has(result.getHours())) continue;
-    return result;
-  }
-  throw new Error("No valid cron time found within 366 days");
+  assertValidCron(cron);
+  const job = new Cron(cron.trim());
+  const next = job.nextRun(after);
+  if (!next) throw new RecurrenceValidationError("No valid cron time found");
+  return next;
 }
 
 /**
  * Compute the next run time for a scheduled task based on its recurrence.
- * Returns null if the task should not run again (e.g. past endDate).
+ * Returns null if the task should not run again (e.g. past endDate / once).
+ * Throws RecurrenceValidationError for invalid weekly/cron configuration.
  */
 export function computeNextRunTime(task: ScheduledTask, now = new Date()): Date | null {
   const recurrence = task.recurrence;
   if (!recurrence || recurrence.type === "once") {
-    // One-time: no next run
     return null;
   }
 
-  // Check endDate
+  validateRecurrence(recurrence);
+
   if (recurrence.endDate) {
     const end = Date.parse(recurrence.endDate);
     if (Number.isFinite(end) && end <= now.getTime()) return null;
@@ -86,7 +75,6 @@ export function computeNextRunTime(task: ScheduledTask, now = new Date()): Date 
 
   switch (recurrence.type) {
     case "daily": {
-      // Next day at the same time as scheduleTime
       const scheduledTime = new Date(task.scheduleTime);
       const next = new Date(baseTime);
       next.setHours(scheduledTime.getHours(), scheduledTime.getMinutes(), 0, 0);
@@ -97,7 +85,6 @@ export function computeNextRunTime(task: ScheduledTask, now = new Date()): Date 
     }
     case "weekly": {
       const weekdays = recurrence.weekdays ?? [];
-      if (weekdays.length === 0) return null;
       const scheduledTime = new Date(task.scheduleTime);
       for (let offset = 0; offset <= 7; offset += 1) {
         const candidate = new Date(baseTime);
@@ -110,17 +97,35 @@ export function computeNextRunTime(task: ScheduledTask, now = new Date()): Date 
     }
     case "interval": {
       const intervalSec = recurrence.intervalSec ?? 0;
-      if (intervalSec <= 0) return null;
       const next = new Date(baseTime.getTime() + intervalSec * 1000);
       return next > now ? next : new Date(now.getTime() + intervalSec * 1000);
     }
     case "cron": {
-      if (!recurrence.cron) return null;
-      return nextCronTime(recurrence.cron, now);
+      return nextCronTime(recurrence.cron!, now);
     }
     default:
       return null;
   }
+}
+
+/** Preview the next N trigger times for UI / dry-run. */
+export function previewNextRuns(task: ScheduledTask, count = 5, now = new Date()): Date[] {
+  const results: Date[] = [];
+  let cursor = new Date(now);
+  let current: ScheduledTask = { ...task };
+
+  for (let i = 0; i < count; i += 1) {
+    const next = computeNextRunTime(current, cursor);
+    if (!next) break;
+    results.push(next);
+    current = {
+      ...current,
+      lastRunAt: next.toISOString(),
+      scheduleTime: next.toISOString(),
+    };
+    cursor = next;
+  }
+  return results;
 }
 
 export function isRecurring(task: ScheduledTask): boolean {

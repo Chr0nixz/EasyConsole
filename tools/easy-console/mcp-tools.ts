@@ -540,22 +540,27 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_schedule_create",
-      description: "Create a local scheduled task.",
+      description: "Create a local scheduled task. Requires confirm=true to persist; otherwise returns a dry-run preview.",
       inputSchema: {
         name: z.string(),
         scheduleTime: z.string(),
         payload: z.record(z.string(), z.unknown()),
         description: z.string().optional(),
         recurrence: z.record(z.string(), z.unknown()).optional(),
+        confirm: z.boolean().optional(),
       },
       handler(context, input) {
-        return createScheduledTaskRecord(context.storage, {
-          name: String(input.name),
-          description: asOptionalString(input.description),
-          scheduleTime: String(input.scheduleTime),
-          payload: buildCreateTaskPayload(asRecord(input.payload)),
-          recurrence: input.recurrence as unknown as Parameters<typeof createScheduledTaskRecord>[1]["recurrence"],
-        });
+        return createScheduledTaskRecord(
+          context.storage,
+          {
+            name: String(input.name),
+            description: asOptionalString(input.description),
+            scheduleTime: String(input.scheduleTime),
+            payload: buildCreateTaskPayload(asRecord(input.payload)),
+            recurrence: input.recurrence as unknown as Parameters<typeof createScheduledTaskRecord>[1]["recurrence"],
+          },
+          asConfirm(input.confirm),
+        );
       },
     },
     {

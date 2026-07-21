@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const authMock = vi.hoisted(() => ({
@@ -10,6 +10,7 @@ const authMock = vi.hoisted(() => ({
   login: vi.fn(),
   loginSaved: vi.fn(),
   forgetSavedAccount: vi.fn(),
+  clearSavedPassword: vi.fn(),
   logout: vi.fn(),
   refreshUser: vi.fn(),
   user: null,
@@ -34,11 +35,14 @@ vi.mock("../components/DataState", () => ({
 import { LoginPage } from "./LoginPage";
 
 function renderLogin() {
-  return render(
-    <MemoryRouter initialEntries={["/login"]}>
-      <LoginPage />
-    </MemoryRouter>,
+  const router = createMemoryRouter(
+    [
+      { path: "/login", element: <LoginPage /> },
+      { path: "/dashboard", element: <div>Dashboard</div> },
+    ],
+    { initialEntries: ["/login"] },
   );
+  return { router, ...render(<RouterProvider router={router} />) };
 }
 
 describe("LoginPage", () => {
@@ -49,6 +53,7 @@ describe("LoginPage", () => {
     authMock.login.mockReset();
     authMock.loginSaved.mockReset();
     authMock.forgetSavedAccount.mockReset();
+    authMock.clearSavedPassword.mockReset();
   });
 
   it("renders password form when no saved accounts", () => {
@@ -84,16 +89,19 @@ describe("LoginPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /^登录$|^Sign in$/ }));
 
     await waitFor(() =>
-      expect(authMock.login).toHaveBeenCalledWith("bob", "secret", { rememberPassword: true }),
+      expect(authMock.login).toHaveBeenCalledWith("bob", "secret", { rememberPassword: false }),
     );
   });
 
-  it("passes rememberPassword option (default on, toggles off)", async () => {
+  it("passes rememberPassword option (default off, toggles on)", async () => {
     authMock.login.mockResolvedValue(undefined);
     renderLogin();
 
-    // Default: remember password checkbox is checked.
+    // Default: remember password checkbox is unchecked.
     const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+
+    fireEvent.click(checkbox);
     expect(checkbox.checked).toBe(true);
 
     fireEvent.change(screen.getByLabelText(/用户名|Username/i), { target: { value: "bob" } });
@@ -103,15 +111,13 @@ describe("LoginPage", () => {
     await waitFor(() =>
       expect(authMock.login).toHaveBeenCalledWith("bob", "secret", { rememberPassword: true }),
     );
+  });
 
-    // Uncheck → next submit passes rememberPassword: false.
-    authMock.login.mockClear();
-    fireEvent.click(checkbox);
-    expect(checkbox.checked).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: /^登录$|^Sign in$/ }));
-
-    await waitFor(() =>
-      expect(authMock.login).toHaveBeenCalledWith("bob", "secret", { rememberPassword: false }),
-    );
+  it("toggles password visibility", () => {
+    renderLogin();
+    const toggle = screen.getByRole("button", { name: /显示密码|Show password/i });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: /隐藏密码|Hide password/i })).toHaveAttribute("aria-pressed", "true");
   });
 });

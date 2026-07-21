@@ -28,14 +28,40 @@ function saveBlobInBrowser(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+async function writeBlobStreaming(path: string, blob: Blob) {
+  const { writeFile } = await import("@tauri-apps/plugin-fs");
+  if (typeof blob.stream !== "function") {
+    await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+    return;
+  }
+  const reader = blob.stream().getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  // Stream into a growing buffer without holding a second ArrayBuffer copy of the Blob internals.
+  // For very large files prefer http_download_to_file (URL → path) from Rust.
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    chunks.push(value);
+    total += value.byteLength;
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  await writeFile(path, merged);
+}
+
 export async function saveBlob(blob: Blob, filename: string) {
   if (isTauri()) {
     const safeFilename = sanitizeDownloadFilename(filename);
 
-    // Mobile Tauri: no native save dialog, write directly to download dir
     if (getRuntimeKind() === "mobile") {
       try {
-        const [{ exists, writeFile }, { downloadDir, join }] = await Promise.all([
+        const [{ exists }, { downloadDir, join }] = await Promise.all([
           import("@tauri-apps/plugin-fs"),
           import("@tauri-apps/api/path"),
         ]);
@@ -45,14 +71,14 @@ export async function saveBlob(blob: Blob, filename: string) {
         for (let index = 1; await exists(targetPath); index += 1) {
           targetPath = await join(downloads, `${name} (${index})${extension}`);
         }
-        await writeFile(targetPath, new Uint8Array(await blob.arrayBuffer()));
+        await writeBlobStreaming(targetPath, blob);
         return;
       } catch (error) {
         console.warn("Tauri mobile download failed, falling back to browser download.", error);
       }
     } else {
       try {
-        const [{ save }, { writeFile }, { downloadDir, join }] = await Promise.all([
+        const [{ save }, { exists }, { downloadDir, join }] = await Promise.all([
           import("@tauri-apps/plugin-dialog"),
           import("@tauri-apps/plugin-fs"),
           import("@tauri-apps/api/path"),
@@ -60,7 +86,8 @@ export async function saveBlob(blob: Blob, filename: string) {
         const defaultPath = await join(await downloadDir(), safeFilename);
         const path = await save({ defaultPath });
         if (!path) return;
-        await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+        void exists;
+        await writeBlobStreaming(path, blob);
         return;
       } catch (error) {
         console.warn("Tauri download failed, falling back to browser download.", error);
@@ -77,11 +104,20 @@ function splitFilename(filename: string) {
   return { name: filename.slice(0, dot), extension: filename.slice(dot) };
 }
 
+/** Desktop: stream a remote URL directly to a local path via Rust (no renderer Blob). */
+export async function downloadUrlToLocalPath(url: string, path: string) {
+  if (!isTauri() || getRuntimeKind() !== "desktop") {
+    throw new Error("downloadUrlToLocalPath is only available in the desktop app");
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<number>("http_download_to_file", { url, path });
+}
+
 export async function saveBlobToDownloads(blob: Blob, filename: string) {
   const safeFilename = sanitizeDownloadFilename(filename);
   if (isTauri()) {
     try {
-      const [{ exists, writeFile }, { downloadDir, join }] = await Promise.all([
+      const [{ exists }, { downloadDir, join }] = await Promise.all([
         import("@tauri-apps/plugin-fs"),
         import("@tauri-apps/api/path"),
       ]);
@@ -91,7 +127,7 @@ export async function saveBlobToDownloads(blob: Blob, filename: string) {
       for (let index = 1; await exists(targetPath); index += 1) {
         targetPath = await join(downloads, `${name} (${index})${extension}`);
       }
-      await writeFile(targetPath, new Uint8Array(await blob.arrayBuffer()));
+      await writeBlobStreaming(targetPath, blob);
       return targetPath;
     } catch (error) {
       console.warn("Tauri default download failed, falling back to browser download.", error);

@@ -23,7 +23,10 @@ The toolchain reads credentials from local config or environment:
 EASY_CONSOLE_API_BASE_URL=http://116.172.93.164:28080/api
 EASY_CONSOLE_TOKEN=Bearer ...
 EASY_CONSOLE_CONFIG=D:\path\to\config.json
+EASY_CONSOLE_ALLOW_INSECURE_HTTP=1
 ```
+
+Remote cleartext HTTP is blocked unless you use HTTPS, `http://127.0.0.1` (local tunnel), or explicitly set `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` / CLI `--allow-insecure-http`.
 
 Default config path on Windows:
 

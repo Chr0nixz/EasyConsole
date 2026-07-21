@@ -6,6 +6,7 @@ import { EmptyState, ErrorState, SearchXIcon, TableSkeleton } from "../component
 import { ImageDetailDialog } from "../components/images/ImageDetailDialog";
 import { Button, Input, Panel, Select, TableRegion } from "../components/ui";
 import { imageApi } from "../lib/api";
+import { queryKeys } from "../lib/query-keys";
 import { useDownloadQueue } from "../lib/download-queue-context";
 import { loadFavoriteImages, toggleFavoriteImage } from "../lib/image-favorites";
 import { useI18n } from "../lib/i18n";
@@ -59,8 +60,14 @@ export function ImagesPage() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [detailImage, setDetailImage] = useState<{ id: string | number; name: string } | null>(null);
-  const custom = useQuery({ queryKey: ["images"], queryFn: () => imageApi.list({ page: 1, page_size: 100 }) });
-  const system = useQuery({ queryKey: ["images", "system"], queryFn: () => imageApi.system({}) });
+  const custom = useQuery({
+    queryKey: queryKeys.images.list(),
+    queryFn: ({ signal }) => imageApi.list({ page: 1, page_size: 100 }, { signal }),
+  });
+  const system = useQuery({
+    queryKey: queryKeys.images.system(),
+    queryFn: ({ signal }) => imageApi.system({}, { signal }),
+  });
 
   useEffect(() => {
     void loadFavoriteImages(browserRuntime.storage).then(setFavorites);

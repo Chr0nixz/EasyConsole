@@ -1,12 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { invalidateTaskQueries, TASK_SNAPSHOT_QUERY_KEY } from "./task-snapshot-query";
+import { nextNotificationPollInterval, TASK_SNAPSHOT_POLL_INTERVAL, TASK_SNAPSHOT_POLL_INTERVAL_HIDDEN_MAX } from "./task-snapshot-query";
 
-describe("task-snapshot-query", () => {
-  it("invalidates both paginated tasks and the shared snapshot", () => {
-    const invalidateQueries = vi.fn();
-    invalidateTaskQueries({ invalidateQueries } as never);
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["tasks"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: TASK_SNAPSHOT_QUERY_KEY });
+describe("nextNotificationPollInterval", () => {
+  it("returns foreground interval when visible", () => {
+    expect(nextNotificationPollInterval(120_000, false)).toBe(TASK_SNAPSHOT_POLL_INTERVAL);
+  });
+
+  it("exponentially backs off while hidden up to the max", () => {
+    const first = nextNotificationPollInterval(TASK_SNAPSHOT_POLL_INTERVAL, true);
+    expect(first).toBeGreaterThanOrEqual(60_000);
+    const capped = nextNotificationPollInterval(TASK_SNAPSHOT_POLL_INTERVAL_HIDDEN_MAX, true);
+    expect(capped).toBe(TASK_SNAPSHOT_POLL_INTERVAL_HIDDEN_MAX);
   });
 });

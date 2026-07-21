@@ -1,753 +1,432 @@
 ---
-timestamp: 2026-06-26
-scope: 全项目四维度审计（用户交互便捷性 / 功能丰富性和完整性 / 架构鲁棒性和稳定性 / 运行效率）
-method: 源码静态审查 + 代码引用定位
+timestamp: 2026-07-21
+scope: EasyConsole 全项目四维审计（用户交互便捷性、功能丰富性和完整性、架构鲁棒性和稳定性、程序运行效率）
+product_priority: Tauri 桌面端优先，CLI/MCP 为派生工具，Web 为开发与降级运行面
+method: 源码静态审计 + 自动化验证 + 375x812 浏览器实测 + 定向逻辑复现
+overall_score: 6.2/10
+finding_count: P0 1 / P1 10 / P2 8 / P3 1
+status: 具备完整产品骨架，但发布前仍需处理安全、调度、持久化和大文件链路风险
 ---
 
 # EasyConsole 项目审计报告
 
-本报告从**用户交互便捷性**、**程序功能丰富性和完整性**、**项目架构鲁棒性和稳定性**、**程序运行效率**四个维度对 EasyConsole 进行系统性审查，记录当前不足与改进方向。所有引用均附 `file:///` 链接与行号，基于当前磁盘状态。
-
-## 整体评价
-
-**优势面**：
-- 架构分层清晰，适配器模式（`runtime.ts`）让 Web/Tauri/Node 三端边界干净。
-- 本地运行时数据模型（模板/定时任务/运行日志/已保存账号）完整。
-- SSH 桌面化（russh 应用内 SSH、VS Code Remote-SSH、系统终端）显著超越原始控制台。
-- `src/lib` 测试覆盖充分（25+ 测试文件），CI 矩阵覆盖三平台。
-- Rust 错误处理规范，无 `unwrap`/`expect` 滥用。
-- manualChunks 拆分、路由 lazy、xterm 动态导入等基础优化到位。
-
-**核心短板**：
-- **错误恢复韧性**：无 ErrorBoundary、无 API 重试、AuthProvider 无 catch、SSH connect 无超时。
-- **凭据安全**：明文 token、无盐哈希、capabilities 过宽。
-- **并发持久化**：runtime-storage.json 无锁全量读写，run log 追加放大 4 倍 IO。
-- **CLI/MCP 与 Web 能力对齐**：模板/定时任务/存储上传/镜像提交等多处缺口。
-- **核心功能完整性**：任务编辑、循环调度、token 刷新、断点续传均缺失。
-- **列表性能**：无虚拟化、搜索无防抖、双重轮询、纯 JS MD5 阻塞主线程。
-
-多数缺口可通过补齐 API 调用与 UI 入口解决，无需重大架构调整；安全与韧性相关问题建议优先处理。
-
----
+## 1. 执行摘要
 
-## 一、用户交互便捷性
+EasyConsole 已经不是简单的原控制台页面复刻，而是形成了以 Tauri 桌面端为主、Web 渲染端与 Node CLI/MCP 共用 API 能力的多运行时产品。任务详情、模板、定时任务、运行日志、通知、存储上传、桌面 SSH、运行时设置、账号保存和中英文切换等主干能力均已落地，TypeScript、Rust、桌面输入构建和现有自动化测试全部通过。
 
-### 1.1 导航与信息架构
+当前成熟度评为 **6.2/10**。主要问题不在“页面或入口太少”，而在已经存在的关键能力仍有正确性和边界可靠性缺口：默认 API 使用明文 HTTP；循环调度的 cron 与周循环计算存在确定性错误；调度执行缺少崩溃恢复与幂等保障；含凭据备份没有接入安全存储；断点续传、Tauri 存储降级和 Node 本地数据并发写入可能产生错误或数据丢失；桌面大文件传输仍采用整文件内存缓冲；后台通知轮询成本随任务总量线性增长。
 
-- **无面包屑导航**：[AppShell.tsx:454-457](file:///d:/Projects/EasyConsole/src/components/AppShell.tsx#L454) 顶栏仅显示单级标题与固定副标题，用户在多层级操作中容易迷失。
-- **无任务详情深链接**：路由扁平为 8 个一级页面（[App.tsx:43-52](file:///d:/Projects/EasyConsole/src/App.tsx#L43)），无 `/tasks/:id` 详情路由，无法分享/收藏单个任务上下文。CommandPalette 搜到任务后只能跳到 `/tasks?keyword=...`（[CommandPalette.tsx:74](file:///d:/Projects/EasyConsole/src/components/CommandPalette.tsx#L74)）。
-- **标题匹配脆弱**：[AppShell.tsx:41-50](file:///d:/Projects/EasyConsole/src/components/AppShell.tsx#L41) 用 `location.pathname` 精确匹配，未来嵌套路由或尾斜杠会回退到默认标题。
-- **菜单无分组/无层级**：8 个 navItem 平铺（[AppShell.tsx:27-36](file:///d:/Projects/EasyConsole/src/components/AppShell.tsx#L27)），"实例模板/定时任务/运行日志/设置"与"任务实例/存储/镜像"没有视觉分组，认知负载随功能增加线性上升。
-- **无"最近访问"或常用置顶**：侧栏顺序固定，无法按使用频率调整。
-
-**改进建议**：增加面包屑组件（至少 "控制台 / 当前页"）；标题匹配改为 `startsWith` 或路由匹配；为任务增加 `/tasks/:id` 详情路由（聚合日志/终端/监控/SSH）；按"实例""资源""系统"对 nav 分组并加分隔线。
+本轮共记录 **20 项正式问题：P0 1 项、P1 10 项、P2 8 项、P3 1 项**。其中 P0 是带条件的发布阻断项：只要生产环境仍通过不可信网络访问默认 HTTP API，就不应发布或输入真实凭据。若部署层已经通过可信 VPN、反向代理或本机隧道强制加密，则应以部署证据关闭该项，而不是仅凭网络拓扑假设降级。
 
-### 1.2 任务列表页交互
+### 1.1 四维评分
 
-- **搜索框无防抖**：[TasksPage.tsx:1053-1058](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1053) `onChange` 直接 `updateTaskQuery({ keyword })` 会 `setSearchParams` 并改变 queryKey，每输入一个字符就发一次 `instanceApi.tasks` 请求。对比 [CommandPalette.tsx:19](file:///d:/Projects/EasyConsole/src/components/CommandPalette.tsx#L19) 同类搜索有 300ms 防抖，TasksPage 反而没有。**最影响体验的问题之一**。
-- **表格列不可排序**：表头全是纯文本（[TasksPage.tsx:1265-1282](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1265)），用户无法按创建时间/时长/状态排序。
-- **分页只有上/下页**：[TasksPage.tsx:1328-1343](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1328) 无页码跳转、无总页数，`hasKnownTotal` 为 false 时用户不知道还有多少页。
-- **列设置/自动刷新设置直接写 `window.localStorage`**：[TasksPage.tsx:197、224、232、1005、1009、1013](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L197) 绕过 `browserRuntime.storage`，桌面端不会落到 `runtime-storage.json`，跨窗口/重装会丢失。违反 AGENTS.md "local runtime data 走 runtime adapter" 约定。
-- **行选择翻页后静默清空**：[TasksPage.tsx:1025-1027](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1025) 无 toast 或保留提示。
-- **无"快速状态切换"**：状态筛选是 Select（[TasksPage.tsx:1060-1067](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1060)），无法像 Tab 一样一键切换"运行中/已释放/失败"，且不显示各状态计数。
-- **置顶排序仅本地**：[TasksPage.tsx:706](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L706) 自动刷新拉到新数据时置顶行会跳动，缺少视觉稳定性锚定。
-
-**改进建议**：搜索加 250-300ms 防抖并显示搜索 loading；表头加可点击排序（至少 created/duration/status）；分页增加页码与跳转；列设置改用 `browserRuntime.storage`；状态筛选改为带计数的 Tab 段控件。
-
-### 1.3 表单交互
-
-- **CreateTaskDialog 校验写两遍**：[CreateTaskDialog.tsx:135-151](file:///d:/Projects/EasyConsole/src/components/tasks/CreateTaskDialog.tsx#L135)（useMemo）和 [CreateTaskDialog.tsx:235-302](file:///d:/Projects/EasyConsole/src/components/tasks/CreateTaskDialog.tsx#L235)（submit）各自重算一遍校验并 `setFormError`，两套规则容易漂移，且字段级 `FieldError` 与顶部 `formError` 同时出现信息重复。
-- **新建任务对话框不能从模板创建**：[CreateTaskDialog.tsx:160-171](file:///d:/Projects/EasyConsole/src/components/tasks/CreateTaskDialog.tsx#L160) 只支持空白新建或从 `initialTask` 克隆，模板入口在另一页面（[TaskTemplatesPage.tsx:605-614](file:///d:/Projects/EasyConsole/src/pages/TaskTemplatesPage.tsx#L605)），核心流程割裂。AGENTS.md 强调模板复用是核心流程。
-- **所有表单无 dirty 检测**：SettingsPage（[SettingsPage.tsx:98-99](file:///d:/Projects/EasyConsole/src/pages/SettingsPage.tsx#L98)）、ScheduledTasksPage、TaskTemplatesPage 改一半切走就丢，无"未保存将丢失"拦截。
-- **LoginPage 无密码可见性切换**：[LoginPage.tsx:172-179](file:///d:/Projects/EasyConsole/src/pages/LoginPage.tsx#L172) 固定 `type="password"`，输错时排查成本高。
-- **ScheduledTasksPage 表单成功后不清空 image/资源**：[ScheduledTasksPage.tsx:257-260](file:///d:/Projects/EasyConsole/src/pages/ScheduledTasksPage.tsx#L257) 只重置 name/description/scheduleTime，CPU/GPU/内存/路径保留，缺"全部重置"按钮。
-- **表单字段组件未抽象复用**：每个表单重复 `<label><span>...</span><Input/><FieldError/></label>`（[CreateTaskDialog.tsx:320-372](file:///d:/Projects/EasyConsole/src/components/tasks/CreateTaskDialog.tsx#L320)、[TaskTemplatesPage.tsx:216-309](file:///d:/Projects/EasyConsole/src/pages/TaskTemplatesPage.tsx#L216)、[ScheduledTasksPage.tsx:374-416](file:///d:/Projects/EasyConsole/src/pages/ScheduledTasksPage.tsx#L374)），label/错误/required 提示不一致风险高。`form-fields.tsx` 只提供三个原子，缺 `<Field label required error>` 封装。
-- **SettingsPage 校验只在提交时触发**：[SettingsPage.tsx:48-52、117-118、217-219](file:///d:/Projects/EasyConsole/src/pages/SettingsPage.tsx#L48) URL 输入过程中无即时反馈。
+| 维度 | 评分 | 当前判断 | 最主要限制 |
+|---|---:|---|---|
+| 用户交互便捷性 | **6.5/10** | 主流程清晰，桌面工作台密度合理，基础无障碍投入可见 | 小屏设置页横向溢出、部分控件缺少可访问语义、长表单与终端交互仍有摩擦 |
+| 程序功能丰富性和完整性 | **6.0/10** | 任务、模板、调度、存储、镜像、日志、通知、SSH、CLI/MCP 已形成较完整能力面 | 循环调度与上传恢复“有入口但不完全正确”，备份与工具端确认语义不完整 |
+| 项目架构鲁棒性和稳定性 | **6.5/10** | 运行时适配器、共享 API 工厂、错误映射和类型边界方向正确 | 明文传输、持久化分叉、跨进程写入、关键链路测试和生产诊断能力不足 |
+| 程序运行效率 | **5.5/10** | 路由懒加载、手工分包和局部动态加载已实施 | 大文件整缓冲、全量通知轮询、查询取消/缓存复用不足、sidecar 重复打包 |
+| **综合** | **6.2/10** | **可持续开发，但尚不适合作为“无需人工看护”的稳定桌面控制面发布** | **优先修复安全、调度、持久化与大文件路径** |
 
-**改进建议**：抽出 `<Field>` 复用组件统一 label/error/required；CreateTaskDialog 顶部加"从模板创建"；SettingsPage 加 URL 即时校验与 dirty 离开拦截；LoginPage 加密码显示切换。
+综合分按桌面优先产品风险加权计算：交互 25%、功能 25%、架构 30%、效率 20%，不是四项简单平均。
 
-### 1.4 错误/空/加载状态反馈
+### 1.2 发布判断
 
-- **错误 Toast 与成功 Toast 用同样 3500ms 自动消失**：[Toast.tsx:32-39](file:///d:/Projects/EasyConsole/src/components/Toast.tsx#L32) error 调用未覆盖时长，最多保留 4 条 `.slice(-4)`，批量失败场景会丢失信息。
-- **Toast 无操作按钮**：[Toast.tsx:69-77](file:///d:/Projects/EasyConsole/src/components/Toast.tsx#L69) 所有 toast 只能关闭或超时，无"重试/查看日志/撤销"内联动作。
-- **LoadingState 只是裸 spinner**：[DataState.tsx:9-19](file:///d:/Projects/EasyConsole/src/components/DataState.tsx#L9) DashboardPage/ImagesPage/StoragePage/TaskTemplatesPage 首屏加载内容区剧烈跳动，无骨架屏。
-- **EmptyState 无引导性副文案**：[DataState.tsx:44-52](file:///d:/Projects/EasyConsole/src/components/DataState.tsx#L44) 只有 icon+title+action，无"为什么为空 + 下一步建议"描述行。
-- **ErrorState 信息单薄**：[DataState.tsx:56-65](file:///d:/Projects/EasyConsole/src/components/DataState.tsx#L56) 只显示 `error.message`，无错误码/请求 URL/重试判断，401/网络/500 无差异化文案。
-- **ConfirmDialog 无"不再提示"**：每次释放/删除/批量操作都弹确认（[TasksPage.tsx:770-831](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L770)），高频用户无法跳过。
-- **离线横幅无操作**：[AppShell.tsx:500-505](file:///d:/Projects/EasyConsole/src/components/AppShell.tsx#L500) 只显示"当前处于离线状态"，无"重试连接"按钮。
+- **不建议直接面向真实账号发布**：除非生产 API 已有可验证的 HTTPS/VPN/隧道保护。
+- **不建议依赖当前循环调度执行重要任务**：cron、周循环和故障窗口均可能导致错时或重复创建。
+- **不建议把“包含登录凭据”的备份作为可恢复承诺**：当前普通存储与 secureStorage 的数据路径不一致。
+- **不建议用当前桌面传输链路处理超大文件**：下载和 SFTP 峰值内存与文件大小近似线性相关。
+- 在封闭测试环境内，任务浏览、详情、模板、日志、普通设置、轻量存储和 SSH 入口可以继续迭代验证。
 
-**改进建议**：error toast 时长延长到 8000ms+ 并提供"重试"动作；通用化骨架屏（卡片/列表/详情）；EmptyState 增加 description 字段；ErrorState 区分 401/网络/500 文案；ConfirmDialog 对高频非破坏操作加"不再确认"。
+## 2. 审计口径
 
-### 1.5 键盘可访问性
+### 2.1 严重度
 
-- **全局快捷键只有 Ctrl+K**：[AppShell.tsx:113-122](file:///d:/Projects/EasyConsole/src/components/AppShell.tsx#L113) 仅命令面板，缺 `/` 聚焦搜索、`n` 新建任务、`g` 系列跳转、`?` 查看快捷键等。
-- **无 skip-to-content 跳转链**：grep 全仓库无 `skip-to/skip-link`，违反 WCAG 2.4.1。
-- **AppSshTerminalDialog 不响应 Esc 关闭**：[AppSshTerminalDialog.tsx:184-206](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L184) 只处理 Tab 焦点循环，无 `Escape` 分支，与其他 Dialog 行为不一致。注意：终端里 Esc 本身是控制字符，需 Esc+Esc 或修饰键区分。
-- **Dialog 打开未锁定 body 滚动**：[ui.tsx:101-164](file:///d:/Projects/EasyConsole/src/components/ui.tsx#L101) 长表单（CreateTaskDialog）背景仍可滚动。
-- **CommandPalette Esc 处理依赖外层 Dialog**：[CommandPalette.tsx:106-127](file:///d:/Projects/EasyConsole/src/components/CommandPalette.tsx#L106) 嵌套场景下事件冒泡顺序可能出问题。
-- **nav-resize-handle 是 `tabindex=0` 但无键盘调整**：[AppShell.tsx:448-450](file:///d:/Projects/EasyConsole/src/components/AppShell.tsx#L448) 设了 `tabIndex={0}` 与 `role="separator"`，但只绑定 `onPointerDown`/`onDoubleClick`，无 ArrowLeft/ArrowRight 键盘调整。
-- **表格行无键盘可达性**：`<tr>` 不可聚焦，无法用键盘选中行触发操作。
+| 等级 | 定义 | 处理要求 |
+|---|---|---|
+| **P0 阻断** | 可能直接造成凭据泄漏、不可接受的数据损坏，或使核心任务无法安全完成 | 发布前立即修复或提供可审计的外部控制措施 |
+| **P1 重大** | 核心流程可能产生错误结果、重复副作用、持久化丢失、明显资源失控或安全承诺失真 | 当前发布周期处理 |
+| **P2 一般** | 有可行绕过方式，但显著影响效率、可访问性、维护成本或故障定位 | 下一迭代处理并加入回归测试 |
+| **P3 优化** | 不影响核心正确性，主要影响安装体积、细节体验或长期成本 | 纳入后续优化 |
 
-**改进建议**：加 skip-link；给 SSH 对话框加 Esc 关闭（双击 Esc 或 Ctrl+Esc 区分控制字符）；Dialog 加 body 滚动锁；扩展快捷键（`/` `n` `?`）；nav-resize-handle 加方向键调整。
+### 2.2 证据等级
 
-### 1.6 国际化
+| 标记 | 含义 |
+|---|---|
+| **S：源码确认** | 由当前工作区源码、配置或构建产物直接确认 |
+| **B：浏览器实测** | 在本地页面运行环境中通过交互、尺寸或可访问性检查复现 |
+| **L：逻辑复现** | 直接执行纯逻辑函数，以确定输入复现结果 |
+| **V：自动验证** | 由 typecheck、lint、test、build 或 cargo 命令验证 |
+| **U：待真实环境验证** | 受真实账号、服务器、网络、设备或签名环境限制，本轮未下结论 |
 
-- **TaskNotificationWatcher 硬编码中文，完全没走 i18n**：[TaskNotificationWatcher.tsx:51-53、87-89](file:///d:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L51)
-  ```ts
-  toast.info(
-    permission === "denied" ? "系统通知未开启" : "当前环境不支持系统通知",
-    permission === "denied" ? "实例成功或失败时将只显示应用内提示。" : undefined,
-  );
-  ```
-  英文用户会看到中文 toast，**明确的 i18n bug**。
-- **大量文案用内联 `text("中","En")` 而非 translation key**：i18n 字典只有约 80 个 key（[i18n.tsx:11-90](file:///d:/Projects/EasyConsole/src/lib/i18n.tsx#L11)），其余所有操作型文案散落在各组件（[TasksPage.tsx:540、639、669](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L540)、[AppShell.tsx:251-258](file:///d:/Projects/EasyConsole/src/components/AppShell.tsx#L251)、[CommandPalette.tsx:72、135](file:///d:/Projects/EasyConsole/src/components/CommandPalette.tsx#L72)），无法统一审计漏译、无法做第三语言、改文案要逐文件找。
-- **无复数/数量格式化支持**：`translate` 只做 `{{name}}` 替换（[i18n.tsx:190-194](file:///d:/Projects/EasyConsole/src/lib/i18n.tsx#L190)），无 ICU 复数。`text(\`${tasks.length} 个实例...\`, \`${tasks.length} instances...\`)`（[TasksPage.tsx:639、669、1132](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L639)）英文单复数会出错（"1 instances"）。
-- **日期/数字未与 locale 联动**：[SettingsPage.tsx:485](file:///d:/Projects/EasyConsole/src/pages/SettingsPage.tsx#L485) `new Date(...).toLocaleString()` 不传 locale；很多地方用 `slice(0,19).replace("T"," ")` 手动格式化（[TaskTemplatesPage.tsx:588、692](file:///d:/Projects/EasyConsole/src/pages/TaskTemplatesPage.tsx#L588)、[ScheduledTasksPage.tsx:519、582](file:///d:/Projects/EasyConsole/src/pages/ScheduledTasksPage.tsx#L519)）。
-- **LanguageSwitch 无语言名称本地化**：[LanguageSwitch.tsx:22-25](file:///d:/Projects/EasyConsole/src/components/LanguageSwitch.tsx#L22) title 用 `language.zh`/`language.en`，但值是"中文"/"English"（[i18n.tsx:27-28](file:///d:/Projects/EasyConsole/src/lib/i18n.tsx#L27)），切换器本身没有"中文 / English"并列显示原文名。
-- **切换语言无即时反馈**：用 `i18nText` 命令式获取文案的地方（[i18n-text.ts](file:///d:/Projects/EasyConsole/src/lib/i18n-text.ts)、[TasksPage.tsx:145](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L145)）在非组件上下文缓存了 locale，可能不随切换更新。
+### 2.3 范围与限制
 
-**改进建议**：修复 TaskNotificationWatcher 硬编码；把高频内联 `text()` 收敛进字典；引入 ICU MessageFormat 处理复数；日期统一用 `Intl.DateTimeFormat(locale)`。
+本报告审查 `src/`、`tools/easy-console/`、`src-tauri/`、构建配置、现有测试及产品/设计文档。浏览器实测用于验证渲染、响应式和无障碍问题，但产品判断仍以 Tauri 桌面工作流为第一优先级。
 
-### 1.7 桌面端集成
+本轮没有使用真实账号或生产 token，也没有修改远端任务、存储或 SSH 主机。所有涉及真实后端行为的结论均明确标为 U；不能把“源码路径存在”写成“线上行为已经通过”。
 
-- **托盘菜单功能极少**：[TrayMenu.tsx:86-99](file:///d:/Projects/EasyConsole/src/components/TrayMenu.tsx#L86) 只有"显示主窗口/执行到期计划/退出"三项，无任务数概览、到期计数 badge、快速新建任务、通知历史。对"最小化到托盘跑后台"的核心场景，用户要恢复窗口才能看状态。
-- **AppSshTerminalDialog 无重连按钮**：[AppSshTerminalDialog.tsx:144-148](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L144) 连接失败后只显示状态文字，用户无法点"重试连接"，只能关掉重开。
-- **SSH 会话状态无持久指示**：最小化后只有一个小悬浮按钮（[AppSshTerminalDialog.tsx:325-340](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L325)），多会话时无法切换、看不到连接时长/最后输出。
-- **更新下载无后台感知通知**：[app-update-context.tsx:243-249](file:///d:/Projects/EasyConsole/src/lib/app-update-context.tsx#L243) 下载完成才弹 toast，最小化到托盘时用户不知道下载进度。无"下载完成"系统通知（只用 in-app toast）。
-- **系统通知权限被拒后只提示一次**：[TaskNotificationWatcher.tsx:46-54](file:///d:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L46) 用 `permissionWarningRef` 去重，用户之后在系统设置里开了权限不会重新探测。
+## 3. 风险总览
 
-**改进建议**：托盘增加到期计数 badge 与任务概览；SSH 对话框加重连按钮与 Esc 关闭；更新下载完成发系统通知；通知权限变化时重新探测（visibilitychange）。
+| ID | 级别 | 维度 | 问题 | 证据 |
+|---|---|---|---|---|
+| SEC-01 | **P0** | 架构 | 默认 HTTP 传输暴露可重放的密码摘要与 Bearer token | S |
+| SCH-01 | **P1** | 功能 | cron、星期字段和 weekly 下一次执行计算错误 | S + L |
+| SCH-02 | **P1** | 功能 | 后端创建与本地调度状态更新非原子，缺少幂等 | S |
+| BAK-01 | **P1** | 功能 | “包含登录凭据”备份没有读取实际 secureStorage 凭据 | S |
+| UPL-01 | **P1** | 功能 | 断点续传假设已上传分片连续，硬崩溃前无恢复记录 | S |
+| UPL-02 | **P1** | 功能 | 上传队列可能在子项失败时报告成功，失败计数读取旧状态 | S |
+| CLI-01 | **P1** | 功能 | CLI/MCP 创建本地计划绕过 mutation 确认约束 | S |
+| STO-01 | **P1** | 架构 | Tauri 存储写入降级后，成功 IPC 读取不会合并 fallback | S |
+| DAT-01 | **P1** | 架构 | Node 本地数据整文件直写且无锁，并发进程可互相覆盖 | S |
+| IO-01 | **P1** | 效率 | HTTP 下载和 SFTP 传输采用整文件内存缓冲 | S |
+| POL-01 | **P1** | 效率 | 通知观察器每 10 秒顺序扫描最多 5000 个任务 | S |
+| UX-01 | **P2** | 交互 | 375px 宽度下设置页扩张至约 530px，页面整体横向滚动 | B + S |
+| A11Y-01 | **P2** | 交互 | select、Tabs、范围按钮和图表缺少完整可访问语义 | B + S |
+| UX-02 | **P2** | 交互 | 全局方向键、长表单离开和遮罩关闭的交互状态不安全 | S |
+| UX-03 | **P2** | 交互 | 任务表缺少排序、页码跳转和翻页旧数据保留 | S |
+| AUTH-01 | **P2** | 交互 | 默认记住密码、无显隐切换，改密后旧密文仍保留 | S |
+| TERM-01 | **P2** | 交互 | 终端强制滚到底部且录制输出无界增长 | S |
+| ARCH-01 | **P2** | 架构 | 超大模块、关键测试缺口与生产日志不足叠加变更风险 | S + V |
+| PERF-01 | **P2** | 效率 | 查询键碎片化且 API 查询未传递 AbortSignal | S |
+| PKG-01 | **P3** | 效率 | 安装包携带两份独立 Node runtime sidecar | S |
 
-### 1.8 移动端/响应式
+## 4. 用户交互便捷性
 
-- **缺少中等屏（tablet）断点**：几乎所有响应式都用 `sm:`/`md:`/`lg:` 二分，无针对 768-1024 平板的专门优化。TasksPage 工具栏在中等屏会拥挤换行（[TasksPage.tsx:1049-1127](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1049)）。
-- **表格在移动端依赖横向滚动**：ImagesPage/StoragePage/RunLogsPage 若未做卡片视图，移动端只能横向滚表格。
-- **AppShell 顶栏在中等屏按钮拥挤**：[AppShell.tsx:458-498](file:///d:/Projects/EasyConsole/src/components/AppShell.tsx#L458) 7 个元素，窄屏靠 `hidden sm:inline` 隐藏文字但按钮本身都在。
-- **Dialog 在小屏几乎全屏但无明确全屏切换**：[ui.tsx:183](file:///d:/Projects/EasyConsole/src/components/ui.tsx#L183) 长表单（CreateTaskDialog）在小屏滚动体验差。
-- **移动端 SSH 键盘栏在长会话下遮挡**：[AppSshTerminalDialog.tsx:256-315](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L256) 固定底部占用 44px 高度且无收起按钮。
+### 4.1 已经做好的部分
 
-**改进建议**：增加 tablet 断点优化工具栏折叠；为所有列表页补齐卡片视图；顶栏在窄屏折叠成单个"更多操作"菜单；Dialog 加全屏切换。
+- 桌面工作台采用稳定的侧栏、紧凑工具栏、表格、抽屉、对话框和状态徽标，符合高频运维任务的扫描习惯。
+- 任务状态和释放条件使用“颜色 + 文本”，没有只用颜色表达状态。
+- 已提供任务详情路由、搜索防抖、焦点可见样式、跳过导航链接、对话框焦点陷阱、粗指针 44px 点击尺寸和 `prefers-reduced-motion` 降级。
+- 关键文本对比度实测约为 **5.6:1 至 16.6:1**，当前抽样范围满足 WCAG AA；设计 token 与语义色分工清晰。
+- 桌面专属 SSH 行为与 Web 降级入口有明确运行时边界，没有假装浏览器可以直接打开本地终端。
 
-### 1.9 任务通知与监控
+**界面反模式结论：通过。** 当前产品界面没有发现渐变文字、装饰性玻璃拟态、营销式 hero、重复卡片墙、过度圆角或无意义动效等明显生成式设计痕迹；信息密度、组件语汇和克制的配色符合运维工作台定位。后续整改应保留这种熟悉、安静、以任务为中心的产品表达，不要为了“现代化”把功能页改造成展示页。
 
-- **通知只监控前 100 个任务**：[TaskNotificationWatcher.tsx:13](file:///d:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L13) `TASK_NOTIFICATION_PAGE_SIZE = 100`，且只取 `page: 1`（[TaskNotificationWatcher.tsx:24](file:///d:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L24)）。用户超过 100 个实例时第 101 个之后的状态变化不会通知，且无任何提示"你已超出监控范围"。
-- **TaskNotificationWatcher 硬编码中文**（见 1.6），英文用户收到的通知是中文。
-- **监控面板只能外链打开**：[monitor-dashboard.ts:15-17](file:///d:/Projects/EasyConsole/src/lib/monitor-dashboard.ts#L15) `openMonitorDashboard` 直接 `browserRuntime.openExternal`，无内嵌 iframe/webview 预览，无 `var-pod` 之外的上下文。用户点了就跳出应用。
-- **无通知中心/历史**：通知一旦 toast 消失或系统通知划掉就找不到了，RunLogs 里有操作日志但与"状态变化通知"不是同一套。
-- **BackgroundScheduledTaskRunner 无"下次执行"倒计时**：[ScheduledTasksPage.tsx:510、572](file:///d:/Projects/EasyConsole/src/pages/ScheduledTasksPage.tsx#L510) 显示 `scheduleTime` 但无相对时间（"3 分钟后"），且 runner 本身无任何 UI 暴露运行状态。
-- **批量定时任务执行无进度**：[BackgroundScheduledTaskRunner.tsx:60-104](file:///d:/Projects/EasyConsole/src/components/BackgroundScheduledTaskRunner.tsx#L60) 与 [ScheduledTasksPage.tsx:276-323](file:///d:/Projects/EasyConsole/src/pages/ScheduledTasksPage.tsx#L276) 顺序执行 + 逐条 toast，多个到期任务时会刷屏，且无总进度条。
-- **监控 URL 仅传 var-pod**：无法按时间范围、节点等过滤，用户点进去还要在 Grafana 里手动调。
+### 4.2 UX-01：设置页在窄屏发生整页横向溢出
 
-**改进建议**：通知分页或按重要性过滤；加通知中心历史；监控支持内嵌预览；定时任务显示相对时间与总进度；批量执行合并为单条汇总 toast。
+**级别：P2｜证据：B + S｜影响：响应式、移动/窄窗口可用性**
 
-### 1.10 设置与本地数据
+在 **375×812** 视口下，独立设置页内容宽度扩张到约 **530px**，导致整个页面横向滚动，而不是仅让确实需要宽度的局部内容滚动。根因集中在网格/弹性子项缺少 `min-w-0`、长 URL/路径缺少断行约束，以及部分双列布局没有在小屏彻底退化。入口见 [SettingsPage.tsx:795](file:///D:/Projects/EasyConsole/src/pages/SettingsPage.tsx#L795)。
 
-- **导入对话框的 section 名是原始 key 未本地化**：[SettingsPage.tsx:577](file:///d:/Projects/EasyConsole/src/pages/SettingsPage.tsx#L577) `<span>{section}</span>` 直接渲染 `settings`/`taskTemplates`/`scheduledTasks`/`runLogs`/`savedAccounts` 字符串。
-- **导出文件名包含日期但无版本号**：[SettingsPage.tsx:237](file:///d:/Projects/EasyConsole/src/pages/SettingsPage.tsx#L237) `easy-console-backup-YYYY-MM-DD.json`，同一天多次导出会覆盖，且无 schema 版本字段。
-- **导入后提示"部分设置需要刷新"但不自动刷新**：[SettingsPage.tsx:280](file:///d:/Projects/EasyConsole/src/pages/SettingsPage.tsx#L280) 只 toast，用户要手动 F5。
-- **SettingsPage 表单无 dirty 检测**（见 1.3）。
-- **无"导出当前任务列表为 CSV/Excel"**：TasksPage 有下载任务 zip（[TasksPage.tsx:740-753](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L740)），但无导出当前筛选结果为表格的能力。
-- **SavedAccounts 无法在 UI 内重命名或排序**：[LoginPage.tsx:110-139](file:///d:/Projects/EasyConsole/src/pages/LoginPage.tsx#L110) 只能直接登录或删除。
-- **TaskTemplatesPage 模板无分类/标签**：[TaskTemplatesPage.tsx:559-770](file:///d:/Projects/EasyConsole/src/pages/TaskTemplatesPage.tsx#L559) 平铺所有模板，无分组、无搜索、无标签过滤。模板有 `usageCount`/`lastUsedAt`（[TaskTemplatesPage.tsx:585-590、690-693](file:///d:/Projects/EasyConsole/src/pages/TaskTemplatesPage.tsx#L585)）但无"按使用次数排序"。
-- **ScheduledTasksPage 无启用/停用开关**：状态有 `paused`（[ScheduledTasksPage.tsx:41](file:///d:/Projects/EasyConsole/src/pages/ScheduledTasksPage.tsx#L41)），但 UI 里只有执行/删除，无法把计划暂停后再启用。
-- **本地数据无自动备份**：导出全靠手动，无"每周自动导出到指定目录"选项。
+这会让保存按钮、字段标签和错误提示离开可视区，用户需要来回横移才能完成配置；对桌面端来说，窄窗口、窗口贴靠和远程桌面场景同样受影响。
 
-**改进建议**：导入 section 名本地化；导出文件名加时间戳与 schema 版本；导入后提供"立即刷新"按钮；SettingsPage 加 dirty 离开拦截；TasksPage 加 CSV 导出；SavedAccounts 加排序/重命名；ScheduledTasksPage 加暂停/启用；模板加搜索与分组。
+**整改要求**：为所有可收缩 grid/flex 子项补 `min-w-0`；URL、路径和代码值使用 `overflow-wrap:anywhere` 或局部滚动容器；在 320、375、768、1024px 进行页面级截图回归，验收标准是 `documentElement.scrollWidth <= clientWidth`，表格等明确允许横向滚动的局部区域除外。
 
----
+### 4.3 A11Y-01：交互控件语义不完整
 
-## 二、程序功能丰富性和完整性
+**级别：P2｜证据：B + S｜影响：键盘与读屏用户、状态可理解性**
 
-### 2.1 任务管理
+已确认的缺口包括：
 
-- **缺少编辑已存在任务的能力**：[api-factory.ts:139-141](file:///d:/Projects/EasyConsole/src/lib/api-factory.ts#L139) `operateTask` 仅做 PUT 释放操作，不存在 `updateTask`/`editTask`；[CreateTaskDialog.tsx](file:///d:/Projects/EasyConsole/src/components/tasks/CreateTaskDialog.tsx) 始终走 `createTask`，克隆只能新建副本不能改原任务。
-- **缺少独立的启动/停止/续费操作**：没有 `startTask`/`stopTask`/`renewTask` API，`operateTask` 语义不清晰（只释放）。
-- **批量操作串行执行**：[TasksPage.tsx:636、666](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L636) `runSequentiallyWithDelay` 一旦中间失败即终止，无部分成功回执、无并发控制。
-- **批量克隆受限**：`batchCount` 上限 50，但批量创建同样串行，失败不汇总。
-- **任务状态变更通知依赖前端轮询**：无 WebSocket 推送，大规模列表下刷新延迟与请求量都偏高。
+- 设置页三处通知模式 `<select>` 没有可访问名称，见 [SettingsPage.tsx:1492](file:///D:/Projects/EasyConsole/src/pages/SettingsPage.tsx#L1492)。
+- 任务详情页签缺少 `role="tablist"`、`role="tab"`、`aria-selected` 以及页签与面板的关联，见 [TaskDetailPage.tsx:168](file:///D:/Projects/EasyConsole/src/pages/TaskDetailPage.tsx#L168)。
+- Dashboard 时间范围按钮没有 `aria-pressed` 或等价选择状态，见 [DashboardPage.tsx:87](file:///D:/Projects/EasyConsole/src/pages/DashboardPage.tsx#L87)。
+- 图表仅提供视觉曲线，没有同数据的文本摘要或表格替代，见 [DashboardPage.tsx:139](file:///D:/Projects/EasyConsole/src/pages/DashboardPage.tsx#L139)。
 
-**改进建议**：与后端确认是否存在更新接口（如 PATCH `/instance/task/{id}`），若有则补 `updateTask` 并在 `CreateTaskDialog` 增加 `mode: "create" | "edit"` 分支；若后端无编辑接口，在"更多操作"菜单中明确标注"任务创建后不可编辑"。批量操作改为 `Promise.allSettled`，返回成功/失败计数与逐条结果清单。引入任务状态变更的 SSE/WebSocket 订阅以替代纯轮询。
+**整改要求**：所有表单控件必须通过 `<label for>`、`aria-label` 或 `aria-labelledby` 获得稳定名称；页签实现 WAI-ARIA Tabs 键盘模型；范围选择使用单选组或 pressed 状态；每张图表提供可折叠数据表或至少包含当前值、极值和变化趋势的可访问摘要。加入 Testing Library + axe（或等价规则）的聚焦测试。
 
-### 2.2 任务模板
+### 4.4 UX-02：键盘选择、未保存状态和对话框关闭策略不一致
 
-- **无变量替换系统**：[task-templates.ts](file:///d:/Projects/EasyConsole/src/lib/task-templates.ts) 模板字段都是字面值，不支持 `${variable}` 占位符或参数化输入（如镜像、CPU、脚本路径）。批量生成仅靠名称后缀区分。
-- **无独立导入/导出模板文件**：只能通过 `local-data-backup.ts` 整体备份携带，无法单条 `.json` 分享或团队复用。
-- **无模板分类/标签/收藏**：模板多了之后缺乏检索手段。
-- **批量执行无 dry-run 预览**：点击执行直接调用创建接口，用户看不到生成的 50 条 payload 全貌。
-- **运行中实例计数轮询开销大**：20 页 × 200 条 = 4000 条拉取（[TaskTemplatesPage.tsx](file:///d:/Projects/EasyConsole/src/pages/TaskTemplatesPage.tsx)），模板多时压力大。
+**级别：P2｜证据：S｜影响：误操作、键盘工作流、长表单数据丢失**
 
-**改进建议**：增加模板变量层 `variables: { key, label, defaultValue }[]`，执行时弹窗收集参数；提供单文件导入导出；批量执行前增加"预览 50 条名称与配置"的 dry-run 步骤；运行中计数改为按 `template_id` 字段过滤（若后端支持）。
+任务页全局拦截 ArrowUp/ArrowDown 并更新“视觉选中行”，但没有把 DOM 焦点同步到对应行或操作控件，见 [TasksPage.tsx:1289](file:///D:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1289)。当焦点位于输入框、菜单或其他可编辑控件时，全局快捷键还可能与原生行为冲突。
 
-### 2.3 定时任务
+设置、计划任务和模板等长表单没有统一 dirty-state 导航保护；通用 Dialog 默认允许点击遮罩关闭，见 [ui.tsx:183](file:///D:/Projects/EasyConsole/src/components/ui.tsx#L183)。用户在编辑过程中切换路由或误点遮罩会无提示丢失输入。
 
-- **无循环/周期调度**：[scheduled-tasks.ts:72-76](file:///d:/Projects/EasyConsole/src/lib/scheduled-tasks.ts#L72) 仅 `scheduleTime`（单一 ISO 时刻），不支持 cron、不支持"每天 02:00"、不支持间隔重复。**最大缺口**。
-- **`paused` 状态从未在 UI 中设置**：[scheduled-tasks.ts:26](file:///d:/Projects/EasyConsole/src/lib/scheduled-tasks.ts#L26) 允许该状态，但 [ScheduledTasksPage](file:///d:/Projects/EasyConsole/src/pages/ScheduledTasksPage.tsx) 无暂停/恢复按钮。
-- **无编辑已有计划**：只能删除重建。
-- **无重试策略**：失败后仅记录 `lastError`，无自动重试次数/退避。
-- **无并发控制**：[BackgroundScheduledTaskRunner.tsx](file:///d:/Projects/EasyConsole/src/components/BackgroundScheduledTaskRunner.tsx) 用 `runningRef` 串行执行，多个到期任务排队，无并行上限配置；一旦一个任务卡住，后续全部阻塞。
-- **执行回执薄弱**：`lastRunAt`/`lastError` 之外没有完整的执行历史（每次运行的开始/结束/结果）。
-- **桌面端依赖窗口存活**：`BackgroundScheduledTaskRunner` 是 React 组件，窗口被完全关闭后只有托盘保活路径，移动端无后台保证。
-- **30s 检查粒度**（[BackgroundScheduledTaskRunner.tsx:13](file:///d:/Projects/EasyConsole/src/components/BackgroundScheduledTaskRunner.tsx#L13) `CHECK_INTERVAL_MS = 30_000`）可能漏掉精确到秒的调度。
+**整改要求**：把方向键监听限制在显式聚焦的表格区域，采用 roving tabindex 或 `aria-activedescendant`，并跳过 input/textarea/select/contenteditable；建立共享 `useUnsavedChanges` 边界；包含有效输入或进行中操作的对话框禁止无确认遮罩关闭。验收需覆盖键盘、鼠标和路由跳转三条路径。
 
-**改进建议**：引入 `recurrence` 字段（`{ type: "once" | "daily" | "weekly" | "cron", cron?: string }`），`isScheduleDue` 计算下一次触发；增加暂停/恢复按钮；增加 `maxRetries`/`retryDelaySec` 字段；维护 `executionHistory: ScheduledTaskExecution[]`；并发执行用 `p-limit` 或自实现信号量；桌面端考虑用 Tauri 后台线程或系统计划任务作为最终保底。
+### 4.5 UX-03：任务表的高频检索效率仍不足
 
-### 2.4 存储管理
+**级别：P2｜证据：S｜影响：大量任务下的定位与比较效率**
 
-- **无断点续传**：[api-factory.ts:283-295](file:///d:/Projects/EasyConsole/src/lib/api-factory.ts#L283) 分片上传一旦中断，下次必须从头开始；无 `uploadId`/已传分片清单持久化。
-- **无并行上传**：[StoragePage.tsx:169-227](file:///d:/Projects/EasyConsole/src/pages/StoragePage.tsx#L169) `runUploadQueue` 顺序处理，大文件夹吞吐受限。
-- **无可分享的外部链接**：下载只能落到本地，无生成临时签名 URL/分享链接的能力。
-- **无上传/下载速度与剩余时间显示**：`UploadProgress` 仅 `loaded/total/percent`，无速率与 ETA。
-- **无进度持久化**：刷新页面后队列丢失。
-- **目录大小计算同步递归**：[remote-storage.ts](file:///d:/Projects/EasyConsole/src/lib/remote-storage.ts) `calculateDirectorySize` 大目录会阻塞 UI 且可能超时。
-- **`readTextFile` 1MB 上限**对大日志不友好，且无分页读取。
-
-**改进建议**：断点续传——本地存储 `{ fileId, uploadedChunks[], md5 }`，中断后调用后端"查询已传分片"接口或自记录，跳过已完成分片；引入并发上传（默认 3 路并发，可配置）；速度/ETA 差分计算；队列持久化到 `runtime-storage.json`；目录大小计算改为流式 + 取消信号 + 增量显示；文本预览支持"加载更多"分页。
+任务页已有搜索、筛选、列可见性和分页，但表头不能按创建时间、状态、时长等常用字段排序，分页只提供顺序翻页而没有页码跳转；切换查询时也没有保留上一页数据，导致表格在网络抖动时闪回 loading。相关实现见 [TasksPage.tsx:1202](file:///D:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1202) 和 [TasksPage.tsx:1883](file:///D:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1883)。
 
-### 2.5 镜像管理
+**整改要求**：先确认后端支持的排序字段并把排序写入 URL query；已知总数时提供页码与跳页，未知总数时显示“已加载范围”而不是伪造总页数；React Query 使用 `placeholderData/keepPreviousData` 并保留明确的后台刷新指示。排序与筛选组合必须可深链接和恢复。
 
-- **无用户级收藏/星标**：[ImagesPage.tsx](file:///d:/Projects/EasyConsole/src/pages/ImagesPage.tsx) 不能标记常用镜像，长列表下检索成本高。
-- **无详情对话框**：`imageApi.detail` 存在（[api-factory.ts:167-192](file:///d:/Projects/EasyConsole/src/lib/api-factory.ts#L167)）但页面未调用，用户看不到镜像的完整字段（创建时间、大小、依赖、命令等）。
-- **无"从零构建镜像"**：只能从运行中任务 `commitImage` 提交，无 Dockerfile 式构建入口。
-- **下载无进度/取消**：`imageApi.download` 支持 `signal`/`onProgress`，但 ImagesPage 的下载按钮未传递这些选项。
-- **无镜像分类/标签筛选**：仅"自定义/系统"二分。
-- **commit 入口分散**：在 TasksPage 而非 ImagesPage（[TasksPage.tsx:790-811](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L790)），违反就近原则。
-
-**改进建议**：增加本地收藏列表（存 `runtime-storage.json`）；ImagesPage 点击行打开详情 Dialog 展示全字段；下载按钮接入 `signal` + `onProgress`；将 `commitImage` 入口也在 ImagesPage 提供"从实例提交"向导。
+### 4.6 AUTH-01：保存密码的默认值与生命周期不够保守
 
-### 2.6 SSH 与终端
+**级别：P2｜证据：S｜影响：共享设备风险、登录排错和密码轮换**
 
-- **无 SSH 密钥管理 UI**：[lib.rs:374-417](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L374) 自动生成 ed25519 并写入 `authorized_keys`，但用户看不到已部署的密钥列表，无法手动添加/删除/轮换。
-- **无 known_hosts 审阅界面**：[lib.rs:134-144](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L134) `trust_on_first_use` 静默接受，缺乏"指纹变更警告"的可视化。
-- **WebSSH 与桌面 SSH 不统一**：WebSSH 走后端 WebSocket（共享后端凭据），桌面 SSH 走 russh（本地直连），两者会话不互通，体验割裂。
-- **应用内 SSH 无多标签/分屏**：一次只能开一个会话。
-- **无会话录制/回放**：运维审计场景缺失。
-- **无 SFTP 文件传输**：`russh` 支持 SFTP 但未暴露命令，无法在终端内上传/下载文件。
-- **VS Code 配置依赖桌面端**：Web 用户只能复制 SSH 命令，无法一键生成 `~/.ssh/config` 片段。
-- **移动端键盘栏缺 Ctrl+Shift 组合、Alt 键、自定义键**。
+登录页“记住密码”默认为选中，且密码框没有显隐切换，见 [LoginPage.tsx:38](file:///D:/Projects/EasyConsole/src/pages/LoginPage.tsx#L38)。用户在设置页修改密码后，已保存账号中的旧密码密文没有同步删除或更新，见 [SettingsPage.tsx:287](file:///D:/Projects/EasyConsole/src/pages/SettingsPage.tsx#L287)，后续静默重登会重复尝试旧密码。
 
-**改进建议**：新增"SSH 密钥管理"页；known_hosts 审阅 Dialog；桌面端提供"SFTP 文件浏览器"；应用内 SSH 支持多标签 + 左右分屏；Web 端提供"复制 SSH config 片段"按钮；移动端键盘栏支持自定义按键与 Ctrl+Shift/Alt 组合。
+**整改要求**：记住密码默认关闭并清楚标识 Web 仅为弱保护、桌面使用系统安全存储；增加带可访问名称的显隐按钮；改密成功后立即失效该账号的旧密码密文，只有用户再次明确选择时才保存新密码。为“改密后 token 失效 -> 静默登录 -> 回退密码表单”增加集成测试。
 
-### 2.7 监控
+### 4.7 TERM-01：终端输出策略破坏阅读位置并可能无界占用内存
 
-- **无 iframe 嵌入**：必须跳转到外部浏览器，应用内无监控视图，割裂感强。
-- **无原生指标展示**：`monitorIndex` API 存在（[api-factory.ts:154-156](file:///d:/Projects/EasyConsole/src/lib/api-factory.ts#L154)）却未被调用，可能是后端返回的 CPU/内存/网络等指标未在 UI 落地。
-- **无时间范围选择**：Grafana 链接固定时间范围，不能从 EasyConsole 传 `from`/`to` 参数。
-- **无告警集成**：看不到 Grafana 告警状态。
-- **多 Pod 聚合缺失**：一次只能看单任务，无"选中多任务批量查看仪表盘"。
+**级别：P2｜证据：S｜影响：长会话可用性与稳定性**
 
-**改进建议**：在 `TerminalDialog` 或任务详情中嵌入 Grafana iframe（桌面端用 `<webview>` 绕过 CSP）；调用 `monitorIndex` 并在任务行内联展示迷你 sparkline；Grafana URL 支持 `?from=now-1h&to=now` 参数；多选任务时生成 `var-pod=pod1|pod2` 多值链接。
+SSH 终端每次收到输出都会强制滚动到底部，用户向上查看历史时会被新输出拉回，见 [SshTerminalTab.tsx:316](file:///D:/Projects/EasyConsole/src/components/tasks/SshTerminalTab.tsx#L316)。同时，会话录制/输出缓冲没有明确上限，长时间日志流会持续增加 renderer 内存。
 
-### 2.8 运行日志
+**整改要求**：仅当用户原本位于底部阈值内时自动跟随，离开底部后显示“回到底部/有新输出”按钮；把显示回滚和录制数据分别设置字节/行数上限；需要完整审计记录时流式落盘到 Tauri 文件命令，而不是保存在 React 状态中。
 
-- **无日志聚合/去重**：同类操作（如轮询刷新）可能产生大量相似日志，无"按 action 聚合"或"去重计数"。
-- **无级别筛选**：`level` 字段存在但页面筛选器无 level 选项（info/warn/error）。
-- **导出仅 JSON**：无 CSV、无可读文本报告。
-- **无审计签名**：日志可被本地清空，无防篡改（对合规场景不足，但本地工具可接受）。
-- **无按用户/目标筛选**：`userName`/`targetId` 字段存在但未做筛选项。
-- **无日志搜索的高级语法**：不支持 `action:task.create AND result:success` 这类结构化查询。
-- **保留策略不可配置**：30 天/1000 条硬编码（[run-logs.ts:4-5](file:///d:/Projects/EasyConsole/src/lib/run-logs.ts#L4)）。
+## 5. 程序功能丰富性和完整性
 
-**改进建议**：增加 `level` 筛选下拉；导出支持 CSV 与 Markdown 报告格式；高级搜索框支持 `key:value` 语法；保留策略在 SettingsPage 可配置；增加"按 action 分组统计"视图。
+### 5.1 能力面评价
 
-### 2.9 账户与认证
+当前功能面已经覆盖日常控制台的主要工作：登录与账号切换、Dashboard、任务列表和详情、创建/克隆/批量操作、模板、计划任务、存储、镜像、运行日志、通知、监控链接、WebSSH、桌面内 SSH、系统终端与 VS Code Remote-SSH。CLI/MCP 复用了同一 API 工厂，并对大部分远端 mutation 实施 dry-run/confirm 约束。
 
-- **无 token 刷新**：[auth-context.tsx](file:///d:/Projects/EasyConsole/src/lib/auth-context.tsx) 无 `refreshToken` 逻辑，token 过期只能 `UNAUTHORIZED_EVENT` → 登出，用户需重新输入密码。**显著体验缺口**。
-- **无 MFA/2FA**。
-- **无"记住我"时长配置**：token 永久存到 `runtime-storage.json` 直到手动登出，无过期时间。
-- **无登录失败锁定/限流**：本地无失败计数，后端限流不可见。
-- **无会话多设备管理**：看不到"当前账号在哪些设备登录"。
-- **savedAccounts 上限 5**（[saved-accounts.ts:4](file:///d:/Projects/EasyConsole/src/lib/saved-accounts.ts#L4)）：多账号用户受限，且无搜索/排序。
-- **无密码强度提示**。
-- **token 存储未加密**：桌面端 `runtime-storage.json` 明文存 token（见 3.7）。
+因此本维度的重点不是继续堆入口，而是修正“看起来已支持、在边界条件下却给出错误结果”的功能。调度、备份和断点续传都属于这一类。
 
-**改进建议**：与后端确认是否有 refresh token 接口，若有则在 `auth-context` 中实现静默刷新；若无，在 token 临过期前弹窗提示续期；`MAX_SAVED_ACCOUNTS` 提升至 10 或可配置；桌面端用操作系统密钥库（Tauri `keyring` 插件）存 token；改密流程增加密码强度指示器。
+### 5.2 SCH-01：循环调度计算存在多处确定性错误
 
-### 2.10 CLI 与 MCP
+**级别：P1｜证据：S + L｜影响：任务错时、漏执行或执行频率失控**
 
-**CLI/MCP 缺失能力**（与 Web 端对比）：
-- 任务模板（`task-templates`）：无 CLI/MCP 命令。
-- 定时任务（`scheduled-tasks`）：无 CLI/MCP 命令。
-- 镜像提交（`commitImage`）：Web 端有，CLI/MCP 无。
-- 镜像下载（`imageApi.download`）：API 有，CLI/MCP 无。
-- 镜像详情（`imageApi.detail`）：API 有，CLI/MCP 无。
-- 批量任务操作（`deleteTasks`）：CLI/MCP 仅单条。
-- 存储上传（`uploadLocalFile`）：CLI/MCP 无上传命令，只能下载。
-- 监控嵌入：CLI/MCP 仅 `monitor_url`，无指标查询（可调用 `monitorIndex`）。
-- 仪表盘统计（`statics`/`staticsCost`）：CLI/MCP 无 dashboard 命令。
-- 账号管理：`login` 有，但 `changePassword`、`savedAccounts` 管理、`logout` 无。
-- 本地数据备份：CLI/MCP 无。
+界面向用户推荐 `*/30` 形式的 cron 表达式，见 [ScheduledTasksPage.tsx:592](file:///D:/Projects/EasyConsole/src/pages/ScheduledTasksPage.tsx#L592)，但当前解析器只接受单值/枚举/范围，不接受 step 表达式，见 [task-recurrence.ts:48](file:///D:/Projects/EasyConsole/src/lib/task-recurrence.ts#L48)。实际执行 `*/30 * * * *` 会抛出 `Invalid cron field "*/30" at position 1`。
 
-**其他不足**：
-- 输出格式单一：CLI 主要是 JSON/表格，无 YAML/CSV。
-- MCP 工具无分页/筛选参数透传需确认。
-- MCP 无批量工具：无 `easyconsole_task_batch_release` 等。
-- CLI 无交互式 TUI：无 `task create` 的交互式向导（只能 `--flags`）。
-- CLI 无配置文件：`EASY_CONSOLE_CONFIG` 存在但无 `ec config init` 向导。
-- MCP 无资源（Resources）暴露：只暴露 Tools，无 `easyconsole://task/{id}` 资源 URI，IDE 集成度有限。
+DOM/DOW 判断也不符合标准 cron 语义：从周二计算 `0 0 * * 1`，当前返回周三而不是下周一。周循环 UI 又没有提供星期选择，在缺少 weekdays 时下一次执行计算返回 `null`。创建入口见 [ScheduledTasksPage.tsx:307](file:///D:/Projects/EasyConsole/src/pages/ScheduledTasksPage.tsx#L307)，核心计算见 [task-recurrence.ts:98](file:///D:/Projects/EasyConsole/src/lib/task-recurrence.ts#L98)。
 
-**改进建议**：补齐 CLI/MCP 与 Web 端的能力对齐表（模板、定时任务、镜像提交/下载/详情、存储上传、批量操作、dashboard 统计、改密、备份）；CLI 增加 `task template list/apply/delete`、`schedule list/create/run/delete`、`image commit/download/detail`、`storage upload`、`dashboard`、`account change-password`、`backup export/import`；MCP 增加对应工具并暴露 Resources；CLI 增加交互式向导；支持 YAML/CSV 输出。
+**整改要求**：不要继续扩展自写 cron 解析器；采用经过验证的 cron 库，并明确支持的方言、时区、夏令时策略和 DOM/DOW 规则。weekly 必须要求至少选择一个星期，表单预览未来 5 次触发时间；非法规则在保存前阻断。为 step、range/list、月底、跨年、时区/DST 和 weekly 空选择建立表驱动测试。
 
-### 2.11 桌面能力
+### 5.3 SCH-02：调度执行缺少幂等和崩溃恢复边界
 
-- **无自动更新实际触发**：`updater` 插件注册了，但 [app-update.ts](file:///d:/Projects/EasyConsole/src/lib/app-update.ts) 是手动检查 GitHub Release，未走 Tauri 原生 updater。两套机制并存且不统一。
-- **无全局快捷键**：未注册快捷键唤起窗口或快速操作。
-- **无深链接（deep link）**：`tauri-plugin-deep-link` 未启用，无法 `easyconsole://task/123` 直接跳转。
-- **无文件关联**：不能双击 `.ec-template.json` 直接导入模板。
-- **托盘菜单功能有限**：[TrayMenu.tsx](file:///d:/Projects/EasyConsole/src/components/TrayMenu.tsx) 仅显示/退出。
-- **移动端能力薄弱**：仅 `install_apk`，无 iOS 对应、无移动端后台保活、无移动端文件分享。
-- **无多窗口**：SSH 终端、监控仪表盘都挤在主窗口。
-- **无原生菜单栏**：无 File/Edit/View 顶层菜单。
-- **托盘与定时任务保活耦合不清**：[lib.rs:1131-1140](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L1131) `start_desktop_run_due_timer` 在 Tauri 后台跑 30s 定时器，与前端 `BackgroundScheduledTaskRunner` 的 `navigator.locks` 协作关系文档化不足。
+**级别：P1｜证据：S｜影响：重复创建远端实例**
 
-**改进建议**：统一更新机制——迁移到 Tauri 原生 updater；启用 `tauri-plugin-deep-link`；注册全局快捷键；SSH 终端支持"在新窗口打开"；增加原生菜单栏；移动端增加文件分享；文档化托盘 + 前端 + Tauri 定时器三者协作的状态机。
+后台 runner 先调用后端创建任务，再计算并保存下一次调度时间，见 [BackgroundScheduledTaskRunner.tsx:68](file:///D:/Projects/EasyConsole/src/components/BackgroundScheduledTaskRunner.tsx#L68)。如果后端创建成功后，本地 recurrence 计算或持久化失败，计划会被标记失败但仍保持到期；下一轮或应用重启后可能再次创建相同实例。
 
-### 2.12 仪表盘
+这是跨“远端副作用 + 本地状态”的非原子流程。单纯把 `setStatus(completed)` 移到前面也不能解决问题，因为崩溃可能发生在任意两个写入之间。
 
-- **无刷新按钮、无自动刷新**：数据进入页面后不会更新，需用户手动导航触发。
-- **无图表**：纯数字 + 表格，无趋势图、无成本曲线、无 CPU/内存历史。
-- **无成本按用户/分组分解**：`cost_map` 是聚合值，看不到"哪个用户/项目花了多少"。
-- **无告警/异常任务高亮**：最近任务表不区分状态颜色（虽有 badges，但无聚合"异常任务"卡片）。
-- **无时间范围切换**：固定 week/month/day，不能自定义。
-- **无导出仪表盘数据**：不能导出 CSV 给汇报用。
+**整改要求**：为每个触发点生成稳定的 execution key（计划 ID + 计划触发时间），调用前持久化 `running` lease，成功后持久化远端 task ID 与下一次触发；重启时对 `running` 记录执行对账而不是直接重放。若后端支持幂等键必须传递；若不支持，至少在本地提供可审计的“结果未知，需人工确认”状态。验收标准是对每个故障注入点重启后，同一 execution key 最多产生一个远端任务。
 
-**改进建议**：增加刷新按钮 + 自动刷新（可配置 30/60s）；引入轻量图表库（如 `recharts`）；`cost_map` 按 user/group 维度展开；增加"异常任务"红色卡片；时间范围选择器；导出仪表盘快照为 CSV。
+### 5.4 BAK-01：凭据备份入口与安全存储实际数据源不一致
 
-### 2.13 数据备份
+**级别：P1｜证据：S｜影响：恢复承诺失真，或诱导采用不安全实现修补**
 
-- **无加密**：[local-data-backup.ts](file:///d:/Projects/EasyConsole/src/lib/local-data-backup.ts) 备份文件明文 JSON，含 token 时任何拿到文件的人可直接登录。
-- **无版本迁移**：`VERSION = 1`，未来字段变更无 `migrateBackup` 路径。
-- **无选择性导出**：导出是全量 sections（除密钥开关），不能只导出"模板"。
-- **无云同步/异地备份**：仅本地文件，设备丢失即丢数据。
-- **无自动备份**：用户需手动触发。
-- **无备份合并策略**：导入是覆盖，无"合并模板（去重）"模式。
-- **无备份完整性校验**：无 hash/checksum。
+设置页提供“包含登录凭据”的导出选项，见 [SettingsPage.tsx:658](file:///D:/Projects/EasyConsole/src/pages/SettingsPage.tsx#L658)。备份模块从普通 runtime storage 读取/写入账号段，见 [local-data-backup.ts:56](file:///D:/Projects/EasyConsole/src/lib/local-data-backup.ts#L56) 和 [local-data-backup.ts:120](file:///D:/Projects/EasyConsole/src/lib/local-data-backup.ts#L120)；真实桌面凭据则由认证上下文通过 secureStorage/系统钥匙串保存，见 [auth-context.tsx:73](file:///D:/Projects/EasyConsole/src/lib/auth-context.tsx#L73)。因此桌面导出可能不包含用户以为会包含的密文，导入也不会恢复到认证实际读取的位置。
 
-**改进建议**：备份文件支持密码加密（AES-GCM）；增加 `migrateBackup(oldVersion)` 路径；导出支持 section 多选；桌面端支持"自动备份到指定目录（每周）"；导入支持"合并模式"；备份文件含 SHA-256 校验字段。
-
-### 2.14 与原始控制台对比
-
-`reference/original-console/` 仅包含压缩后的 webpack 产物（`app.f36c1631.js` 等），无可读源码，只能进行结构性对比。
-
-**结构对比结论**：
-- 原始控制台基于 **Element UI（Vue 2 生态）**；EasyConsole 是 React 18 + 自研 UI + Tauri。
-- 原始控制台是纯 Web SPA；EasyConsole 提供 Web + 桌面（Tauri）+ CLI + MCP 四端，是显著增强。
-- 原始控制台无模板/定时任务/运行日志的本地化概念；EasyConsole 引入本地运行时存储，是新增能力。
-- 原始控制台仅有 WebSSH（WebSocket）；EasyConsole 增加 russh 应用内 SSH、VS Code Remote-SSH、系统终端，是显著增强。
-- 原始控制台语言不明；EasyConsole 明确支持 zh-CN/en-US 切换。
-
-**潜在缺失**：由于无法阅读原始控制台业务代码，无法确认其是否具备 EasyConsole 缺失的能力（如任务编辑、循环调度、token 刷新）。
-
-**改进建议**：用 `webcrack` 反编译原始控制台 JS，提取路由表与 API 路径，生成功能清单矩阵；在 `docs/` 维护一张"原始控制台 vs EasyConsole"功能对照表。
-
----
-
-## 三、项目架构鲁棒性和稳定性
-
-### 3.1 类型系统
-
-**优点**：
-- 全面使用 `UnknownRecord` 交叉类型对后端不确定字段容错（[types.ts:24-31](file:///d:/Projects/EasyConsole/src/lib/types.ts#L24)）。
-- 全量搜索 `src` 目录，**未发现 `: any`、`as any`、`<any>`、`Record<string, any>` 等滥用**。
-- 业务字段拼写问题已按 AGENTS.md 要求保留：`releace_conditions`（后端拼写错误）与 `release_condition` 双字段并存（[types.ts:82-83](file:///d:/Projects/EasyConsole/src/lib/types.ts#L82)）。
-- `tsconfig.app.json` 启用 `"strict": true`（[tsconfig.app.json:11](file:///d:/Projects/EasyConsole/tsconfig.app.json#L11)）。
-
-**不足**：
-- `TaskStatus` 类型定义为 `0 | 1 | ... | 8 | number`（[types.ts:33](file:///d:/Projects/EasyConsole/src/lib/types.ts#L33)），`| number` 让整个联合类型退化为 `number`，失去字面量校验价值。建议去掉 `| number`，改用 `(0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8) & number` 或保留一个 `TaskStatusUnknown` 别名。
-- `local-data-backup.ts` 中存在 `as never` 强转以绕过类型检查（[local-data-backup.ts:105、108](file:///d:/Projects/EasyConsole/src/lib/local-data-backup.ts#L105)）。导入备份时未对 `taskTemplates`/`scheduledTasks` 做逐字段归一化，直接信任外部 JSON，存在类型安全空洞。
-
-### 3.2 API 客户端
-
-**优点**：
-- 错误分类清晰：`ApiError` 区分 `http`/`business`/`network`/`parse` 四类（[types.ts:8-22](file:///d:/Projects/EasyConsole/src/lib/types.ts#L8)、[api-client.ts:108-119](file:///d:/Projects/EasyConsole/src/lib/api-client.ts#L108)）。
-- 401 与业务码 10000 统一触发 `UNAUTHORIZED_EVENT` 事件，由 `AuthProvider` 监听并登出（[api-client.ts:41、48-52](file:///d:/Projects/EasyConsole/src/lib/api-client.ts#L41)、[auth-context.tsx:173-179](file:///d:/Projects/EasyConsole/src/lib/auth-context.tsx#L173)）。
-- Blob 端点正确避免 envelope 解包（[api-client.ts:121-123](file:///d:/Projects/EasyConsole/src/lib/api-client.ts#L121)）。
-- 请求超时默认 20s，上传分片 300s（[runtime.ts:155-156](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L155)、[api-factory.ts:239](file:///d:/Projects/EasyConsole/src/lib/api-factory.ts#L239)）。
-
-**不足**：
-- **无自动重试机制**。网络抖动或临时 5xx 会直接失败。React Query 层仅有 `retry: 1`（[main.tsx:19](file:///d:/Projects/EasyConsole/src/main.tsx#L19)），但 mutation 默认不重试。建议在 `ApiClient.request` 或关键查询上增加可配置的指数退避重试（至少对 `network` 类错误和 502/503/504）。
-- **无请求并发限制**。批量删除/释放使用 `runSequentiallyWithDelay` 串行（[TasksPage.tsx:636](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L636)），但其他场景无节流。
-- `unwrapEnvelope` 对 `code === 10000` 触发登出，但**未对其他业务错误码做精细化处理**（如权限不足、资源冲突）。
-- `extractToken` 直接读取 `record.Authorization` 字段（[api-client.ts:58](file:///d:/Projects/EasyConsole/src/lib/api-client.ts#L58)），但后端登录响应字段是 `token`/`access`/`access_token`，`Authorization` 分支可能永远命中不到，属于死代码或过度防御。
-- `checkTaskName` 把查询参数手动拼到 URL（`?name=...`）（[api-factory.ts:137](file:///d:/Projects/EasyConsole/src/lib/api-factory.ts#L137)），绕过了 `buildUrl` 的统一 query 序列化。
-
-### 3.3 运行时边界
-
-**优点**：
-- `RuntimeTransport` 抽象层设计良好，通过 `isDesktop`/`isMobile`/`runtimeKind` 能力位区分三端（[types.ts:307-343](file:///d:/Projects/EasyConsole/src/lib/types.ts#L307)、[runtime.ts:346-469](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L346)）。
-- 桌面-only 能力（托盘、系统终端、文件定位）均通过 `runtimeKind === "desktop"` 守卫（[runtime.ts:361-375](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L361)）。
-- `initRuntimeKind` 对 Tauri 平台检测有 3s 超时保护（[runtime.ts:49-58](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L49)）。
-
-**不足**：
-- `runtime.ts` 中**直接 import 了 `@tauri-apps/api/core` 的 `isTauri`**（[runtime.ts:1](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L1)），且包含 `window.localStorage`/`window.fetch`/`window.navigator` 等浏览器全局（[runtime.ts:66-74、164、382](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L66)），在 Node 环境会失败。CLI/MCP 实际有独立的 `node-runtime.ts` 绕开。
-- `fetchRequest` 中 `credentials: "include"` 硬编码（[runtime.ts:170](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L170)），对于跨域请求会发送 cookie，增加 CSRF 面。建议按需可配。
-- `buildUrl` 使用 `new URL(url, window.location.origin)`（[runtime.ts:105](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L105)），在 Tauri 环境 `window.location.origin` 可能是 `tauri://localhost`，相对地址场景下行为需验证。
-
-### 3.4 状态管理
-
-**优点**：
-- Context 拆分合理：`Auth`、`AppUpdate`、`CommitQueue`、`DownloadQueue`、`RunLogger`、`Toast`、`I18n` 各自独立（[main.tsx:30-44](file:///d:/Projects/EasyConsole/src/main.tsx#L30)）。
-- `AuthProvider` 使用 `useMemo` 包裹 value（[auth-context.tsx:181-184](file:///d:/Projects/EasyConsole/src/lib/auth-context.tsx#L181)）。
-- `CommitQueueProvider` 与 `DownloadQueueProvider` 使用 `runningRef` 保证单任务串行执行（[commit-queue-context.tsx:46](file:///d:/Projects/EasyConsole/src/lib/commit-queue-context.tsx#L46)、[download-queue-context.tsx:54](file:///d:/Projects/EasyConsole/src/lib/download-queue-context.tsx#L54)）。
-- `savedAccountsRef` 避免 `login` 回调依赖 `savedAccounts` 状态导致闭包陈旧（[auth-context.tsx:34、117](file:///d:/Projects/EasyConsole/src/lib/auth-context.tsx#L34)）。
-
-**不足**：
-- `AuthProvider` 初始化 `useEffect` 的 Promise 链**无 catch 处理**（[auth-context.tsx:36-54](file:///d:/Projects/EasyConsole/src/lib/auth-context.tsx#L36)），若 `storage.get` 抛错，`ready` 永远不会变为 `true`，应用卡在加载态。建议补 `.catch` 并设置 `ready` 以降级。
-- `auth-context.tsx:56-66` 的 `userInfo` 恢复逻辑，失败时静默清除 token，但未记录 run log，排障困难。
-- `CommitQueueProvider` 与 `DownloadQueueProvider` 的 `runNext` 依赖 `useEffect(() => { runNext(); }, [items, runNext])`（[commit-queue-context.tsx:114-116](file:///d:/Projects/EasyConsole/src/lib/commit-queue-context.tsx#L114)、[download-queue-context.tsx:153-155](file:///d:/Projects/EasyConsole/src/lib/download-queue-context.tsx#L153)），每次 `items` 变化都触发 `runNext`，在高速进度更新下产生不必要函数调用噪声。
-- `DownloadQueueProvider` 进度回调每次 `setItems` 都 `map` 全量数组（[download-queue-context.tsx:84-97](file:///d:/Projects/EasyConsole/src/lib/download-queue-context.tsx#L84)），大文件高频进度会引发全表重渲染。建议用 ref + 节流，或按 id 局部更新。
-- `RunLoggerProvider` 的 value 未 memoize（[RunLoggerProvider.tsx:19](file:///d:/Projects/EasyConsole/src/components/RunLoggerProvider.tsx#L19)），每次 Provider 重渲染都生成新对象。
-- `jobsRef`/`controllersRef` 在 `clearCompleted` 时才清理（[commit-queue-context.tsx:138-147](file:///d:/Projects/EasyConsole/src/lib/commit-queue-context.tsx#L138)），若用户从不清理且队列无限增长，Map 会累积无用引用。建议设置上限或定期 GC。
-
-### 3.5 测试覆盖
-
-**优点**：
-- `src/lib` 下测试覆盖非常充分，几乎所有 `.ts` 模块都有对应 `.test.ts`：25+ 个测试文件。
-- Rust 侧有 `trust_on_first_use` 单元测试（[lib.rs:1497-1505](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L1497)）。
-- 测试覆盖关键边界：envelope 解析、token 归一化、密码哈希、文件名清洗（含 Windows 保留名）、空文件上传 fallback、TOFU 主机指纹。
-
-**不足**：
-- **页面测试严重缺失**。11 个页面中仅 `DashboardPage`、`RunLogsPage`、`TasksPage.menu`（仅菜单交互）有测试，其余 `LoginPage`、`SettingsPage`、`StoragePage`、`ImagesPage`、`ScheduledTasksPage`、`TaskTemplatesPage` 无测试。
-- **组件测试稀疏**。`src/components` 下仅 `CommandPalette`、`ConfirmDialog`、`DataState`、`TaskInstanceName`、`TerminalDialog` 有测试。关键组件如 `AppShell`、`TaskNotificationWatcher`、`BackgroundScheduledTaskRunner`、`AppSshTerminalDialog`、`CreateTaskDialog`、`StoragePage` 的上传流程均无测试。
-- **无集成测试**。无端到端流程测试（如 登录 -> 列表 -> 创建任务 -> 上传 -> 下载），无 MSW（mock service worker）拦截真实请求的组件树测试。
-- **无 Tauri 命令的集成验证**。Rust 侧仅 1 个单元测试，SSH 会话生命周期、storage 读写并发、tray 交互均无测试。
-
-### 3.6 Tauri 命令
-
-**优点**：
-- Rust 错误处理规范：命令统一返回 `Result<T, String>`，错误消息为中文人类可读字符串（[lib.rs:105-112、114-128](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L105)）。
-- **全文件仅 1 处 `panic!`**（[lib.rs:1434](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L1434)，`builder.build` 失败时，启动致命错误可接受）。**无 `unwrap()`/`expect()` 滥用**。
-- `Mutex::lock()` 均通过 `map_err` 转 `String`（[lib.rs:874-876、981-984](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L874)）。
-- 输入校验充分：`validate_host`（[lib.rs:187-199](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L187)）、`validate_username`（[lib.rs:209-221](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L209)）、`validate_external_url`（[lib.rs:273-285](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L273)）、`validate_local_path`（[lib.rs:288-301](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L288)）。
-- SSH host key 校验采用 TOFU（[lib.rs:134-144、146-161](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L134)），指纹变化时拒绝连接。
-
-**不足**：
-- **`verify_known_host` 用 `unwrap_or(false)` 吞掉读取/写入 known_hosts 的错误**（[lib.rs:101](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L101)）。若 `app_data_file` 失败（磁盘满、权限问题），SSH 连接会静默失败，用户看到的是"SSH 连接失败"而非根因。建议把错误传播出去并提示。
-- **capabilities 配置过宽**。`fs:scope` 允许 `$DOWNLOAD/**`、`$DOCUMENT/**`、`$DESKTOP/**`（[default.json:30-35](file:///d:/Projects/EasyConsole/src-tauri/capabilities/default.json#L30)），但实际下载只需 `$DOWNLOAD`。`http:default` 允许 `http://*:*/*` 与 `https://*:*/*`（[default.json:16-21](file:///d:/Projects/EasyConsole/src-tauri/capabilities/default.json#L16)），无域名白名单。建议收紧到已知后端 host 与监控面板 host。
-- `open_ssh_session` 命令在 `validate_host`/`parse_port`/`validate_username` 通过后即返回 `session_id`（[lib.rs:860-897](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L860)），实际连接是 `tauri::async_runtime::spawn` 异步进行。**无连接超时**：`run_russh_session` 中 `client::connect` 无超时（[lib.rs:765-767](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L765)），网络不通时会一直挂起。建议为 `connect` 加 `tokio::time::timeout`。
-- `runtime_storage_get/set/remove` 每次都全量读写 `runtime-storage.json`（[lib.rs:922-943](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L922)），高频写入会有 IO 放大与并发写竞态（无文件锁）。两个并发 `set` 可能互相覆盖。建议引入写锁或内存缓存 + 去抖落盘。
-- `install_vscode_public_key` 通过 SSH 执行远端 shell 命令拼接 `authorized_keys`（[lib.rs:644-647](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L644)），`shell_single_quote` 转义了公钥（[lib.rs:474-476](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L474)），但整体命令注入面需审视。
-- `spawn_ssh_terminal` 在 Windows 上拼接 `wt`/`powershell` 参数（[lib.rs:532-561](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L532)），`task_name` 作为 `--title` 参数传入，未转义。虽然 `Command::new` 不走 shell，但恶意 task_name 含特殊字符可能导致参数注入。建议对 title 做清洗。
-
-### 3.7 安全
-
-**优点**：
-- **无 `dangerouslySetInnerHTML`、无 `eval`、无 `new Function`、无 `innerHTML`**（全量搜索确认），XSS 注入面小。
-- 文件下载名清洗到位：`sanitizeDownloadFilename` 移除 `<>:"/\|?*`、控制字符、Windows 保留名，限长 180（[download.ts:6-17](file:///d:/Projects/EasyConsole/src/lib/download.ts#L6)）。
-- run logs 元数据脱敏：`SENSITIVE_KEY_PATTERN` 匹配 `authorization|bearer|cookie|password|secret|token|passwd|pwd`（[run-logs.ts:57](file:///d:/Projects/EasyConsole/src/lib/run-logs.ts#L57)），限深度 5、字符串 1000 字符、JSON 12KB。
-- SSH host key TOFU 校验。
-- VS Code 专用 SSH key 存放在 app data 目录而非用户 `.ssh`，权限 `0600` 由 `ssh-keygen` 保证（[lib.rs:374-417](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L374)）。
-
-**不足（高优先级）**：
-- **Token 明文存储**。`TOKEN_STORAGE_KEY` 直接存 `Bearer ...` 到 localStorage 或 `runtime-storage.json`（[auth-context.tsx:84、121](file:///d:/Projects/EasyConsole/src/lib/auth-context.tsx#L84)）。`saved-accounts.ts` 也明文存 token（[saved-accounts.ts:46](file:///d:/Projects/EasyConsole/src/lib/saved-accounts.ts#L46)）。localStorage 可被 XSS 读取，`runtime-storage.json` 可被同机其他进程读取。建议使用 Tauri 的 keychain/secure storage 或至少加密。
-- **密码哈希无加盐**。`sha256Hex(password)` 直接对明文做 SHA-256（[crypto.ts:1-7](file:///d:/Projects/EasyConsole/src/lib/crypto.ts#L1)），无 per-user salt、无慢哈希（PBKDF2/bcrypt/argon2）。彩虹表攻击风险高。建议至少客户端做 HMAC-SHA256（server 提供的 challenge/salt）或改用慢哈希。
-- **CSRF 风险**。`fetchRequest` 硬编码 `credentials: "include"`（[runtime.ts:170](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L170)），但请求仅靠 `Authorization` header 鉴权，无 CSRF token。若后端同时接受 cookie 鉴权，则存在 CSRF。当前看鉴权基于 Bearer token，CSRF 面较小，但 `credentials: include` 仍是不必要的暴露。
-- **CLI 配置文件明文存 token**。`saveEasyConsoleConfig` 将 `token` 明文写入 `~/.easy-console/config.json`（[config.ts:74-81](file:///d:/Projects/EasyConsole/tools/easy-console/config.ts#L74)），文件权限未设置。建议 `chmod 600`。
-- **SSH 密码明文传输到前端**。任务列表返回的 `ssh_password`/`password` 字段（[types.ts:53-54](file:///d:/Projects/EasyConsole/src/lib/types.ts#L53)）被 `buildTaskSshInfo` 提取并显示在终端对话框（虽用 `••••••••` 遮罩，[TerminalDialog.tsx:31](file:///d:/Projects/EasyConsole/src/components/tasks/TerminalDialog.tsx#L31)，但可复制）。这是后端设计问题，但前端也明文持有。
-
-### 3.8 持久化
-
-**优点**：
-- run logs 裁剪策略完善：默认 1000 条、30 天（[run-logs.ts:4-5、153-166](file:///d:/Projects/EasyConsole/src/lib/run-logs.ts#L4)）。
-- saved accounts 上限 5 个（[saved-accounts.ts:4](file:///d:/Projects/EasyConsole/src/lib/saved-accounts.ts#L4)）。
-- `parseRunLogs`/`parseSavedAccounts`/`parseAppSettings` 对损坏 JSON 容错，返回默认值。
-- 数据备份/恢复有版本号 `LOCAL_DATA_BACKUP_VERSION = 1`（[local-data-backup.ts:9](file:///d:/Projects/EasyConsole/src/lib/local-data-backup.ts#L9)）。
-
-**不足**：
-- **无数据迁移机制**。`LOCAL_DATA_BACKUP_VERSION` 仅用于备份文件格式版本，运行时存储无 schema 版本字段。若未来调整 `AppSettings` 结构，旧数据只能回退默认。
-- **`runtime-storage.json` 无并发保护**（见 3.6），多窗口或快速连续写入会丢数据。
-- `TasksPage` 的列可见性、自动刷新设置直接写 localStorage（[TasksPage.tsx:1004-1014](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1004)），未走 `browserRuntime.storage` 适配层。
-- `loadColumnVisibility` 有手工迁移逻辑（`cost` -> `duration`，[TasksPage.tsx:202-205](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L202)），但无版本号。
-
-### 3.9 错误边界
-
-**严重不足**：
-- **全项目无 React ErrorBoundary**。搜索 `ErrorBoundary`、`componentDidCatch`、`getDerivedStateFromError` 均无结果。`App.tsx`（[App.tsx:24-62](file:///d:/Projects/EasyConsole/src/App.tsx#L24)）与 `main.tsx`（[main.tsx:29-44](file:///d:/Projects/EasyConsole/src/main.tsx#L29)）均未包裹 ErrorBoundary。
-- **无全局 `window.onerror`/`unhandledrejection` 处理**。
-- 任何组件渲染期抛错（如后端返回畸形数据导致 `task.status` 访问异常）会使整个应用白屏，用户只能刷新。
-
-**建议**：
-- 在 `App` 外层包裹至少一个顶层 ErrorBoundary，展示友好错误页 + 重试按钮 + 上报 run log。
-- 对关键路由（TasksPage、StoragePage）单独包裹 ErrorBoundary，避免局部崩溃影响全局。
-- 注册 `window.addEventListener("unhandledrejection", ...)` 捕获未处理的 Promise 拒绝。
-
-### 3.10 副作用清理
-
-**优点**：
-- `AppSshTerminalDialog` 的 `useEffect` 清理完整（[AppSshTerminalDialog.tsx:151-161](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L151)）。
-- `BackgroundScheduledTaskRunner` 清理定时器、事件监听、background lock、Tauri 事件监听（[BackgroundScheduledTaskRunner.tsx:128-137](file:///d:/Projects/EasyConsole/src/components/BackgroundScheduledTaskRunner.tsx#L128)）。
-- `fetchRequest` 在 `finally` 中移除 abort 监听并清超时（[runtime.ts:189-192](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L189)）。
-- `AppUpdateProvider` 用 `cancelled` 标志防止卸载后 setState（[app-update-context.tsx:80-87](file:///d:/Projects/EasyConsole/src/lib/app-update-context.tsx#L80)）。
-
-**不足**：
-- `TaskNotificationWatcher` 的 `useEffect`（[TaskNotificationWatcher.tsx:35-55](file:///d:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L35)）调用 `browserRuntime.requestSystemNotificationPermission().then(...)`，**无 `cancelled` 标志**，组件卸载后 `toast.info` 仍可能触发。
-- `TaskNotificationWatcher` 的第二个 effect（[TaskNotificationWatcher.tsx:57-99](file:///d:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L57)）在轮询场景下高频触发；`browserRuntime.notifySystem` 是 fire-and-forget，无清理。
-- `AuthProvider` 初始化 effect（[auth-context.tsx:36-54](file:///d:/Projects/EasyConsole/src/lib/auth-context.tsx#L36)）无 `cancelled` 标志，StrictMode 双调用下可能重复执行。
+**整改要求**：先定义明确产品策略。推荐默认永不导出凭据；如确需可迁移备份，必须通过 secureStorage 专用接口读取，使用用户单独输入的备份口令和带 KDF 参数的版本化加密包，导入时再写回 secureStorage。普通设置备份与凭据备份应分成两个明确动作，不能静默混用。需要覆盖桌面与 Web 的 round-trip、错误口令、旧 schema、部分导入和撤销场景。
 
-### 3.11 并发与竞态
-
-**优点**：
-- `CommitQueueProvider`/`DownloadQueueProvider` 用 `runningRef` 保证串行。
-- `BackgroundScheduledTaskRunner` 用 `runningRef` + Web Locks API（`navigator.locks`）保证多窗口单实例执行（[BackgroundScheduledTaskRunner.tsx:24-43、49](file:///d:/Projects/EasyConsole/src/components/BackgroundScheduledTaskRunner.tsx#L24)）。
-- 任务列表轮询通过 React Query 的 `refetchInterval`，且有 `autoRefreshPaused` 在对话框打开时暂停（[TasksPage.tsx:695-701](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L695)）。
-- `TaskNotificationWatcher` 用 `initializedRef` 避免首次加载误发通知（[TaskNotificationWatcher.tsx:18、63](file:///d:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L18)）。
-
-**不足**：
-- **`BackgroundScheduledTaskRunner` 与 Tauri 侧 `start_desktop_run_due_timer`（30s 间隔，[lib.rs:1131-1140](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L1131)）同时触发**。前端有 30s `setInterval`（[BackgroundScheduledTaskRunner.tsx:115](file:///d:/Projects/EasyConsole/src/components/BackgroundScheduledTaskRunner.tsx#L115)），Tauri 也每 30s emit `desktop-run-due-scheduled-tasks`（[lib.rs:1137](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L1137)），前端还监听该事件（[BackgroundScheduledTaskRunner.tsx:120](file:///d:/Projects/EasyConsole/src/components/BackgroundScheduledTaskRunner.tsx#L120)）。虽有 `runningRef` 兜底，但双源触发冗余。
-- **上传队列无断点续传**（见 2.4）。
-- **SSH 会话事件竞态**。`AppSshTerminalDialog` 中 `openSshSession` 返回 `sessionId` 后才注册 `onSshSessionEvent`（[AppSshTerminalDialog.tsx:118-124](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L118)）。若连接极快建立并在注册监听前就 emit 了 `status`/`output` 事件，会丢失。建议先注册监听再开连接，或用 `sessionId` 做事件缓冲。
-- **`TaskNotificationWatcher` 与 `TasksPage` 各自独立轮询**（前者 10s，后者可配 5/10/30s），两个 `instanceApi.tasks` 查询 key 不同（`task-notification-watch` vs `taskQueryKey`），无缓存共享，产生双倍后端请求。建议共用一个查询 key 或用 `staleTime` 复用。
+### 5.5 UPL-01：断点续传偏移计算和持久化时机不可靠
 
-### 3.12 配置与环境变量
+**级别：P1｜证据：S｜影响：分片错位、重复传输、硬崩溃后无法恢复**
 
-**优点**：
-- `api-client.ts` 对 `import.meta.env` 做了类型断言保护（[api-client.ts:5-6](file:///d:/Projects/EasyConsole/src/lib/api-client.ts#L5)）。
-- `app-settings.ts` 对 `VITE_MONITOR_DASHBOARD_URL` 同样保护（[app-settings.ts:35-36](file:///d:/Projects/EasyConsole/src/lib/app-settings.ts#L35)）。
-- CLI/MCP 配置有 env > config file > default 的优先级（[config.ts:56-72](file:///d:/Projects/EasyConsole/tools/easy-console/config.ts#L56)）。
-
-**不足**：
-- **`.env` 无校验**。`.env.example`（[.env.example:1-2](file:///d:/Projects/EasyConsole/.env.example#L1)）仅两行，无 schema 校验。若 `VITE_API_BASE_URL` 写错（如漏掉 `/api` 后缀），应用启动后所有请求 404，但无早期告警。建议在 `initRuntimeKind` 后增加一次 `apiBaseUrl` 合法性校验。
-- **默认 API base 硬编码公网 IP** `http://116.172.93.164:28080/api`（[api-client.ts:4](file:///d:/Projects/EasyConsole/src/lib/api-client.ts#L4) 与 [.env.example:1](file:///d:/Projects/EasyConsole/.env.example#L1)）。这是测试环境地址，不应作为代码默认值。建议默认值为空字符串并在启动时强校验。
-- `vite.config.ts` 无 `envPrefix` 限制（默认只暴露 `VITE_` 前缀，安全），但无 `define` 做构建期校验。
-
-### 3.13 CI/CD
+恢复偏移使用 `uploadedChunks.length * chunkSize`，见 [api-factory.ts:335](file:///D:/Projects/EasyConsole/src/lib/api-factory.ts#L335)，这隐含假设已上传分片从 0 开始连续。如果服务端返回稀疏分片集合，后续 `Content-Range` 会从错误位置继续。页面只在捕获上传失败后持久化 upload ID，见 [StoragePage.tsx:196](file:///D:/Projects/EasyConsole/src/pages/StoragePage.tsx#L196)；进程崩溃、断电或强制退出不会进入 catch，因此没有可恢复记录。
 
-**优点**：
-- `ci.yml` 矩阵覆盖 Windows/macOS/Linux 三平台，步骤完整：`version:check`、`typecheck`、`typecheck:tools`、`lint`、`test`、`build:desktop`、`cargo check`（[ci.yml:62-81](file:///d:/Projects/EasyConsole/.github/workflows/ci.yml#L62)）。
-- `release.yml` 在发布前重跑验证（version/typecheck/lint/test）（[release.yml:78-85](file:///d:/Projects/EasyConsole/.github/workflows/release.yml#L78)）。
+**整改要求**：上传会话创建成功后、发送第一片前立即落盘 `{uploadId, file fingerprint, chunkSize, completed indices}`；每片确认后原子更新 checkpoint；恢复时与服务端状态对账，按第一个缺失连续片或精确索引集合补传，不能按数组长度推断。文件 fingerprint 至少包含路径/名称、大小、mtime 和内容摘要策略。增加稀疏分片、服务器状态回退、硬退出和文件被替换的测试。
 
-**不足**：
-- **`android-ci.yml` 跳过所有验证步骤**。仅 `Checkout` -> 安装 -> 直接 `tauri android build --debug`（[android-ci.yml:83-90](file:///d:/Projects/EasyConsole/.github/workflows/android-ci.yml#L83)），**不跑 typecheck/lint/test/cargo check**。Android 构建若引入平台特定代码错误，只能在 release 时发现。
-- **`release.yml` 不跑 `build:desktop` 与 `cargo check` 的独立步骤**，而是直接用 `tauri-action` 构建（[release.yml:86-99](file:///d:/Projects/EasyConsole/.github/workflows/release.yml#L86)）。
-- **无覆盖率上报**。`vitest run` 无 `--coverage`，测试覆盖率不可见。建议加 `@vitest/coverage-v8` 并在 CI 上报。
-- **无安全扫描**。无 `npm audit`、无 `cargo audit`、无依赖漏洞扫描。
-- **无 Lighthouse/a11y 自动检查**（虽 eslint 有 a11y 规则）。
-
----
-
-## 四、程序运行效率
+### 5.6 UPL-02：上传队列最终状态可能错误报告成功
 
-### 4.1 列表渲染
+**级别：P1｜证据：S｜影响：用户误以为文件已经上传完成**
 
-- **未使用虚拟化**。`package.json` 中无 `react-window` / `@tanstack/react-virtual` 依赖。TasksPage 桌面端 `table.getRowModel().rows.map(...)` 渲染整页（[TasksPage.tsx:1285](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1285)），`TASK_PAGE_SIZE_OPTIONS` 最大 200（[task-list-query.ts:5](file:///d:/Projects/EasyConsole/src/lib/task-list-query.ts#L5)）。200 行 × 15 列 ≈ 3000 单元格 + 200 个 MoreActionsMenu 组件实例。StoragePage（[StoragePage.tsx:538](file:///d:/Projects/EasyConsole/src/pages/StoragePage.tsx#L538)）、ImagesPage（[ImagesPage.tsx:267](file:///d:/Projects/EasyConsole/src/pages/ImagesPage.tsx#L267)）同样全量 `map`。
-- **移动端卡片与桌面表格双份渲染**。三个页面均在同一 JSX 中同时渲染 `sm:hidden` 的卡片列表和 `hidden sm:block` 的表格（用 CSS 隐藏一份），DOM 节点和工作量翻倍：[TasksPage.tsx:1176 与 1262](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1176)、[StoragePage.tsx:434 与 526](file:///d:/Projects/EasyConsole/src/pages/StoragePage.tsx#L434)、[ImagesPage.tsx:194 与 254](file:///d:/Projects/EasyConsole/src/pages/ImagesPage.tsx#L194)。
-- **`columns` useMemo 依赖项过宽**（[TasksPage.tsx:987](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L987)）。依赖 `pinnedTaskIds`、`releaseMutation.isPending`、`deleteMutation.isPending`、`saveTemplateMutation` 等，任一变化都会重建整列定义，继而触发 `useReactTable` 重新初始化。
-- **key 设置正确**：表格行用 `row.id`（[TasksPage.tsx:1286](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1286)），StoragePage 用 `entryPath`（[StoragePage.tsx:553](file:///d:/Projects/EasyConsole/src/pages/StoragePage.tsx#L553)），ImagesPage 用 `${source}-${id}`（[ImagesPage.tsx:268](file:///d:/Projects/EasyConsole/src/pages/ImagesPage.tsx#L268)），均稳定。**亮点**。
+队列完成提示没有以最终队列快照为唯一事实源；失败计数读取运行前捕获的旧 items，且单文件失败不一定阻止队列级成功消息，见 [StoragePage.tsx:243](file:///D:/Projects/EasyConsole/src/pages/StoragePage.tsx#L243)。这使“部分失败”可能表现为总体成功，破坏存储操作的可信度。
 
-**改进建议**：引入 `@tanstack/react-virtual` 对表格体做行虚拟化；移动端卡片与桌面表格二选一渲染（用 `useMediaQuery` 或 runtime `isMobile` 判断）；`columns` 中将 `pinnedTaskIds`、`isPending` 等通过 ref 读取，把 cell 闭包从依赖中移除，使 columns 稳定。
+**整改要求**：让 `runUploadQueue` 返回不可变结果 `{succeeded, failed, cancelled, items}`，UI 只依据该结果显示汇总；任何失败都不得使用成功 toast；成功后保留后端列表复核，无法看到目标文件时降级为“上传完成但尚未确认”。为全成功、部分失败、全部失败、取消、重试后成功和列表未出现建立测试。
 
-### 4.2 网络请求
+### 5.7 CLI-01：计划创建绕过工具端 mutation 确认规范
 
-**亮点**：
-- 已用 `@tanstack/react-query`，QueryClient 在 [main.tsx:15](file:///d:/Projects/EasyConsole/src/main.tsx#L15) 配置了 `refetchOnWindowFocus: false, retry: 1`。
-- `fetchRequest` 实现了 AbortController 超时与外部 signal 取消（[runtime.ts:153](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L153)）。
-- blob 下载用流式 reader 带进度（[runtime.ts:124](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L124)）。
+**级别：P1｜证据：S｜影响：脚本或 AI 调用可无确认改变本地自动执行状态**
 
-**不足**：
-- **未设置 `staleTime`，默认 0**。[main.tsx:15-22](file:///d:/Projects/EasyConsole/src/main.tsx#L15) 没有配置 `staleTime`，所有 query 一旦挂载就视为过期。由于页面 `lazy` 加载，路由切换回来必触发 refetch。建议给只读列表设置 `staleTime: 30_000`。
-- **任务列表存在重复轮询**。TasksPage 自动刷新查询 `["tasks", page, pageSize, keyword, status]`（[TasksPage.tsx:696](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L696)），同时 `TaskNotificationWatcher` 又以独立 queryKey `["task-notification-watch"]` 每 10s 拉取 `page_size: 100` 的同一接口（[TaskNotificationWatcher.tsx:22-28](file:///d:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L22)，`refetchIntervalInBackground: true`）。在 TasksPage 打开时，两个请求并发打到 `/instance/task`，react-query 不会去重（key 不同）。
-- **`gcTime`/`cacheTime` 未配置**，缓存默认保留 5 分钟；可接受但可显式调优。
+仓库规范要求 CLI mutation 默认 dry-run 并使用 `--yes`，MCP mutation 要求 `confirm: true`。但 `schedule create` 在 CLI 中直接写入本地计划，见 [cli.ts:702](file:///D:/Projects/EasyConsole/tools/easy-console/cli.ts#L702)；对应 MCP 工具也没有强制确认，见 [mcp-tools.ts:542](file:///D:/Projects/EasyConsole/tools/easy-console/mcp-tools.ts#L542)。计划会在后台触发真实远端创建，风险不低于直接 mutation。
 
-**改进建议**：让 `TaskNotificationWatcher` 复用 TasksPage 的 `["tasks",...]` 缓存（用 `useQueryClient().getQueryData` 读取），或把轮询合并到一个观察者，避免双份网络；在 `defaultOptions.queries` 设 `staleTime` 与 `gcTime`。
+**整改要求**：CLI 默认输出规范化计划和未来触发预览，仅 `--yes` 后持久化；MCP schema 强制 `confirm: true`，未确认时返回 dry-run payload。运行日志记录调用渠道、确认状态、计划 ID 和 execution key。为 CLI 与 MCP 各加未确认不写、确认后只写一次的测试。
 
-### 4.3 状态更新与重渲染
+### 5.8 功能扩充建议（正确性修复之后）
 
-**不足**：
-- `RunLoggerProvider` 的 value 未 memoize（[RunLoggerProvider.tsx:19](file:///d:/Projects/EasyConsole/src/components/RunLoggerProvider.tsx#L19)），每次 Provider 重渲染都生成新对象。由于它位于 `AuthProvider` 内（[main.tsx:35](file:///d:/Projects/EasyConsole/src/main.tsx#L35)），auth 状态变化会触发 RunLoggerProvider 重渲染，进而使所有 `useRunLogger()` 消费者重渲染。`log` 本身是 `useCallback` 稳定的，完全可以用 `useMemo` 包一下 value。
-- `CommitQueueProvider` 与 `DownloadQueueProvider` 的 `runNext` 通过 `useEffect(() => { runNext(); }, [items, runNext])` 触发（[commit-queue-context.tsx:114](file:///d:/Projects/EasyConsole/src/lib/commit-queue-context.tsx#L114)、[download-queue-context.tsx:153](file:///d:/Projects/EasyConsole/src/lib/download-queue-context.tsx#L153)）。每次 `items` 变化（包括进度回调里每个 progress tick 的 `setItems`）都会重跑 effect。下载进度高频更新时这是额外开销，不过 `runningRef` 守卫了实际执行。
-- TasksPage 的 `filteredTasks` 与 `columns` 在 pinnedTaskIds 变化时连锁重建（[TasksPage.tsx:703 与 833](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L703)）。
+以下不是本轮正式缺陷计数的一部分，但能提高完整度，优先级应低于 SCH/BAK/UPL/CLI 系列：
 
-**亮点**：
-- `CommitQueueProvider`（[commit-queue-context.tsx:150](file:///d:/Projects/EasyConsole/src/lib/commit-queue-context.tsx#L150)）、`DownloadQueueProvider`（[download-queue-context.tsx:216](file:///d:/Projects/EasyConsole/src/lib/download-queue-context.tsx#L216)）、`AuthProvider`（[auth-context.tsx:181](file:///d:/Projects/EasyConsole/src/lib/auth-context.tsx#L181)）、`ToastProvider`（[Toast.tsx:41](file:///d:/Projects/EasyConsole/src/components/Toast.tsx#L41)）均用 `useMemo` 包了 value，依赖项正确。
-- Context 拆分粒度合理。
-- 全部用 `useState`，未滥用 `useReducer`，复杂度匹配。
+- 为计划任务提供可检索的执行历史、失败重试策略、暂停原因和“下 5 次执行”预览。
+- 为任务列表增加当前筛选结果 CSV 导出，便于交接、核对和离线分析。
+- 为模板增加搜索、标签、变量化参数和执行前 payload 预览，避免批量创建只能依赖名称后缀区分。
+- 为通知增加持久化历史中心，使错过的系统通知可以回看并关联到任务详情。
+- 为镜像和远程存储补齐适合桌面端的详情/进度视图，但不要在后端契约未确认前承诺不存在的操作能力。
 
-**改进建议**：RunLoggerProvider `const value = useMemo(() => ({ log }), [log])`；TasksPage 把 `pinnedTaskIds` 改为 ref 读取，columns 与 filteredTasks 解耦。
+## 6. 项目架构的鲁棒性和稳定性
 
-### 4.4 Bundle 体积
+### 6.1 已经做好的部分
 
-**亮点**：
-- `manualChunks` 已拆分 vendor-xterm / vendor-tanstack / vendor-tauri / vendor-icons / vendor-react / vendor（[vite.config.ts:9](file:///d:/Projects/EasyConsole/vite.config.ts#L9)）。
-- 所有路由页 `lazy`（[App.tsx:14-22](file:///d:/Projects/EasyConsole/src/App.tsx#L14)）。
-- `TerminalDialog` lazy（[TasksPage.tsx:74](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L74)），`AppSshTerminalDialog` 内动态 `import("@xterm/xterm")` 与 `import("@xterm/addon-fit")`（[AppSshTerminalDialog.tsx:72](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L72)），xterm 不进主包。
-- 无 recharts / monaco 等重型库。
+- [runtime.ts](file:///D:/Projects/EasyConsole/src/lib/runtime.ts) 把 storage、fetch、WebSocket、通知、剪贴板、外链、下载和桌面命令隔离在运行时适配器中，页面没有大面积泄漏平台全局对象。
+- [api-client.ts](file:///D:/Projects/EasyConsole/src/lib/api-client.ts) 与 [api-factory.ts](file:///D:/Projects/EasyConsole/src/lib/api-factory.ts) 统一处理 envelope、鉴权、业务错误和领域 API，Web、CLI、MCP 复用方向正确。
+- 已有 ErrorBoundary、登录失效映射、token 规范化、blob 响应分支、运行日志脱敏、通知状态转换和密码密文异常拒绝等保护。
+- TypeScript 与 Rust 编译检查通过；现有 **53 个测试文件、267 项测试**全部通过；Rust **4 项单元测试**通过。
+- Rust 命令普遍返回结构化错误而非依赖 panic，SSH 主机密钥与 SOCKS 辅助逻辑已有基础测试。
 
-**不足**：
-- **`manualChunks` 的 `react` 匹配过宽**。[vite.config.ts:15](file:///d:/Projects/EasyConsole/vite.config.ts#L15) 用 `id.includes("react")`，会捕获路径中任何含 "react" 的模块。建议改为 `/node_modules/(react|react-dom|react-router-dom)/`。
-- **`CreateTaskDialog` 与 `TaskLogDialog` 静态导入**。[TasksPage.tsx:36-38](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L36) 直接 import，未 lazy。这两个对话框体积可能不小（表单字段多），会进入 TasksPage chunk。
-- **`zod` 在 dependencies 但渲染层未见使用**。[package.json:53](file:///d:/Projects/EasyConsole/package.json#L53)。zod v4 体积可观（~50KB+）。若仅 CLI/MCP sidecar 使用，应移到 devDependencies。
-- **无 `build.target`、`build.minify`、`chunkSizeWarningLimit`、`esbuild` 选项配置**，全用默认。
+### 6.2 SEC-01：默认生产路径仍使用明文 HTTP
 
-**改进建议**：精确化 manualChunks 的 react 匹配；`CreateTaskDialog`、`TaskLogDialog` 改 `lazy()`；显式 `build.target` 与 `build.chunkSizeWarningLimit`。
+**级别：P0（条件阻断）｜证据：S｜影响：账号凭据、token 与所有控制操作的机密性/完整性**
 
-### 4.5 Tauri 应用启动
+默认 API 基址是 `http://116.172.93.164:28080/api`，见 [api-client.ts:4](file:///D:/Projects/EasyConsole/src/lib/api-client.ts#L4)。登录虽然发送 SHA-256 hex 密码，见 [api-factory.ts:104](file:///D:/Projects/EasyConsole/src/lib/api-factory.ts#L104)，但该摘要本身就是可重放的登录材料；后续 Bearer token 同样通过明文 HTTP 传输。哈希不能替代 TLS，攻击者不需要还原原密码即可重放摘要或 token。
 
-**不足**：
-- **setup 阶段同步读取两次同一个文件**。[lib.rs:1356-1363](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L1356)，`read_close_to_tray_setting` 与 `read_close_prompt_setting` 各自调用 `runtime_storage_path` + `load_string_map`（同步 `fs::read_to_string` + `serde_json::from_str`），对 `runtime-storage.json` 做了两次完整读解析。可合并为一次读取。
-- **托盘菜单窗口在启动时即创建**。[lib.rs:1099](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L1099)（`setup_tray` → `ensure_tray_menu_window`）在 setup 中 `WebviewWindowBuilder::new(...).build()`，即启动就创建第二个隐藏 webview。webview 创建开销不小，应改为首次右键时懒创建。
-- **`runtime_storage_get/set/remove` 每次全量读写整个 map**（[lib.rs:922-943](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L922)），`runtime_storage_get` 读整个 JSON map 再取一个 key，`set` 读整个 map → 改一个 key → 写回。配合前端 `appendRunLog`（见 4.10）会产生放大效应。
-- **`verify_known_host` 每次连接同步读写 `known-ssh-hosts.json`**（[lib.rs:146-161](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L146)），在 SSH 连接热路径上做文件 IO + 序列化。
+**整改要求**：生产环境必须使用证书有效的 HTTPS/WSS。若后端暂时不能直接启用 TLS，应由受控反向代理、VPN 或本机隧道提供端到端加密，并在 Tauri 生产构建中拒绝非 loopback 的 `http://` API；设置页对不安全 URL 给出阻断而不是普通提示。验收需要抓包证明登录、刷新、任务、存储和 WebSSH 凭据在不可信链路上均不可见，并覆盖证书错误与降级攻击。
 
-**亮点**：
-- 无 sidecar 进程在 Tauri 内启动。CLI/MCP 是独立 Node 二进制（[tools/easy-console/build-sidecars.mjs](file:///d:/Projects/EasyConsole/tools/easy-console/build-sidecars.mjs)），桌面 app 用 `russh` 直连，不付 sidecar 启动开销。
-- `initRuntimeKind`（[runtime.ts:39](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L39)）对 `runtime_platform` IPC 做了 3s 超时 race，防止挂死渲染启动。
-- 插件链注册顺序合理。
+### 6.3 STO-01：Tauri 存储降级会形成双数据源
 
-**改进建议**：setup 中合并 `read_close_to_tray_setting` 与 `read_close_prompt_setting` 为一次读；托盘菜单窗口懒创建；runtime-storage 改为按 key 分文件，或前端缓存减少 IPC。
+**级别：P1｜证据：S｜影响：设置、计划、模板或账号元数据“写入成功但读取不到”**
 
-### 4.6 上传/下载效率
+Tauri IPC 写入失败时适配器回退到 `localStorage`；后续 IPC 恢复后，如果原生读取成功但返回 `null`，当前实现不会再查询 fallback，见 [runtime.ts:89](file:///D:/Projects/EasyConsole/src/lib/runtime.ts#L89)。这样同一个 key 可能同时存在于 `runtime-storage.json` 与 WebView localStorage，读写来源随 IPC 状态变化，造成数据回退、丢失或界面与后台 runner 看到不同状态。
 
-**不足**：
-- **MD5 用纯 JS 同步实现，阻塞主线程**。[md5.ts:50](file:///d:/Projects/EasyConsole/src/lib/md5.ts#L50) `md5ArrayBuffer` 是手写纯 JS MD5，`md5Blob`（[md5.ts:140](file:///d:/Projects/EasyConsole/src/lib/md5.ts#L140)）`await blob.arrayBuffer()` 后同步计算。上传完成时对整文件计算 MD5（[api-factory.ts:265 与 292](file:///d:/Projects/EasyConsole/src/lib/api-factory.ts#L265)），大文件（数百 MB ~ GB）会明显卡顿主线程。浏览器 Web Crypto 不支持 MD5，但可用 WASM 版（如 `hash-wasm`）或 Web Worker 卸载。
-- **上传分片固定 5MB，串行**。[api-factory.ts:23](file:///d:/Projects/EasyConsole/src/lib/api-factory.ts#L23) `UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024`，`uploadFile`（[api-factory.ts:279](file:///d:/Projects/EasyConsole/src/lib/api-factory.ts#L279)）用 `for` 循环逐片上传，无并发。对多小文件场景也无并行（StoragePage `runUploadQueue` 串行，[StoragePage.tsx:183](file:///d:/Projects/EasyConsole/src/pages/StoragePage.tsx#L183)）。
-- **MD5 重复读文件**。`uploadFile` 已经逐片 `file.slice` 读了一遍，最后 `md5Blob(file)` 又 `await blob.arrayBuffer()` 把整个文件再读一遍进内存。
-- **上传进度回调每 tick 做整数组 map**。[StoragePage.tsx:198-200](file:///d:/Projects/EasyConsole/src/pages/StoragePage.tsx#L198)。
+**整改要求**：定义单一权威源与迁移协议。建议 Tauri 以原生存储为主：读到 null 时检查 fallback 并原子迁移；写失败时明确标记 pending migration；删除使用 tombstone 防止旧值复活。不要无提示吞掉 IPC 错误。测试必须模拟写失败、读恢复、删除失败、双边冲突和多窗口读取。
 
-**亮点**：
-- 下载用流式 reader 带进度（[runtime.ts:124](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L124)）。
-- 0B 空文件有专门 fallback 与 post-upload listing 校验（[api-factory.ts:250-278](file:///d:/Projects/EasyConsole/src/lib/api-factory.ts#L250)），符合 AGENTS.md。
-- `AbortController` 贯穿上传/下载，支持取消。
+### 6.4 DAT-01：Node 本地数据存储不具备崩溃与跨进程安全性
 
-**改进建议**：MD5 移到 Web Worker 或换 WASM 实现；或边上传边增量哈希（分片已读，可流式累加）；多文件上传加有限并发（如 3 路）；大文件分片可考虑动态调整。
+**级别：P1｜证据：S｜影响：CLI/MCP 并发写导致计划、模板或运行日志丢失/损坏**
 
-### 4.7 SSH 终端
+[local-data-store.ts:10](file:///D:/Projects/EasyConsole/tools/easy-console/local-data-store.ts#L10) 使用进程内整文件缓存和直接覆盖写入，没有文件锁、版本比较、临时文件 + 原子 rename，也没有跨进程事务。CLI 与 MCP sidecar 可同时运行：两个进程读取同一旧快照后分别写入时，后写者会覆盖先写者；进程在写入中断还可能留下截断 JSON。
 
-**不足**：
-- **SSH 输出每段 Data 触发一次 Tauri 事件**。[lib.rs:827-834](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L827)，`ChannelMsg::Data` 每次都 `emit_session_event` → JS 全局 `listen`（[runtime.ts:416](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L416)）→ `terminal.write`。高吞吐输出（如 `cat` 大文件、`yes`）下，每个数据块一次 IPC round-trip，无批量合并，容易成为瓶颈。
-- **全局单 listener 按 sessionId 过滤**。[runtime.ts:416-419](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L416)，所有 SSH 会话的事件都进同一个 listener，再 `if (event.payload.sessionId !== sessionId) return`。多会话时 O(会话数) 过滤。
-- **xterm 未启用 WebGL 渲染**。AppSshTerminalDialog 只加载 `FitAddon`（[AppSshTerminalDialog.tsx:87](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L87)），未加载 `@xterm/addon-webgl` / `addon-web-links`。大 scrollback（10_000 行）下默认 canvas 渲染在快速输出时会掉帧。
-- **每个按键一次 IPC**。`terminal.onData` → `writeSshSession` → `invoke("ssh_write")`（[AppSshTerminalDialog.tsx:110-114](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L110)）。正常打字可接受，但粘贴大量文本会产生大量小 IPC。
+**整改要求**：短期使用同目录临时文件、flush/fsync、原子 rename，并加入跨进程锁与 revision 冲突重试；中期可统一迁移到 SQLite（WAL 模式）并定义 schema migration。每次 mutation 必须在锁内重新读取最新数据，不能依赖长期进程缓存。增加多进程并发压测、写入中途终止、磁盘满和损坏恢复测试。
 
-**亮点**：
-- xterm 与 addon 动态 import，不进主包（[AppSshTerminalDialog.tsx:72](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L72)）。
-- `scrollback: 10_000`（[AppSshTerminalDialog.tsx:80](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L80)）合理。
-- 会话清理完善：dispose 时 `closeSshSession` + `terminal.dispose()`（[AppSshTerminalDialog.tsx:156-161](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L156)）。
+### 6.5 ARCH-01：关键链路复杂度增长快于测试与可观测性
 
-**改进建议**：Rust 侧对 SSH 输出做 16ms / 8KB 合并后批量 emit；或用 `mpsc` 直接推流，前端用单个订阅；加载 `@xterm/addon-webgl`（动态 import）提升大输出渲染；粘贴场景前端做合并。
+**级别：P2｜证据：S + V｜影响：修改一个页面或命令时容易产生跨功能回归**
 
-### 4.8 搜索/筛选
+当前 [TasksPage.tsx](file:///D:/Projects/EasyConsole/src/pages/TasksPage.tsx) 约 **1969 行**，[SettingsPage.tsx](file:///D:/Projects/EasyConsole/src/pages/SettingsPage.tsx) 约 **1610 行**，[src-tauri/src/lib.rs](file:///D:/Projects/EasyConsole/src-tauri/src/lib.rs) 约 **2699 行**。这些文件同时承担数据编排、持久化、交互状态和渲染/命令实现，职责边界开始模糊。
 
-**不足（重点）**：
-- **TasksPage 搜索输入无防抖，每次按键触发 API 请求**。[TasksPage.tsx:1057](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L1057) `onChange={(event) => updateTaskQuery({ keyword: event.target.value })}`，`updateTaskQuery` 调 `setSearchParams`（[TasksPage.tsx:534](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L534)），`queryState` 变化 → `taskQueryKey` 变化（[TasksPage.tsx:239](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L239)）→ `useQuery` 以新 key 发起 `instanceApi.tasks(toTaskApiQuery(queryState))`（[TasksPage.tsx:698](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L698)）。快速输入 "abc" 会发 3 个请求，前两个被 react-query 取消（key 变了），但仍浪费网络与渲染。应加 200-300ms 防抖。
-- **`filterAndSortTasks` 客户端又对结果做一次 keyword 排序**。[TasksPage.tsx:705](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L705)，`taskMatchesQuery` + `filterAndSortTasks` 都基于 `queryState.keyword`。既然后端已按 keyword 过滤，客户端再 rank 排序是额外 O(n) 工作。
+现有 267 项测试数量可观，但风险最高的 `task-recurrence`、上传恢复、备份、Tauri fallback、Node 跨进程写、SFTP 大文件、调度崩溃/幂等，以及 TaskDetail/ScheduledTasks/TaskTemplates 集成仍缺少针对性覆盖；没有 E2E 套件和覆盖率门槛。Tauri 日志插件只在 debug 构建启用，见 [lib.rs:2462](file:///D:/Projects/EasyConsole/src-tauri/src/lib.rs#L2462)，生产故障难以定位。
 
-**亮点**：
-- `taskSearchRank`（[task-search.ts:45](file:///d:/Projects/EasyConsole/src/lib/task-search.ts#L45)）算法清晰：精确匹配 0、前缀 100+、包含 200+，数字与文本分别处理。复杂度 O(n × 字段数)，对 200 任务 × 6 字段约 1200 次比较，无性能问题。
-- StoragePage / ImagesPage 搜索是纯客户端 filter，无需防抖。
+**整改要求**：按领域拆出 page controller/hooks、纯状态机、表单 schema 和展示组件；Rust 按 storage/ssh/sftp/external/update 命令模块拆分，但保持 Tauri command 接口稳定。先为 P0/P1 增加失败路径测试，再设核心模块覆盖率门槛和 3 至 5 条桌面冒烟 E2E。生产日志采用滚动文件、分级和严格脱敏，默认不得记录 token、密码、SSH 私钥或完整敏感 payload。
 
-**改进建议**：TasksPage 搜索加防抖（`useDeferredValue` 或 setTimeout/`useDebounce`），并对 keyword 去抖后再进 URLSearchParams，避免历史栈污染与重复请求。
+## 7. 程序运行效率
 
-### 4.9 通知监听
+### 7.1 已经做好的部分
 
-**不足**：
-- **任务通知轮询与 TasksPage 轮询重复**（见 4.2）。`TaskNotificationWatcher` 每 10s 拉 100 条任务，`refetchIntervalInBackground: true`（[TaskNotificationWatcher.tsx:27](file:///d:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L27)），即使 TasksPage 已在轮询，后台 watcher 仍独立工作。
-- **`BackgroundScheduledTaskRunner` 多重触发源叠加**。[BackgroundScheduledTaskRunner.tsx:115-119](file:///d:/Projects/EasyConsole/src/components/BackgroundScheduledTaskRunner.tsx#L115)，30s `setInterval` + `focus` + `online` + `pageshow` + `visibilitychange` + 桌面端 `desktop-run-due-scheduled-tasks` 事件（Rust 侧 [lib.rs:1131](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L1131) 也每 30s emit 一次）。焦点切换可能连续触发 `executeDueTasks`，虽有 `runningRef` 守卫，但仍会重复 `loadScheduledTasks`（读存储 + JSON.parse）。
-- **状态比较每次新建 Map**。[TaskNotificationWatcher.tsx:62](file:///d:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L62) `new Map(previousSnapshot)` 然后逐任务 set，O(n)。
+- 页面路由已懒加载，xterm 等较重能力采用动态加载；Vite `manualChunks` 已把 React、TanStack、xterm 和通用 vendor 分离。
+- 搜索已具备防抖，共享 helper 对远程文本/日志读取设置字节上限，避免默认无限返回。
+- 任务表具有服务端分页和列可见性，不会把全部任务一次性渲染到单页 DOM。
+- 桌面输入构建成功，当前主要 chunk 规模可见且可监控：`vendor-xterm` 约 504 KB、通用 vendor 约 401 KB、React vendor 约 222 KB、TanStack vendor 约 108 KB（均为未压缩近似值）。
 
-**亮点**：
-- `TaskNotificationWatcher` 用 `initializedRef` 避免首屏误发通知（[TaskNotificationWatcher.tsx:63](file:///d:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L63)）。
-- `permissionWarningRef` 防止重复权限警告（[TaskNotificationWatcher.tsx:46](file:///d:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L46)）。
-- 桌面端用 Web Locks（`BACKGROUND_LOCK_NAME`）确保单实例后台运行（[BackgroundScheduledTaskRunner.tsx:14-43](file:///d:/Projects/EasyConsole/src/components/BackgroundScheduledTaskRunner.tsx#L14)）。
+### 7.2 IO-01：大文件传输使用整文件内存缓冲
 
-**改进建议**：TaskNotificationWatcher 复用 TasksPage 的 tasks query 数据，消除独立轮询；BackgroundScheduledTaskRunner 对 `focus`/`visibilitychange` 做最小间隔节流（如 30s 内不重复 load）。
+**级别：P1｜证据：S｜影响：大文件时内存峰值、OOM、复制开销与 UI 卡顿**
 
-### 4.10 本地存储
-
-**不足（重点）**：
-- **`appendRunLog` 每次追加都全量读 + 全量写，且 Tauri storage adapter 放大 2 倍**。
-  - [run-logs.ts:188](file:///d:/Projects/EasyConsole/src/lib/run-logs.ts#L188) `appendRunLog`：`loadRunLogs`（读 + JSON.parse + prune O(n log n)）→ 构造新条目 → `storage.set`（JSON.stringify 全部）。
-  - Tauri storage adapter（[runtime.ts:86-92](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L86)）的 `set` 又调用 `runtime_storage_set` Tauri 命令，该命令（[lib.rs:930-935](file:///d:/Projects/EasyConsole/src-tauri/src/lib.rs#L930)）再次 `load_string_map`（读整个 runtime-storage.json + 解析）→ 改一个 key → `write_string_map`（序列化整个 map + 写文件）。
-  - 结果：一次 run log 追加 = 前端读 1 次 + 前端写 1 次（含 Tauri 后端再读 1 次 + 再写 1 次）。1000 条日志上限下，每次追加序列化/反序列化 1000 条 + 整个 storage map。频繁操作时累计开销明显。
-- **`pruneRunLogs` 每次都 `[...items].filter().sort().slice()`**（[run-logs.ts:159](file:///d:/Projects/EasyConsole/src/lib/run-logs.ts#L159)），O(n log n) 复制 + 排序。append 时调用，即使无过期项也全排序。
-- **`BackgroundScheduledTaskRunner` 每个状态变更都 `persist`（全量写）**（[BackgroundScheduledTaskRunner.tsx:68、71、85](file:///d:/Projects/EasyConsole/src/components/BackgroundScheduledTaskRunner.tsx#L68)），一个 due 任务从 pending→running→done 至少 2 次 `saveScheduledTasks`（全量 JSON.stringify + storage.set → Tauri 全量读写）。
-- **浏览器端 localStorage 同步阻塞**。[runtime.ts:66-75](file:///d:/Projects/EasyConsole/src/lib/runtime.ts#L66) `localStorageAdapter.get/set` 是同步 `localStorage.getItem/setItem`，主线程阻塞。
-
-**亮点**：
-- `run-logs` 有上限（`DEFAULT_RUN_LOG_LIMIT = 1000`）与保留期（30 天）（[run-logs.ts:4-5](file:///d:/Projects/EasyConsole/src/lib/run-logs.ts#L4)）。
-- `saved-accounts` 限 5 条（[saved-accounts.ts:4](file:///d:/Projects/EasyConsole/src/lib/saved-accounts.ts#L4)）。
-- `sanitizeRunLogValue` 限制 metadata 深度（5）与长度（[run-logs.ts:57-59](file:///d:/Projects/EasyConsole/src/lib/run-logs.ts#L57)），防止单条过大。
-- 敏感 key 正则脱敏（[run-logs.ts:57](file:///d:/Projects/EasyConsole/src/lib/run-logs.ts#L57)）。
-
-**改进建议**：run-logs 改为独立 key 文件（如 `runtime-storage.json` 中只存指针，日志单独文件），或前端内存缓存 + 防抖批量写；Tauri 侧 `runtime_storage_set` 支持增量更新单 key（不重读整个 map），或前端缓存 map 镜像；`pruneRunLogs` 在 append 热路径上做轻量检查（仅当超限时才排序裁剪）。
-
-### 4.11 构建产物
-
-**不足**：
-- **无 `build.target` / `build.minify` 显式配置**，依赖默认。Vite 8 默认 `target: 'baseline-widely-available'`（较保守），可能包含不必要 polyfill；可设 `target: 'es2020'` 减小体积。
-- **无 `cssMinify` 配置**（默认 esbuild）。
-- **`manualChunks` 未拆分 `zod`、`@modelcontextprotocol/sdk`、`commander`**——虽然这些在渲染层未 import 不会进包，但若未来误 import 会全部塞进 `vendor` 兜底 chunk。
-- **无 `build.reportCompressedSize: false`**，构建会 gzip 所有 chunk 报告，大项目拖慢构建。
-
-**亮点**：
-- manualChunks 已存在且按生态拆分（[vite.config.ts:7](file:///d:/Projects/EasyConsole/vite.config.ts#L7)）。
-- esbuild minify（默认）比 terser 快。
-- 无 `sourcemap`（生产默认 false），不泄露源码。
-- `@vitejs/plugin-react` 已启用。
-
-**改进建议**：加 `build: { target: 'es2020', chunkSizeWarningLimit: 1500, reportCompressedSize: false }`；manualChunks 增加 `zod`、`commander`、`@modelcontextprotocol/sdk` 分组以防误打入。
-
-### 4.12 图片/资源
-
-- 未见 `loading="lazy"` 用法。但渲染层图片极少（仅 favicon.svg、Tauri 图标），不构成问题。
-- xterm CSS 在 AppSshTerminalDialog 顶部 `import "@xterm/xterm/css/xterm.css"`（[AppSshTerminalDialog.tsx:1](file:///d:/Projects/EasyConsole/src/components/tasks/AppSshTerminalDialog.tsx#L1)），随组件进入其 chunk，合理。
-
-**亮点**：`lucide-react` 按需命名导入（如 [TasksPage.tsx:11-28](file:///d:/Projects/EasyConsole/src/pages/TasksPage.tsx#L11)），tree-shaking 生效；manualChunks 单独拆 `vendor-icons`；无大图片资源；Tailwind v4 自动检测用到的 class。
-
----
-
-## 五、优先级排序（按收益/成本）
-
-### P0（影响核心可用性或安全，应优先修复）
-
-1. **无 React ErrorBoundary，渲染错误白屏**（三-3.9）
-2. **Token 明文存储 + 密码无盐 SHA-256**（三-3.7）
-3. **TasksPage 搜索加防抖**（一-1.2、四-4.8）
-4. **TaskNotificationWatcher 硬编码中文修复**（一-1.6）
-5. **AuthProvider 初始化无 catch 可能永久卡 loading**（三-3.4）
-6. **合并 TaskNotificationWatcher 与 TasksPage 双重轮询**（四-4.2）
-
-### P1（影响核心工作流完整性）
-
-7. **任务编辑能力**（确认后端是否支持，补 `updateTask`）（二-2.1）
-8. **token 刷新机制**（二-2.9）
-9. **定时任务循环调度（cron/interval）**（二-2.3）
-10. **存储断点续传**（二-2.4）
-11. **CLI/MCP 能力对齐（模板/定时任务/存储上传/镜像提交/dashboard 统计）**（二-2.10）
-12. **MD5 移至 Web Worker/WASM**（四-4.6）
-13. **Tauri runtime-storage 增量写/前端缓存**（四-4.5、4.10）
-14. **SSH connect 加超时 + capabilities http/fs scope 收紧**（三-3.6）
-15. **runtime-storage.json 并发写加锁**（三-3.6）
-
-### P2（体验与性能提升）
-
-16. **列表虚拟化 + 移除移动端双份渲染**（四-4.1）
-17. **TasksPage 列设置改用 `browserRuntime.storage`**（一-1.2）
-18. **AppSshTerminalDialog 加 Esc 关闭与重连**（一-1.5、1.7）
-19. **error toast 延长时长 + 操作按钮 + 通用骨架屏**（一-1.4）
-20. **skip-to-content + Dialog body 滚动锁 + 扩展快捷键**（一-1.5）
-21. **任务详情深链接 `/tasks/:id`**（一-1.1）
-22. **仪表盘刷新 + 图表 + 时间范围**（二-2.12）
-23. **监控 iframe 嵌入 + 调用 monitorIndex**（二-2.7）
-24. **SSH 输出批量 emit + xterm WebGL**（四-4.7）
-25. **RunLoggerProvider value memoize + CreateTaskDialog/TaskLogDialog lazy**（四-4.3、4.4）
-26. **android-ci.yml 补 typecheck/lint/test**（三-3.13）
-27. **页面/组件测试覆盖补齐 + 集成测试**（三-3.5）
-
-### P3（锦上添花）
-
-28. **运行日志 level 筛选与高级搜索**（二-2.8）
-29. **备份加密与自动备份**（二-2.13）
-30. **镜像收藏与详情 Dialog**（二-2.5）
-31. **桌面端深链接与全局快捷键**（二-2.11）
-32. **模板变量替换系统**（二-2.2）
-33. **vite build.target / reportCompressedSize**（四-4.11）
-34. **Tauri setup 合并读 + 托盘窗口懒创建**（四-4.5）
-
----
-
-## 附：审查范围与方法
-
-- **审查时间**：2026-06-26
-- **审查范围**：全项目源码（`src/`、`src-tauri/src/`、`tools/easy-console/`、`.github/workflows/`、配置文件）
-- **审查方法**：源码静态审查 + 代码引用定位，未运行时验证
-- **对比基准**：`reference/original-console/`（仅压缩 webpack 产物，结构性对比）、AGENTS.md 约定、DESIGN.md 视觉系统
-- **未覆盖**：实际运行性能 profiling、真实 API 行为验证、原始控制台反编译对比
+HTTP 下载先累积响应 chunk 形成 Blob，见 [runtime.ts:165](file:///D:/Projects/EasyConsole/src/lib/runtime.ts#L165)，随后又把完整 Blob 转成 ArrayBuffer 再交给写文件命令，见 [download.ts:31](file:///D:/Projects/EasyConsole/src/lib/download.ts#L31)。这会在 renderer/Tauri 边界产生至少一次完整文件副本。Rust SFTP 上传与下载同样整文件读入内存，见 [lib.rs:1302](file:///D:/Projects/EasyConsole/src-tauri/src/lib.rs#L1302)。
+
+**整改要求**：桌面端把 URL/SFTP 到文件的传输下沉到 Rust，采用固定大小 buffer 流式读写，通过事件只回传进度、速度和可取消句柄；上传也由 Rust 从本地路径分块读取。临时文件完成后原子 rename，失败/取消清理 `.part` 文件并支持恢复。验收以至少 5GB 稀疏/测试文件执行，证明 renderer 内存不随文件大小线性增长，并覆盖网络中断与磁盘不足。
+
+### 7.3 POL-01：通知观察器高频全量扫描任务
+
+**级别：P1｜证据：S｜影响：后台网络、服务端压力、耗电和通知延迟**
+
+通知观察器每 **10 秒**调用全量分页 helper，helper 最多顺序请求 **50 页 × 100 条 = 5000 条任务**，见 [fetch-all-tasks.ts:4](file:///D:/Projects/EasyConsole/src/lib/fetch-all-tasks.ts#L4)、[fetch-all-tasks.ts:29](file:///D:/Projects/EasyConsole/src/lib/fetch-all-tasks.ts#L29) 和 [TaskNotificationWatcher.tsx:27](file:///D:/Projects/EasyConsole/src/components/TaskNotificationWatcher.tsx#L27)。窗口不可见或缩到托盘后仍可能保持同样频率；任务越多，每分钟请求数和 JSON 解析量越高。
+
+**整改要求**：优先使用后端增量事件/SSE/WebSocket；如果后端只能轮询，则只查询活动/近期任务，保存 `updatedAt/cursor`，前台 10 至 30 秒、后台指数退避到 1 至 5 分钟，并对失败加 jitter。分页请求设置总时间预算与并发上限，避免一次轮询未完成下一次又启动。记录每轮任务数、页数、耗时和跳过原因，用 100/1000/5000 任务基准验收。
+
+### 7.4 PERF-01：查询取消与缓存复用不完整
+
+**级别：P2｜证据：S｜影响：重复请求、过期响应覆盖新状态、页面切换浪费**
+
+Images、Scheduled Tasks 和 Create Task 对相同镜像 API 使用不同 query key，导致无法共享缓存和失效策略；多个 React Query `queryFn` 没有把 `AbortSignal` 传到 API client，快速切换筛选、路由或账号时旧请求仍会完成。相关入口见 [ImagesPage.tsx](file:///D:/Projects/EasyConsole/src/pages/ImagesPage.tsx)、[ScheduledTasksPage.tsx](file:///D:/Projects/EasyConsole/src/pages/ScheduledTasksPage.tsx) 和 [CreateTaskDialog.tsx](file:///D:/Projects/EasyConsole/src/components/tasks/CreateTaskDialog.tsx)。
+
+**整改要求**：建立按领域集中的 query key factory；相同资源、相同参数必须生成相同 key。`queryFn({signal})` 一路传到 fetch；账号/API base 切换时显式取消并清理隔离域缓存。用 MSW 或等价 mock 验证快速切换时旧响应不会覆盖新查询，重复挂载只产生一次网络请求。
+
+### 7.5 PKG-01：两个 sidecar 重复携带 Node runtime
+
+**级别：P3｜证据：S｜影响：安装包与更新下载体积**
+
+Tauri 配置同时打包 CLI 和 MCP 两个独立 sidecar，见 [tauri.conf.json:33](file:///D:/Projects/EasyConsole/src-tauri/tauri.conf.json#L33)。当前构建近似为 CLI **55.43 MiB**、MCP **56.83 MiB**，合计约 **112 MiB**，主体是重复 Node runtime。
+
+**整改要求**：在不破坏命令行兼容性的前提下评估单一 sidecar 多入口、共享 runtime、原生 Rust launcher 或按需安装 MCP 工具。以最终安装包、增量更新包和冷启动时间作为决策指标；该项不得先于 P0/P1 正确性工作。
+
+## 8. 系统性问题归纳
+
+### 8.1 “本地功能”已经成为分布式状态问题
+
+计划、模板、账号、运行日志和上传 checkpoint 看似都是本地数据，但实际横跨 renderer、Tauri 原生存储、系统钥匙串、CLI 与 MCP 多进程。当前风险的共同根因是缺少统一的权威源、revision、原子写入和迁移协议。继续为每个 key 添加独立 fallback 会放大分叉。
+
+建议建立一份本地数据契约：每类数据明确 owner、schemaVersion、敏感级别、事务边界、跨进程访问方式、迁移和损坏恢复策略。普通设置、敏感凭据和高频运行日志不应共用同一持久化假设。
+
+### 8.2 “已支持”与“已验证”需要分开
+
+代码中已存在 refresh token、断点续传状态查询、监控 URL、SSH/SFTP 等路径，但真实后端或目标主机尚未验证。产品文案与发布记录应使用三态：已测试、实验性、不可用；不能仅根据接口封装存在就声明完整支持。
+
+### 8.3 失败路径覆盖落后于功能增长
+
+现有测试主要证明纯 helper 和常规输入，P0/P1 多集中在跨边界失败：网络成功后本地写失败、IPC 暂时失败后恢复、多个进程同时写、上传状态稀疏、进程在两个步骤之间退出。后续测试投入应从“再增加正常路径样例”转向故障注入、重启恢复、并发和大数据量。
+
+## 9. 验证结果
+
+### 9.1 已通过
+
+| 命令/检查 | 结果 | 说明 |
+|---|---|---|
+| `npm.cmd run typecheck` | 通过 | Renderer TypeScript |
+| `npm.cmd run typecheck:tools` | 通过 | CLI/MCP TypeScript |
+| `npm.cmd run test` | 通过 | 53 个测试文件，267 项测试 |
+| `cargo check --manifest-path src-tauri/Cargo.toml` | 通过 | Tauri Rust 编译检查 |
+| `cargo test --manifest-path src-tauri/Cargo.toml` | 通过 | 4 项 Rust 测试 |
+| `npm.cmd run build:desktop` | 通过 | sidecar、应用类型检查与 Vite 桌面输入构建 |
+| `npm.cmd run version:check` | 通过 | 版本一致性检查 |
+| `npm.cmd run lint` | 通过但有警告 | 0 errors，35 warnings |
+| 375×812 页面检查 | 部分不通过 | 设置页存在约 530px 宽的整页横向溢出 |
+| 关键颜色对比度抽样 | 通过 | 约 5.6:1 至 16.6:1 |
+| recurrence 定向逻辑复现 | 不通过 | `*/30` 抛错；星期 cron 错算；weekly 空星期返回 null |
+
+### 9.2 Lint 警告说明
+
+35 条 warning 主要来自 effect 内同步 setState、effect dependency、Fast Refresh 导出方式和 TanStack “incompatible library” 提示。它们目前没有阻断构建，但不能长期作为固定基线忽略。应逐条分类为：真实闭包/依赖风险、架构性 false positive、允许但需注释的例外；目标是新代码不增加 warning，并为现存 warning 建立清理清单。
+
+### 9.3 依赖安全审计未完成
+
+`npm.cmd audit --omit=dev --json` 因 npm registry TLS 连接在建立前终止而失败。因此本报告**不能声明依赖无漏洞**。应在网络可用或组织镜像源上重新执行，并保留 lockfile 对应的 JSON 结果；若发布桌面安装包，还应补 Rust 依赖审计与许可证检查。
+
+## 10. 未验证的真实环境边界
+
+以下项目均为 **U**，必须在隔离测试账号、测试任务和可回收资源上验证：
+
+- 真实登录、`userinfo`、token 过期与 `/user/refresh_token` 行为。
+- 任务创建、编辑能力边界、释放、删除、批量操作和错误码映射。
+- 分片上传状态接口、0B 文件、真实断点恢复、上传完成后的列表一致性。
+- Grafana iframe/外链的认证、CSP、`var-pod` 和时间范围行为。
+- WebSSH、应用内 SSH、系统终端、VS Code Remote-SSH、主机指纹变更与 SFTP 大文件。
+- 系统通知权限在 Windows 实机的拒绝、恢复、托盘和后台行为。
+- `npm.cmd run tauri:build` 生成的实际安装包、签名、升级和卸载数据保留。
+- Android 生成工程和真实设备行为；当前产品优先级为桌面，不应由“工程目录存在”推断移动端可发布。
+
+建议建立单独的 `LIVE_VALIDATION.md` 或发布检查单，记录时间、应用版本、API 环境、脱敏账号、测试资源、预期、实际和清理结果。任何真实凭据和 token 都不得进入仓库或测试快照。
+
+## 11. 分阶段整改路线图
+
+### Phase 0：发布阻断与调度正确性
+
+1. **SEC-01**：提供 HTTPS/WSS 或可审计的加密隧道，并在生产构建阻断非本机明文 API。
+2. **SCH-01**：替换 cron 解析，修正 weekly/DOM/DOW/时区语义，增加未来执行预览和表驱动测试。
+3. **SCH-02**：引入 execution key、运行 lease、结果对账与故障注入测试。
+4. **BAK-01**：拆分普通备份与凭据迁移，统一 secureStorage 的导入导出契约。
+
+**阶段出口**：安全链路可证明；所有 recurrence 反例通过；任意故障点重启不重复创建；凭据备份承诺与实际 round-trip 一致。
+
+### Phase 1：持久化与 mutation 安全
+
+1. **UPL-01 / UPL-02**：重建 checkpoint 与队列结果模型，覆盖硬退出、稀疏分片和部分失败。
+2. **STO-01**：确定 Tauri 本地数据权威源，加入 fallback 迁移与冲突测试。
+3. **CLI-01**：计划创建统一 dry-run/`--yes`/`confirm: true` 语义。
+4. **DAT-01**：Node 存储采用原子写和跨进程并发控制，评估 SQLite。
+
+**阶段出口**：崩溃、IPC 恢复和双进程并发均不丢数据；所有 mutation 无确认不落盘、不触发远端副作用。
+
+### Phase 2：大文件、轮询与交互质量
+
+1. **IO-01**：桌面 HTTP/SFTP 流式传输、取消、临时文件和恢复。
+2. **POL-01 / PERF-01**：活动任务增量轮询、后台退避、请求取消和 query key 统一。
+3. **UX-01 / A11Y-01**：修复 320/375px 溢出，补齐表单、Tabs、范围控件和图表语义。
+4. **UX-02 / UX-03 / AUTH-01 / TERM-01**：完善键盘模型、dirty guard、任务表效率、密码生命周期和终端回滚策略。
+
+**阶段出口**：5GB 文件传输 renderer 内存近似恒定；5000 任务后台请求量有上限；关键页面通过键盘/读屏冒烟和窄屏截图回归。
+
+### Phase 3：工程治理与分发成本
+
+1. **ARCH-01**：按领域拆分超大模块，增加调度、上传、存储、备份和桌面 E2E 覆盖。
+2. 启用脱敏的生产滚动日志和可导出的诊断包。
+3. **PKG-01**：合并或共享 Node sidecar runtime，建立安装包体积预算。
+4. 恢复 npm/Rust 依赖安全审计并纳入发布门禁。
+
+**阶段出口**：核心链路有覆盖门槛与桌面冒烟测试；生产故障可定位；安装包和更新体积有稳定预算。
+
+## 12. 复审验收标准
+
+下次复审至少应满足：
+
+- 所有 P0 清零，P1 有代码修复、自动化回归和迁移说明，不以“暂未复现”关闭。
+- 生产 API/WSS 全链路加密，应用拒绝不安全的远程 HTTP 配置。
+- cron/weekly 在时区、DST、星期与 step 表达式测试中结果正确，调度崩溃恢复不会重复创建。
+- 普通备份和凭据备份分别 round-trip；错误口令、旧版本和部分损坏均可恢复或明确拒绝。
+- 上传 checkpoint 在硬退出后可恢复，稀疏分片不会错位，部分失败不会显示总体成功。
+- Tauri fallback 与 Node 多进程写在故障注入下保持一致且不产生截断文件。
+- 5GB 下载、SFTP 上传/下载的 renderer 与 Rust 峰值内存受固定 buffer 约束。
+- 任务通知在 5000 条数据规模下有请求/耗时预算，窗口后台时显著退避。
+- 320、375、768、1024 和常用桌面窗口尺寸无非预期整页横向滚动。
+- 关键页面完成键盘、焦点恢复、accessible name、Tabs、图表替代信息检查。
+- `typecheck`、`typecheck:tools`、`lint`、测试、`build:desktop`、`cargo check/test`、依赖审计和实际 `tauri:build` 全部有可追溯结果。
+
+## 13. 最终结论
+
+EasyConsole 的基础架构方向和功能覆盖已经足以支撑正式产品化，当前也保留了不少值得继续沿用的工程实践：多运行时适配边界、共享 API 层、桌面优先能力、可理解的状态 UI、设计 token、错误映射和较好的纯逻辑测试基础。
+
+下一阶段不应优先继续扩张页面数量，而应把现有核心能力从“可操作”提升为“结果可信”：先保证传输安全和调度不重复，再保证本地数据、断点续传和跨进程写入不会丢失，随后解决大文件与后台轮询的规模问题，最后补齐可访问性、E2E、生产诊断和安装体积治理。完成 Phase 0 与 Phase 1 后，项目才具备进入真实账号受控试运行的稳健基础。

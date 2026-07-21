@@ -1,5 +1,14 @@
 import { lazy, Suspense, useEffect } from "react";
-import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import {
+  Navigate,
+  Outlet,
+  Route,
+  createBrowserRouter,
+  createHashRouter,
+  createRoutesFromElements,
+  useNavigate,
+} from "react-router-dom";
+import { isTauri } from "@tauri-apps/api/core";
 
 import { AppShell } from "./components/AppShell";
 import { AppUpdateDialog } from "./components/AppUpdateDialog";
@@ -92,47 +101,56 @@ const TaskTemplatesPage = lazy(() => import("./pages/TaskTemplatesPage").then((m
 const TasksPage = lazy(() => import("./pages/TasksPage").then((module) => ({ default: module.TasksPage })));
 const TaskDetailPage = lazy(() => import("./pages/TaskDetailPage").then((module) => ({ default: module.TaskDetailPage })));
 
-export function App() {
+function AppRoot() {
   return (
     <ToastProvider>
       <DownloadQueueProvider>
         <CommitQueueProvider>
-        <AppUpdateProvider>
-          <ErrorBoundary showHomeInFallback={false}>
-          <Suspense fallback={<LoadingState />}>
-            <DeepLinkHandler />
-            <Routes>
-              <Route path="/tray-menu" element={<TrayMenu />} />
-              <Route path="/ssh-terminal" element={<SshTerminalPage />} />
-              <Route path="/login" element={<LoginPage />} />
-              <Route path="/login/settings" element={<SettingsPage standalone />} />
-              <Route
-                path="/"
-                element={
-                  <ProtectedRoute>
-                    <AppShell />
-                  </ProtectedRoute>
-                }
-              >
-                <Route index element={<Navigate to="/dashboard" replace />} />
-                <Route path="dashboard" element={<DashboardPage />} />
-                <Route path="tasks" element={<TasksPage />} />
-                <Route path="tasks/:id" element={<TaskDetailPage />} />
-                <Route path="scheduled-tasks" element={<ScheduledTasksPage />} />
-                <Route path="task-templates" element={<TaskTemplatesPage />} />
-                <Route path="storage" element={<StoragePage />} />
-                <Route path="images" element={<ImagesPage />} />
-                <Route path="run-logs" element={<RunLogsPage />} />
-                <Route path="settings" element={<SettingsPage />} />
-              </Route>
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-            <AppUpdateDialog />
-          </Suspense>
-          </ErrorBoundary>
-        </AppUpdateProvider>
+          <AppUpdateProvider>
+            <ErrorBoundary showHomeInFallback={false}>
+              <Suspense fallback={<LoadingState />}>
+                <DeepLinkHandler />
+                <Outlet />
+                <AppUpdateDialog />
+              </Suspense>
+            </ErrorBoundary>
+          </AppUpdateProvider>
         </CommitQueueProvider>
       </DownloadQueueProvider>
     </ToastProvider>
+  );
+}
+
+export function createAppRouter() {
+  const createRouter = isTauri() ? createHashRouter : createBrowserRouter;
+  return createRouter(
+    createRoutesFromElements(
+      <Route element={<AppRoot />}>
+        <Route path="/tray-menu" element={<TrayMenu />} />
+        <Route path="/ssh-terminal" element={<SshTerminalPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/login/settings" element={<SettingsPage standalone />} />
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute>
+              <AppShell />
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<Navigate to="/dashboard" replace />} />
+          <Route path="dashboard" element={<DashboardPage />} />
+          <Route path="tasks" element={<TasksPage />} />
+          <Route path="tasks/:id" element={<TaskDetailPage />} />
+          <Route path="scheduled-tasks" element={<ScheduledTasksPage />} />
+          <Route path="task-templates" element={<TaskTemplatesPage />} />
+          <Route path="storage" element={<StoragePage />} />
+          <Route path="images" element={<ImagesPage />} />
+          <Route path="run-logs" element={<RunLogsPage />} />
+          <Route path="settings" element={<SettingsPage />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Route>,
+    ),
   );
 }

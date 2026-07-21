@@ -82,7 +82,8 @@ function createFakeContext(overrides: Record<string, unknown> = {}) {
       apiBaseUrl: "http://host/api",
       token: null,
       configPath: "config.json",
-      env: { apiBaseUrl: false, token: false },
+      allowInsecureHttp: true,
+      env: { apiBaseUrl: false, token: false, allowInsecureHttp: false },
     },
     runLogPath: "run-logs.json",
     runLogStorage: memoryStorage(),
@@ -354,13 +355,25 @@ describe("easy-console MCP tools", () => {
     expect(result).toMatchObject({ dryRun: true, action: "schedule.delete" });
   });
 
-  it("creates a local scheduled task via schedule_create", async () => {
+  it("returns dry-run for schedule_create without confirm", async () => {
     const result = await invokeMcpToolDefinition(getTool("easyconsole_schedule_create"), createFakeContext(), {
       name: "my-schedule",
       scheduleTime: "2026-12-31T23:59:59.000Z",
       payload: { name: "scheduled-task" },
     });
-    expect(result).toMatchObject({ name: "my-schedule", status: "pending" });
+    expect(result).toMatchObject({ dryRun: true, action: "schedule.create" });
+  });
+
+  it("creates a local scheduled task when confirm=true", async () => {
+    const context = createFakeContext();
+    const result = await invokeMcpToolDefinition(getTool("easyconsole_schedule_create"), context, {
+      name: "my-schedule",
+      scheduleTime: "2026-12-31T23:59:59.000Z",
+      payload: { name: "scheduled-task" },
+      confirm: true,
+    });
+    expect(result).toMatchObject({ dryRun: false, action: "schedule.create" });
+    expect(result).toMatchObject({ result: { name: "my-schedule", status: "pending" } });
   });
 
   it("returns dry-run for backup_import without confirm", async () => {

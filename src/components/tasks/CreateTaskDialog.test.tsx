@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -50,11 +51,20 @@ import { CreateTaskDialog } from "./CreateTaskDialog";
 
 function renderDialog(props?: Partial<React.ComponentProps<typeof CreateTaskDialog>>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <CreateTaskDialog open onClose={vi.fn()} {...props} />
-    </QueryClientProvider>,
+  const router = createMemoryRouter(
+    [
+      {
+        path: "*",
+        element: (
+          <QueryClientProvider client={client}>
+            <CreateTaskDialog open onClose={vi.fn()} {...props} />
+          </QueryClientProvider>
+        ),
+      },
+    ],
+    { initialEntries: ["/"] },
   );
+  return render(<RouterProvider router={router} />);
 }
 
 describe("CreateTaskDialog", () => {

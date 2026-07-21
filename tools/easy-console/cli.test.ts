@@ -77,7 +77,8 @@ function createFakeContext(overrides: Record<string, unknown> = {}) {
       apiBaseUrl: "http://host/api",
       token: null,
       configPath: "config.json",
-      env: { apiBaseUrl: false, token: false },
+      allowInsecureHttp: true,
+      env: { apiBaseUrl: false, token: false, allowInsecureHttp: false },
     },
     runLogPath: "run-logs.json",
     runLogStorage: memoryStorage(),
@@ -486,7 +487,7 @@ describe("easy-console cli", () => {
     expect(JSON.parse(resume.stdout).data).toMatchObject({ dryRun: true, action: "schedule.resume" });
   });
 
-  it("creates a local scheduled task", async () => {
+  it("returns dry-run for schedule create without --yes", async () => {
     const result = await runCli([
       "--json",
       "schedule",
@@ -499,7 +500,25 @@ describe("easy-console cli", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    const payload = JSON.parse(result.stdout) as { data: { name: string; status: string } };
-    expect(payload.data).toMatchObject({ name: "my-schedule", status: "pending" });
+    const payload = JSON.parse(result.stdout) as { data: { dryRun: boolean; action: string } };
+    expect(payload.data).toMatchObject({ dryRun: true, action: "schedule.create" });
+  });
+
+  it("creates a local scheduled task with --yes", async () => {
+    const result = await runCli([
+      "--json",
+      "schedule",
+      "create",
+      "--yes",
+      "--name", "my-schedule",
+      "--schedule-time", "2026-12-31T23:59:59.000Z",
+      "--payload-json", JSON.stringify({ name: "scheduled-task" }),
+    ], {
+      createContext: async () => createFakeContext(),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout) as { data: { dryRun: boolean; result: { name: string; status: string } } };
+    expect(payload.data).toMatchObject({ dryRun: false, result: { name: "my-schedule", status: "pending" } });
   });
 });

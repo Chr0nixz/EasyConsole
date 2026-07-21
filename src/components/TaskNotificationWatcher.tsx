@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMatch } from "react-router-dom";
 
 import { instanceApi } from "../lib/api";
@@ -7,7 +7,11 @@ import { getRuntimeSettings } from "../lib/app-settings";
 import { i18nText } from "../lib/i18n-text";
 import { browserRuntime } from "../lib/runtime";
 import { getImportantTaskStatusNotification, getTaskNotificationId, type ImportantTaskStatusNotification } from "../lib/task-status-notifications";
-import { TASK_SNAPSHOT_POLL_INTERVAL, taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
+import {
+  nextNotificationPollInterval,
+  TASK_SNAPSHOT_POLL_INTERVAL,
+  taskSnapshotQueryOptions,
+} from "../lib/task-snapshot-query";
 import type { TaskStatus } from "../lib/types";
 import { useAuth } from "../lib/use-auth";
 import { useToast } from "../lib/use-toast";
@@ -18,18 +22,34 @@ export function TaskNotificationWatcher() {
   const initializedRef = useRef(false);
   const statusSnapshotRef = useRef<Map<string, TaskStatus | undefined>>(new Map());
   const permissionWarningRef = useRef<"permission-denied" | "unsupported" | null>(null);
+  const [hidden, setHidden] = useState(() => typeof document !== "undefined" && document.visibilityState === "hidden");
+  const [pollInterval, setPollInterval] = useState(TASK_SNAPSHOT_POLL_INTERVAL);
 
-  // When the user is on the Tasks page, TasksPage polls the same endpoint and
-  // pushes its data into our query cache via setQueryData. Suspend our own
-  // polling to avoid duplicate requests.
   const onTasksPage = Boolean(useMatch("/tasks"));
+
+  useEffect(() => {
+    const onVisibility = () => {
+      const nextHidden = document.visibilityState === "hidden";
+      setHidden(nextHidden);
+      setPollInterval((current) => (nextHidden ? nextNotificationPollInterval(current, true) : TASK_SNAPSHOT_POLL_INTERVAL));
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
 
   const query = useQuery({
     ...taskSnapshotQueryOptions(instanceApi),
     enabled: Boolean(auth.token),
-    refetchInterval: onTasksPage ? false : TASK_SNAPSHOT_POLL_INTERVAL,
+    refetchInterval: onTasksPage ? false : pollInterval,
     refetchIntervalInBackground: true,
   });
+
+  useEffect(() => {
+    if (onTasksPage || !query.isFetched) return;
+    if (hidden) {
+      setPollInterval((current) => nextNotificationPollInterval(current, true));
+    }
+  }, [hidden, onTasksPage, query.dataUpdatedAt, query.isFetched]);
 
   const showInAppNotification = useCallback((notification: ImportantTaskStatusNotification) => {
     const notify = notification.kind === "failure" ? toast.error : toast.success;

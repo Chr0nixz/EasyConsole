@@ -89,12 +89,30 @@ const tauriStorageCache = new Map<string, string | null>();
 const tauriStorageAdapter: RuntimeStorage = {
   async get(key) {
     if (tauriStorageCache.has(key)) {
-      return tauriStorageCache.get(key) ?? null;
+      const cached = tauriStorageCache.get(key) ?? null;
+      if (cached !== null) return cached;
+      // Cached null may be from a prior IPC miss while fallback still holds data.
     }
     try {
       const value = await invokeTauriCommand<string | null>("runtime_storage_get", { key });
-      tauriStorageCache.set(key, value);
-      return value;
+      if (value !== null && value !== undefined) {
+        tauriStorageCache.set(key, value);
+        return value;
+      }
+      // IPC succeeded with null — check browser fallback and migrate back to native.
+      const fallback = await localStorageAdapter.get(key);
+      if (fallback !== null) {
+        try {
+          await invokeTauriCommand("runtime_storage_set", { key, value: fallback });
+          await localStorageAdapter.remove(key);
+        } catch (migrateError) {
+          console.warn("Tauri storage migrate-from-fallback failed.", migrateError);
+        }
+        tauriStorageCache.set(key, fallback);
+        return fallback;
+      }
+      tauriStorageCache.set(key, null);
+      return null;
     } catch (error) {
       console.warn("Tauri storage get failed, falling back to localStorage.", error);
       return localStorageAdapter.get(key);
@@ -104,15 +122,19 @@ const tauriStorageAdapter: RuntimeStorage = {
     tauriStorageCache.set(key, value);
     try {
       await invokeTauriCommand("runtime_storage_set", { key, value });
+      // Clear stale fallback copy after successful native write.
+      await localStorageAdapter.remove(key).catch(() => undefined);
     } catch (error) {
       console.warn("Tauri storage set failed, falling back to localStorage.", error);
       await localStorageAdapter.set(key, value);
     }
   },
   async remove(key) {
+    // Tombstone in cache so a later get does not revive stale fallback before native delete lands.
     tauriStorageCache.set(key, null);
     try {
       await invokeTauriCommand("runtime_storage_remove", { key });
+      await localStorageAdapter.remove(key);
     } catch (error) {
       console.warn("Tauri storage remove failed, falling back to localStorage.", error);
       await localStorageAdapter.remove(key);

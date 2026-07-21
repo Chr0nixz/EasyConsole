@@ -5,7 +5,13 @@ import { instanceApi } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { appendRunLog } from "../lib/run-logs";
 import { browserRuntime } from "../lib/runtime";
-import { isScheduleDue, mutateScheduledTasks, resetStaleRunningTasks, scheduleNextRun, sortScheduledTasks, updateScheduledTask } from "../lib/scheduled-tasks";
+import {
+  beginScheduledExecution,
+  completeScheduledExecution,
+  failScheduledExecution,
+  makeExecutionKey,
+} from "../lib/schedule-execution";
+import { isScheduleDue, mutateScheduledTasks, resetStaleRunningTasks, sortScheduledTasks, updateScheduledTask } from "../lib/scheduled-tasks";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import type { ScheduledTask } from "../lib/types";
 import { errorMessage } from "../lib/use-run-logger";
@@ -21,6 +27,13 @@ type RuntimeLockManager = {
     callback: () => Promise<void>,
   ): Promise<void>;
 };
+
+function extractRemoteTaskId(result: unknown): string | undefined {
+  if (!result || typeof result !== "object") return undefined;
+  const record = result as Record<string, unknown>;
+  const id = record.id ?? record.task_id ?? record.taskId;
+  return id === undefined || id === null ? undefined : String(id);
+}
 
 function startDesktopBackgroundLock() {
   if (!browserRuntime.isDesktop || typeof navigator === "undefined") return () => undefined;
@@ -60,17 +73,29 @@ export function BackgroundScheduledTaskRunner() {
       if (disposed || runningRef.current) return;
       runningRef.current = true;
       try {
-        // Reset tasks stuck in "running" (e.g. from a previous crash) before evaluating.
         const items = await persistUpdate((current) => resetStaleRunningTasks(current));
         const due = items.filter((item) => isScheduleDue(item));
         for (const task of due) {
           if (disposed) return;
-          await persistUpdate((current) => updateScheduledTask(current, { ...task, status: "running", lastError: undefined }));
+          const executionKey = makeExecutionKey(task);
+          // Skip if this execution key already has a remote task recorded (idempotent).
+          if (task.lastRemoteTaskId && task.executionKey === executionKey) {
+            continue;
+          }
+          const leased = beginScheduledExecution(task);
+          await persistUpdate((current) => updateScheduledTask(current, leased));
           try {
-            await instanceApi.createTask(task.payload);
-            const completedTask: ScheduledTask = { ...task, status: "done", lastRunAt: new Date().toISOString(), lastError: undefined };
-            const nextTask = scheduleNextRun(completedTask);
-            await persistUpdate((current) => updateScheduledTask(current, nextTask ?? completedTask));
+            const result = await instanceApi.createTask(task.payload);
+            const remoteTaskId = extractRemoteTaskId(result);
+            // Persist remote id before advancing scheduleTime so a crash mid-way is needs_review, not replay.
+            const withRemote: ScheduledTask = {
+              ...leased,
+              lastRemoteTaskId: remoteTaskId,
+              lastRunAt: new Date().toISOString(),
+            };
+            await persistUpdate((current) => updateScheduledTask(current, withRemote));
+            const nextTask = completeScheduledExecution(withRemote, remoteTaskId);
+            await persistUpdate((current) => updateScheduledTask(current, nextTask));
             invalidateTaskQueries(queryClient);
             toast.success(text("定时任务已执行", "Scheduled task executed"), task.name);
             void appendRunLog(browserRuntime.storage, {
@@ -82,14 +107,15 @@ export function BackgroundScheduledTaskRunner() {
               title: text("定时任务已执行", "Scheduled task executed"),
               targetName: task.name,
               targetId: task.id,
+              metadata: { executionKey, remoteTaskId },
             });
           } catch (error) {
-            await persistUpdate((current) => updateScheduledTask(current, {
-              ...task,
-              status: "failed",
-              lastRunAt: new Date().toISOString(),
-              lastError: error instanceof Error ? error.message : text("执行失败", "Execution failed"),
-            }));
+            await persistUpdate((current) =>
+              updateScheduledTask(
+                current,
+                failScheduledExecution(leased, error instanceof Error ? error.message : text("执行失败", "Execution failed")),
+              ),
+            );
             toast.error(text("定时任务执行失败", "Scheduled task execution failed"), `${task.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
             void appendRunLog(browserRuntime.storage, {
               source: "scheduled-task",
@@ -101,6 +127,7 @@ export function BackgroundScheduledTaskRunner() {
               targetName: task.name,
               targetId: task.id,
               error: errorMessage(error, text("定时任务执行失败", "Scheduled task execution failed")),
+              metadata: { executionKey },
             });
           }
         }

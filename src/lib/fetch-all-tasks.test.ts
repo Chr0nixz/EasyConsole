@@ -47,5 +47,27 @@ describe("fetchAllTasks", () => {
 
     expect(tasks).toHaveBeenCalledTimes(3);
     expect(result.items).toHaveLength(30);
+    expect(result.pagesFetched).toBe(3);
+  });
+
+  it("stops when AbortSignal aborts", async () => {
+    const controller = new AbortController();
+    const tasks = vi.fn(async () => {
+      controller.abort();
+      return { items: makeTasks(1, 10), total: 1000, raw: null };
+    });
+
+    await expect(fetchAllTasks({ tasks }, { pageSize: 10, maxPages: 5, signal: controller.signal })).rejects.toThrow();
+  });
+
+  it("stops when time budget is exceeded", async () => {
+    const tasks = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { items: makeTasks(1, 10), total: 1000, raw: null };
+    });
+
+    const result = await fetchAllTasks({ tasks }, { pageSize: 10, maxPages: 50, timeBudgetMs: 1 });
+    expect(result.timedOut).toBe(true);
+    expect(result.pagesFetched).toBeLessThanOrEqual(2);
   });
 });

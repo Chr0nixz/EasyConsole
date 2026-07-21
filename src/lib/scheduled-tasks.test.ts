@@ -75,6 +75,7 @@ describe("scheduled tasks", () => {
       status: "pending",
       lastError: undefined,
     });
+    expect(resumeScheduledTask(makeTask({ status: "needs_review", lastError: "lease" })).status).toBe("pending");
   });
 
   it("keeps active schedules before completed schedules", () => {

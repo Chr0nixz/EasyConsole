@@ -8,6 +8,7 @@ import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
 import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
 import { Button, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
+import { queryKeys } from "../lib/query-keys";
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { parsePositivePrice } from "../lib/resource-price";
@@ -24,7 +25,7 @@ import {
   sortScheduledTasks,
   updateScheduledTask,
 } from "../lib/scheduled-tasks";
-import { describeRecurrence } from "../lib/task-recurrence";
+import { describeRecurrence, RecurrenceValidationError, validateRecurrence } from "../lib/task-recurrence";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, ScheduledTask, ScheduledTaskStatus, TaskRecurrence, TaskRecurrenceType } from "../lib/types";
 import { useAuth } from "../lib/use-auth";
@@ -45,6 +46,7 @@ const statusText: Record<ScheduledTaskStatus, { zh: string; en: string }> = {
   done: { zh: "已完成", en: "Done" },
   failed: { zh: "失败", en: "Failed" },
   paused: { zh: "已暂停", en: "Paused" },
+  needs_review: { zh: "待确认", en: "Needs review" },
 };
 
 function getImageOptionLabel(image: ImageItem) {
@@ -80,6 +82,7 @@ function statusClass(status: ScheduledTaskStatus) {
   if (status === "done") return "bg-app-successSoft text-app-success ring-app-successRing";
   if (status === "failed") return "bg-app-dangerSoft text-app-danger ring-app-dangerRing";
   if (status === "running") return "bg-app-warningSoft text-app-warning ring-app-warningRing";
+  if (status === "needs_review") return "bg-app-warningSoft text-app-warning ring-app-warningRing";
   if (status === "paused") return "bg-app-panel text-app-muted ring-app-border";
   return "bg-app-accentSoft text-app-accent ring-app-accent/20";
 }
@@ -126,9 +129,16 @@ export function ScheduledTasksPage() {
   const [recurrenceType, setRecurrenceType] = useState<TaskRecurrenceType>("once");
   const [recurrenceIntervalSec, setRecurrenceIntervalSec] = useState("3600");
   const [recurrenceCron, setRecurrenceCron] = useState("");
+  const [recurrenceWeekdays, setRecurrenceWeekdays] = useState<number[]>([1]);
 
-  const images = useQuery({ queryKey: ["images", "scheduled-task"], queryFn: () => imageApi.list({ page: 1, page_size: 100 }) });
-  const systemImages = useQuery({ queryKey: ["images", "system", "scheduled-task"], queryFn: () => imageApi.system({}) });
+  const images = useQuery({
+    queryKey: queryKeys.images.list(),
+    queryFn: ({ signal }) => imageApi.list({ page: 1, page_size: 100 }, { signal }),
+  });
+  const systemImages = useQuery({
+    queryKey: queryKeys.images.system(),
+    queryFn: ({ signal }) => imageApi.system({}, { signal }),
+  });
   const imageOptions = useMemo(() => [...(images.data?.items ?? []), ...(systemImages.data?.items ?? [])], [images.data, systemImages.data]);
 
   const fieldErrors = useMemo(() => {
@@ -200,6 +210,7 @@ export function ScheduledTasksPage() {
     setRecurrenceType("once");
     setRecurrenceIntervalSec("3600");
     setRecurrenceCron("");
+    setRecurrenceWeekdays([1]);
     setFormError(null);
     setStoragePickerTarget(null);
     resetTouched();
@@ -227,6 +238,7 @@ export function ScheduledTasksPage() {
     setRecurrenceType(recurrence?.type ?? "once");
     setRecurrenceIntervalSec(String(recurrence?.intervalSec ?? 3600));
     setRecurrenceCron(recurrence?.cron ?? "");
+    setRecurrenceWeekdays(recurrence?.weekdays?.length ? [...recurrence.weekdays] : [1]);
     setFormError(null);
     setStoragePickerTarget(null);
     resetTouched();
@@ -309,9 +321,26 @@ export function ScheduledTasksPage() {
         const sec = parseInt(recurrenceIntervalSec, 10);
         if (Number.isFinite(sec) && sec > 0) recurrence = { type: "interval", intervalSec: sec };
       } else if (recurrenceType === "cron") {
-        if (recurrenceCron.trim()) recurrence = { type: "cron", cron: recurrenceCron.trim() };
-      } else if (recurrenceType !== "once") {
-        recurrence = { type: recurrenceType };
+        if (!recurrenceCron.trim()) {
+          setFormError(text("请填写 Cron 表达式", "Enter a cron expression"));
+          return null;
+        }
+        recurrence = { type: "cron", cron: recurrenceCron.trim() };
+      } else if (recurrenceType === "weekly") {
+        recurrence = { type: "weekly", weekdays: [...recurrenceWeekdays].sort() };
+      } else if (recurrenceType === "daily") {
+        recurrence = { type: "daily" };
+      }
+
+      try {
+        validateRecurrence(recurrence);
+      } catch (error) {
+        const message =
+          error instanceof RecurrenceValidationError
+            ? error.message
+            : text("重复规则无效", "Invalid recurrence rule");
+        setFormError(message);
+        return null;
       }
 
       if (editingId) {
@@ -482,7 +511,7 @@ export function ScheduledTasksPage() {
             {text("暂停", "Pause")}
           </Button>
         ) : null}
-        {item.status === "paused" || item.status === "failed" ? (
+        {item.status === "paused" || item.status === "failed" || item.status === "needs_review" ? (
           <Button
             className="h-8 px-2"
             title={text("恢复", "Resume")}
@@ -583,6 +612,40 @@ export function ScheduledTasksPage() {
                 <option value="cron">{text("Cron 表达式", "Cron expression")}</option>
               </Select>
             </label>
+            {recurrenceType === "weekly" && (
+              <div className="block text-sm md:col-span-3">
+                <span className="mb-1 block text-app-muted">{text("重复星期", "Weekdays")}</span>
+                <div className="flex flex-wrap gap-2">
+                  {(
+                    [
+                      [0, text("日", "Sun")],
+                      [1, text("一", "Mon")],
+                      [2, text("二", "Tue")],
+                      [3, text("三", "Wed")],
+                      [4, text("四", "Thu")],
+                      [5, text("五", "Fri")],
+                      [6, text("六", "Sat")],
+                    ] as const
+                  ).map(([day, label]) => {
+                    const checked = recurrenceWeekdays.includes(day);
+                    return (
+                      <label key={day} className="inline-flex items-center gap-1.5 rounded-md border border-app-border bg-app-panel px-2.5 py-1.5 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setRecurrenceWeekdays((current) =>
+                              checked ? current.filter((value) => value !== day) : [...current, day].sort(),
+                            );
+                          }}
+                        />
+                        {label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {recurrenceType === "interval" && (
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("间隔秒数", "Interval (seconds)")}</span>
@@ -590,9 +653,10 @@ export function ScheduledTasksPage() {
               </label>
             )}
             {recurrenceType === "cron" && (
-              <label className="block text-sm">
+              <label className="block text-sm md:col-span-2">
                 <span className="mb-1 block text-app-muted">{text("Cron 表达式", "Cron expression")}</span>
-                <Input className="w-full" placeholder="*/30 * * * *（仅支持 *、数字、逗号、连字符）" value={recurrenceCron} onChange={(event) => setRecurrenceCron(event.target.value)} />
+                <Input className="w-full" placeholder="*/30 * * * *" value={recurrenceCron} onChange={(event) => setRecurrenceCron(event.target.value)} />
+                <span className="mt-1 block text-xs text-app-muted">{text("支持 step/范围/列表，例如 */30 * * * *", "Supports step/range/list, e.g. */30 * * * *")}</span>
               </label>
             )}
             <label className="block text-sm">

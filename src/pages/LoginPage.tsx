@@ -1,10 +1,11 @@
-import { LockKeyhole, Server, Trash2, UserCheck, UserRoundPlus } from "lucide-react";
+import { Eye, EyeOff, LockKeyhole, Server, Trash2, UserCheck, UserRoundPlus } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { LoadingState } from "../components/DataState";
 import { LanguageSwitch } from "../components/LanguageSwitch";
 import { Button, Input } from "../components/ui";
+import { getTransportBlockReason } from "../lib/api";
 import { getSavedAccountLabel } from "../lib/saved-accounts";
 import { useI18n } from "../lib/i18n";
 import { useConfirmAction } from "../lib/use-confirm-action";
@@ -37,13 +38,15 @@ export function LoginPage() {
   const confirm = useConfirmAction();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [rememberPassword, setRememberPassword] = useState(true);
+  const [rememberPassword, setRememberPassword] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [savedLoginId, setSavedLoginId] = useState<string | null>(null);
   const [showPasswordForm, setShowPasswordForm] = useState(false);
   const hasSavedAccounts = auth.savedAccounts.length > 0;
   const showSavedAccounts = hasSavedAccounts && !showPasswordForm;
+  const transportBlocked = Boolean(getTransportBlockReason());
 
   if (!auth.ready || auth.restoringSession) return <LoadingState label={t("login.restoreSession")} />;
   if (auth.token) return <Navigate to="/dashboard" replace />;
@@ -56,6 +59,10 @@ export function LoginPage() {
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setError(null);
+    if (getTransportBlockReason()) {
+      setError(t("login.transportBlocked"));
+      return;
+    }
     setLoading(true);
     try {
       await auth.login(username, password, { rememberPassword });
@@ -70,6 +77,10 @@ export function LoginPage() {
 
   async function onSavedLogin(accountId: string) {
     setError(null);
+    if (getTransportBlockReason()) {
+      setError(t("login.transportBlocked"));
+      return;
+    }
     setSavedLoginId(accountId);
     try {
       await auth.loginSaved(accountId);
@@ -135,6 +146,9 @@ export function LoginPage() {
             <p className="mt-1 text-sm text-app-muted">
               {showSavedAccounts ? t("login.chooseSavedDescription") : t("login.passwordDescription")}
             </p>
+            {transportBlocked ? (
+              <div className="mt-3 rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{t("login.transportBlocked")}</div>
+            ) : null}
           </div>
 
           {showSavedAccounts ? (
@@ -178,7 +192,7 @@ export function LoginPage() {
                   setError(null);
                   setUsername("");
                   setPassword("");
-                  setRememberPassword(true);
+                  setRememberPassword(false);
                   setShowPasswordForm(true);
                 }}
                 type="button"
@@ -203,14 +217,25 @@ export function LoginPage() {
               </label>
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">{t("login.password")}</span>
-                <Input
-                  autoComplete="current-password"
-                  className="w-full"
-                  onChange={(event) => setPassword(event.target.value)}
-                  required
-                  type="password"
-                  value={password}
-                />
+                <div className="relative">
+                  <Input
+                    autoComplete="current-password"
+                    className="w-full pr-10"
+                    onChange={(event) => setPassword(event.target.value)}
+                    required
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                  />
+                  <button
+                    type="button"
+                    className="app-interactive absolute inset-y-0 right-0 flex w-10 items-center justify-center text-app-muted hover:text-app-text"
+                    aria-label={showPassword ? t("login.hidePassword") : t("login.showPassword")}
+                    aria-pressed={showPassword}
+                    onClick={() => setShowPassword((value) => !value)}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </label>
               <label className="flex items-center gap-2 text-xs text-app-muted">
                 <input

@@ -165,15 +165,47 @@ export function TaskDetailPage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-1 border-b border-app-border">
+      <div
+        className="flex flex-wrap gap-1 border-b border-app-border"
+        role="tablist"
+        aria-label={text("任务详情页签", "Task detail tabs")}
+        onKeyDown={(event) => {
+          const currentIndex = tabs.findIndex((item) => item.key === tab);
+          if (currentIndex < 0) return;
+          if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+            event.preventDefault();
+            const delta = event.key === "ArrowRight" ? 1 : -1;
+            const next = tabs[(currentIndex + delta + tabs.length) % tabs.length];
+            if (next) setTab(next.key);
+            const nextButton = event.currentTarget.querySelector<HTMLElement>(`[data-tab-key="${next?.key}"]`);
+            nextButton?.focus();
+          } else if (event.key === "Home") {
+            event.preventDefault();
+            setTab(tabs[0].key);
+            event.currentTarget.querySelector<HTMLElement>(`[data-tab-key="${tabs[0].key}"]`)?.focus();
+          } else if (event.key === "End") {
+            event.preventDefault();
+            const last = tabs[tabs.length - 1];
+            setTab(last.key);
+            event.currentTarget.querySelector<HTMLElement>(`[data-tab-key="${last.key}"]`)?.focus();
+          }
+        }}
+      >
         {tabs.map((tabItem) => {
           const Icon = tabItem.icon;
+          const selected = tab === tabItem.key;
           return (
             <button
               key={tabItem.key}
               type="button"
+              role="tab"
+              id={`task-detail-tab-${tabItem.key}`}
+              data-tab-key={tabItem.key}
+              aria-selected={selected}
+              aria-controls={`task-detail-panel-${tabItem.key}`}
+              tabIndex={selected ? 0 : -1}
               className={`app-interactive flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
-                tab === tabItem.key
+                selected
                   ? "border-app-accent text-app-accent"
                   : "border-transparent text-app-muted hover:text-app-text"
               }`}
@@ -187,18 +219,25 @@ export function TaskDetailPage() {
       </div>
 
       {tab === "monitor" && monitorUrl ? (
-        <>
+        <div role="tabpanel" id="task-detail-panel-monitor" aria-labelledby="task-detail-tab-monitor">
           {sparklineMetrics.length > 0 ? (
             <Panel className="p-4">
               <div className="mb-3 text-sm font-semibold text-app-text">{text("实时指标", "Live metrics")}</div>
               <div className="grid gap-4 sm:grid-cols-3">
                 {sparklineMetrics.map((metric) => {
                   const path = renderSparkline(metric.points);
+                  const min = Math.min(...metric.points);
+                  const max = Math.max(...metric.points);
+                  const summary = text(
+                    `${metric.label}：${metric.points.length} 个采样点，最低 ${min.toFixed(2)}，最高 ${max.toFixed(2)}。`,
+                    `${metric.label}: ${metric.points.length} samples, min ${min.toFixed(2)}, max ${max.toFixed(2)}.`,
+                  );
                   return (
                     <div key={metric.label}>
                       <div className="mb-1 text-xs text-app-muted">{metric.label}</div>
                       {path ? (
-                        <svg viewBox="0 0 200 40" className="h-10 w-full" preserveAspectRatio="none" role="img" aria-label={metric.label}>
+                        <svg viewBox="0 0 200 40" className="h-10 w-full" preserveAspectRatio="none" role="img" aria-label={summary}>
+                          <title>{summary}</title>
                           <path d={path} fill="none" stroke="var(--color-app-accent)" strokeWidth={1.5} />
                         </svg>
                       ) : null}
@@ -236,32 +275,42 @@ export function TaskDetailPage() {
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
             />
           </Panel>
-        </>
+        </div>
       ) : null}
 
       {tab === "monitor" && !monitorUrl ? (
-        <EmptyState title={text("无法生成监控链接", "Unable to generate monitor URL")} description={text("任务缺少必要的标识信息", "Task is missing required identifier fields")} />
+        <div role="tabpanel" id="task-detail-panel-monitor" aria-labelledby="task-detail-tab-monitor">
+          <EmptyState title={text("无法生成监控链接", "Unable to generate monitor URL")} description={text("任务缺少必要的标识信息", "Task is missing required identifier fields")} />
+        </div>
       ) : null}
 
       {tab === "raw" ? (
-        <Panel className="overflow-auto">
-          <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
-            {JSON.stringify(task, null, 2)}
-          </pre>
-        </Panel>
+        <div role="tabpanel" id="task-detail-panel-raw" aria-labelledby="task-detail-tab-raw">
+          <Panel className="overflow-auto">
+            <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
+              {JSON.stringify(task, null, 2)}
+            </pre>
+          </Panel>
+        </div>
       ) : null}
 
       {tab === "log" || tab === "ssh" ? (
-        <Panel className="p-4">
-          <EmptyState
-            title={tab === "log" ? text("点击下方按钮查看日志", "Click the button below to view logs") : text("点击下方按钮打开终端", "Click the button below to open terminal")}
-            action={
-              <Button onClick={() => (tab === "log" ? setLogOpen(true) : setTerminalOpen(true))}>
-                {tab === "log" ? text("查看日志", "View logs") : text("打开终端", "Open terminal")}
-              </Button>
-            }
-          />
-        </Panel>
+        <div
+          role="tabpanel"
+          id={`task-detail-panel-${tab}`}
+          aria-labelledby={`task-detail-tab-${tab}`}
+        >
+          <Panel className="p-4">
+            <EmptyState
+              title={tab === "log" ? text("点击下方按钮查看日志", "Click the button below to view logs") : text("点击下方按钮打开终端", "Click the button below to open terminal")}
+              action={
+                <Button onClick={() => (tab === "log" ? setLogOpen(true) : setTerminalOpen(true))}>
+                  {tab === "log" ? text("查看日志", "View logs") : text("打开终端", "Open terminal")}
+                </Button>
+              }
+            />
+          </Panel>
+        </div>
       ) : null}
 
       <Suspense fallback={null}>

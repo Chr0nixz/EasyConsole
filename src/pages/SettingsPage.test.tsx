@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ToastProvider } from "../components/Toast";
@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
     login: vi.fn(),
     loginSaved: vi.fn(),
     forgetSavedAccount: vi.fn(),
+    clearSavedPassword: vi.fn(),
     logout: vi.fn(),
     refreshUser: vi.fn(),
   },
@@ -37,6 +38,7 @@ vi.mock("../lib/api", () => ({
     changePassword: (...args: unknown[]) => mocks.changePassword(...args),
   },
   setApiBaseUrl: vi.fn(),
+  getTransportBlockReason: vi.fn(() => null),
 }));
 
 vi.mock("../lib/use-auth", () => ({
@@ -58,23 +60,32 @@ import { SettingsPage } from "./SettingsPage";
 
 function renderSettings() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(
-    <MemoryRouter>
-      <RunLoggerContext.Provider value={{ log: async () => undefined }}>
-        <ToastProvider>
-          <QueryClientProvider client={client}>
-            <SettingsPage />
-          </QueryClientProvider>
-        </ToastProvider>
-      </RunLoggerContext.Provider>
-    </MemoryRouter>,
+  const router = createMemoryRouter(
+    [
+      {
+        path: "/",
+        element: (
+          <RunLoggerContext.Provider value={{ log: async () => undefined }}>
+            <ToastProvider>
+              <QueryClientProvider client={client}>
+                <SettingsPage />
+              </QueryClientProvider>
+            </ToastProvider>
+          </RunLoggerContext.Provider>
+        ),
+      },
+    ],
+    { initialEntries: ["/"] },
   );
+  return render(<RouterProvider router={router} />);
 }
 
 describe("SettingsPage", () => {
   beforeEach(() => {
     mocks.changePassword.mockReset();
     mocks.changePassword.mockResolvedValue(undefined);
+    mocks.auth.clearSavedPassword.mockReset();
+    mocks.auth.clearSavedPassword.mockResolvedValue(undefined);
   });
 
   it("validates password fields before calling the API", async () => {
@@ -94,7 +105,7 @@ describe("SettingsPage", () => {
     expect(mocks.changePassword).not.toHaveBeenCalled();
   });
 
-  it("submits a matching password change", async () => {
+  it("submits a matching password change and clears saved ciphertext", async () => {
     renderSettings();
 
     const inputs = document.querySelectorAll<HTMLInputElement>('input[type="password"]');
@@ -110,6 +121,7 @@ describe("SettingsPage", () => {
         new_password: "new-secret",
       }),
     );
+    await waitFor(() => expect(mocks.auth.clearSavedPassword).toHaveBeenCalled());
     expect(await screen.findByText(/密码已修改|Password changed/)).toBeInTheDocument();
   });
 });

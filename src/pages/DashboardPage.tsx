@@ -76,6 +76,14 @@ export function DashboardPage() {
   }));
 
   const selectedRangeIndex = TIME_RANGES.indexOf(timeRange);
+  const runtimeSummary = text(
+    `运行时长对比：共 ${chartData.length} 个时间范围，当前选中 ${rangeLabel(timeRange, text)}，值为 ${formatSecondsDuration(runtimeValue, locale)}。极值约 ${formatSecondsDuration(Math.max(...chartData.map((d) => d.runtime), 0), locale)}。`,
+    `Runtime comparison: ${chartData.length} ranges; selected ${rangeLabel(timeRange, text)} is ${formatSecondsDuration(runtimeValue, locale)}. Peak about ${formatSecondsDuration(Math.max(...chartData.map((d) => d.runtime), 0), locale)}.`,
+  );
+  const costSummary = text(
+    `费用对比：共 ${chartData.length} 个时间范围，当前选中 ${rangeLabel(timeRange, text)}，值为 ${formatCost(costValue, locale)}。极值约 ${formatCost(Math.max(...chartData.map((d) => d.cost), 0), locale)}。`,
+    `Cost comparison: ${chartData.length} ranges; selected ${rangeLabel(timeRange, text)} is ${formatCost(costValue, locale)}. Peak about ${formatCost(Math.max(...chartData.map((d) => d.cost), 0), locale)}.`,
+  );
 
   if (consoleQuery.isLoading) return <LoadingState />;
   if (consoleQuery.isError) return <ErrorState error={consoleQuery.error} />;
@@ -83,11 +91,16 @@ export function DashboardPage() {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-1 rounded-md border border-app-border bg-app-surface p-0.5">
+        <div
+          className="flex items-center gap-1 rounded-md border border-app-border bg-app-surface p-0.5"
+          role="group"
+          aria-label={text("时间范围", "Time range")}
+        >
           {TIME_RANGES.map((range) => (
             <button
               key={range}
               type="button"
+              aria-pressed={timeRange === range}
               onClick={() => setTimeRange(range)}
               className={[
                 "app-interactive rounded px-3 py-1 text-xs font-medium",
@@ -135,7 +148,8 @@ export function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-2">
         <Panel className="p-4">
           <div className="mb-3 text-sm font-semibold text-app-text">{text("运行时长对比", "Runtime comparison")}</div>
-          <div className="h-48">
+          <div className="h-48" role="img" aria-label={runtimeSummary}>
+            <span className="sr-only">{runtimeSummary}</span>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
                 <XAxis dataKey="label" tick={{ fontSize: 12 }} stroke="currentColor" className="text-app-muted" />
@@ -156,7 +170,8 @@ export function DashboardPage() {
         </Panel>
         <Panel className="p-4">
           <div className="mb-3 text-sm font-semibold text-app-text">{text("费用对比", "Cost comparison")}</div>
-          <div className="h-48">
+          <div className="h-48" role="img" aria-label={costSummary}>
+            <span className="sr-only">{costSummary}</span>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
                 <XAxis dataKey="label" tick={{ fontSize: 12 }} stroke="currentColor" className="text-app-muted" />

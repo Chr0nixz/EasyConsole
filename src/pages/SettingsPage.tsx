@@ -28,7 +28,7 @@ import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState, type
 import { Link } from "react-router-dom";
 
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
-import { authApi, setApiBaseUrl } from "../lib/api";
+import { authApi, getTransportBlockReason, setApiBaseUrl } from "../lib/api";
 import {
   DEFAULT_APP_SETTINGS,
   DEFAULT_CUSTOM_COLORS,
@@ -70,9 +70,16 @@ import {
 import { decryptBackup, encryptBackup, isEncryptedBackup, type EncryptedBackup } from "../lib/backup-crypto";
 import { browserRuntime } from "../lib/runtime";
 import { useI18n, type TranslationKey } from "../lib/i18n";
+import {
+  isInsecureRemoteTransportUrl,
+  isTransportUrlAllowed,
+  shouldEnforceSecureRemoteTransport,
+} from "../lib/transport-security";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 import { useConfirmAction } from "../lib/use-confirm-action";
+import { queryKeys } from "../lib/query-keys";
+import { useUnsavedChanges } from "../lib/use-unsaved-changes";
 import type { KnownHostEntry, PortForwardRule, PortForwardType, SshHistoryEntry } from "../lib/types";
 
 function isHttpUrl(value: string) {
@@ -87,6 +94,14 @@ function isHttpUrl(value: string) {
 function validate(settings: AppSettings, t: (key: TranslationKey) => string) {
   if (!isHttpUrl(settings.apiBaseUrl)) return t("settings.apiBaseInvalid");
   if (!isHttpUrl(settings.monitorDashboardUrl)) return t("settings.monitorUrlInvalid");
+  if (shouldEnforceSecureRemoteTransport()) {
+    if (!isTransportUrlAllowed(settings.apiBaseUrl, { enforceSecureRemote: true })) {
+      return t("settings.apiBaseInsecure");
+    }
+    if (!isTransportUrlAllowed(settings.monitorDashboardUrl, { enforceSecureRemote: true })) {
+      return t("settings.monitorUrlInsecure");
+    }
+  }
   return null;
 }
 
@@ -237,6 +252,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const queryClient = useQueryClient();
   const { confirm, confirmDialog } = useConfirmAction();
   const [form, setForm] = useState<AppSettings>(() => getRuntimeSettings());
+  const [savedBaseline, setSavedBaseline] = useState(() => normalizeAppSettings(getRuntimeSettings()));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [includeSecrets, setIncludeSecrets] = useState(false);
@@ -271,6 +287,13 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   }, [auth.user]);
 
   const normalized = useMemo(() => normalizeAppSettings(form), [form]);
+  const settingsDirty = useMemo(
+    () => JSON.stringify(normalized) !== JSON.stringify(savedBaseline),
+    [normalized, savedBaseline],
+  );
+  const passwordDirty = Boolean(oldPassword || newPassword || confirmPassword);
+  const unsavedMessage = text("设置有未保存的更改，确定要离开吗？", "You have unsaved settings. Leave without saving?");
+  useUnsavedChanges(settingsDirty || passwordDirty, unsavedMessage);
   const derivedWebsshUrl = useMemo(() => {
     if (!isHttpUrl(normalized.apiBaseUrl)) return t("settings.websshPending");
     try {
@@ -279,9 +302,15 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       return t("settings.websshPending");
     }
   }, [normalized.apiBaseUrl, t]);
+  const showInsecureTransportWarning =
+    !shouldEnforceSecureRemoteTransport() &&
+    (isInsecureRemoteTransportUrl(normalized.apiBaseUrl) || isInsecureRemoteTransportUrl(normalized.monitorDashboardUrl));
+  const transportBlockedReason = getTransportBlockReason();
 
   useEffect(() => {
+    const next = normalizeAppSettings(getRuntimeSettings());
     setForm(getRuntimeSettings());
+    setSavedBaseline(next);
   }, [settingsAccountId]);
 
   async function onChangePassword() {
@@ -300,9 +329,12 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       setOldPassword("");
       setNewPassword("");
       setConfirmPassword("");
+      await auth.clearSavedPassword(settingsAccountId).catch((clearError) => {
+        console.warn("Failed to clear saved password after change.", clearError);
+      });
       toast.success(
         text("密码已修改", "Password changed"),
-        text("请使用新密码重新登录；已保存账号不会自动更新密文。", "Sign in again with the new password; saved accounts are not updated automatically."),
+        text("已清除本地保存的密码密文；请使用新密码重新登录。", "Cleared the locally saved password ciphertext; sign in again with the new password."),
       );
       void runLogger.log({
         source: "settings",
@@ -336,8 +368,12 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     try {
       applySettings(nextSettings);
       await saveAccountSettings(browserRuntime.storage, settingsAccountId, nextSettings);
-      queryClient.clear();
+      await queryClient.cancelQueries({ queryKey: queryKeys.images.all });
+      await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.images.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all });
       setForm(nextSettings);
+      setSavedBaseline(normalizeAppSettings(nextSettings));
       toast.success(successTitle, t("settings.saveDescription"));
       void runLogger.log({
         source: "settings",
@@ -374,8 +410,12 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         applySettings(DEFAULT_APP_SETTINGS);
         const store = await readAccountSettingsStore(browserRuntime.storage);
         await writeAccountSettingsStore(browserRuntime.storage, resetAccountAppSettings(store, settingsAccountId));
-        queryClient.clear();
+        await queryClient.cancelQueries({ queryKey: queryKeys.images.all });
+        await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.images.all });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all });
         setForm(DEFAULT_APP_SETTINGS);
+        setSavedBaseline(normalizeAppSettings(DEFAULT_APP_SETTINGS));
         setError(null);
         toast.success(t("settings.resetDone"), t("settings.resetDescription"));
         void runLogger.log({
@@ -655,9 +695,16 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   }
 
   async function performExportBackup(withSecrets: boolean) {
-    const backup = await exportLocalDataBackup(browserRuntime.storage, withSecrets);
+    if (withSecrets && !exportPassword.trim()) {
+      toast.error(text("导出凭据需要设置备份口令", "A backup password is required to export credentials"));
+      return;
+    }
+    const backup = await exportLocalDataBackup(
+      { storage: browserRuntime.storage, credentialStorage: browserRuntime.secureStorage },
+      withSecrets,
+    );
     const password = exportPassword.trim();
-    if (password) {
+    if (withSecrets || password) {
       const encrypted = await encryptBackup(backup, password);
       const blob = new Blob([JSON.stringify(encrypted, null, 2)], { type: "application/json" });
       saveBlob(blob, `easy-console-backup-${new Date().toISOString().slice(0, 10)}.encrypted.json`);
@@ -672,9 +719,12 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   function exportBackup() {
     if (includeSecrets) {
       confirm({
-        title: text("导出确认", "Export confirmation"),
-        description: text("导出文件将包含登录 token 和已保存账号。确认继续？", "The export will include login tokens and saved accounts. Continue?"),
-        confirmLabel: text("导出", "Export"),
+        title: text("导出凭据确认", "Export credentials confirmation"),
+        description: text(
+          "将单独从安全存储读取登录 token 与已保存账号，并用备份口令加密。普通设置请取消勾选后另存。确认继续？",
+          "Credentials will be read from secure storage and encrypted with your backup password. Uncheck to export ordinary settings only. Continue?",
+        ),
+        confirmLabel: text("导出凭据", "Export credentials"),
         tone: "danger",
         run: () => performExportBackup(true),
       });
@@ -735,7 +785,16 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   async function performImportBackup() {
     if (!importBackup) return;
     const sections = [...importSections, ...(importSecrets ? secretBackupSections.filter((section) => importBackup.items[section] !== undefined) : [])];
-    await importLocalDataBackup(browserRuntime.storage, importBackup, sections);
+    await importLocalDataBackup(
+      { storage: browserRuntime.storage, credentialStorage: browserRuntime.secureStorage },
+      importBackup,
+      sections,
+    );
+    if (sections.some((section) => secretBackupSections.includes(section))) {
+      // Auth context reads credentials from secureStorage at boot; force reload so imports take effect.
+      window.location.reload();
+      return;
+    }
     if (sections.includes("settings") && importBackup.items.settings) {
       const store = parseAccountSettingsStore(
         typeof importBackup.items.settings === "string"
@@ -745,6 +804,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       const nextSettings = getAccountAppSettings(store, settingsAccountId);
       applySettings(nextSettings);
       setForm(nextSettings);
+      setSavedBaseline(normalizeAppSettings(nextSettings));
     }
     queryClient.clear();
     toast.success(text("本地数据已导入", "Local data imported"), text("部分设置需要刷新后完全生效", "Some settings need a refresh to fully apply"));
@@ -792,49 +852,55 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           }
         />
 
-        <div className="grid gap-5 p-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
-          <div className="space-y-4">
-            <label className="block text-sm">
+        <div className="grid min-w-0 gap-5 p-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
+          <div className="min-w-0 space-y-4">
+            <label className="block min-w-0 text-sm">
               <span className="mb-1 block font-medium text-app-text">API Base URL</span>
               <Input
-                className="w-full font-mono"
+                className="w-full min-w-0 font-mono"
                 inputMode="url"
                 onChange={(event) => setForm((value) => ({ ...value, apiBaseUrl: event.target.value }))}
                 placeholder={DEFAULT_APP_SETTINGS.apiBaseUrl}
                 spellCheck={false}
                 value={form.apiBaseUrl}
               />
-              <span className="mt-1 block text-xs leading-5 text-app-muted">{t("settings.apiExample")}</span>
+              <span className="mt-1 block break-words text-xs leading-5 text-app-muted">{t("settings.apiExample")}</span>
             </label>
 
-            <label className="block text-sm">
+            <label className="block min-w-0 text-sm">
               <span className="mb-1 block font-medium text-app-text">{t("settings.monitorDashboardUrl")}</span>
               <Input
-                className="w-full font-mono"
+                className="w-full min-w-0 font-mono"
                 inputMode="url"
                 onChange={(event) => setForm((value) => ({ ...value, monitorDashboardUrl: event.target.value }))}
                 placeholder={DEFAULT_APP_SETTINGS.monitorDashboardUrl}
                 spellCheck={false}
                 value={form.monitorDashboardUrl}
               />
-              <span className="mt-1 block text-xs leading-5 text-app-muted">{t("settings.monitorHelp")}</span>
+              <span className="mt-1 block break-words text-xs leading-5 text-app-muted">{t("settings.monitorHelp")}</span>
             </label>
 
+            {showInsecureTransportWarning ? (
+              <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">{t("settings.transportInsecureWarning")}</div>
+            ) : null}
+            {transportBlockedReason ? (
+              <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{t("settings.transportBlocked")}</div>
+            ) : null}
             {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
           </div>
 
-          <aside className="rounded-lg border border-app-border bg-app-panel/60 p-3">
+          <aside className="min-w-0 rounded-lg border border-app-border bg-app-panel/60 p-3">
             <div className="flex items-center gap-2 text-xs font-medium text-app-muted">
-              <Globe className="h-3.5 w-3.5 text-app-accent" />
+              <Globe className="h-3.5 w-3.5 shrink-0 text-app-accent" />
               {t("settings.derivedTitle")}
             </div>
-            <div className="mt-3 space-y-3 text-xs">
-              <div>
+            <div className="mt-3 min-w-0 space-y-3 text-xs">
+              <div className="min-w-0">
                 <div className="mb-1 flex items-center gap-1.5 text-app-muted">
                   <span className="h-1.5 w-1.5 rounded-full bg-app-accent" />
                   WebSSH
                 </div>
-                <code className="block overflow-x-auto whitespace-nowrap rounded-md bg-app-surface px-2.5 py-2 font-mono text-app-text ring-1 ring-inset ring-app-border">
+                <code className="block max-w-full break-all rounded-md bg-app-surface px-2.5 py-2 font-mono text-app-text ring-1 ring-inset ring-app-border">
                   {derivedWebsshUrl}
                 </code>
                 <p className="mt-1.5 leading-5 text-app-muted">{t("settings.websshHint")}</p>
@@ -858,7 +924,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           <SectionHeader
             icon={KeyRound}
             title={text("修改密码", "Change Password")}
-            description={text("修改当前登录账号密码。成功后请用新密码重新登录；本地已保存账号不会自动更新。", "Change the current account password. Sign in again with the new password afterward; saved accounts are not updated automatically.")}
+            description={text("修改当前登录账号密码。成功后会清除本地保存的密码密文，请用新密码重新登录。", "Change the current account password. Success clears the locally saved password ciphertext; sign in again with the new password.")}
           />
           <div className="grid gap-4 p-4 sm:grid-cols-3">
             <label className="block text-sm">
@@ -1011,9 +1077,9 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 {form.ssh.authMode === "key" ? (
                   <label className="block text-sm">
                     <span className="mb-1 block text-app-muted">{t("settings.sshKeyPath")}</span>
-                    <div className="flex gap-2">
-                      <Input className="flex-1 font-mono text-xs" value={form.ssh.sshKeyPath} onChange={(e) => updateSshField("sshKeyPath", e.target.value)} placeholder="~/.ssh/id_rsa" />
-                      <Button type="button" variant="secondary" onClick={() => void chooseKeyFile()}>
+                    <div className="flex min-w-0 gap-2">
+                      <Input className="min-w-0 flex-1 font-mono text-xs" value={form.ssh.sshKeyPath} onChange={(e) => updateSshField("sshKeyPath", e.target.value)} placeholder="~/.ssh/id_rsa" />
+                      <Button type="button" className="shrink-0" variant="secondary" onClick={() => void chooseKeyFile()}>
                         {t("settings.sshChooseKeyFile")}
                       </Button>
                     </div>
@@ -1481,15 +1547,17 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                   ? "bg-app-danger"
                   : "bg-app-warning";
             return (
-              <div key={item.event} className="grid gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_12rem] sm:items-center">
+              <div key={item.event} className="grid min-w-0 gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,12rem)] sm:items-center">
                 <div className="flex min-w-0 items-start gap-3">
                   <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${tone}`} aria-hidden />
                   <div className="min-w-0">
-                    <div className="text-sm font-medium text-app-text">{text(item.zh, item.en)}</div>
+                    <div id={`notification-label-${item.event}`} className="text-sm font-medium text-app-text">{text(item.zh, item.en)}</div>
                     <div className="mt-1 text-xs leading-5 text-app-muted">{text(item.descriptionZh, item.descriptionEn)}</div>
                   </div>
                 </div>
                 <Select
+                  aria-labelledby={`notification-label-${item.event}`}
+                  className="min-w-0"
                   value={form.notificationPreferences[item.event]}
                   onChange={(event) => updateNotificationPreference(item.event, event.target.value as NotificationMode)}
                 >
@@ -1597,8 +1665,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   if (!standalone) return content;
 
   return (
-    <main className="min-h-screen bg-app-bg px-3 py-4 text-app-text sm:p-6">
-      <div className="mx-auto max-w-5xl space-y-4">
+    <main className="min-h-screen min-w-0 overflow-x-hidden bg-app-bg px-3 py-4 text-app-text sm:p-6">
+      <div className="mx-auto max-w-5xl min-w-0 space-y-4">
         <Link className="app-interactive inline-flex h-9 items-center gap-2 rounded-md px-2 text-sm text-app-muted hover:bg-app-panel hover:text-app-text" to="/login">
           <ArrowLeft className="h-4 w-4" />
           {t("settings.backToLogin")}

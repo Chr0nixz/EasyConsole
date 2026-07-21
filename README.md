@@ -84,7 +84,10 @@ EASY_CONSOLE_API_BASE_URL=http://116.172.93.164:28080/api
 EASY_CONSOLE_MONITOR_DASHBOARD_URL=http://116.172.93.164:33000/d/da7c4fef-70c7-43eb-8103-31b7d283ca9f/pod-board?orgId=1
 EASY_CONSOLE_TOKEN=Bearer ...
 EASY_CONSOLE_CONFIG=D:\path\to\config.json
+EASY_CONSOLE_ALLOW_INSECURE_HTTP=1
 ```
+
+Remote cleartext HTTP is rejected by default. Prefer HTTPS or a loopback tunnel (`http://127.0.0.1:...`). For lab APIs over plain HTTP, pass `--allow-insecure-http` or set `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1`. Production desktop builds also block remote cleartext API/monitor URLs in Settings.
 
 Login stores a normalized bearer token in the local config file:
 

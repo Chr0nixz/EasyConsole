@@ -1,5 +1,6 @@
 import { ApiError, type ApiEnvelope, type RuntimeTransport, type UnknownRecord } from "./types";
 import { i18nText } from "./i18n-text";
+import { assertTransportUrlAllowed, shouldEnforceSecureRemoteTransport } from "./transport-security";
 
 export const DEFAULT_API_BASE_URL = "http://116.172.93.164:28080/api";
 export const API_BASE_URL =
@@ -96,6 +97,7 @@ export class ApiClient {
   ) {}
 
   setBaseUrl(baseUrl: string) {
+    assertTransportUrlAllowed(baseUrl, { enforceSecureRemote: shouldEnforceSecureRemoteTransport() });
     this.baseUrl = baseUrl;
   }
 
@@ -116,6 +118,7 @@ export class ApiClient {
   }
 
   async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
+    assertTransportUrlAllowed(this.baseUrl, { enforceSecureRemote: shouldEnforceSecureRemoteTransport() });
     const headers = { ...(options.headers ?? {}) };
     if (options.auth !== false && this.token) {
       headers.Authorization = this.token;

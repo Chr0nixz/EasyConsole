@@ -1,15 +1,16 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   createColumnHelper,
   flexRender,
   getCoreRowModel,
   useReactTable,
-  type RowSelectionState,
   type VisibilityState,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ActivitySquare,
+  ArrowDown,
+  ArrowUp,
   Braces,
   CopyPlus,
   Download,
@@ -31,7 +32,7 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 import { needsLogAttention } from "../lib/task-status-notifications";
 
@@ -56,26 +57,19 @@ import {
   loadTaskPins,
   pruneTaskPins,
   saveTaskPins,
-  sortTasksWithPins,
   toggleTaskPin,
 } from "../lib/task-pins";
-import { filterAndSortTasks } from "../lib/task-search";
 import { createTaskTemplate, loadTaskTemplates, saveTaskTemplates, taskToEditableTaskTemplate } from "../lib/task-templates";
-import {
-  parseTaskListQuery,
-  serializeTaskListQuery,
-  TASK_PAGE_SIZE_OPTIONS,
-  taskMatchesQuery,
-  toTaskApiQuery,
-  type TaskListQueryState,
-} from "../lib/task-list-query";
+import { TASK_PAGE_SIZE_OPTIONS, type TaskListSortBy } from "../lib/task-list-query";
 import { resolveTaskTerminalAction, willOpenAppSshSession } from "../lib/task-terminal";
-import { invalidateTaskQueries, TASK_SNAPSHOT_QUERY_KEY } from "../lib/task-snapshot-query";
+import { invalidateTaskQueries } from "../lib/task-snapshot-query";
+import { queryKeys } from "../lib/query-keys";
 import type { SshConnectionRequest, Task } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useAuth } from "../lib/use-auth";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
+import { useTaskListController } from "./tasks/use-task-list-controller";
 
 const columnHelper = createColumnHelper<Task>();
 const CreateTaskDialog = lazy(() => import("../components/tasks/CreateTaskDialog").then((module) => ({ default: module.CreateTaskDialog })));
@@ -272,16 +266,6 @@ async function loadNumberSetting(key: string, fallback: number) {
   } catch {
     return fallback;
   }
-}
-
-function taskQueryKey(state: TaskListQueryState) {
-  return [
-    "tasks",
-    state.page,
-    state.pageSize,
-    state.keyword,
-    state.status,
-  ];
 }
 
 export function MoreActionsMenu({
@@ -617,9 +601,6 @@ export function TasksPage() {
   const downloadQueue = useDownloadQueue();
   const commitQueue = useCommitQueue();
   const auth = useAuth();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const queryState = useMemo(() => parseTaskListQuery(searchParams), [searchParams]);
-  const [keywordInput, setKeywordInput] = useState(queryState.keyword);
   const { confirm, confirmDialog } = useConfirmAction();
   const [createOpen, setCreateOpen] = useState(false);
   const [cloneTask, setCloneTask] = useState<Task | null>(null);
@@ -630,39 +611,20 @@ export function TasksPage() {
   const [rawTask, setRawTask] = useState<Task | null>(null);
   const [columnSettingsOpen, setColumnSettingsOpen] = useState(false);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(defaultColumnVisibility);
-  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(DEFAULT_AUTO_REFRESH_INTERVAL);
   const [pinnedTaskIds, setPinnedTaskIds] = useState<string[]>([]);
   const [autoRefreshMenuOpen, setAutoRefreshMenuOpen] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [activeRowIndex, setActiveRowIndex] = useState(0);
+  const [pageJumpInput, setPageJumpInput] = useState("");
   const autoRefreshMenuId = useId();
   const autoRefreshMenuRef = useRef<HTMLDivElement>(null);
   const autoRefreshTriggerRef = useRef<HTMLButtonElement>(null);
   const autoRefreshMenuListRef = useRef<HTMLDivElement>(null);
   const autoRefreshItemRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const autoRefreshInitialFocusRef = useRef(0);
-
-  const updateTaskQuery = useCallback((patch: Partial<TaskListQueryState>) => {
-    const next = { ...queryState, ...patch };
-    if (!("page" in patch)) next.page = 1;
-    setSearchParams(serializeTaskListQuery(next), { replace: true });
-  }, [queryState, setSearchParams]);
-
-  // Debounce search input: write to URL 300ms after the last keystroke.
-  useEffect(() => {
-    if (keywordInput === queryState.keyword) return;
-    const timer = window.setTimeout(() => {
-      updateTaskQuery({ keyword: keywordInput });
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [keywordInput, queryState.keyword, updateTaskQuery]);
-
-  // Keep local input in sync when keyword changes externally (URL nav, clear).
-  useEffect(() => {
-    setKeywordInput(queryState.keyword);
-  }, [queryState.keyword]);
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const mobileCardsRef = useRef<HTMLDivElement>(null);
 
   const deleteMutation = useMutation({
     mutationFn: (task: Task) => instanceApi.deleteTask(task.id),
@@ -823,26 +785,31 @@ export function TasksPage() {
 
   const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending;
   const autoRefreshPaused = batchPending || createOpen || Boolean(editTask) || Boolean(logTask) || Boolean(sshInfoTask) || Boolean(appSshRequest) || Boolean(rawTask) || columnSettingsOpen;
-  const query = useQuery({
-    queryKey: taskQueryKey(queryState),
-    queryFn: () => instanceApi.tasks(toTaskApiQuery(queryState)),
-    refetchInterval: autoRefresh && !autoRefreshPaused ? autoRefreshInterval : false,
-    refetchIntervalInBackground: false,
+  const {
+    queryState,
+    keywordInput,
+    setKeywordInput,
+    updateTaskQuery,
+    query,
+    filteredTasks,
+    activeRowIndex,
+    setActiveRowIndex,
+    rowSelection,
+    setRowSelection,
+    total,
+    hasKnownTotal,
+    totalPages,
+    hasNextPage,
+  } = useTaskListController({
+    pinnedTaskIds,
+    autoRefresh,
+    autoRefreshInterval,
+    autoRefreshPaused,
   });
 
-  // Sync fetched data into the TaskNotificationWatcher cache so it can compare
-  // task status snapshots without polling the same endpoint in parallel.
   useEffect(() => {
-    if (query.data) {
-      queryClient.setQueryData(TASK_SNAPSHOT_QUERY_KEY, query.data);
-    }
-  }, [query.data, queryClient]);
-
-  const filteredTasks = useMemo(() => {
-    const tasks = query.data?.items ?? [];
-    const matched = filterAndSortTasks(tasks.filter((task) => taskMatchesQuery(task, queryState)), queryState.keyword);
-    return sortTasksWithPins(matched, pinnedTaskIds);
-  }, [pinnedTaskIds, query.data?.items, queryState]);
+    setPageJumpInput(String(queryState.page));
+  }, [queryState.page]);
 
   useEffect(() => {
     void loadTaskPins(browserRuntime.storage).then(setPinnedTaskIds);
@@ -851,7 +818,7 @@ export function TasksPage() {
   const prevCommitDoneRef = useRef(0);
   useEffect(() => {
     if (commitQueue.summary.completed > prevCommitDoneRef.current) {
-      queryClient.invalidateQueries({ queryKey: ["images"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.images.all });
     }
     prevCommitDoneRef.current = commitQueue.summary.completed;
   }, [commitQueue.summary.completed, queryClient]);
@@ -1213,7 +1180,6 @@ export function TasksPage() {
     onRowSelectionChange: setRowSelection,
   });
 
-  const tableScrollRef = useRef<HTMLDivElement>(null);
   const tableRows = table.getRowModel().rows;
   const rowVirtualizer = useVirtualizer({
     count: tableRows.length,
@@ -1265,26 +1231,26 @@ export function TasksPage() {
   const selectedTasks = table.getSelectedRowModel().flatRows.map((row) => row.original);
   const selectedReleasableTasks = selectedTasks.filter(isReleasableTask);
   const selectedNonReleasableTasks = selectedTasks.filter((task) => !isReleasableTask(task));
-  const total = query.data?.total;
-  const hasKnownTotal = typeof total === "number";
-  const totalPages = hasKnownTotal ? Math.max(1, Math.ceil(total / queryState.pageSize)) : undefined;
-  const hasNextPage = hasKnownTotal ? queryState.page < (totalPages ?? 1) : (query.data?.items.length ?? 0) >= queryState.pageSize;
-
-  useEffect(() => {
-    setRowSelection({});
-  }, [queryState.page, queryState.pageSize, queryState.keyword, queryState.status]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNowMs(Date.now()), 5_000);
     return () => window.clearInterval(timer);
   }, []);
 
+  const isListNavigationTarget = useCallback(() => {
+    const active = document.activeElement;
+    if (!active) return false;
+    const tableEl = tableScrollRef.current;
+    if (tableEl && (tableEl === active || tableEl.contains(active))) return true;
+    const cardsEl = mobileCardsRef.current;
+    return Boolean(cardsEl && (cardsEl === active || cardsEl.contains(active)));
+  }, []);
+
   useEffect(() => {
-    setActiveRowIndex((index) => {
-      if (filteredTasks.length === 0) return 0;
-      return Math.min(index, filteredTasks.length - 1);
-    });
-  }, [filteredTasks.length]);
+    const container = browserRuntime.isMobile ? mobileCardsRef.current : tableScrollRef.current;
+    if (!container) return;
+    container.querySelector(`[data-task-row-index="${activeRowIndex}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [activeRowIndex]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1297,6 +1263,7 @@ export function TasksPage() {
           target.tagName === "SELECT" ||
           target.isContentEditable);
       if (isTyping) return;
+      if (!isListNavigationTarget()) return;
       if (
         createOpen ||
         Boolean(editTask) ||
@@ -1358,6 +1325,7 @@ export function TasksPage() {
     createOpen,
     editTask,
     filteredTasks,
+    isListNavigationTarget,
     logTask,
     navigate,
     openTerminal,
@@ -1484,6 +1452,28 @@ export function TasksPage() {
               </option>
             ))}
           </Select>
+          <Select
+            aria-label={text("排序字段", "Sort by")}
+            className="w-32"
+            value={queryState.sortBy}
+            onChange={(event) => updateTaskQuery({ sortBy: event.target.value as TaskListSortBy })}
+          >
+            <option value="">{text("默认排序", "Default")}</option>
+            <option value="name">{text("名称", "Name")}</option>
+            <option value="status">{text("状态", "Status")}</option>
+            <option value="created">{text("创建时间", "Created")}</option>
+            <option value="updated">{text("更新时间", "Updated")}</option>
+          </Select>
+          <Button
+            aria-label={text("切换排序方向", "Toggle sort direction")}
+            disabled={!queryState.sortBy}
+            title={queryState.sortDir === "asc" ? text("升序", "Ascending") : text("降序", "Descending")}
+            type="button"
+            variant="secondary"
+            onClick={() => updateTaskQuery({ sortDir: queryState.sortDir === "asc" ? "desc" : "asc" })}
+          >
+            {queryState.sortDir === "asc" ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
+          </Button>
           <Button disabled={query.isFetching} variant="secondary" onClick={() => void query.refetch()}>
             <RefreshCw className={["h-4 w-4", query.isFetching ? "animate-spin" : ""].join(" ")} aria-hidden="true" />
             {text("刷新", "Refresh")}
@@ -1637,7 +1627,7 @@ export function TasksPage() {
       ) : null}
 
       <Panel className="overflow-hidden">
-        {query.isLoading ? (
+        {!query.data && query.isLoading ? (
           <TableSkeleton columns={7} />
         ) : query.isError ? (
           <ErrorState error={query.error} action={<Button variant="secondary" onClick={() => query.refetch()}>{text("重试", "Retry")}</Button>} />
@@ -1648,7 +1638,7 @@ export function TasksPage() {
         ) : (
           <>
           {browserRuntime.isMobile ? (
-          <div className="divide-y divide-app-border">
+          <div ref={mobileCardsRef} className="divide-y divide-app-border" tabIndex={0}>
             {table.getRowModel().rows.map((row, rowIndex) => {
               const task = row.original;
               const release = isReleasableTask(task);
@@ -1656,6 +1646,8 @@ export function TasksPage() {
               return (
                 <article
                   key={row.id}
+                  id={`task-row-${rowIndex}`}
+                  data-task-row-index={rowIndex}
                   className={[
                     "space-y-3 px-3 py-3",
                     isRunningTask(task) ? "bg-app-infoSoft/40" : "",
@@ -1800,7 +1792,11 @@ export function TasksPage() {
             })}
           </div>
           ) : (
-          <TableRegion ref={tableScrollRef} label={text("任务实例表格", "Task instances table")}>
+          <TableRegion
+            ref={tableScrollRef}
+            label={text("任务实例表格", "Task instances table")}
+            aria-activedescendant={filteredTasks.length > 0 ? `task-row-${activeRowIndex}` : undefined}
+          >
             <table className="w-max min-w-full table-auto border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 {table.getHeaderGroups().map((headerGroup) => (
@@ -1833,7 +1829,8 @@ export function TasksPage() {
                   return (
                     <tr
                       key={row.id}
-                      data-index={virtualRow.index}
+                      id={`task-row-${virtualRow.index}`}
+                      data-task-row-index={virtualRow.index}
                       ref={rowVirtualizer.measureElement}
                       className={[
                         "relative border-b border-app-border last:border-0 hover:z-20",
@@ -1915,6 +1912,39 @@ export function TasksPage() {
           >
             {text("下一页", "Next")}
           </Button>
+          {hasKnownTotal && totalPages ? (
+            <>
+              <Input
+                aria-label={text("跳转到页码", "Jump to page")}
+                className="w-16 text-center"
+                inputMode="numeric"
+                min={1}
+                max={totalPages}
+                value={pageJumpInput}
+                onChange={(event) => setPageJumpInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  const page = Number(pageJumpInput);
+                  if (Number.isInteger(page) && page >= 1 && page <= totalPages) {
+                    updateTaskQuery({ page });
+                  }
+                }}
+              />
+              <Button
+                disabled={query.isFetching}
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  const page = Number(pageJumpInput);
+                  if (Number.isInteger(page) && page >= 1 && page <= totalPages) {
+                    updateTaskQuery({ page });
+                  }
+                }}
+              >
+                {text("跳转", "Jump")}
+              </Button>
+            </>
+          ) : null}
         </div>
       </div>
 
