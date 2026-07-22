@@ -65,9 +65,9 @@ describe("transport-security", () => {
     expect(describeTransportViolation("http://example.com/api")).toMatch(/HTTPS|明文|cleartext/i);
   });
 
-  it("defaults enforce from Vite PROD when options omit enforceSecureRemote", () => {
-    // Vitest / Vite test builds set PROD=false, so remote cleartext is allowed by default.
+  it("does not enforce secure remote by default (packaged app allows remote HTTP)", () => {
     expect(shouldEnforceSecureRemoteTransport()).toBe(false);
     expect(isTransportUrlAllowed("http://example.com/api")).toBe(true);
+    expect(isTransportUrlAllowed("http://116.172.93.164:28080/api")).toBe(true);
   });
 });

@@ -86,13 +86,13 @@ EASY_CONSOLE_CONFIG=D:\path\to\config.json
 EASY_CONSOLE_ALLOW_INSECURE_HTTP=1
 ```
 
-Production desktop builds reject remote cleartext `http://` / `ws://` API and monitor URLs (HTTPS or loopback tunnel only). Development builds still allow remote HTTP with an in-settings warning. CLI/MCP reject remote cleartext by default; opt in with `--allow-insecure-http` or `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` for lab use. Prefer `https://...` or `http://127.0.0.1:...` (local reverse proxy / VPN tunnel).
+Packaged desktop builds currently allow remote cleartext `http://` / `ws://` (lab console). Settings still warn when remote HTTP is in use. Prefer `https://...` or `http://127.0.0.1:...` (local reverse proxy / VPN tunnel) when available. CLI/MCP reject remote cleartext by default; opt in with `--allow-insecure-http` or `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` for lab use.
 
 Do not commit real account credentials, tokens, or live test secrets.
 
 ## Architecture
 
-- `src/lib/transport-security.ts`: URL transport classification and production cleartext-remote blocking.
+- `src/lib/transport-security.ts`: URL transport classification; packaged app does not block remote cleartext by default (CLI/MCP still opt-in).
 - `src/lib/types.ts`: shared API and runtime types. Keep backend fields tolerant with `UnknownRecord` intersections when the live API is not fully verified.
 - `src/lib/api-client.ts`: generic HTTP client, envelope unwrap, auth header injection, HTTP/business error mapping.
 - `src/lib/api-factory.ts`: typed endpoint wrappers grouped by domain: auth, instance/task, image, storage, resource/price. Reused by web, CLI, and MCP.

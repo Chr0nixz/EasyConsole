@@ -1,3 +1,14 @@
+# EasyConsole v0.4.8
+
+Allow remote cleartext HTTP in the packaged desktop app so the lab console default URL works without a local tunnel.
+
+## Changes
+
+- **Transport policy**: Packaged builds no longer block remote `http://` / `ws://` API and monitor URLs. Settings still warns when remote cleartext is in use.
+- **Defaults**: Keep `http://116.172.93.164:28080/api` as the lab default; CLI/MCP still require `--allow-insecure-http` / `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` for remote HTTP.
+
+---
+
 # EasyConsole v0.4.7
 
 Audit remediations across security, scheduling, uploads, and desktop UX (P0–P2).

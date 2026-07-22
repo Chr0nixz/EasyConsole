@@ -22,11 +22,16 @@ function readViteEnv(): ImportMetaEnv | undefined {
   }
 }
 
-/** Renderer production builds enforce secure remote transport. Node callers opt in via config flags. */
+/**
+ * Whether the desktop/web renderer should reject remote cleartext HTTP/WS.
+ *
+ * Currently always off: the packaged app targets a lab console that only
+ * serves remote HTTP. Prefer HTTPS or a loopback tunnel when available.
+ * Callers can still pass `{ enforceSecureRemote: true }` explicitly.
+ * CLI/MCP keep their own opt-in via `--allow-insecure-http`.
+ */
 export function shouldEnforceSecureRemoteTransport(): boolean {
-  const env = readViteEnv();
-  if (env?.PROD === true) return true;
-  if (env?.PROD === false) return false;
+  void readViteEnv();
   return false;
 }
 
