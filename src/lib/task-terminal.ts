@@ -20,7 +20,7 @@ export function resolveTaskTerminalAction(
   return { type: "ssh-info", info };
 }
 
-/** True when the primary terminal control will open an in-app SSH session. */
+/** True when in-app SSH can be started for this task from the connection-info drawer. */
 export function willOpenAppSshSession(
   task: Task,
   options: { loginUsername?: string; supportsInAppSsh: boolean },

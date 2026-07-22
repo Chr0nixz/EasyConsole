@@ -229,7 +229,11 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
   }, [tabs, text, confirmAction, onClose]);
 
   const updateTabStatus = useCallback((id: string, status: string) => {
-    setTabs((prev) => prev.map((tab) => (tab.id === id ? { ...tab, status } : tab)));
+    setTabs((prev) => {
+      const current = prev.find((tab) => tab.id === id);
+      if (!current || current.status === status) return prev;
+      return prev.map((tab) => (tab.id === id ? { ...tab, status } : tab));
+    });
   }, []);
 
   const focusTab = useCallback((id: string) => {
@@ -310,6 +314,10 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
 
   const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
+      // Host-key (and similar) alertdialogs handle Escape themselves.
+      if (event.target instanceof Element && event.target.closest('[role="alertdialog"]')) {
+        return;
+      }
       const activeElement = document.activeElement;
       // If the new-tab form is open and focus is inside it, Escape closes just the form
       // (not the entire dialog, which may hold live SSH sessions).
@@ -328,7 +336,10 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
 
     if (event.key !== "Tab") return;
 
-    const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? []).filter(
+    // When a nested alertdialog (e.g. host-key confirm) is open, trap Tab there only.
+    const nestedAlert = dialogRef.current?.querySelector<HTMLElement>('[role="alertdialog"]');
+    const trapRoot = nestedAlert ?? dialogRef.current;
+    const focusable = Array.from(trapRoot?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? []).filter(
       (element) => !element.hasAttribute("disabled") && element.getAttribute("aria-hidden") !== "true",
     );
     if (focusable.length === 0) return;

@@ -19,7 +19,7 @@ import {
 import type { PortForwardRule, PortForwardStatus, SshConnectionRequest, SshHostKeyPrompt } from "../../lib/types";
 import { useToast } from "../../lib/use-toast";
 import { cn } from "../../lib/utils";
-import { Button, Dialog } from "../ui";
+import { Button } from "../ui";
 import { SftpPanel } from "./SftpPanel";
 
 type SshTerminalTabProps = {
@@ -127,9 +127,15 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     followBottomRef.current = followBottom;
   }, [followBottom]);
 
+  // Keep a stable ref so status sync cannot re-trigger when the parent passes a
+  // fresh inline `onStatusChange` each render (which would infinite-loop via setState).
+  const onStatusChangeRef = useRef(onStatusChange);
   useEffect(() => {
-    onStatusChange(status);
-  }, [status, onStatusChange]);
+    onStatusChangeRef.current = onStatusChange;
+  }, [onStatusChange]);
+  useEffect(() => {
+    onStatusChangeRef.current(status);
+  }, [status]);
 
   useEffect(() => {
     if (active) {
@@ -502,11 +508,24 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     setReconnectKey((key) => key + 1);
   };
 
+  const respondHostKey = (accept: boolean) => {
+    if (hostKeyPending || !hostKeyPrompt) return;
+    const promptId = hostKeyPrompt.promptId;
+    setHostKeyPending(true);
+    void browserRuntime
+      .confirmKnownHost(promptId, accept)
+      .catch(() => {})
+      .finally(() => {
+        setHostKeyPending(false);
+        setHostKeyPrompt(null);
+      });
+  };
+
   const statusColorClass =
     statusKind === "connected" ? "text-app-success" : statusKind === "failed" ? "text-app-danger" : "text-app-terminalMuted";
 
   return (
-    <div className={cn("flex h-full flex-col", !active && "hidden")} data-tab-id={tabId}>
+    <div className={cn("relative flex h-full flex-col", !active && "hidden")} data-tab-id={tabId}>
       <div className="flex h-10 items-center justify-between border-b border-app-terminalBorder bg-app-terminalPanel px-3 text-xs text-app-terminalText">
         <span className="truncate font-mono">{request.command}</span>
         <div className="flex items-center gap-2">
@@ -808,32 +827,32 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           </Button>
         </div>
       ) : null}
-      <Dialog
-        open={Boolean(hostKeyPrompt)}
-        title={text("确认 SSH 主机密钥", "Confirm SSH Host Key")}
-        width="max-w-md"
-        closeOnOverlayClick={!hostKeyPending}
-        onClose={() => {
-          if (hostKeyPending || !hostKeyPrompt) return;
-          const promptId = hostKeyPrompt.promptId;
-          setHostKeyPending(true);
-          void browserRuntime
-            .confirmKnownHost(promptId, false)
-            .catch(() => {})
-            .finally(() => {
-              setHostKeyPending(false);
-              setHostKeyPrompt(null);
-            });
-        }}
-      >
-        <div className="space-y-4 p-4 text-sm">
-          <p className="leading-6 text-app-muted">
-            {text(
-              "首次连接该主机。请核对指纹后再信任；错误指纹可能表示中间人攻击。",
-              "First connection to this host. Verify the fingerprint before trusting it; a wrong fingerprint may indicate a man-in-the-middle attack.",
-            )}
-          </p>
-          {hostKeyPrompt ? (
+      {hostKeyPrompt ? (
+        <div
+          className="absolute inset-0 z-20 flex items-center justify-center bg-black/55 p-4"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby={`ssh-host-key-title-${tabId}`}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              respondHostKey(false);
+            }
+          }}
+        >
+          <div className="w-full max-w-md space-y-4 rounded-lg border border-app-border bg-app-surface p-4 text-sm shadow-popover">
+            <div>
+              <h3 id={`ssh-host-key-title-${tabId}`} className="text-sm font-semibold text-app-text">
+                {text("确认 SSH 主机密钥", "Confirm SSH Host Key")}
+              </h3>
+              <p className="mt-2 leading-6 text-app-muted">
+                {text(
+                  "首次连接该主机。请核对指纹后再信任；错误指纹可能表示中间人攻击。",
+                  "First connection to this host. Verify the fingerprint before trusting it; a wrong fingerprint may indicate a man-in-the-middle attack.",
+                )}
+              </p>
+            </div>
             <div className="space-y-2 rounded-md border border-app-border bg-app-panel px-3 py-2 font-mono text-xs">
               <div>
                 <span className="text-app-muted">Host</span>
@@ -846,48 +865,27 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                 <div className="mt-0.5 break-all text-app-text">{hostKeyPrompt.fingerprint}</div>
               </div>
             </div>
-          ) : null}
-          <div className="flex flex-col-reverse gap-2 border-t border-app-border pt-3 sm:flex-row sm:justify-end">
-            <Button
-              disabled={hostKeyPending}
-              type="button"
-              variant="secondary"
-              onClick={() => {
-                if (!hostKeyPrompt) return;
-                const promptId = hostKeyPrompt.promptId;
-                setHostKeyPending(true);
-                void browserRuntime
-                  .confirmKnownHost(promptId, false)
-                  .catch(() => {})
-                  .finally(() => {
-                    setHostKeyPending(false);
-                    setHostKeyPrompt(null);
-                  });
-              }}
-            >
-              {text("拒绝", "Reject")}
-            </Button>
-            <Button
-              disabled={hostKeyPending}
-              type="button"
-              onClick={() => {
-                if (!hostKeyPrompt) return;
-                const promptId = hostKeyPrompt.promptId;
-                setHostKeyPending(true);
-                void browserRuntime
-                  .confirmKnownHost(promptId, true)
-                  .catch(() => {})
-                  .finally(() => {
-                    setHostKeyPending(false);
-                    setHostKeyPrompt(null);
-                  });
-              }}
-            >
-              {hostKeyPending ? text("提交中", "Submitting") : text("信任并继续", "Trust and continue")}
-            </Button>
+            <div className="flex flex-col-reverse gap-2 border-t border-app-border pt-3 sm:flex-row sm:justify-end">
+              <Button
+                disabled={hostKeyPending}
+                type="button"
+                variant="secondary"
+                onClick={() => respondHostKey(false)}
+              >
+                {text("拒绝", "Reject")}
+              </Button>
+              <Button
+                disabled={hostKeyPending}
+                type="button"
+                autoFocus
+                onClick={() => respondHostKey(true)}
+              >
+                {hostKeyPending ? text("提交中", "Submitting") : text("信任并继续", "Trust and continue")}
+              </Button>
+            </div>
           </div>
         </div>
-      </Dialog>
+      ) : null}
     </div>
   );
 }

@@ -1,3 +1,14 @@
+# EasyConsole v0.4.9
+
+Restore the SSH connection-info drawer before connecting, and fix the host-key confirmation freeze.
+
+## Changes
+
+- **Tasks → terminal**: The primary action always opens the SSH connection-info drawer first; in-app SSH / system terminal / VS Code remain choices inside that panel.
+- **Host-key TOFU**: Replaced the nested confirmation dialog with an in-terminal panel, and stopped status updates from infinite-re-rendering the SSH window (app freeze after “trust this host”).
+
+---
+
 # EasyConsole v0.4.8
 
 Allow remote cleartext HTTP in the packaged desktop app so the lab console default URL works without a local tunnel.

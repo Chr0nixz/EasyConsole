@@ -26,7 +26,6 @@ import {
   Save,
   Search,
   Settings2,
-  Terminal,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -61,7 +60,6 @@ import {
 } from "../lib/task-pins";
 import { createTaskTemplate, loadTaskTemplates, saveTaskTemplates, taskToEditableTaskTemplate } from "../lib/task-templates";
 import { TASK_PAGE_SIZE_OPTIONS, type TaskListSortBy } from "../lib/task-list-query";
-import { resolveTaskTerminalAction, willOpenAppSshSession } from "../lib/task-terminal";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import { queryKeys } from "../lib/query-keys";
 import type { SshConnectionRequest, Task } from "../lib/types";
@@ -871,17 +869,10 @@ export function TasksPage() {
     setSshInfoTask(task);
   }, []);
 
+  /** Always open the SSH connection-info drawer first; connect actions live inside it. */
   const openTerminal = useCallback((task: Task) => {
-    const action = resolveTaskTerminalAction(task, {
-      loginUsername: auth.user?.username ?? "",
-      supportsInAppSsh: browserRuntime.supportsInAppSsh,
-    });
-    if (action.type === "app-ssh") {
-      setAppSshRequest(action.request);
-      return;
-    }
     setSshInfoTask(task);
-  }, [auth.user?.username]);
+  }, []);
 
   const closeCreateTask = () => {
     setCreateOpen(false);
@@ -1072,26 +1063,18 @@ export function TasksPage() {
         cell: ({ row }) => {
           const task = row.original;
           const release = isReleasableTask(task);
-          const opensAppSsh = willOpenAppSshSession(task, {
-            loginUsername: auth.user?.username ?? "",
-            supportsInAppSsh: browserRuntime.supportsInAppSsh,
-          });
-          const terminalLabel = opensAppSsh ? text("终端", "Terminal") : text("连接信息", "Connection info");
+          const terminalLabel = text("连接信息", "Connection info");
           const promoteLog = needsLogAttention(task);
           return (
             <div className={ACTION_GRID_CLASS}>
               <Button
-                aria-label={
-                  opensAppSsh
-                    ? text(`打开 ${getTaskName(task)} 的终端`, `Open terminal for ${getTaskName(task)}`)
-                    : text(`查看 ${getTaskName(task)} 的连接信息`, `View connection info for ${getTaskName(task)}`)
-                }
+                aria-label={text(`查看 ${getTaskName(task)} 的连接信息`, `View connection info for ${getTaskName(task)}`)}
                 className="h-8 w-8 px-0"
                 variant="ghost"
                 title={terminalLabel}
                 onClick={() => openTerminal(task)}
               >
-                {opensAppSsh ? <Terminal className="h-4 w-4" /> : <KeyRound className="h-4 w-4" />}
+                <KeyRound className="h-4 w-4" />
               </Button>
               {promoteLog ? (
                 <Button
@@ -1145,7 +1128,7 @@ export function TasksPage() {
                 canEdit={getTaskEditableState() !== false}
                 isPinned={isTaskPinned(pinnedTaskIds, task)}
                 promoteLog={promoteLog}
-                showSshInfo={opensAppSsh}
+                showSshInfo={false}
                 task={task}
                 onClone={openCloneTask}
                 onCommit={confirmCommitTask}
@@ -1163,7 +1146,7 @@ export function TasksPage() {
         },
       }),
     ],
-    [auth.user?.username, confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, handleTogglePin, locale, openSshInfo, openTerminal, pinnedTaskIds, releaseMutation.isPending, saveTemplateMutation, text],
+    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, handleTogglePin, locale, openSshInfo, openTerminal, pinnedTaskIds, releaseMutation.isPending, saveTemplateMutation, text],
   );
 
   const table = useReactTable({
@@ -1700,26 +1683,18 @@ export function TasksPage() {
                   </dl>
                   <div className="flex flex-wrap gap-1.5">
                     {(() => {
-                      const opensAppSsh = willOpenAppSshSession(task, {
-                        loginUsername: auth.user?.username ?? "",
-                        supportsInAppSsh: browserRuntime.supportsInAppSsh,
-                      });
-                      const terminalLabel = opensAppSsh ? text("终端", "Terminal") : text("连接信息", "Connection info");
+                      const terminalLabel = text("连接信息", "Connection info");
                       const promoteLog = needsLogAttention(task);
                       return (
                         <>
                         <Button
-                          aria-label={
-                            opensAppSsh
-                              ? text(`打开 ${taskName} 的终端`, `Open terminal for ${taskName}`)
-                              : text(`查看 ${taskName} 的连接信息`, `View connection info for ${taskName}`)
-                          }
+                          aria-label={text(`查看 ${taskName} 的连接信息`, `View connection info for ${taskName}`)}
                           className="h-9 px-2"
                           variant="ghost"
                           title={terminalLabel}
                           onClick={() => openTerminal(task)}
                         >
-                          {opensAppSsh ? <Terminal className="h-4 w-4" /> : <KeyRound className="h-4 w-4" />}
+                          <KeyRound className="h-4 w-4" />
                           {terminalLabel}
                         </Button>
                         {promoteLog ? (
@@ -1770,7 +1745,7 @@ export function TasksPage() {
                           canEdit={getTaskEditableState() !== false}
                           isPinned={isTaskPinned(pinnedTaskIds, task)}
                           promoteLog={promoteLog}
-                          showSshInfo={opensAppSsh}
+                          showSshInfo={false}
                           task={task}
                           onClone={openCloneTask}
                           onCommit={confirmCommitTask}
