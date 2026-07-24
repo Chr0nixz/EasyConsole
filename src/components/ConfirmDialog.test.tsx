@@ -88,4 +88,42 @@ describe("Dialog", () => {
     expect(container).not.toContainElement(dialog);
     expect(document.body).toContainElement(dialog);
   });
+
+  it("keeps focus in a number input when onClose identity changes on re-render", async () => {
+    function NumberFieldDialog() {
+      const [value, setValue] = useState("4");
+      return (
+        <Dialog
+          open
+          title="资源配置"
+          onClose={() => {
+            // Unstable callback (same pattern as inline requestClose in forms).
+            void value;
+          }}
+        >
+          <label>
+            CPU
+            <input
+              aria-label="CPU"
+              type="number"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+            />
+          </label>
+          <button type="button">其他</button>
+        </Dialog>
+      );
+    }
+
+    render(<NumberFieldDialog />);
+    const input = screen.getByLabelText("CPU");
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "关闭" })).toHaveFocus());
+    input.focus();
+    expect(input).toHaveFocus();
+
+    fireEvent.change(input, { target: { value: "8" } });
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue(8);
+  });
 });

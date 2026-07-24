@@ -106,7 +106,7 @@ const columnLabels: Record<string, { zh: string; en: string }> = {
   releaseCondition: { zh: "释放条件", en: "Release condition" },
   deleted: { zh: "删除状态", en: "Delete status" },
 };
-const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_4rem_2rem] items-center gap-1";
+const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_2rem_4rem_2rem] items-center gap-1";
 const MENU_ITEM_CLASS =
   "flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel disabled:cursor-not-allowed disabled:opacity-50 [@media(pointer:coarse)]:min-h-11";
 const CHECKBOX_HIT_CLASS =
@@ -188,7 +188,8 @@ function ActionHeader() {
   return (
     <div className={`${ACTION_GRID_CLASS} text-center text-xs text-app-muted`}>
       <span>{text("终端/连接", "SSH")}</span>
-      <span>{text("监控", "Mon.")}</span>
+      <span>{text("日志", "Logs")}</span>
+      <span>{text("复制", "Clone")}</span>
       <span>{text("释放/删除", "Release/Delete")}</span>
       <span>{text("更多", "More")}</span>
     </div>
@@ -271,6 +272,7 @@ export function MoreActionsMenu({
   isPinned,
   canEdit,
   promoteLog = false,
+  promoteClone = false,
   showSshInfo = true,
   onLog,
   onClone,
@@ -282,12 +284,15 @@ export function MoreActionsMenu({
   onEdit,
   onSaveTemplate,
   onTogglePin,
+  onOpenChange,
 }: {
   task: Task;
   isPinned: boolean;
   canEdit: boolean;
-  /** When true, logs are on the action strip; expose monitor in More instead. */
+  /** When true, logs are on the primary action strip; expose monitor in More instead (and omit Logs there). */
   promoteLog?: boolean;
+  /** When true, clone is on the primary action strip; omit Clone from More. */
+  promoteClone?: boolean;
   onLog: (task: Task) => void;
   onClone: (task: Task) => void;
   onSshInfo: (task: Task) => void;
@@ -300,6 +305,8 @@ export function MoreActionsMenu({
   onTogglePin: (task: Task) => void;
   /** When false, hide connection info in More (already on the action strip). */
   showSshInfo?: boolean;
+  /** Notify parent when the menu opens/closes (e.g. to pause auto-refresh / lock table scroll). */
+  onOpenChange?: (taskId: string, open: boolean) => void;
 }) {
   const { text } = useI18n();
   const menuId = useId();
@@ -310,11 +317,19 @@ export function MoreActionsMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const menuItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const initialFocusIndexRef = useRef(0);
+  const taskId = taskRowId(task);
 
   const closeMenu = useCallback((restoreFocus = false) => {
     setOpen(false);
     if (restoreFocus) window.setTimeout(() => triggerButtonRef.current?.focus(), 0);
   }, []);
+
+  useEffect(() => {
+    onOpenChange?.(taskId, open);
+    return () => {
+      onOpenChange?.(taskId, false);
+    };
+  }, [onOpenChange, open, taskId]);
 
   const focusMenuItem = useCallback((index: number) => {
     const items = menuItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
@@ -358,19 +373,20 @@ export function MoreActionsMenu({
         }
       : null;
 
-    // Normal rows: monitor on the strip, logs in More. Failed/abnormal: logs on the strip, monitor in More.
+    // When logs are on the primary strip, keep monitor (and optional SSH info) in More — do not duplicate Logs.
     const connect: MenuItem[] = promoteLog
-      ? [logItem, ...(monitorItem ? [monitorItem] : []), ...(sshInfoItem ? [sshInfoItem] : [])]
+      ? [...(monitorItem ? [monitorItem] : []), ...(sshInfoItem ? [sshInfoItem] : [])]
       : [logItem, ...(sshInfoItem ? [sshInfoItem] : [])];
 
-    const lifecycle: MenuItem[] = [
-      {
+    const lifecycle: MenuItem[] = [];
+    if (!promoteClone) {
+      lifecycle.push({
         key: "clone",
         label: text("克隆", "Clone"),
         icon: <CopyPlus className="h-4 w-4 text-app-muted" />,
         onSelect: () => onClone(task),
-      },
-    ];
+      });
+    }
     if (canEdit) {
       lifecycle.push({
         key: "edit",
@@ -422,7 +438,7 @@ export function MoreActionsMenu({
       { id: "lifecycle", items: lifecycle },
       { id: "local", items: local },
     ] as const;
-  }, [canEdit, isPinned, onClone, onCommit, onDownload, onEdit, onLog, onMonitor, onRaw, onSaveTemplate, onSshInfo, onTogglePin, promoteLog, showSshInfo, task, text]);
+  }, [canEdit, isPinned, onClone, onCommit, onDownload, onEdit, onLog, onMonitor, onRaw, onSaveTemplate, onSshInfo, onTogglePin, promoteClone, promoteLog, showSshInfo, task, text]);
 
   const menuItems = useMemo(() => menuSections.flatMap((section) => section.items), [menuSections]);
 
@@ -430,12 +446,30 @@ export function MoreActionsMenu({
     if (!open) return undefined;
 
     const updatePosition = () => {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (!rect) return;
+      const trigger = triggerRef.current;
+      const rect = trigger?.getBoundingClientRect();
+      if (!trigger || !rect || !document.contains(trigger)) {
+        closeMenu();
+        return;
+      }
+
+      // Ignore zero rects (e.g. first layout / jsdom) so we do not dismiss the menu immediately.
+      const hasLayout = rect.width > 0 || rect.height > 0;
+      const margin = 8;
+      if (hasLayout) {
+        const offScreen =
+          rect.bottom < margin ||
+          rect.top > window.innerHeight - margin ||
+          rect.right < margin ||
+          rect.left > window.innerWidth - margin;
+        if (offScreen) {
+          closeMenu();
+          return;
+        }
+      }
 
       const width = 176;
       const estimatedHeight = Math.min(320, 8 + menuItems.length * 32 + (menuSections.length - 1) * 9);
-      const margin = 8;
       const left = Math.min(Math.max(margin, rect.right - width), window.innerWidth - width - margin);
       const top =
         rect.bottom + estimatedHeight + margin > window.innerHeight ? rect.top - estimatedHeight - 4 : rect.bottom + 4;
@@ -454,17 +488,32 @@ export function MoreActionsMenu({
         closeMenu(true);
       }
     };
-    const handleScroll = () => closeMenu();
+    const handleScroll = (event: Event) => {
+      // Keep the menu usable while the page/table moves slightly; only dismiss when the trigger leaves view.
+      if (menuRef.current && event.target instanceof Node && menuRef.current.contains(event.target)) return;
+      updatePosition();
+    };
+    const handleWheel = (event: WheelEvent) => {
+      // Portal menus sit above virtualized rows; stop wheel chaining so the table does not scroll away under the menu.
+      if (!menuRef.current?.contains(event.target as Node)) return;
+      event.stopPropagation();
+      const menu = menuRef.current;
+      if (menu.scrollHeight <= menu.clientHeight) {
+        event.preventDefault();
+      }
+    };
 
     updatePosition();
     document.addEventListener("pointerdown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("wheel", handleWheel, { capture: true, passive: false });
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", handleScroll, true);
 
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("wheel", handleWheel, true);
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", handleScroll, true);
     };
@@ -546,7 +595,7 @@ export function MoreActionsMenu({
           <div
             id={menuId}
             ref={menuRef}
-            className="fixed z-[100] max-h-[min(20rem,calc(100vh-1rem))] w-44 overflow-y-auto rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
+            className="fixed z-[100] max-h-[min(20rem,calc(100vh-1rem))] w-44 overflow-y-auto overscroll-contain rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
             role="menu"
             aria-label={text(`实例操作 ${getTaskName(task)}`, `Instance actions for ${getTaskName(task)}`)}
             style={{ left: menuPosition.left, top: menuPosition.top }}
@@ -613,6 +662,7 @@ export function TasksPage() {
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(DEFAULT_AUTO_REFRESH_INTERVAL);
   const [pinnedTaskIds, setPinnedTaskIds] = useState<string[]>([]);
   const [autoRefreshMenuOpen, setAutoRefreshMenuOpen] = useState(false);
+  const [openMoreMenuIds, setOpenMoreMenuIds] = useState<Set<string>>(() => new Set());
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [pageJumpInput, setPageJumpInput] = useState("");
   const autoRefreshMenuId = useId();
@@ -623,6 +673,18 @@ export function TasksPage() {
   const autoRefreshInitialFocusRef = useRef(0);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const mobileCardsRef = useRef<HTMLDivElement>(null);
+  const moreMenuOpen = openMoreMenuIds.size > 0;
+
+  const handleMoreMenuOpenChange = useCallback((taskId: string, open: boolean) => {
+    setOpenMoreMenuIds((prev) => {
+      const has = prev.has(taskId);
+      if (open === has) return prev;
+      const next = new Set(prev);
+      if (open) next.add(taskId);
+      else next.delete(taskId);
+      return next;
+    });
+  }, []);
 
   const deleteMutation = useMutation({
     mutationFn: (task: Task) => instanceApi.deleteTask(task.id),
@@ -782,7 +844,16 @@ export function TasksPage() {
   });
 
   const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending;
-  const autoRefreshPaused = batchPending || createOpen || Boolean(editTask) || Boolean(logTask) || Boolean(sshInfoTask) || Boolean(appSshRequest) || Boolean(rawTask) || columnSettingsOpen;
+  const autoRefreshPaused =
+    batchPending ||
+    createOpen ||
+    Boolean(editTask) ||
+    Boolean(logTask) ||
+    Boolean(sshInfoTask) ||
+    Boolean(appSshRequest) ||
+    Boolean(rawTask) ||
+    columnSettingsOpen ||
+    moreMenuOpen;
   const {
     queryState,
     keywordInput,
@@ -1064,7 +1135,7 @@ export function TasksPage() {
           const task = row.original;
           const release = isReleasableTask(task);
           const terminalLabel = text("连接信息", "Connection info");
-          const promoteLog = needsLogAttention(task);
+          const logAttention = needsLogAttention(task);
           return (
             <div className={ACTION_GRID_CLASS}>
               <Button
@@ -1076,31 +1147,24 @@ export function TasksPage() {
               >
                 <KeyRound className="h-4 w-4" />
               </Button>
-              {promoteLog ? (
-                <Button
-                  aria-label={text(`打开 ${getTaskName(task)} 的日志`, `Open logs for ${getTaskName(task)}`)}
-                  className="h-8 w-8 px-0 text-app-danger"
-                  title={text("日志", "Logs")}
-                  variant="ghost"
-                  onClick={() => setLogTask(task)}
-                >
-                  <FileText className="h-4 w-4" />
-                </Button>
-              ) : (
-                <Button
-                  aria-label={text(`打开 ${getTaskName(task)} 的监控`, `Open monitor for ${getTaskName(task)}`)}
-                  className={["h-8 w-8 px-0", isRunningTask(task) ? "text-app-accent" : ""].join(" ")}
-                  title={
-                    isRunningTask(task)
-                      ? text("监控（运行中）", "Monitor (running)")
-                      : text("监控", "Monitor")
-                  }
-                  variant="ghost"
-                  onClick={() => openMonitorDashboard(task)}
-                >
-                  <ActivitySquare className="h-4 w-4" />
-                </Button>
-              )}
+              <Button
+                aria-label={text(`打开 ${getTaskName(task)} 的日志`, `Open logs for ${getTaskName(task)}`)}
+                className={["h-8 w-8 px-0", logAttention ? "text-app-danger" : ""].join(" ")}
+                title={text("日志", "Logs")}
+                variant="ghost"
+                onClick={() => setLogTask(task)}
+              >
+                <FileText className="h-4 w-4" />
+              </Button>
+              <Button
+                aria-label={text(`复制实例 ${getTaskName(task)}`, `Clone instance ${getTaskName(task)}`)}
+                className="h-8 w-8 px-0"
+                title={text("复制实例", "Clone instance")}
+                variant="ghost"
+                onClick={() => openCloneTask(task)}
+              >
+                <CopyPlus className="h-4 w-4" />
+              </Button>
               {release ? (
                 <Button
                   className="h-8 w-16 justify-center px-1.5 text-app-muted hover:text-app-warning"
@@ -1127,7 +1191,8 @@ export function TasksPage() {
               <MoreActionsMenu
                 canEdit={getTaskEditableState() !== false}
                 isPinned={isTaskPinned(pinnedTaskIds, task)}
-                promoteLog={promoteLog}
+                promoteClone
+                promoteLog
                 showSshInfo={false}
                 task={task}
                 onClone={openCloneTask}
@@ -1136,6 +1201,7 @@ export function TasksPage() {
                 onEdit={openEditTask}
                 onLog={setLogTask}
                 onMonitor={openMonitorDashboard}
+                onOpenChange={handleMoreMenuOpenChange}
                 onRaw={setRawTask}
                 onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
                 onSshInfo={openSshInfo}
@@ -1146,7 +1212,7 @@ export function TasksPage() {
         },
       }),
     ],
-    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, handleTogglePin, locale, openSshInfo, openTerminal, pinnedTaskIds, releaseMutation.isPending, saveTemplateMutation, text],
+    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, handleMoreMenuOpenChange, handleTogglePin, locale, openSshInfo, openTerminal, pinnedTaskIds, releaseMutation.isPending, saveTemplateMutation, text],
   );
 
   const table = useReactTable({
@@ -1236,6 +1302,16 @@ export function TasksPage() {
   }, [activeRowIndex]);
 
   useEffect(() => {
+    const tableEl = tableScrollRef.current;
+    if (!tableEl || !moreMenuOpen) return undefined;
+    const previousOverflow = tableEl.style.overflow;
+    tableEl.style.overflow = "hidden";
+    return () => {
+      tableEl.style.overflow = previousOverflow;
+    };
+  }, [moreMenuOpen]);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
@@ -1255,7 +1331,8 @@ export function TasksPage() {
         Boolean(appSshRequest) ||
         Boolean(rawTask) ||
         columnSettingsOpen ||
-        autoRefreshMenuOpen
+        autoRefreshMenuOpen ||
+        moreMenuOpen
       ) {
         return;
       }
@@ -1310,6 +1387,7 @@ export function TasksPage() {
     filteredTasks,
     isListNavigationTarget,
     logTask,
+    moreMenuOpen,
     navigate,
     openTerminal,
     rawTask,
@@ -1684,7 +1762,7 @@ export function TasksPage() {
                   <div className="flex flex-wrap gap-1.5">
                     {(() => {
                       const terminalLabel = text("连接信息", "Connection info");
-                      const promoteLog = needsLogAttention(task);
+                      const logAttention = needsLogAttention(task);
                       return (
                         <>
                         <Button
@@ -1697,27 +1775,24 @@ export function TasksPage() {
                           <KeyRound className="h-4 w-4" />
                           {terminalLabel}
                         </Button>
-                        {promoteLog ? (
-                          <Button
-                            className="h-9 px-2 text-app-danger"
-                            title={text("日志", "Logs")}
-                            variant="ghost"
-                            onClick={() => setLogTask(task)}
-                          >
-                            <FileText className="h-4 w-4" />
-                            {text("日志", "Logs")}
-                          </Button>
-                        ) : isRunningTask(task) ? (
-                          <Button
-                            className="h-9 px-2 text-app-accent"
-                            title={text("监控", "Monitor")}
-                            variant="ghost"
-                            onClick={() => openMonitorDashboard(task)}
-                          >
-                            <ActivitySquare className="h-4 w-4" />
-                            {text("监控", "Monitor")}
-                          </Button>
-                        ) : null}
+                        <Button
+                          className={["h-9 px-2", logAttention ? "text-app-danger" : ""].join(" ")}
+                          title={text("日志", "Logs")}
+                          variant="ghost"
+                          onClick={() => setLogTask(task)}
+                        >
+                          <FileText className="h-4 w-4" />
+                          {text("日志", "Logs")}
+                        </Button>
+                        <Button
+                          className="h-9 px-2"
+                          title={text("复制实例", "Clone instance")}
+                          variant="ghost"
+                          onClick={() => openCloneTask(task)}
+                        >
+                          <CopyPlus className="h-4 w-4" />
+                          {text("复制", "Clone")}
+                        </Button>
                         {release ? (
                           <Button
                             className="h-9 px-2 text-app-muted hover:text-app-warning"
@@ -1744,7 +1819,8 @@ export function TasksPage() {
                         <MoreActionsMenu
                           canEdit={getTaskEditableState() !== false}
                           isPinned={isTaskPinned(pinnedTaskIds, task)}
-                          promoteLog={promoteLog}
+                          promoteClone
+                          promoteLog
                           showSshInfo={false}
                           task={task}
                           onClone={openCloneTask}
@@ -1753,6 +1829,7 @@ export function TasksPage() {
                           onEdit={openEditTask}
                           onLog={setLogTask}
                           onMonitor={openMonitorDashboard}
+                          onOpenChange={handleMoreMenuOpenChange}
                           onRaw={setRawTask}
                           onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
                           onSshInfo={openSshInfo}

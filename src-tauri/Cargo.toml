@@ -1,6 +1,6 @@
 [package]
 name = "easy-console"
-version = "0.4.9"
+version = "0.4.10"
 description = "EasyConsole desktop shell"
 authors = ["EasyConsole"]
 license = ""

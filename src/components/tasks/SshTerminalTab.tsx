@@ -293,12 +293,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           return true;
         }
         if (event.key === "v" || event.key === "V") {
-          void browserRuntime.readClipboardText()
-            .then((clipText) => {
-              const sid = sessionIdRef.current;
-              if (sid && clipText) void browserRuntime.writeSshSession(sid, clipText);
-            })
-            .catch(() => {});
+          // Suppress \x16; native paste → onData handles clipboard once.
           return false;
         }
         if (event.key === "f" || event.key === "F") {
@@ -803,8 +798,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
               event.preventDefault();
               void browserRuntime.readClipboardText()
                 .then((clipText) => {
-                  const sid = sessionIdRef.current;
-                  if (sid && clipText) void browserRuntime.writeSshSession(sid, clipText);
+                  if (clipText) termRef.current?.paste(clipText);
                 })
                 .catch(() => {});
               setTimeout(() => termRef.current?.focus(), 0);

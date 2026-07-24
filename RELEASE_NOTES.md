@@ -1,3 +1,16 @@
+# EasyConsole v0.4.10
+
+Keep Logs and Clone on the primary task action strip, and stop dialog re-renders from stealing focus in number fields.
+
+## Changes
+
+- **Tasks actions**: Logs and Clone stay on the primary row strip for every instance; Monitor remains under More. Failed/abnormal tasks still highlight Logs in danger color.
+- **More menu**: Avoid duplicating promoted actions; keep the menu usable while scrolling, pause auto-refresh while open, and lock table overflow so the trigger does not scroll away.
+- **Dialog focus**: Dialog/Drawer focus setup no longer re-runs when `onClose` identity changes, so typing in number inputs no longer jumps focus after the first digit.
+- **SSH paste**: Ctrl/Cmd+V no longer double-pastes; the context-menu paste path uses xterm `paste()` so input still goes through `onData` once.
+
+---
+
 # EasyConsole v0.4.9
 
 Restore the SSH connection-info drawer before connecting, and fix the host-key confirmation freeze.

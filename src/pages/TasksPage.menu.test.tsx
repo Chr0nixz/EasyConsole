@@ -84,7 +84,7 @@ describe("MoreActionsMenu", () => {
     expect(await screen.findByRole("menuitem", { name: /Commit image|提交镜像/ })).toBeDisabled();
   });
 
-  it("exposes monitor in More when logs are promoted for failed tasks", async () => {
+  it("exposes monitor in More when logs are on the primary strip", async () => {
     const onMonitor = vi.fn();
     render(
       <MoreActionsMenu
@@ -97,9 +97,32 @@ describe("MoreActionsMenu", () => {
 
     fireEvent.click(screen.getByRole("button"));
     const items = await screen.findAllByRole("menuitem");
-    expect(items).toHaveLength(9);
+    expect(items).toHaveLength(8);
+    expect(screen.queryByRole("menuitem", { name: /Logs|日志/ })).not.toBeInTheDocument();
+    expect(items[0]).toHaveTextContent(/Monitor|监控/);
     fireEvent.click(await screen.findByRole("menuitem", { name: /Monitor|监控/ }));
     expect(onMonitor).toHaveBeenCalledWith({ ...task, status: 7 });
+  });
+
+  it("omits clone from More when clone is on the primary strip", async () => {
+    const onMonitor = vi.fn();
+    render(
+      <MoreActionsMenu
+        task={task}
+        {...defaultProps}
+        promoteClone
+        promoteLog
+        showSshInfo={false}
+        onMonitor={onMonitor}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button"));
+    const items = await screen.findAllByRole("menuitem");
+    expect(items).toHaveLength(6);
+    expect(screen.queryByRole("menuitem", { name: /Clone|克隆/ })).not.toBeInTheDocument();
+    expect(items[0]).toHaveTextContent(/Monitor|监控/);
+    expect(items[1]).toHaveTextContent(/Commit image|提交镜像/);
   });
 
   it("keeps logs first in the toolbox and exposes connection info", async () => {
@@ -143,5 +166,28 @@ describe("MoreActionsMenu", () => {
     expect(screen.queryByRole("menuitem", { name: /Connection info|连接信息/ })).not.toBeInTheDocument();
     expect(items[0]).toHaveTextContent(/Logs|日志/);
     expect(items[1]).toHaveTextContent(/Clone|克隆/);
+  });
+
+  it("keeps the menu open while the page scrolls", async () => {
+    render(<MoreActionsMenu task={task} {...defaultProps} />);
+
+    fireEvent.click(screen.getByRole("button"));
+    expect(await screen.findByRole("menu")).toBeInTheDocument();
+
+    fireEvent.scroll(window);
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+  });
+
+  it("notifies the parent when the menu opens and closes", async () => {
+    const onOpenChange = vi.fn();
+    render(<MoreActionsMenu task={task} {...defaultProps} onOpenChange={onOpenChange} />);
+
+    fireEvent.click(screen.getByRole("button"));
+    await screen.findByRole("menu");
+    expect(onOpenChange).toHaveBeenCalledWith("1", true);
+
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+    expect(onOpenChange).toHaveBeenCalledWith("1", false);
   });
 });
