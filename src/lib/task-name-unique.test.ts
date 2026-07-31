@@ -58,6 +58,15 @@ describe("nextUniqueTaskName / allocateUniqueTaskNames", () => {
     expect(names).toEqual(["demo_1", "demo_2", "other"]);
   });
 
+  it("caches checkTaskName results", async () => {
+    const check = vi.fn(async (name: string) => ({ available: name !== "a" }));
+    const isAvailable = createTaskNameAvailabilityChecker(check);
+    expect(await isAvailable("a")).toBe(false);
+    expect(await isAvailable("a")).toBe(false);
+    expect(await isAvailable("b")).toBe(true);
+    expect(check).toHaveBeenCalledTimes(2);
+  });
+
   it("rewrites payload names when enabled", async () => {
     const payloads = await maybeAllocateUniqueCreateTaskNames([{ name: "job" }, { name: "job" }], {
       enabled: true,
