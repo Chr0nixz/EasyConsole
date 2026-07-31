@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 
 import { instanceApi } from "../lib/api";
+import { getRuntimeSettings } from "../lib/app-settings";
 import { useI18n } from "../lib/i18n";
 import { appendRunLog } from "../lib/run-logs";
 import { browserRuntime } from "../lib/runtime";
@@ -12,6 +13,7 @@ import {
   makeExecutionKey,
 } from "../lib/schedule-execution";
 import { isScheduleDue, mutateScheduledTasks, resetStaleRunningTasks, sortScheduledTasks, updateScheduledTask } from "../lib/scheduled-tasks";
+import { maybeAllocateUniqueCreateTaskNames } from "../lib/task-name-unique";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import type { ScheduledTask } from "../lib/types";
 import { errorMessage } from "../lib/use-run-logger";
@@ -85,7 +87,11 @@ export function BackgroundScheduledTaskRunner() {
           const leased = beginScheduledExecution(task);
           await persistUpdate((current) => updateScheduledTask(current, leased));
           try {
-            const result = await instanceApi.createTask(task.payload);
+            const [payload] = await maybeAllocateUniqueCreateTaskNames([task.payload], {
+              enabled: getRuntimeSettings().autoNumberDuplicateTaskNames,
+              checkTaskName: (name) => instanceApi.checkTaskName(name),
+            });
+            const result = await instanceApi.createTask(payload!);
             const remoteTaskId = extractRemoteTaskId(result);
             // Persist remote id before advancing scheduleTime so a crash mid-way is needs_review, not replay.
             const withRemote: ScheduledTask = {

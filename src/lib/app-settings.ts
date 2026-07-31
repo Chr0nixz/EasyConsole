@@ -47,6 +47,8 @@ export type AppSettings = {
   monitorDashboardUrl: string;
   notificationPreferences: NotificationPreferences;
   autoCheckUpdates: boolean;
+  /** When creating instances, append `_1`, `_2`, … if the name already exists. Default on. */
+  autoNumberDuplicateTaskNames: boolean;
   desktopCloseToTray: boolean;
   desktopClosePrompt: boolean;
   runLogLimit: number;
@@ -145,6 +147,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
     (import.meta as ImportMetaWithEnv).env?.VITE_MONITOR_DASHBOARD_URL || DEFAULT_MONITOR_DASHBOARD_URL,
   notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
   autoCheckUpdates: true,
+  autoNumberDuplicateTaskNames: true,
   desktopCloseToTray: false,
   desktopClosePrompt: true,
   runLogLimit: DEFAULT_RUN_LOG_LIMIT,
@@ -302,6 +305,7 @@ export function normalizeAppSettings(settings: Partial<AppSettings>): AppSetting
     monitorDashboardUrl: normalizeUrl(settings.monitorDashboardUrl, DEFAULT_APP_SETTINGS.monitorDashboardUrl),
     notificationPreferences: normalizeNotificationPreferences(settings.notificationPreferences),
     autoCheckUpdates: settings.autoCheckUpdates !== false,
+    autoNumberDuplicateTaskNames: settings.autoNumberDuplicateTaskNames !== false,
     desktopCloseToTray: settings.desktopCloseToTray === true,
     desktopClosePrompt: settings.desktopClosePrompt !== false,
     runLogLimit: normalizePositiveInteger(settings.runLogLimit, DEFAULT_APP_SETTINGS.runLogLimit),

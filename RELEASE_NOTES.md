@@ -1,3 +1,15 @@
+# EasyConsole v0.4.11
+
+Auto-number duplicate instance names on create, and keep the Tasks more-actions menu anchored while scrolling.
+
+## Changes
+
+- **Auto-number duplicates**: When creating instances, colliding names become `XXX_1`, `XXX_2`, … via `checkTaskName`. Enabled by default in the create dialog and Settings; also applies to clone, templates, and scheduled creation.
+- **Clone naming**: Clone prefills the source instance name so auto-numbering can produce a sequential sibling.
+- **Tasks more menu**: Host the menu in a document portal with sticky viewport positioning so it stays usable while the table scrolls; pause refresh / lock overflow while open.
+
+---
+
 # EasyConsole v0.4.10
 
 Keep Logs and Clone on the primary task action strip, and stop dialog re-renders from stealing focus in number fields.

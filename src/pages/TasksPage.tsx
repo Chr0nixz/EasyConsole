@@ -29,7 +29,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 
@@ -267,6 +267,408 @@ async function loadNumberSetting(key: string, fallback: number) {
   }
 }
 
+type MoreMenuPosition = { left: number; top: number };
+
+type MoreMenuItem = {
+  key: string;
+  label: string;
+  icon: ReactNode;
+  disabled?: boolean;
+  title?: string;
+  onSelect: () => void;
+};
+
+type MoreMenuSection = { id: string; items: MoreMenuItem[] };
+
+function computeMoreMenuPosition(anchor: DOMRect, itemCount: number, sectionCount: number): MoreMenuPosition {
+  const width = 176;
+  const margin = 8;
+  const estimatedHeight = Math.min(320, 8 + itemCount * 32 + Math.max(0, sectionCount - 1) * 9);
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 768;
+  const left = Math.min(Math.max(margin, anchor.right - width), Math.max(margin, viewportWidth - width - margin));
+  const top =
+    anchor.bottom + estimatedHeight + margin > viewportHeight ? anchor.top - estimatedHeight - 4 : anchor.bottom + 4;
+  return { left, top: Math.max(margin, top) };
+}
+
+function buildMoreMenuSections({
+  task,
+  isPinned,
+  canEdit,
+  promoteLog,
+  promoteClone,
+  showSshInfo,
+  text,
+  onLog,
+  onClone,
+  onSshInfo,
+  onMonitor,
+  onRaw,
+  onDownload,
+  onCommit,
+  onEdit,
+  onSaveTemplate,
+  onTogglePin,
+}: {
+  task: Task;
+  isPinned: boolean;
+  canEdit: boolean;
+  promoteLog: boolean;
+  promoteClone: boolean;
+  showSshInfo: boolean;
+  text: (zh: string, en: string) => string;
+  onLog: (task: Task) => void;
+  onClone: (task: Task) => void;
+  onSshInfo: (task: Task) => void;
+  onMonitor?: (task: Task) => void;
+  onRaw: (task: Task) => void;
+  onDownload: (task: Task) => void;
+  onCommit: (task: Task) => void;
+  onEdit: (task: Task) => void;
+  onSaveTemplate: (task: Task) => void;
+  onTogglePin: (task: Task) => void;
+}): MoreMenuSection[] {
+  const running = isRunningTask(task);
+  const logItem: MoreMenuItem = {
+    key: "log",
+    label: text("日志", "Logs"),
+    icon: <FileText className="h-4 w-4 text-app-muted" />,
+    onSelect: () => onLog(task),
+  };
+  const monitorItem: MoreMenuItem | null =
+    promoteLog && onMonitor
+      ? {
+          key: "monitor",
+          label: text("监控", "Monitor"),
+          icon: <ActivitySquare className="h-4 w-4 text-app-muted" />,
+          onSelect: () => onMonitor(task),
+        }
+      : null;
+  const sshInfoItem: MoreMenuItem | null = showSshInfo
+    ? {
+        key: "ssh-info",
+        label: text("连接信息", "Connection info"),
+        icon: <KeyRound className="h-4 w-4 text-app-muted" />,
+        onSelect: () => onSshInfo(task),
+      }
+    : null;
+
+  const connect: MoreMenuItem[] = promoteLog
+    ? [...(monitorItem ? [monitorItem] : []), ...(sshInfoItem ? [sshInfoItem] : [])]
+    : [logItem, ...(sshInfoItem ? [sshInfoItem] : [])];
+
+  const lifecycle: MoreMenuItem[] = [];
+  if (!promoteClone) {
+    lifecycle.push({
+      key: "clone",
+      label: text("克隆", "Clone"),
+      icon: <CopyPlus className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onClone(task),
+    });
+  }
+  if (canEdit) {
+    lifecycle.push({
+      key: "edit",
+      label: text("编辑", "Edit"),
+      icon: <Pencil className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onEdit(task),
+    });
+  }
+  lifecycle.push({
+    key: "commit",
+    label: text("提交镜像", "Commit image"),
+    icon: <Upload className="h-4 w-4 text-app-muted" />,
+    disabled: !running,
+    title: running
+      ? text("提交镜像", "Commit image")
+      : text("仅运行中实例可提交镜像", "Only running instances can be committed"),
+    onSelect: () => onCommit(task),
+  });
+
+  const local: MoreMenuItem[] = [
+    {
+      key: "download",
+      label: text("下载", "Download"),
+      icon: <Download className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onDownload(task),
+    },
+    {
+      key: "template",
+      label: text("存为模板", "Save as template"),
+      icon: <Save className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onSaveTemplate(task),
+    },
+    {
+      key: "pin",
+      label: isPinned ? text("取消置顶", "Unpin") : text("置顶", "Pin"),
+      icon: isPinned ? <PinOff className="h-4 w-4 text-app-muted" /> : <Pin className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onTogglePin(task),
+    },
+    {
+      key: "raw",
+      label: text("原始 JSON", "Raw JSON"),
+      icon: <Braces className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onRaw(task),
+    },
+  ];
+
+  return [
+    { id: "connect", items: connect },
+    { id: "lifecycle", items: lifecycle },
+    { id: "local", items: local },
+  ];
+}
+
+function MoreActionsMenuPanel({
+  task,
+  position,
+  menuId,
+  initialFocusIndex,
+  triggerRef,
+  promoteLog,
+  promoteClone,
+  showSshInfo,
+  isPinned,
+  canEdit,
+  onClose,
+  onLog,
+  onClone,
+  onSshInfo,
+  onMonitor,
+  onRaw,
+  onDownload,
+  onCommit,
+  onEdit,
+  onSaveTemplate,
+  onTogglePin,
+}: {
+  task: Task;
+  position: MoreMenuPosition;
+  menuId: string;
+  initialFocusIndex: number;
+  triggerRef: MutableRefObject<HTMLElement | null>;
+  promoteLog: boolean;
+  promoteClone: boolean;
+  showSshInfo: boolean;
+  isPinned: boolean;
+  canEdit: boolean;
+  onClose: (restoreFocus?: boolean) => void;
+  onLog: (task: Task) => void;
+  onClone: (task: Task) => void;
+  onSshInfo: (task: Task) => void;
+  onMonitor?: (task: Task) => void;
+  onRaw: (task: Task) => void;
+  onDownload: (task: Task) => void;
+  onCommit: (task: Task) => void;
+  onEdit: (task: Task) => void;
+  onSaveTemplate: (task: Task) => void;
+  onTogglePin: (task: Task) => void;
+}) {
+  const { text } = useI18n();
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [menuPosition, setMenuPosition] = useState(position);
+  const taskId = taskRowId(task);
+
+  const menuSections = useMemo(
+    () =>
+      buildMoreMenuSections({
+        task,
+        isPinned,
+        canEdit,
+        promoteLog,
+        promoteClone,
+        showSshInfo,
+        text,
+        onLog,
+        onClone,
+        onSshInfo,
+        onMonitor,
+        onRaw,
+        onDownload,
+        onCommit,
+        onEdit,
+        onSaveTemplate,
+        onTogglePin,
+      }),
+    [
+      canEdit,
+      isPinned,
+      onClone,
+      onCommit,
+      onDownload,
+      onEdit,
+      onLog,
+      onMonitor,
+      onRaw,
+      onSaveTemplate,
+      onSshInfo,
+      onTogglePin,
+      promoteClone,
+      promoteLog,
+      showSshInfo,
+      task,
+      text,
+    ],
+  );
+  const menuItems = useMemo(() => menuSections.flatMap((section) => section.items), [menuSections]);
+
+  const focusMenuItem = useCallback((index: number) => {
+    const items = menuItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
+    if (items.length === 0) return;
+    const nextIndex = (index + items.length) % items.length;
+    items[nextIndex].focus();
+  }, []);
+
+  const resolveTrigger = useCallback(() => {
+    const current = triggerRef.current;
+    if (current && document.contains(current)) return current;
+    const rebound = document.querySelector<HTMLElement>(`[data-task-more-trigger="${taskId}"]`);
+    if (rebound) {
+      triggerRef.current = rebound;
+      return rebound;
+    }
+    return null;
+  }, [taskId, triggerRef]);
+
+  useEffect(() => {
+    setMenuPosition(position);
+  }, [position]);
+
+  useEffect(() => {
+    window.setTimeout(() => focusMenuItem(initialFocusIndex), 0);
+  }, [focusMenuItem, initialFocusIndex]);
+
+  useEffect(() => {
+    const updatePosition = () => {
+      const trigger = resolveTrigger();
+      if (!trigger) {
+        onClose();
+        return;
+      }
+      const rect = trigger.getBoundingClientRect();
+      // Keep the menu open through transient zero-rect layout passes (virtualized rows / jsdom).
+      if (rect.width <= 0 && rect.height <= 0) return;
+      setMenuPosition(computeMoreMenuPosition(rect, menuItems.length, menuSections.length));
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      const trigger = resolveTrigger();
+      if (trigger?.contains(target) || menuRef.current?.contains(target)) return;
+      onClose();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose(true);
+      }
+    };
+    const handleScroll = (event: Event) => {
+      if (menuRef.current && event.target instanceof Node && menuRef.current.contains(event.target)) return;
+      updatePosition();
+    };
+    const handleWheel = (event: WheelEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) return;
+      event.stopPropagation();
+      const menu = menuRef.current;
+      if (menu.scrollHeight <= menu.clientHeight) event.preventDefault();
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("wheel", handleWheel, { capture: true, passive: false });
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", handleScroll, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("wheel", handleWheel, true);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", handleScroll, true);
+    };
+  }, [menuItems.length, menuSections.length, onClose, resolveTrigger]);
+
+  const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const items = menuItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
+    const currentIndex = items.findIndex((item) => item === document.activeElement);
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose(true);
+      return;
+    }
+    if (event.key === "Tab") {
+      onClose();
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusMenuItem(currentIndex + 1);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusMenuItem(currentIndex - 1);
+      return;
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      focusMenuItem(0);
+      return;
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      focusMenuItem(items.length - 1);
+    }
+  };
+
+  return createPortal(
+    <div
+      id={menuId}
+      ref={menuRef}
+      className="fixed z-[100] max-h-[min(20rem,calc(100vh-1rem))] w-44 overflow-y-auto overscroll-contain rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
+      role="menu"
+      aria-label={text(`实例操作 ${getTaskName(task)}`, `Instance actions for ${getTaskName(task)}`)}
+      style={{ left: menuPosition.left, top: menuPosition.top }}
+      onKeyDown={handleMenuKeyDown}
+    >
+      {menuSections.map((section, sectionIndex) => (
+        <div key={section.id}>
+          {sectionIndex > 0 ? <div className="my-1 border-t border-app-border" role="separator" /> : null}
+          {section.items.map((item) => {
+            const index = menuItems.findIndex((candidate) => candidate.key === item.key);
+            return (
+              <button
+                key={item.key}
+                ref={(element) => {
+                  menuItemRefs.current[index] = element;
+                }}
+                className={MENU_ITEM_CLASS}
+                disabled={item.disabled}
+                role="menuitem"
+                tabIndex={-1}
+                title={item.title}
+                type="button"
+                onClick={() => {
+                  if (item.disabled) return;
+                  onClose();
+                  item.onSelect();
+                }}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
 export function MoreActionsMenu({
   task,
   isPinned,
@@ -274,6 +676,7 @@ export function MoreActionsMenu({
   promoteLog = false,
   promoteClone = false,
   showSshInfo = true,
+  open: openControlled,
   onLog,
   onClone,
   onSshInfo,
@@ -293,6 +696,8 @@ export function MoreActionsMenu({
   promoteLog?: boolean;
   /** When true, clone is on the primary action strip; omit Clone from More. */
   promoteClone?: boolean;
+  /** Controlled open state. When set, the parent owns open/close (needed for virtualized rows). */
+  open?: boolean;
   onLog: (task: Task) => void;
   onClone: (task: Task) => void;
   onSshInfo: (task: Task) => void;
@@ -305,273 +710,101 @@ export function MoreActionsMenu({
   onTogglePin: (task: Task) => void;
   /** When false, hide connection info in More (already on the action strip). */
   showSshInfo?: boolean;
-  /** Notify parent when the menu opens/closes (e.g. to pause auto-refresh / lock table scroll). */
-  onOpenChange?: (taskId: string, open: boolean) => void;
+  /** Notify parent when the menu opens/closes. Position is included so the parent can host the portal. */
+  onOpenChange?: (taskId: string, open: boolean, position?: MoreMenuPosition, trigger?: HTMLElement | null) => void;
 }) {
   const { text } = useI18n();
   const menuId = useId();
-  const [open, setOpen] = useState(false);
-  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const [openUncontrolled, setOpenUncontrolled] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<MoreMenuPosition | null>(null);
+  const [initialFocusIndex, setInitialFocusIndex] = useState(0);
   const triggerRef = useRef<HTMLDivElement>(null);
   const triggerButtonRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const menuItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const initialFocusIndexRef = useRef(0);
   const taskId = taskRowId(task);
+  const controlled = openControlled !== undefined;
+  const open = controlled ? openControlled : openUncontrolled;
 
-  const closeMenu = useCallback((restoreFocus = false) => {
-    setOpen(false);
-    if (restoreFocus) window.setTimeout(() => triggerButtonRef.current?.focus(), 0);
-  }, []);
-
-  useEffect(() => {
-    onOpenChange?.(taskId, open);
-    return () => {
-      onOpenChange?.(taskId, false);
-    };
-  }, [onOpenChange, open, taskId]);
-
-  const focusMenuItem = useCallback((index: number) => {
-    const items = menuItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
-    if (items.length === 0) return;
-    const nextIndex = (index + items.length) % items.length;
-    items[nextIndex].focus();
-  }, []);
-
-  const menuSections = useMemo(() => {
-    type MenuItem = {
-      key: string;
-      label: string;
-      icon: ReactNode;
-      disabled?: boolean;
-      title?: string;
-      onSelect: () => void;
-    };
-
-    const running = isRunningTask(task);
-    const logItem: MenuItem = {
-      key: "log",
-      label: text("日志", "Logs"),
-      icon: <FileText className="h-4 w-4 text-app-muted" />,
-      onSelect: () => onLog(task),
-    };
-    const monitorItem: MenuItem | null =
-      promoteLog && onMonitor
-        ? {
-            key: "monitor",
-            label: text("监控", "Monitor"),
-            icon: <ActivitySquare className="h-4 w-4 text-app-muted" />,
-            onSelect: () => onMonitor(task),
-          }
-        : null;
-    const sshInfoItem: MenuItem | null = showSshInfo
-      ? {
-          key: "ssh-info",
-          label: text("连接信息", "Connection info"),
-          icon: <KeyRound className="h-4 w-4 text-app-muted" />,
-          onSelect: () => onSshInfo(task),
-        }
-      : null;
-
-    // When logs are on the primary strip, keep monitor (and optional SSH info) in More — do not duplicate Logs.
-    const connect: MenuItem[] = promoteLog
-      ? [...(monitorItem ? [monitorItem] : []), ...(sshInfoItem ? [sshInfoItem] : [])]
-      : [logItem, ...(sshInfoItem ? [sshInfoItem] : [])];
-
-    const lifecycle: MenuItem[] = [];
-    if (!promoteClone) {
-      lifecycle.push({
-        key: "clone",
-        label: text("克隆", "Clone"),
-        icon: <CopyPlus className="h-4 w-4 text-app-muted" />,
-        onSelect: () => onClone(task),
-      });
-    }
-    if (canEdit) {
-      lifecycle.push({
-        key: "edit",
-        label: text("编辑", "Edit"),
-        icon: <Pencil className="h-4 w-4 text-app-muted" />,
-        onSelect: () => onEdit(task),
-      });
-    }
-    lifecycle.push({
-      key: "commit",
-      label: text("提交镜像", "Commit image"),
-      icon: <Upload className="h-4 w-4 text-app-muted" />,
-      disabled: !running,
-      title: running
-        ? text("提交镜像", "Commit image")
-        : text("仅运行中实例可提交镜像", "Only running instances can be committed"),
-      onSelect: () => onCommit(task),
+  const menuItemCount = useMemo(() => {
+    const sections = buildMoreMenuSections({
+      task,
+      isPinned,
+      canEdit,
+      promoteLog,
+      promoteClone,
+      showSshInfo,
+      text,
+      onLog,
+      onClone,
+      onSshInfo,
+      onMonitor,
+      onRaw,
+      onDownload,
+      onCommit,
+      onEdit,
+      onSaveTemplate,
+      onTogglePin,
     });
+    return {
+      items: sections.reduce((sum, section) => sum + section.items.length, 0),
+      sections: sections.length,
+    };
+  }, [
+    canEdit,
+    isPinned,
+    onClone,
+    onCommit,
+    onDownload,
+    onEdit,
+    onLog,
+    onMonitor,
+    onRaw,
+    onSaveTemplate,
+    onSshInfo,
+    onTogglePin,
+    promoteClone,
+    promoteLog,
+    showSshInfo,
+    task,
+    text,
+  ]);
 
-    const local: MenuItem[] = [
-      {
-        key: "download",
-        label: text("下载", "Download"),
-        icon: <Download className="h-4 w-4 text-app-muted" />,
-        onSelect: () => onDownload(task),
-      },
-      {
-        key: "template",
-        label: text("存为模板", "Save as template"),
-        icon: <Save className="h-4 w-4 text-app-muted" />,
-        onSelect: () => onSaveTemplate(task),
-      },
-      {
-        key: "pin",
-        label: isPinned ? text("取消置顶", "Unpin") : text("置顶", "Pin"),
-        icon: isPinned ? <PinOff className="h-4 w-4 text-app-muted" /> : <Pin className="h-4 w-4 text-app-muted" />,
-        onSelect: () => onTogglePin(task),
-      },
-      {
-        key: "raw",
-        label: text("原始 JSON", "Raw JSON"),
-        icon: <Braces className="h-4 w-4 text-app-muted" />,
-        onSelect: () => onRaw(task),
-      },
-    ];
-
-    return [
-      { id: "connect", items: connect },
-      { id: "lifecycle", items: lifecycle },
-      { id: "local", items: local },
-    ] as const;
-  }, [canEdit, isPinned, onClone, onCommit, onDownload, onEdit, onLog, onMonitor, onRaw, onSaveTemplate, onSshInfo, onTogglePin, promoteClone, promoteLog, showSshInfo, task, text]);
-
-  const menuItems = useMemo(() => menuSections.flatMap((section) => section.items), [menuSections]);
-
-  useEffect(() => {
-    if (!open) return undefined;
-
-    const updatePosition = () => {
-      const trigger = triggerRef.current;
-      const rect = trigger?.getBoundingClientRect();
-      if (!trigger || !rect || !document.contains(trigger)) {
-        closeMenu();
-        return;
+  const closeMenu = useCallback(
+    (restoreFocus = false) => {
+      if (!controlled) {
+        setOpenUncontrolled(false);
+        setMenuPosition(null);
       }
+      onOpenChange?.(taskId, false);
+      if (restoreFocus) window.setTimeout(() => triggerButtonRef.current?.focus(), 0);
+    },
+    [controlled, onOpenChange, taskId],
+  );
 
-      // Ignore zero rects (e.g. first layout / jsdom) so we do not dismiss the menu immediately.
-      const hasLayout = rect.width > 0 || rect.height > 0;
-      const margin = 8;
-      if (hasLayout) {
-        const offScreen =
-          rect.bottom < margin ||
-          rect.top > window.innerHeight - margin ||
-          rect.right < margin ||
-          rect.left > window.innerWidth - margin;
-        if (offScreen) {
-          closeMenu();
-          return;
-        }
+  const openMenu = useCallback(
+    (focusIndex: number) => {
+      const rect = triggerRef.current?.getBoundingClientRect() ?? triggerButtonRef.current?.getBoundingClientRect();
+      const position = rect
+        ? computeMoreMenuPosition(rect, menuItemCount.items, menuItemCount.sections)
+        : { left: 8, top: 8 };
+      setInitialFocusIndex(focusIndex);
+      if (!controlled) {
+        setMenuPosition(position);
+        setOpenUncontrolled(true);
       }
-
-      const width = 176;
-      const estimatedHeight = Math.min(320, 8 + menuItems.length * 32 + (menuSections.length - 1) * 9);
-      const left = Math.min(Math.max(margin, rect.right - width), window.innerWidth - width - margin);
-      const top =
-        rect.bottom + estimatedHeight + margin > window.innerHeight ? rect.top - estimatedHeight - 4 : rect.bottom + 4;
-
-      setMenuPosition({ left, top: Math.max(margin, top) });
-    };
-
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
-      closeMenu();
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        closeMenu(true);
-      }
-    };
-    const handleScroll = (event: Event) => {
-      // Keep the menu usable while the page/table moves slightly; only dismiss when the trigger leaves view.
-      if (menuRef.current && event.target instanceof Node && menuRef.current.contains(event.target)) return;
-      updatePosition();
-    };
-    const handleWheel = (event: WheelEvent) => {
-      // Portal menus sit above virtualized rows; stop wheel chaining so the table does not scroll away under the menu.
-      if (!menuRef.current?.contains(event.target as Node)) return;
-      event.stopPropagation();
-      const menu = menuRef.current;
-      if (menu.scrollHeight <= menu.clientHeight) {
-        event.preventDefault();
-      }
-    };
-
-    updatePosition();
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    document.addEventListener("wheel", handleWheel, { capture: true, passive: false });
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", handleScroll, true);
-
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-      document.removeEventListener("wheel", handleWheel, true);
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", handleScroll, true);
-    };
-  }, [closeMenu, menuItems.length, menuSections.length, open]);
-
-  useEffect(() => {
-    if (!open || !menuPosition) return;
-    window.setTimeout(() => focusMenuItem(initialFocusIndexRef.current), 0);
-  }, [focusMenuItem, menuPosition, open]);
+      onOpenChange?.(taskId, true, position, triggerRef.current);
+    },
+    [controlled, menuItemCount.items, menuItemCount.sections, onOpenChange, taskId],
+  );
 
   const handleTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     event.preventDefault();
-    initialFocusIndexRef.current = event.key === "ArrowUp" ? -1 : 0;
-    setOpen(true);
-  };
-
-  const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    const items = menuItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
-    const currentIndex = items.findIndex((item) => item === document.activeElement);
-
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeMenu(true);
-      return;
-    }
-
-    if (event.key === "Tab") {
-      closeMenu();
-      return;
-    }
-
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      focusMenuItem(currentIndex + 1);
-      return;
-    }
-
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      focusMenuItem(currentIndex - 1);
-      return;
-    }
-
-    if (event.key === "Home") {
-      event.preventDefault();
-      focusMenuItem(0);
-      return;
-    }
-
-    if (event.key === "End") {
-      event.preventDefault();
-      focusMenuItem(items.length - 1);
-    }
+    if (open) return;
+    openMenu(event.key === "ArrowUp" ? -1 : 0);
   };
 
   return (
-    <div ref={triggerRef} className="relative z-30">
+    <div ref={triggerRef} className="relative z-30" data-task-more-trigger={taskId}>
       <Button
         ref={triggerButtonRef}
         aria-controls={open ? menuId : undefined}
@@ -583,58 +816,41 @@ export function MoreActionsMenu({
         type="button"
         variant="ghost"
         onClick={() => {
-          initialFocusIndexRef.current = 0;
-          setOpen((value) => !value);
+          if (open) {
+            closeMenu();
+            return;
+          }
+          openMenu(0);
         }}
         onKeyDown={handleTriggerKeyDown}
       >
         <MoreHorizontal className="h-4 w-4" />
       </Button>
-      {open && menuPosition
-        ? createPortal(
-          <div
-            id={menuId}
-            ref={menuRef}
-            className="fixed z-[100] max-h-[min(20rem,calc(100vh-1rem))] w-44 overflow-y-auto overscroll-contain rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
-            role="menu"
-            aria-label={text(`实例操作 ${getTaskName(task)}`, `Instance actions for ${getTaskName(task)}`)}
-            style={{ left: menuPosition.left, top: menuPosition.top }}
-            onKeyDown={handleMenuKeyDown}
-          >
-            {menuSections.map((section, sectionIndex) => (
-              <div key={section.id}>
-                {sectionIndex > 0 ? <div className="my-1 border-t border-app-border" role="separator" /> : null}
-                {section.items.map((item) => {
-                  const index = menuItems.findIndex((candidate) => candidate.key === item.key);
-                  return (
-                    <button
-                      key={item.key}
-                      ref={(element) => {
-                        menuItemRefs.current[index] = element;
-                      }}
-                      className={MENU_ITEM_CLASS}
-                      disabled={item.disabled}
-                      role="menuitem"
-                      tabIndex={-1}
-                      title={item.title}
-                      type="button"
-                      onClick={() => {
-                        if (item.disabled) return;
-                        closeMenu();
-                        item.onSelect();
-                      }}
-                    >
-                      {item.icon}
-                      {item.label}
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
-          </div>,
-          document.body,
-        )
-        : null}
+      {!controlled && open && menuPosition ? (
+        <MoreActionsMenuPanel
+          task={task}
+          position={menuPosition}
+          menuId={menuId}
+          initialFocusIndex={initialFocusIndex}
+          triggerRef={triggerRef}
+          promoteLog={promoteLog}
+          promoteClone={promoteClone}
+          showSshInfo={showSshInfo}
+          isPinned={isPinned}
+          canEdit={canEdit}
+          onClose={closeMenu}
+          onLog={onLog}
+          onClone={onClone}
+          onSshInfo={onSshInfo}
+          onMonitor={onMonitor}
+          onRaw={onRaw}
+          onDownload={onDownload}
+          onCommit={onCommit}
+          onEdit={onEdit}
+          onSaveTemplate={onSaveTemplate}
+          onTogglePin={onTogglePin}
+        />
+      ) : null}
     </div>
   );
 }
@@ -662,10 +878,15 @@ export function TasksPage() {
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(DEFAULT_AUTO_REFRESH_INTERVAL);
   const [pinnedTaskIds, setPinnedTaskIds] = useState<string[]>([]);
   const [autoRefreshMenuOpen, setAutoRefreshMenuOpen] = useState(false);
-  const [openMoreMenuIds, setOpenMoreMenuIds] = useState<Set<string>>(() => new Set());
+  const [moreMenu, setMoreMenu] = useState<null | {
+    taskId: string;
+    left: number;
+    top: number;
+  }>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [pageJumpInput, setPageJumpInput] = useState("");
   const autoRefreshMenuId = useId();
+  const moreActionsMenuId = useId();
   const autoRefreshMenuRef = useRef<HTMLDivElement>(null);
   const autoRefreshTriggerRef = useRef<HTMLButtonElement>(null);
   const autoRefreshMenuListRef = useRef<HTMLDivElement>(null);
@@ -673,17 +894,32 @@ export function TasksPage() {
   const autoRefreshInitialFocusRef = useRef(0);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const mobileCardsRef = useRef<HTMLDivElement>(null);
-  const moreMenuOpen = openMoreMenuIds.size > 0;
+  const moreMenuTriggerRef = useRef<HTMLElement | null>(null);
+  const moreMenuOpen = moreMenu !== null;
 
-  const handleMoreMenuOpenChange = useCallback((taskId: string, open: boolean) => {
-    setOpenMoreMenuIds((prev) => {
-      const has = prev.has(taskId);
-      if (open === has) return prev;
-      const next = new Set(prev);
-      if (open) next.add(taskId);
-      else next.delete(taskId);
-      return next;
-    });
+  const handleMoreMenuOpenChange = useCallback((
+    taskId: string,
+    open: boolean,
+    position?: MoreMenuPosition,
+    trigger?: HTMLElement | null,
+  ) => {
+    if (!open) {
+      setMoreMenu((prev) => (prev?.taskId === taskId ? null : prev));
+      if (moreMenuTriggerRef.current && (!trigger || moreMenuTriggerRef.current === trigger)) {
+        moreMenuTriggerRef.current = null;
+      }
+      return;
+    }
+    if (!position) return;
+    moreMenuTriggerRef.current = trigger ?? null;
+    setMoreMenu({ taskId, left: position.left, top: position.top });
+  }, []);
+
+  const closeMoreMenu = useCallback((restoreFocus = false) => {
+    const trigger = moreMenuTriggerRef.current;
+    moreMenuTriggerRef.current = null;
+    setMoreMenu(null);
+    if (restoreFocus) window.setTimeout(() => trigger?.querySelector("button")?.focus(), 0);
   }, []);
 
   const deleteMutation = useMutation({
@@ -875,6 +1111,15 @@ export function TasksPage() {
     autoRefreshInterval,
     autoRefreshPaused,
   });
+
+  const moreMenuTask = useMemo(() => {
+    if (!moreMenu) return null;
+    return filteredTasks.find((task) => taskRowId(task) === moreMenu.taskId) ?? null;
+  }, [filteredTasks, moreMenu]);
+
+  useEffect(() => {
+    if (moreMenu && !moreMenuTask) closeMoreMenu();
+  }, [closeMoreMenu, moreMenu, moreMenuTask]);
 
   useEffect(() => {
     setPageJumpInput(String(queryState.page));
@@ -1191,6 +1436,7 @@ export function TasksPage() {
               <MoreActionsMenu
                 canEdit={getTaskEditableState() !== false}
                 isPinned={isTaskPinned(pinnedTaskIds, task)}
+                open={moreMenu?.taskId === taskRowId(task)}
                 promoteClone
                 promoteLog
                 showSshInfo={false}
@@ -1212,7 +1458,7 @@ export function TasksPage() {
         },
       }),
     ],
-    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, handleMoreMenuOpenChange, handleTogglePin, locale, openSshInfo, openTerminal, pinnedTaskIds, releaseMutation.isPending, saveTemplateMutation, text],
+    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, handleMoreMenuOpenChange, handleTogglePin, locale, moreMenu?.taskId, openSshInfo, openTerminal, pinnedTaskIds, releaseMutation.isPending, saveTemplateMutation.mutate, text],
   );
 
   const table = useReactTable({
@@ -1302,12 +1548,26 @@ export function TasksPage() {
   }, [activeRowIndex]);
 
   useEffect(() => {
-    const tableEl = tableScrollRef.current;
-    if (!tableEl || !moreMenuOpen) return undefined;
-    const previousOverflow = tableEl.style.overflow;
-    tableEl.style.overflow = "hidden";
+    // Do not toggle overflow on the virtualized table — that remounts rows and kills the menu.
+    // Block wheel/touch scrolling on the list instead so the trigger row stays mounted.
+    const scrollRoots = [tableScrollRef.current, mobileCardsRef.current].filter(
+      (el): el is HTMLDivElement => Boolean(el),
+    );
+    if (!moreMenuOpen || scrollRoots.length === 0) return undefined;
+
+    const preventScroll = (event: Event) => {
+      event.preventDefault();
+    };
+
+    for (const el of scrollRoots) {
+      el.addEventListener("wheel", preventScroll, { passive: false });
+      el.addEventListener("touchmove", preventScroll, { passive: false });
+    }
     return () => {
-      tableEl.style.overflow = previousOverflow;
+      for (const el of scrollRoots) {
+        el.removeEventListener("wheel", preventScroll);
+        el.removeEventListener("touchmove", preventScroll);
+      }
     };
   }, [moreMenuOpen]);
 
@@ -1819,6 +2079,7 @@ export function TasksPage() {
                         <MoreActionsMenu
                           canEdit={getTaskEditableState() !== false}
                           isPinned={isTaskPinned(pinnedTaskIds, task)}
+                          open={moreMenu?.taskId === taskRowId(task)}
                           promoteClone
                           promoteLog
                           showSshInfo={false}
@@ -2013,6 +2274,31 @@ export function TasksPage() {
           }}
         />
       </Suspense>
+      {moreMenu && moreMenuTask ? (
+        <MoreActionsMenuPanel
+          task={moreMenuTask}
+          position={{ left: moreMenu.left, top: moreMenu.top }}
+          menuId={moreActionsMenuId}
+          initialFocusIndex={0}
+          triggerRef={moreMenuTriggerRef}
+          promoteLog
+          promoteClone
+          showSshInfo={false}
+          isPinned={isTaskPinned(pinnedTaskIds, moreMenuTask)}
+          canEdit={getTaskEditableState() !== false}
+          onClose={closeMoreMenu}
+          onLog={setLogTask}
+          onClone={openCloneTask}
+          onSshInfo={openSshInfo}
+          onMonitor={openMonitorDashboard}
+          onRaw={setRawTask}
+          onDownload={handleDownloadTask}
+          onCommit={confirmCommitTask}
+          onEdit={openEditTask}
+          onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
+          onTogglePin={handleTogglePin}
+        />
+      ) : null}
       <AppSshTerminalDialog request={appSshRequest} onClose={() => setAppSshRequest(null)} />
       <Dialog open={Boolean(rawTask)} title={text(`实例原始 JSON ${rawTask ? getTaskName(rawTask) : ""}`, `Instance Raw JSON ${rawTask ? getTaskName(rawTask) : ""}`)} onClose={() => setRawTask(null)} width="max-w-4xl">
         <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">

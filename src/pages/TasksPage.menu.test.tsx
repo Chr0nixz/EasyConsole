@@ -184,7 +184,7 @@ describe("MoreActionsMenu", () => {
 
     fireEvent.click(screen.getByRole("button"));
     await screen.findByRole("menu");
-    expect(onOpenChange).toHaveBeenCalledWith("1", true);
+    expect(onOpenChange).toHaveBeenCalledWith("1", true, expect.objectContaining({ left: expect.any(Number), top: expect.any(Number) }), expect.any(HTMLElement));
 
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());

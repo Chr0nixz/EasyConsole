@@ -10,6 +10,7 @@ import {
   Globe,
   History,
   KeyRound,
+  ListOrdered,
   Network,
   Palette,
   PanelTopClose,
@@ -969,6 +970,30 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           </div>
         </Panel>
       ) : null}
+
+      <Panel>
+        <SectionHeader
+          icon={ListOrdered}
+          title={text("实例创建", "Instance Creation")}
+          description={text("控制新建、克隆、模板和定时创建时的实例命名行为。", "Controls instance naming for create, clone, template, and scheduled creation.")}
+        />
+        <div className="grid gap-3 p-4 sm:grid-cols-2">
+          <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface">
+            <input
+              className="mt-1"
+              type="checkbox"
+              checked={form.autoNumberDuplicateTaskNames}
+              onChange={(event) => setForm((value) => ({ ...value, autoNumberDuplicateTaskNames: event.target.checked }))}
+            />
+            <span>
+              <span className="block font-medium text-app-text">{text("有同名实例自动增加编号", "Auto-number when name already exists")}</span>
+              <span className="mt-1 block text-xs leading-5 text-app-muted">
+                {text("例如已有 XXX 时创建为 XXX_1。默认开启；新建对话框也会显示此选项。", "For example, create XXX_1 when XXX already exists. Enabled by default; also shown in the create dialog.")}
+              </span>
+            </span>
+          </label>
+        </div>
+      </Panel>
 
       {browserRuntime.supportsTray ? (
         <Panel>

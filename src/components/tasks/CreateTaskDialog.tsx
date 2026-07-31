@@ -8,6 +8,7 @@ import { RemoteStoragePicker } from "../storage/RemoteStoragePicker";
 import { ResourcePriceFields } from "./ResourcePriceFields";
 import { Button, Dialog, Input, Select } from "../ui";
 import { imageApi, instanceApi } from "../../lib/api";
+import { getRuntimeSettings } from "../../lib/app-settings";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../../lib/batch";
 import { useAuth } from "../../lib/use-auth";
 import { useToast } from "../../lib/use-toast";
@@ -17,6 +18,7 @@ import { useI18n } from "../../lib/i18n";
 import { queryKeys } from "../../lib/query-keys";
 import { parsePositivePrice } from "../../lib/resource-price";
 import { normalizeStoragePath } from "../../lib/remote-storage";
+import { allocateUniqueTaskNames, createTaskNameAvailabilityChecker } from "../../lib/task-name-unique";
 import { invalidateTaskQueries } from "../../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, Task } from "../../lib/types";
 import { confirmDiscardUnsavedChanges, useUnsavedChanges } from "../../lib/use-unsaved-changes";
@@ -46,6 +48,13 @@ type FormSnapshot = {
   batchCount: string;
 };
 
+function resolveCreateFormName(isEditMode: boolean, initialTask?: Task | null) {
+  if (isEditMode) return initialTask?.name ?? "";
+  // Clone keeps the source name so auto-numbering can produce XXX_1 when needed.
+  if (initialTask) return String(initialTask.name || initialTask.task_name || formatTaskDefaultName());
+  return formatTaskDefaultName();
+}
+
 function buildFormSnapshot({
   isEditMode,
   initialTask,
@@ -56,7 +65,7 @@ function buildFormSnapshot({
   username: string;
 }): FormSnapshot {
   return {
-    name: isEditMode ? (initialTask?.name ?? "") : formatTaskDefaultName(),
+    name: resolveCreateFormName(isEditMode, initialTask),
     imageId: String(getTaskImageId(initialTask)),
     price: String(initialTask?.price ?? DEFAULT_PRICE),
     cpu: String(initialTask?.cpu ?? DEFAULT_CPU),
@@ -204,7 +213,9 @@ export function CreateTaskDialog({
   const [scriptPath, setScriptPath] = useState("");
   const [storagePickerTarget, setStoragePickerTarget] = useState<StoragePickerTarget | null>(null);
   const [batchCount, setBatchCount] = useState("1");
+  const [autoNumberDuplicates, setAutoNumberDuplicates] = useState(() => getRuntimeSettings().autoNumberDuplicateTaskNames);
   const [formError, setFormError] = useState<string | null>(null);
+  const [resolvingNames, setResolvingNames] = useState(false);
   const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
   const unsavedMessage = text("表单有未保存的更改，确定要关闭吗？", "You have unsaved changes. Discard them and close?");
 
@@ -275,7 +286,9 @@ export function CreateTaskDialog({
       setScriptPath(snapshot.scriptPath);
       setStoragePickerTarget(null);
       setBatchCount(snapshot.batchCount);
+      setAutoNumberDuplicates(getRuntimeSettings().autoNumberDuplicateTaskNames);
       setFormError(null);
+      setResolvingNames(false);
       resetTouched();
     } else {
       setInitialSnapshot(null);
@@ -374,7 +387,7 @@ export function CreateTaskDialog({
     },
   });
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     setFormError(null);
     touchAll(["name", "image", "price", "cpu", "gpu", "memory", "batchCount", "releaseTime", "workDirectory", "scriptPath"]);
@@ -446,10 +459,27 @@ export function CreateTaskDialog({
       return;
     }
 
+    const baseNames = Array.from({ length: count }, (_, index) => formatBatchTaskName(taskName, index, count));
+    let resolvedNames = baseNames;
+    if (autoNumberDuplicates) {
+      setResolvingNames(true);
+      try {
+        resolvedNames = await allocateUniqueTaskNames(
+          baseNames,
+          createTaskNameAvailabilityChecker((candidate) => instanceApi.checkTaskName(candidate)),
+        );
+      } catch (error) {
+        setFormError(error instanceof Error ? error.message : text("无法分配可用实例名称", "Unable to allocate an available instance name"));
+        return;
+      } finally {
+        setResolvingNames(false);
+      }
+    }
+
     mutation.mutate(
-      Array.from({ length: count }, (_, index) => ({
+      resolvedNames.map((resolvedName) => ({
         ...sharedPayload,
-        name: formatBatchTaskName(taskName, index, count),
+        name: resolvedName,
       })),
     );
   }
@@ -500,6 +530,22 @@ export function CreateTaskDialog({
                 </label>
               )}
             </div>
+            {isEditMode ? null : (
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  className="mt-0.5"
+                  type="checkbox"
+                  checked={autoNumberDuplicates}
+                  onChange={(event) => setAutoNumberDuplicates(event.target.checked)}
+                />
+                <span>
+                  <span className="block text-app-text">{text("有同名实例自动增加编号", "Auto-number when name already exists")}</span>
+                  <span className="mt-0.5 block text-xs leading-5 text-app-muted">
+                    {text("例如已有 XXX 时创建为 XXX_1；默认开启。", "For example, create XXX_1 when XXX already exists. Enabled by default.")}
+                  </span>
+                </span>
+              </label>
+            )}
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("镜像", "Image")}</span>
               <Select className={cn("w-full", touchedFields.has("image") && fieldErrors.image && "border-app-danger")} value={imageId} onChange={(event) => setImageId(event.target.value)} onBlur={() => markTouched("image")}>
@@ -620,11 +666,13 @@ export function CreateTaskDialog({
             <Button type="button" variant="secondary" onClick={requestClose}>
               {text("取消", "Cancel")}
             </Button>
-            <Button disabled={mutation.isPending}>
-              {mutation.isPending
+            <Button disabled={mutation.isPending || resolvingNames}>
+              {mutation.isPending || resolvingNames
                 ? isEditMode
                   ? text("保存中", "Saving")
-                  : text("正在创建", "Creating")
+                  : resolvingNames
+                    ? text("检查名称中", "Checking names")
+                    : text("正在创建", "Creating")
                 : isEditMode
                   ? text("保存", "Save")
                   : text("创建", "Create")}

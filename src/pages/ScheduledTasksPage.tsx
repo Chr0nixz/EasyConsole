@@ -8,6 +8,7 @@ import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
 import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
 import { Button, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
+import { getRuntimeSettings } from "../lib/app-settings";
 import { queryKeys } from "../lib/query-keys";
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
@@ -26,6 +27,7 @@ import {
   updateScheduledTask,
 } from "../lib/scheduled-tasks";
 import { describeRecurrence, RecurrenceValidationError, validateRecurrence } from "../lib/task-recurrence";
+import { maybeAllocateUniqueCreateTaskNames } from "../lib/task-name-unique";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, ScheduledTask, ScheduledTaskStatus, TaskRecurrence, TaskRecurrenceType } from "../lib/types";
 import { useAuth } from "../lib/use-auth";
@@ -414,7 +416,14 @@ export function ScheduledTasksPage() {
         next = updateScheduledTask(next, { ...target, status: "running", lastError: undefined });
         await persist(next);
         try {
-          await instanceApi.createTask(target.payload);
+          await instanceApi.createTask(
+            (
+              await maybeAllocateUniqueCreateTaskNames([target.payload], {
+                enabled: getRuntimeSettings().autoNumberDuplicateTaskNames,
+                checkTaskName: (name) => instanceApi.checkTaskName(name),
+              })
+            )[0]!,
+          );
           next = updateScheduledTask(next, { ...target, status: "done", lastRunAt: new Date().toISOString(), lastError: undefined });
           await persist(next);
           invalidateTaskQueries(queryClient);

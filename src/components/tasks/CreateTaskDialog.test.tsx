@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   imageList: vi.fn(),
   imageSystem: vi.fn(),
   createTask: vi.fn(),
+  checkTaskName: vi.fn(),
 }));
 
 vi.mock("../../lib/api", () => ({
@@ -16,6 +17,7 @@ vi.mock("../../lib/api", () => ({
   },
   instanceApi: {
     createTask: (...args: unknown[]) => mocks.createTask(...args),
+    checkTaskName: (...args: unknown[]) => mocks.checkTaskName(...args),
   },
 }));
 
@@ -72,14 +74,31 @@ describe("CreateTaskDialog", () => {
     mocks.imageList.mockReset();
     mocks.imageSystem.mockReset();
     mocks.createTask.mockReset();
+    mocks.checkTaskName.mockReset();
     mocks.imageList.mockResolvedValue({ items: [{ id: "img1", name: "ubuntu", tag: "22.04" }] });
     mocks.imageSystem.mockResolvedValue({ items: [] });
     mocks.createTask.mockResolvedValue({});
+    mocks.checkTaskName.mockResolvedValue({ available: true });
   });
 
   it("renders dialog with create title", async () => {
     renderDialog();
     await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
+    expect(screen.getByText("有同名实例自动增加编号")).toBeInTheDocument();
+  });
+
+  it("auto-numbers colliding names before create", async () => {
+    mocks.checkTaskName.mockImplementation(async (name: string) => ({ available: name !== "my-task" }));
+    renderDialog();
+    await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
+    await waitFor(() => expect(mocks.imageList).toHaveBeenCalled());
+
+    const nameInput = screen.getAllByRole("textbox")[0];
+    fireEvent.change(nameInput, { target: { value: "my-task" } });
+    fireEvent.submit(document.querySelector("form")!);
+
+    await waitFor(() => expect(mocks.createTask).toHaveBeenCalled());
+    expect(mocks.createTask).toHaveBeenCalledWith(expect.objectContaining({ name: "my-task_1" }));
   });
 
   it("shows form error when submitting with empty name", async () => {

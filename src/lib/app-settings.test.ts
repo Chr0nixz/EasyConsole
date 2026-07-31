@@ -40,6 +40,7 @@ describe("app settings", () => {
         "task.abnormal": "system",
       },
       autoCheckUpdates: true,
+      autoNumberDuplicateTaskNames: true,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
       runLogLimit: DEFAULT_RUN_LOG_LIMIT,
@@ -58,6 +59,7 @@ describe("app settings", () => {
         "task.abnormal": "system",
       },
       autoCheckUpdates: true,
+      autoNumberDuplicateTaskNames: true,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
       runLogLimit: DEFAULT_RUN_LOG_LIMIT,
@@ -69,6 +71,7 @@ describe("app settings", () => {
   it("fills notification preference defaults for older stored settings", () => {
     expect(parseAppSettings(JSON.stringify({ apiBaseUrl: "http://a/api", monitorDashboardUrl: "http://b/d" }))).toMatchObject({
       autoCheckUpdates: true,
+      autoNumberDuplicateTaskNames: true,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
       runLogLimit: DEFAULT_RUN_LOG_LIMIT,

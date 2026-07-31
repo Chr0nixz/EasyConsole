@@ -8,6 +8,7 @@ import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
 import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
 import { Button, Dialog, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
+import { getRuntimeSettings } from "../lib/app-settings";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { getReleaseConditionText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
@@ -15,6 +16,7 @@ import { parsePositivePrice } from "../lib/resource-price";
 import { normalizeStoragePath } from "../lib/remote-storage";
 import { browserRuntime } from "../lib/runtime";
 import { invalidateTaskQueries, taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
+import { maybeAllocateUniqueCreateTaskNames } from "../lib/task-name-unique";
 import { cn } from "../lib/utils";
 import {
   createTaskTemplate,
@@ -672,7 +674,10 @@ export function TaskTemplatesPage() {
   const createMutation = useMutation({
     mutationFn: async (args: { template: TaskTemplate; variableValues?: Record<string, string> }) => {
       const { template, variableValues } = args;
-      const payloads = taskTemplateToPayloads(template, new Date(), variableValues);
+      const payloads = await maybeAllocateUniqueCreateTaskNames(taskTemplateToPayloads(template, new Date(), variableValues), {
+        enabled: getRuntimeSettings().autoNumberDuplicateTaskNames,
+        checkTaskName: (name) => instanceApi.checkTaskName(name),
+      });
       await runSequentiallyWithDelay(payloads, (payload) => instanceApi.createTask(payload));
       return { payloads, template };
     },
