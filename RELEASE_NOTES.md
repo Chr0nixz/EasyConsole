@@ -1,3 +1,16 @@
+# EasyConsole v0.4.12
+
+Softer in-app update prompts, background download support, and a shell scroll lock so long Settings pages no longer push the chrome away.
+
+## Changes
+
+- **Update UX**: Auto-check only shows a toast (with View) and status badge instead of forcing a dialog; Later / Skip this version / close semantics are clearer.
+- **Background update**: Download continues after closing the dialog; progress stays in the status bar, and completion/failure toasts can reopen the dialog.
+- **Settings updates**: Status row plus View update CTA; auto-check copy notes soft notifications.
+- **Shell scroll**: Keep the sidebar/header fixed while the main pane scrolls; lock document overflow so long Settings content cannot scroll the whole app away.
+
+---
+
 # EasyConsole v0.4.11
 
 Auto-number duplicate instance names on create, and keep the Tasks more-actions menu anchored while scrolling.

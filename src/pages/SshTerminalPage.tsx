@@ -91,7 +91,7 @@ export function SshTerminalPage() {
 
   if (error) {
     return (
-      <div className="flex h-screen items-center justify-center bg-app-terminalBg text-app-terminalText">
+      <div className="flex h-full items-center justify-center bg-app-terminalBg text-app-terminalText">
         <div className="text-center">
           <p className="text-sm">{error}</p>
           <button
@@ -108,14 +108,14 @@ export function SshTerminalPage() {
 
   if (!request) {
     return (
-      <div className="flex h-screen items-center justify-center bg-app-terminalBg text-app-terminalText">
+      <div className="flex h-full items-center justify-center bg-app-terminalBg text-app-terminalText">
         <p className="text-sm text-app-terminalMuted">{text("正在初始化...", "Initializing...")}</p>
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen flex-col bg-app-terminalBg">
+    <div className="flex h-full flex-col bg-app-terminalBg">
       <SshTerminalTab
         request={request}
         tabId={tabId}

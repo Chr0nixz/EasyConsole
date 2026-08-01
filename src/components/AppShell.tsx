@@ -1,4 +1,4 @@
-import { CalendarClock, Command as CommandIcon, Database, DownloadCloud, ExternalLink, FolderOpen, Image, LayoutDashboard, LogOut, Minimize2, MoreHorizontal, Power, RotateCcw, Save, ScrollText, Search, Server, Settings, SquareStack, TerminalSquare, WifiOff, X } from "lucide-react";
+import { ArrowUpCircle, CalendarClock, Command as CommandIcon, Database, DownloadCloud, ExternalLink, FolderOpen, Image, LayoutDashboard, LogOut, Minimize2, MoreHorizontal, Power, RotateCcw, Save, ScrollText, Search, Server, Settings, SquareStack, TerminalSquare, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
@@ -390,7 +390,7 @@ export function AppShell() {
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-app-bg text-app-text md:flex-row">
+    <div className="flex h-full max-h-full flex-col overflow-hidden bg-app-bg text-app-text md:flex-row">
       <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[100] focus:rounded focus:bg-app-surface focus:px-3 focus:py-1.5 focus:text-sm focus:shadow-popover">
         {text("跳到主内容", "Skip to main content")}
       </a>
@@ -570,7 +570,7 @@ export function AppShell() {
         </div>
       </Dialog>
       {confirm.confirmDialog}
-      <div className="relative hidden h-screen shrink-0 md:flex" style={{ width: navWidth }}>
+      <div className="relative hidden h-full shrink-0 md:flex" style={{ width: navWidth }}>
         <aside className="flex h-full w-full min-w-0 flex-col overflow-hidden border-r border-app-border bg-app-surface">
           <div className="flex h-14 items-center gap-2 border-b border-app-border px-4">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-app-accent text-app-onAccent">
@@ -614,8 +614,8 @@ export function AppShell() {
           onPointerDown={handleNavResizePointerDown}
         />
       </div>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-40 flex min-h-14 items-center justify-between gap-3 border-b border-app-border bg-app-surface px-4 md:px-5" style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="z-40 flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-app-border bg-app-surface px-4 md:px-5" style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}>
           <div className="min-w-0">
             <h1 className="truncate text-base font-semibold">{t(titles[location.pathname] ?? "common.console")}</h1>
             <p className="hidden truncate text-xs text-app-muted sm:block">{t("shell.headerDescription")}</p>
@@ -722,19 +722,45 @@ export function AppShell() {
                     </button>
                     {browserRuntime.supportsUpdater && (appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading") ? (
                       <button
-                        className="app-interactive flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-app-panel"
+                        className={cn(
+                          "app-interactive flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-app-panel",
+                          appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading"
+                            ? "bg-app-accentSoft/40 ring-1 ring-inset ring-app-accent/25"
+                            : null,
+                        )}
                         type="button"
                         onClick={() => {
                           appUpdate.openUpdateDialog();
                           setStatusPopoverOpen(false);
                         }}
                       >
-                        <DownloadCloud className="h-4 w-4 shrink-0 text-app-muted" />
+                        <ArrowUpCircle
+                          className={cn(
+                            "h-4 w-4 shrink-0",
+                            appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading"
+                              ? "text-app-accent"
+                              : "text-app-muted",
+                          )}
+                        />
                         <span className="min-w-0 flex-1">
                           <span className="block font-medium text-app-text">
-                            {appUpdate.state.status === "readyToRestart" ? text("重启更新", "Restart update") : text("更新", "Update")}
+                            {appUpdate.state.status === "readyToRestart"
+                              ? browserRuntime.isMobile
+                                ? text("安装 APK", "Install APK")
+                                : text("重启完成更新", "Restart to finish update")
+                              : appUpdate.state.status === "downloading"
+                                ? text("正在下载更新", "Downloading update")
+                                : text(`更新到 ${appUpdate.state.info?.version ?? ""}`, `Update to ${appUpdate.state.info?.version ?? ""}`)}
                           </span>
-                          <span className="block truncate text-xs text-app-muted">{text("有新版本可用", "A new version is available")}</span>
+                          <span className="block truncate text-xs text-app-muted">
+                            {appUpdate.state.status === "downloading"
+                              ? `${appUpdate.state.progress?.percent ?? 0}%`
+                              : appUpdate.state.status === "readyToRestart"
+                                ? browserRuntime.isMobile
+                                  ? text("APK 已就绪", "APK is ready")
+                                  : text("重启后生效", "Takes effect after restart")
+                                : text("有新版本可用", "A new version is available")}
+                          </span>
                         </span>
                       </button>
                     ) : null}
@@ -778,7 +804,7 @@ export function AppShell() {
             </Button>
           </div>
         ) : null}
-        <main id="main-content" className="app-main-content min-h-0 min-w-0 flex-1 overflow-auto px-3 py-4 pb-32 sm:p-5 sm:pb-32 md:pb-5">
+        <main id="main-content" className="app-main-content min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain px-3 py-4 pb-32 sm:p-5 sm:pb-32 md:pb-5">
           <div key={location.pathname} className="app-page-enter">
             <Outlet />
           </div>

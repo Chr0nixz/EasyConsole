@@ -42,9 +42,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const value = useMemo<ToastContextValue>(
     () => ({
       notify,
-      success: (title, description) => notify({ kind: "success", title, description }),
+      success: (title, description, action) => notify({ kind: "success", title, description, action }),
       error: (title, description, action) => notify({ kind: "error", title, description, action }),
-      info: (title, description) => notify({ kind: "info", title, description }),
+      info: (title, description, action) => notify({ kind: "info", title, description, action }),
     }),
     [notify],
   );

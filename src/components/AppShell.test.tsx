@@ -30,7 +30,17 @@ vi.mock("../lib/use-auth", () => ({
 }));
 
 vi.mock("../lib/app-update-context", () => ({
-  useAppUpdate: () => ({ updateAvailable: false, applyUpdate: vi.fn(), dismiss: vi.fn() }),
+  useAppUpdate: () => ({
+    state: { status: "idle", dialogOpen: false },
+    checkForUpdates: vi.fn(),
+    installUpdate: vi.fn(),
+    relaunchAfterUpdate: vi.fn(),
+    dismissUpdate: vi.fn(),
+    ignoreUpdateVersion: vi.fn(),
+    openUpdateDialog: vi.fn(),
+    closeUpdateDialog: vi.fn(),
+    openReleasePage: vi.fn(),
+  }),
 }));
 
 vi.mock("../lib/download-queue-context", () => ({

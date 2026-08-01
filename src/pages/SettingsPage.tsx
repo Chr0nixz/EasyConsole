@@ -1421,6 +1421,15 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 <RefreshCw className="h-4 w-4" />
                 {appUpdate.state.status === "checking" ? text("检查中", "Checking") : text("检查更新", "Check")}
               </Button>
+              {(appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading") ? (
+                <Button type="button" onClick={appUpdate.openUpdateDialog}>
+                  {appUpdate.state.status === "readyToRestart"
+                    ? browserRuntime.isMobile
+                      ? text("安装更新", "Install update")
+                      : text("查看更新", "View update")
+                    : text("查看更新", "View update")}
+                </Button>
+              ) : null}
               <Button type="button" variant="secondary" onClick={appUpdate.openReleasePage}>
                 <ExternalLink className="h-4 w-4" />
                 GitHub
@@ -1440,10 +1449,35 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               <span>
                 <span className="block font-medium text-app-text">{text("启动后自动检查更新", "Check for updates after startup")}</span>
                 <span className="mt-1 block text-xs leading-5 text-app-muted">
-                  {text("最多每 12 小时自动检查一次；手动检查不受限制。", "Automatic checks run at most once every 12 hours; manual checks are not limited.")}
+                  {text(
+                    "最多每 12 小时自动检查一次；发现更新时以通知与状态栏提醒，不会强制弹窗。手动检查不受限制。",
+                    "Automatic checks run at most once every 12 hours. When an update is found, you get a notification and status badge instead of a forced dialog. Manual checks are not limited.",
+                  )}
                 </span>
               </span>
             </label>
+            <div className="rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+              <div className="text-xs text-app-muted">{text("更新状态", "Update status")}</div>
+              <div className="mt-1 text-app-text">
+                {appUpdate.state.status === "checking"
+                  ? text("正在检查…", "Checking…")
+                  : appUpdate.state.status === "downloading"
+                    ? text(`正在下载（${appUpdate.state.progress?.percent ?? 0}%）`, `Downloading (${appUpdate.state.progress?.percent ?? 0}%)`)
+                    : appUpdate.state.status === "readyToRestart"
+                      ? browserRuntime.isMobile
+                        ? text("APK 已就绪，可安装", "APK ready to install")
+                        : text("更新已就绪，重启后生效", "Update ready — restart to apply")
+                      : appUpdate.state.status === "available" && appUpdate.state.info
+                        ? text(`发现 ${appUpdate.state.info.version}`, `Update ${appUpdate.state.info.version} available`)
+                        : appUpdate.state.status === "upToDate"
+                          ? text("已是最新版本", "Up to date")
+                          : appUpdate.state.status === "error"
+                            ? text("检查失败", "Check failed")
+                            : appUpdate.state.status === "unsupported"
+                              ? text("当前环境不支持更新", "Updates unsupported in this runtime")
+                              : text("尚未检查", "Not checked yet")}
+              </div>
+            </div>
             {!browserRuntime.supportsUpdater ? (
               <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">
                 {text("当前运行时不支持安装桌面更新。", "This runtime cannot install desktop updates.")}
@@ -1460,20 +1494,17 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 </div>
                 <code className="font-mono text-app-text">{appUpdate.state.currentVersion ?? appUpdate.state.info?.currentVersion ?? "-"}</code>
               </div>
-              <div>
-                <div className="mb-1 flex items-center gap-1.5 text-app-muted">
-                  <span className="h-1.5 w-1.5 rounded-full bg-app-muted" />
-                  {text("更新源", "Update source")}
-                </div>
-                <code className="block max-w-full break-all rounded-md bg-app-surface px-2.5 py-2 font-mono leading-5 text-app-text ring-1 ring-inset ring-app-border">
-                  {browserRuntime.isMobile ? GITHUB_API_RELEASE_URL : APP_UPDATE_ENDPOINT_URL}
-                </code>
-              </div>
               {appUpdate.state.lastCheckedAt ? (
                 <div className="text-app-muted">
                   {text("上次检查", "Last checked")} {new Date(appUpdate.state.lastCheckedAt).toLocaleString()}
                 </div>
               ) : null}
+              <div className="text-app-muted">
+                <div className="mb-1">{text("更新源", "Update source")}</div>
+                <code className="block max-w-full break-all font-mono text-[11px] leading-4 text-app-muted">
+                  {browserRuntime.isMobile ? GITHUB_API_RELEASE_URL : APP_UPDATE_ENDPOINT_URL}
+                </code>
+              </div>
             </div>
           </aside>
         </div>
@@ -1690,7 +1721,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   if (!standalone) return content;
 
   return (
-    <main className="min-h-screen min-w-0 overflow-x-hidden bg-app-bg px-3 py-4 text-app-text sm:p-6">
+    <main className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain bg-app-bg px-3 py-4 text-app-text sm:p-6">
       <div className="mx-auto max-w-5xl min-w-0 space-y-4">
         <Link className="app-interactive inline-flex h-9 items-center gap-2 rounded-md px-2 text-sm text-app-muted hover:bg-app-panel hover:text-app-text" to="/login">
           <ArrowLeft className="h-4 w-4" />

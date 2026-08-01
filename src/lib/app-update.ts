@@ -33,6 +33,8 @@ export type AppUpdateStateSnapshot = {
   lastAutoCheckAt?: string;
   dismissedVersion?: string;
   dismissedAt?: string;
+  /** When true, suppress auto toast/dialog for dismissedVersion until a newer version appears. */
+  dismissedUntilNextVersion?: boolean;
 };
 
 export function parseAppUpdateState(raw: string | null): AppUpdateStateSnapshot {
@@ -43,6 +45,7 @@ export function parseAppUpdateState(raw: string | null): AppUpdateStateSnapshot 
       lastAutoCheckAt: typeof parsed.lastAutoCheckAt === "string" ? parsed.lastAutoCheckAt : undefined,
       dismissedVersion: typeof parsed.dismissedVersion === "string" ? parsed.dismissedVersion : undefined,
       dismissedAt: typeof parsed.dismissedAt === "string" ? parsed.dismissedAt : undefined,
+      dismissedUntilNextVersion: parsed.dismissedUntilNextVersion === true,
     };
   } catch {
     return {};
@@ -63,8 +66,13 @@ export function shouldAutoCheckForUpdates(state: AppUpdateStateSnapshot, now = D
   return now - timeValue(state.lastAutoCheckAt) >= AUTO_UPDATE_CHECK_INTERVAL_MS;
 }
 
+/**
+ * Whether auto-check may surface a toast (and historically a dialog) for this update.
+ * Shell badge remains available regardless; only soft notifications are gated.
+ */
 export function shouldShowDismissedUpdate(info: AppUpdateInfo, state: AppUpdateStateSnapshot, now = Date.now()) {
   if (state.dismissedVersion !== info.version) return true;
+  if (state.dismissedUntilNextVersion) return false;
   return now - timeValue(state.dismissedAt) >= DISMISSED_UPDATE_INTERVAL_MS;
 }
 

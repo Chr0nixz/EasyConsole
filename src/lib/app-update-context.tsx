@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Update } from "@tauri-apps/plugin-updater";
 
 import {
@@ -49,6 +49,7 @@ type AppUpdateContextValue = {
   installUpdate: () => Promise<void>;
   relaunchAfterUpdate: () => Promise<void>;
   dismissUpdate: () => Promise<void>;
+  ignoreUpdateVersion: () => Promise<void>;
   openUpdateDialog: () => void;
   closeUpdateDialog: () => void;
   openReleasePage: () => void;
@@ -74,6 +75,12 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
   const runLogger = useRunLogger();
   const [state, setState] = useState<AppUpdateState>(initialState);
   const [updateHandle, setUpdateHandle] = useState<Update | null>(null);
+  const dialogOpenRef = useRef(false);
+  const installInFlightRef = useRef(false);
+
+  useEffect(() => {
+    dialogOpenRef.current = state.dialogOpen;
+  }, [state.dialogOpen]);
 
   useEffect(() => {
     if (!browserRuntime.supportsUpdater || isTrayMenuWindow()) return;
@@ -86,9 +93,28 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  const openUpdateDialog = useCallback(() => {
+    setState((current) => ({ ...current, dialogOpen: true }));
+  }, []);
+
+  const closeUpdateDialog = useCallback(() => {
+    setState((current) => ({ ...current, dialogOpen: false }));
+  }, []);
+
+  const openDialogAction = useCallback(() => ({
+    label: text("查看", "View"),
+    onClick: () => setState((current) => ({ ...current, dialogOpen: true })),
+  }), [text]);
+
   const checkForUpdates = useCallback(async (manual = false) => {
     if (!browserRuntime.supportsUpdater || isTrayMenuWindow()) {
       setState((value) => ({ ...value, status: "unsupported", dialogOpen: manual ? true : value.dialogOpen }));
+      return;
+    }
+
+    // Don't interrupt an in-flight download/install.
+    if (installInFlightRef.current) {
+      if (manual) setState((value) => ({ ...value, dialogOpen: true }));
       return;
     }
 
@@ -138,7 +164,7 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
 
       setUpdateHandle(result.update ?? null);
       const stored = await loadAppUpdateState();
-      const showDialog = manual || shouldShowDismissedUpdate(result.info, stored);
+      const allowSoftNotify = shouldShowDismissedUpdate(result.info, stored);
       setState((value) => ({
         ...value,
         status: "available",
@@ -146,9 +172,25 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
         currentVersion: result.info.currentVersion,
         progress: undefined,
         lastCheckedAt: checkedAt,
-        dialogOpen: showDialog || value.dialogOpen,
+        // Manual checks open the dialog; auto checks only use toast + shell badge.
+        dialogOpen: manual ? true : value.dialogOpen,
       }));
-      toast.info(text("发现新版本", "Update available"), `${result.info.currentVersion} -> ${result.info.version}`);
+
+      if (manual || allowSoftNotify) {
+        toast.notify({
+          kind: "info",
+          title: text("发现新版本", "Update available"),
+          description: `${result.info.currentVersion} -> ${result.info.version}`,
+          durationMs: manual ? 3500 : 8000,
+          action: manual
+            ? undefined
+            : {
+                label: text("查看", "View"),
+                onClick: () => setState((current) => ({ ...current, dialogOpen: true })),
+              },
+        });
+      }
+
       void runLogger.log({
         source: "system",
         channel: "tauri",
@@ -188,6 +230,8 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
   }, [checkForUpdates]);
 
   const installUpdate = useCallback(async () => {
+    if (installInFlightRef.current) return;
+
     // Mobile: download APK from GitHub, then trigger install intent
     if (browserRuntime.isMobile) {
       const apkUrl = state.info?.apkUrl;
@@ -196,6 +240,7 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      installInFlightRef.current = true;
       setState((value) => ({ ...value, status: "downloading", error: undefined, progress: { loaded: 0, percent: 0 } }));
       try {
         const apkPath = await downloadMobileApk(apkUrl, (progress) => {
@@ -207,7 +252,15 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
           apkPath,
           progress: { ...value.progress, percent: 100, loaded: value.progress?.loaded ?? 0 },
         }));
-        toast.success(text("APK 已下载", "APK downloaded"), text("点击下方按钮安装", "Tap the button below to install"));
+        toast.notify({
+          kind: "success",
+          title: text("APK 已下载", "APK downloaded"),
+          description: dialogOpenRef.current
+            ? text("点击下方按钮安装", "Tap the button below to install")
+            : text("可在状态栏继续安装", "Continue installing from the status bar"),
+          durationMs: 8000,
+          action: dialogOpenRef.current ? undefined : openDialogAction(),
+        });
         void runLogger.log({
           source: "system",
           channel: "mobile",
@@ -220,7 +273,11 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         const message = errorMessage(error, text("APK 下载失败", "APK download failed"));
         setState((value) => ({ ...value, status: "error", error: message }));
-        toast.error(text("APK 下载失败", "APK download failed"), message);
+        toast.error(
+          text("APK 下载失败", "APK download failed"),
+          message,
+          dialogOpenRef.current ? undefined : openDialogAction(),
+        );
         void runLogger.log({
           source: "system",
           channel: "mobile",
@@ -230,6 +287,8 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
           title: text("APK 下载失败", "APK download failed"),
           error: message,
         });
+      } finally {
+        installInFlightRef.current = false;
       }
       return;
     }
@@ -240,13 +299,22 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    installInFlightRef.current = true;
     setState((value) => ({ ...value, status: "downloading", error: undefined, progress: { loaded: 0, percent: 0 } }));
     try {
       await downloadAndInstallAppUpdate(updateHandle, (progress) => {
         setState((value) => ({ ...value, progress }));
       });
       setState((value) => ({ ...value, status: "readyToRestart", progress: { ...value.progress, percent: 100, loaded: value.progress?.loaded ?? 0 } }));
-      toast.success(text("更新已安装", "Update installed"), text("重启 EasyConsole 后生效", "Restart EasyConsole to apply it"));
+      toast.notify({
+        kind: "success",
+        title: text("更新已安装", "Update installed"),
+        description: dialogOpenRef.current
+          ? text("重启 EasyConsole 后生效", "Restart EasyConsole to apply it")
+          : text("可在状态栏重启完成更新", "Restart from the status bar to finish"),
+        durationMs: 8000,
+        action: dialogOpenRef.current ? undefined : openDialogAction(),
+      });
       void runLogger.log({
         source: "system",
         channel: "tauri",
@@ -259,7 +327,11 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       const message = errorMessage(error, text("更新安装失败", "Update installation failed"));
       setState((value) => ({ ...value, status: "error", error: message }));
-      toast.error(text("更新安装失败", "Update installation failed"), message);
+      toast.error(
+        text("更新安装失败", "Update installation failed"),
+        message,
+        dialogOpenRef.current ? undefined : openDialogAction(),
+      );
       void runLogger.log({
         source: "system",
         channel: "tauri",
@@ -269,8 +341,10 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
         title: text("更新安装失败", "Update installation failed"),
         error: message,
       });
+    } finally {
+      installInFlightRef.current = false;
     }
-  }, [runLogger, state.info, text, toast, updateHandle]);
+  }, [openDialogAction, runLogger, state.info, text, toast, updateHandle]);
 
   const relaunchAfterUpdate = useCallback(async () => {
     if (browserRuntime.isMobile) {
@@ -298,6 +372,20 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
       ...stored,
       dismissedVersion: info.version,
       dismissedAt: new Date().toISOString(),
+      dismissedUntilNextVersion: false,
+    });
+  }, [state.info]);
+
+  const ignoreUpdateVersion = useCallback(async () => {
+    const info = state.info;
+    setState((value) => ({ ...value, dialogOpen: false }));
+    if (!info) return;
+    const stored = await loadAppUpdateState();
+    await saveAppUpdateState({
+      ...stored,
+      dismissedVersion: info.version,
+      dismissedAt: new Date().toISOString(),
+      dismissedUntilNextVersion: true,
     });
   }, [state.info]);
 
@@ -307,10 +395,11 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
     installUpdate,
     relaunchAfterUpdate,
     dismissUpdate,
-    openUpdateDialog: () => setState((current) => ({ ...current, dialogOpen: true })),
-    closeUpdateDialog: () => setState((current) => ({ ...current, dialogOpen: false })),
+    ignoreUpdateVersion,
+    openUpdateDialog,
+    closeUpdateDialog,
     openReleasePage: () => browserRuntime.openExternal(APP_UPDATE_RELEASE_URL),
-  }), [checkForUpdates, dismissUpdate, installUpdate, relaunchAfterUpdate, state]);
+  }), [checkForUpdates, closeUpdateDialog, dismissUpdate, ignoreUpdateVersion, installUpdate, openUpdateDialog, relaunchAfterUpdate, state]);
 
   return <AppUpdateContext.Provider value={value}>{children}</AppUpdateContext.Provider>;
 }

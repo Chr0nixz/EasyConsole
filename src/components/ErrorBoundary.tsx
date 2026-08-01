@@ -15,7 +15,7 @@ export function ErrorFallback({ error, reset, showHome = true }: ErrorFallbackPr
 
   return (
     <div
-      className="flex min-h-screen flex-col items-center justify-center gap-4 p-6 text-center"
+      className="flex h-full flex-col items-center justify-center gap-4 overflow-auto p-6 text-center"
       role="alert"
       aria-live="assertive"
       aria-atomic="true"

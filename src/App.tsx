@@ -103,21 +103,23 @@ const TaskDetailPage = lazy(() => import("./pages/TaskDetailPage").then((module)
 
 function AppRoot() {
   return (
-    <ToastProvider>
-      <DownloadQueueProvider>
-        <CommitQueueProvider>
-          <AppUpdateProvider>
-            <ErrorBoundary showHomeInFallback={false}>
-              <Suspense fallback={<LoadingState />}>
-                <DeepLinkHandler />
-                <Outlet />
-                <AppUpdateDialog />
-              </Suspense>
-            </ErrorBoundary>
-          </AppUpdateProvider>
-        </CommitQueueProvider>
-      </DownloadQueueProvider>
-    </ToastProvider>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <ToastProvider>
+        <DownloadQueueProvider>
+          <CommitQueueProvider>
+            <AppUpdateProvider>
+              <ErrorBoundary showHomeInFallback={false}>
+                <Suspense fallback={<LoadingState />}>
+                  <DeepLinkHandler />
+                  <Outlet />
+                  <AppUpdateDialog />
+                </Suspense>
+              </ErrorBoundary>
+            </AppUpdateProvider>
+          </CommitQueueProvider>
+        </DownloadQueueProvider>
+      </ToastProvider>
+    </div>
   );
 }
 

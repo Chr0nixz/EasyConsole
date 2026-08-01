@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
     installUpdate: vi.fn(),
     relaunchAfterUpdate: vi.fn(),
     dismissUpdate: vi.fn(),
+    ignoreUpdateVersion: vi.fn(),
     openUpdateDialog: vi.fn(),
     closeUpdateDialog: vi.fn(),
     openReleasePage: vi.fn(),
