@@ -13,7 +13,7 @@ export function buildMonitorDashboardUrl(task: Task, options?: { from?: string; 
 }
 
 export function buildMonitorDashboardEmbedUrl(task: Task, options?: { from?: string; to?: string }) {
-  return buildMonitorDashboardUrlWithBase(task, getRuntimeSettings().monitorDashboardUrl, options);
+  return buildMonitorDashboardUrl(task, options);
 }
 
 export function openMonitorDashboard(task: Task) {

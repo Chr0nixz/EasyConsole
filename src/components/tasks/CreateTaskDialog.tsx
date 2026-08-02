@@ -18,7 +18,8 @@ import { useI18n } from "../../lib/i18n";
 import { queryKeys } from "../../lib/query-keys";
 import { parsePositivePrice } from "../../lib/resource-price";
 import { normalizeStoragePath } from "../../lib/remote-storage";
-import { allocateUniqueTaskNames, createTaskNameAvailabilityChecker } from "../../lib/task-name-unique";
+import { allocateUniqueTaskNames, collectExistingTaskNames, createCombinedTaskNameAvailabilityChecker } from "../../lib/task-name-unique";
+import { fetchAllTasks } from "../../lib/fetch-all-tasks";
 import { invalidateTaskQueries } from "../../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, Task } from "../../lib/types";
 import { confirmDiscardUnsavedChanges, useUnsavedChanges } from "../../lib/use-unsaved-changes";
@@ -48,13 +49,6 @@ type FormSnapshot = {
   batchCount: string;
 };
 
-function resolveCreateFormName(isEditMode: boolean, initialTask?: Task | null) {
-  if (isEditMode) return initialTask?.name ?? "";
-  // Clone keeps the source name so auto-numbering can produce XXX_1 when needed.
-  if (initialTask) return String(initialTask.name || initialTask.task_name || formatTaskDefaultName());
-  return formatTaskDefaultName();
-}
-
 function buildFormSnapshot({
   isEditMode,
   initialTask,
@@ -65,7 +59,7 @@ function buildFormSnapshot({
   username: string;
 }): FormSnapshot {
   return {
-    name: resolveCreateFormName(isEditMode, initialTask),
+    name: isEditMode ? (initialTask?.name ?? "") : formatTaskDefaultName(),
     imageId: String(getTaskImageId(initialTask)),
     price: String(initialTask?.price ?? DEFAULT_PRICE),
     cpu: String(initialTask?.cpu ?? DEFAULT_CPU),
@@ -464,9 +458,13 @@ export function CreateTaskDialog({
     if (autoNumberDuplicates) {
       setResolvingNames(true);
       try {
+        const listed = await fetchAllTasks(instanceApi);
         resolvedNames = await allocateUniqueTaskNames(
           baseNames,
-          createTaskNameAvailabilityChecker((candidate) => instanceApi.checkTaskName(candidate)),
+          createCombinedTaskNameAvailabilityChecker({
+            existingNames: collectExistingTaskNames(listed.items),
+            checkTaskName: (candidate) => instanceApi.checkTaskName(candidate),
+          }),
         );
       } catch (error) {
         setFormError(error instanceof Error ? error.message : text("无法分配可用实例名称", "Unable to allocate an available instance name"));

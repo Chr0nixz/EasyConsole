@@ -16,7 +16,8 @@ import { parsePositivePrice } from "../lib/resource-price";
 import { normalizeStoragePath } from "../lib/remote-storage";
 import { browserRuntime } from "../lib/runtime";
 import { invalidateTaskQueries, taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
-import { maybeAllocateUniqueCreateTaskNames } from "../lib/task-name-unique";
+import { maybeAllocateUniqueCreateTaskNames, collectExistingTaskNames } from "../lib/task-name-unique";
+import { fetchAllTasks } from "../lib/fetch-all-tasks";
 import { cn } from "../lib/utils";
 import {
   createTaskTemplate,
@@ -676,6 +677,7 @@ export function TaskTemplatesPage() {
       const { template, variableValues } = args;
       const payloads = await maybeAllocateUniqueCreateTaskNames(taskTemplateToPayloads(template, new Date(), variableValues), {
         enabled: getRuntimeSettings().autoNumberDuplicateTaskNames,
+        listExistingNames: async () => collectExistingTaskNames((await fetchAllTasks(instanceApi)).items),
         checkTaskName: (name) => instanceApi.checkTaskName(name),
       });
       await runSequentiallyWithDelay(payloads, (payload) => instanceApi.createTask(payload));

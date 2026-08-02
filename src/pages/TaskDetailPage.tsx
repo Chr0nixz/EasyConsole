@@ -10,7 +10,7 @@ import { Button, Panel, Select } from "../components/ui";
 import { instanceApi } from "../lib/api";
 import { getTaskName } from "../lib/format";
 import { useI18n } from "../lib/i18n";
-import { buildMonitorDashboardEmbedUrl } from "../lib/monitor-dashboard";
+import { buildMonitorDashboardUrl } from "../lib/monitor-dashboard";
 import { browserRuntime } from "../lib/runtime";
 import { taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
 import type { MonitorMetricSeries, Task } from "../lib/types";
@@ -105,7 +105,7 @@ export function TaskDetailPage() {
   );
   const queryError = fallbackQuery.error ?? snapshotQuery.error;
   const monitorUrl = useMemo(
-    () => (task ? buildMonitorDashboardEmbedUrl(task, { from: monitorRange, to: "now" }) : null),
+    () => (task ? buildMonitorDashboardUrl(task, { from: monitorRange, to: "now" }) : null),
     [task, monitorRange],
   );
 
@@ -263,17 +263,26 @@ export function TaskDetailPage() {
                     </option>
                   ))}
                 </Select>
-                <Button variant="ghost" onClick={() => browserRuntime.openExternal(monitorUrl)}>
+                <Button onClick={() => browserRuntime.openExternal(monitorUrl)}>
                   {text("在新窗口打开", "Open in new window")}
                 </Button>
               </div>
             </div>
-            <iframe
-              src={monitorUrl}
-              className="h-[60vh] w-full border-0"
-              title={text("任务监控", "Task monitor")}
-              sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-            />
+            <div className="px-4 py-10">
+              <EmptyState
+                icon={Monitor}
+                title={text("无法在应用内嵌套显示 Grafana", "Grafana cannot be embedded in-app")}
+                description={text(
+                  "监控服务返回了 X-Frame-Options: deny，浏览器会拦截内嵌页面。请选择时间范围后，在新窗口打开完整 Grafana 面板。",
+                  "The monitor service returns X-Frame-Options: deny, so the browser blocks the embedded page. Choose a time range, then open the full Grafana dashboard in a new window.",
+                )}
+                action={
+                  <Button onClick={() => browserRuntime.openExternal(monitorUrl)}>
+                    {text("打开 Grafana 面板", "Open Grafana dashboard")}
+                  </Button>
+                }
+              />
+            </div>
           </Panel>
         </div>
       ) : null}

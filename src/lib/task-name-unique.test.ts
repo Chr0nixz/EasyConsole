@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   allocateUniqueTaskNames,
+  collectExistingTaskNames,
+  createCombinedTaskNameAvailabilityChecker,
   createTaskNameAvailabilityChecker,
+  createTakenNamesAvailabilityChecker,
   formatNumberedTaskName,
   isTaskNameAvailableResponse,
   maybeAllocateUniqueCreateTaskNames,
@@ -24,10 +27,27 @@ describe("formatNumberedTaskName", () => {
   });
 });
 
+describe("collectExistingTaskNames", () => {
+  it("collects name and task_name fields", () => {
+    expect(
+      collectExistingTaskNames([
+        { name: "a", task_name: "b" },
+        { name: "  a  " },
+        { task_name: "" },
+      ]),
+    ).toEqual(new Set(["a", "b"]));
+  });
+});
+
 describe("isTaskNameAvailableResponse", () => {
-  it("parses common availability shapes", () => {
-    expect(isTaskNameAvailableResponse(true)).toBe(true);
-    expect(isTaskNameAvailableResponse(false)).toBe(false);
+  it("treats bare booleans as exists flags", () => {
+    expect(isTaskNameAvailableResponse(true)).toBe(false);
+    expect(isTaskNameAvailableResponse(false)).toBe(true);
+    expect(isTaskNameAvailableResponse({ data: true })).toBe(false);
+    expect(isTaskNameAvailableResponse({ data: false })).toBe(true);
+  });
+
+  it("parses explicit availability / exists shapes", () => {
     expect(isTaskNameAvailableResponse({ available: true })).toBe(true);
     expect(isTaskNameAvailableResponse({ available: false })).toBe(false);
     expect(isTaskNameAvailableResponse({ exists: true })).toBe(false);
@@ -58,6 +78,13 @@ describe("nextUniqueTaskName / allocateUniqueTaskNames", () => {
     expect(names).toEqual(["demo_1", "demo_2", "other"]);
   });
 
+  it("uses taken-name sets from the task list", () => {
+    const isAvailable = createTakenNamesAvailabilityChecker(["demo", "demo_1"]);
+    expect(isAvailable("demo")).toBe(false);
+    expect(isAvailable("demo_1")).toBe(false);
+    expect(isAvailable("demo_2")).toBe(true);
+  });
+
   it("caches checkTaskName results", async () => {
     const check = vi.fn(async (name: string) => ({ available: name !== "a" }));
     const isAvailable = createTaskNameAvailabilityChecker(check);
@@ -67,18 +94,35 @@ describe("nextUniqueTaskName / allocateUniqueTaskNames", () => {
     expect(check).toHaveBeenCalledTimes(2);
   });
 
-  it("rewrites payload names when enabled", async () => {
+  it("lets the task list override a flaky available API response", async () => {
+    const isAvailable = createCombinedTaskNameAvailabilityChecker({
+      existingNames: ["job"],
+      checkTaskName: async () => ({ available: true }),
+    });
+    expect(await isAvailable("job")).toBe(false);
+    expect(await isAvailable("job_1")).toBe(true);
+  });
+
+  it("rewrites payload names from listed existing names", async () => {
     const payloads = await maybeAllocateUniqueCreateTaskNames([{ name: "job" }, { name: "job" }], {
       enabled: true,
-      checkTaskName: async (name) => ({ available: name !== "job" }),
+      existingNames: ["job"],
     });
     expect(payloads.map((payload) => payload.name)).toEqual(["job_1", "job_2"]);
+  });
+
+  it("loads existing names via listExistingNames", async () => {
+    const payloads = await maybeAllocateUniqueCreateTaskNames([{ name: "xxx" }], {
+      enabled: true,
+      listExistingNames: async () => ["xxx"],
+    });
+    expect(payloads[0]?.name).toBe("xxx_1");
   });
 
   it("leaves payload names unchanged when disabled", async () => {
     const payloads = await maybeAllocateUniqueCreateTaskNames([{ name: "job" }], {
       enabled: false,
-      checkTaskName: async () => ({ available: false }),
+      existingNames: ["job"],
     });
     expect(payloads).toEqual([{ name: "job" }]);
   });

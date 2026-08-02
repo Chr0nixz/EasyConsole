@@ -1,3 +1,15 @@
+# EasyConsole v0.4.13
+
+Fix duplicate instance auto-numbering, stop clone from copying names, and replace the blocked Grafana iframe with an open-in-window prompt.
+
+## Changes
+
+- **Auto-number duplicates**: Detect collisions from the existing task list (with `checkTaskName` as a secondary signal) so names correctly become `XXX_1`, `XXX_2`, ….
+- **Clone naming**: Clone again uses a fresh default name instead of copying the source instance name.
+- **Task monitor**: Grafana cannot be embedded (`X-Frame-Options: deny`); the detail Monitor tab shows a clear empty state and opens the dashboard in a new window.
+
+---
+
 # EasyConsole v0.4.12
 
 Softer in-app update prompts, background download support, and a shell scroll lock so long Settings pages no longer push the chrome away.
@@ -17,8 +29,7 @@ Auto-number duplicate instance names on create, and keep the Tasks more-actions 
 
 ## Changes
 
-- **Auto-number duplicates**: When creating instances, colliding names become `XXX_1`, `XXX_2`, … via `checkTaskName`. Enabled by default in the create dialog and Settings; also applies to clone, templates, and scheduled creation.
-- **Clone naming**: Clone prefills the source instance name so auto-numbering can produce a sequential sibling.
+- **Auto-number duplicates**: When creating instances, colliding names become `XXX_1`, `XXX_2`, … by checking the existing task list (and `checkTaskName` as a secondary signal). Enabled by default in the create dialog and Settings; also applies to templates and scheduled creation.
 - **Tasks more menu**: Host the menu in a document portal with sticky viewport positioning so it stays usable while the table scrolls; pause refresh / lock overflow while open.
 
 ---

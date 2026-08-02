@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   imageSystem: vi.fn(),
   createTask: vi.fn(),
   checkTaskName: vi.fn(),
+  tasks: vi.fn(),
 }));
 
 vi.mock("../../lib/api", () => ({
@@ -18,6 +19,7 @@ vi.mock("../../lib/api", () => ({
   instanceApi: {
     createTask: (...args: unknown[]) => mocks.createTask(...args),
     checkTaskName: (...args: unknown[]) => mocks.checkTaskName(...args),
+    tasks: (...args: unknown[]) => mocks.tasks(...args),
   },
 }));
 
@@ -75,10 +77,12 @@ describe("CreateTaskDialog", () => {
     mocks.imageSystem.mockReset();
     mocks.createTask.mockReset();
     mocks.checkTaskName.mockReset();
+    mocks.tasks.mockReset();
     mocks.imageList.mockResolvedValue({ items: [{ id: "img1", name: "ubuntu", tag: "22.04" }] });
     mocks.imageSystem.mockResolvedValue({ items: [] });
     mocks.createTask.mockResolvedValue({});
     mocks.checkTaskName.mockResolvedValue({ available: true });
+    mocks.tasks.mockResolvedValue({ items: [], total: 0 });
   });
 
   it("renders dialog with create title", async () => {
@@ -87,8 +91,8 @@ describe("CreateTaskDialog", () => {
     expect(screen.getByText("有同名实例自动增加编号")).toBeInTheDocument();
   });
 
-  it("auto-numbers colliding names before create", async () => {
-    mocks.checkTaskName.mockImplementation(async (name: string) => ({ available: name !== "my-task" }));
+  it("auto-numbers colliding names from the task list before create", async () => {
+    mocks.tasks.mockResolvedValue({ items: [{ id: 1, name: "my-task" }], total: 1 });
     renderDialog();
     await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
     await waitFor(() => expect(mocks.imageList).toHaveBeenCalled());
@@ -98,7 +102,24 @@ describe("CreateTaskDialog", () => {
     fireEvent.submit(document.querySelector("form")!);
 
     await waitFor(() => expect(mocks.createTask).toHaveBeenCalled());
+    expect(mocks.tasks).toHaveBeenCalled();
     expect(mocks.createTask).toHaveBeenCalledWith(expect.objectContaining({ name: "my-task_1" }));
+  });
+
+  it("does not copy the source name when cloning", async () => {
+    renderDialog({
+      initialTask: {
+        id: 9,
+        name: "source-instance",
+        price: 1,
+        cpu: 4,
+        memory: 16,
+      } as never,
+    });
+    await waitFor(() => expect(screen.getByText("复制实例")).toBeInTheDocument());
+    const nameInput = screen.getAllByRole("textbox")[0] as HTMLInputElement;
+    expect(nameInput.value).not.toBe("source-instance");
+    expect(nameInput.value.length).toBeGreaterThan(0);
   });
 
   it("shows form error when submitting with empty name", async () => {
