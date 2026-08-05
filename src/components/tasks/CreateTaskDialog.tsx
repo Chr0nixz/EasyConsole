@@ -19,9 +19,8 @@ import { queryKeys } from "../../lib/query-keys";
 import { parsePositivePrice } from "../../lib/resource-price";
 import { normalizeStoragePath } from "../../lib/remote-storage";
 import { allocateUniqueTaskNames, collectExistingTaskNames, createCombinedTaskNameAvailabilityChecker } from "../../lib/task-name-unique";
-import { fetchAllTasks } from "../../lib/fetch-all-tasks";
-import { invalidateTaskQueries } from "../../lib/task-snapshot-query";
-import type { CreateTaskPayload, ImageItem, Task } from "../../lib/types";
+import { invalidateTaskQueries, TASK_SNAPSHOT_QUERY_KEY } from "../../lib/task-snapshot-query";
+import type { CreateTaskPayload, ImageItem, ListResult, Task } from "../../lib/types";
 import { confirmDiscardUnsavedChanges, useUnsavedChanges } from "../../lib/use-unsaved-changes";
 import { errorMessage, useRunLogger } from "../../lib/use-run-logger";
 
@@ -458,11 +457,13 @@ export function CreateTaskDialog({
     if (autoNumberDuplicates) {
       setResolvingNames(true);
       try {
-        const listed = await fetchAllTasks(instanceApi);
+        // Prefer a few checkTaskName calls over paging the entire task list.
+        // Seed only from already-cached snapshot data (no extra network).
+        const cachedSnapshot = queryClient.getQueryData(TASK_SNAPSHOT_QUERY_KEY) as ListResult<Task> | undefined;
         resolvedNames = await allocateUniqueTaskNames(
           baseNames,
           createCombinedTaskNameAvailabilityChecker({
-            existingNames: collectExistingTaskNames(listed.items),
+            existingNames: cachedSnapshot?.items ? collectExistingTaskNames(cachedSnapshot.items) : [],
             checkTaskName: (candidate) => instanceApi.checkTaskName(candidate),
           }),
         );

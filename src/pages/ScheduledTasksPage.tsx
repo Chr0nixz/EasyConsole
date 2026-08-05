@@ -27,8 +27,7 @@ import {
   updateScheduledTask,
 } from "../lib/scheduled-tasks";
 import { describeRecurrence, RecurrenceValidationError, validateRecurrence } from "../lib/task-recurrence";
-import { maybeAllocateUniqueCreateTaskNames, collectExistingTaskNames } from "../lib/task-name-unique";
-import { fetchAllTasks } from "../lib/fetch-all-tasks";
+import { maybeAllocateUniqueCreateTaskNames } from "../lib/task-name-unique";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, ScheduledTask, ScheduledTaskStatus, TaskRecurrence, TaskRecurrenceType } from "../lib/types";
 import { useAuth } from "../lib/use-auth";
@@ -421,7 +420,6 @@ export function ScheduledTasksPage() {
             (
               await maybeAllocateUniqueCreateTaskNames([target.payload], {
                 enabled: getRuntimeSettings().autoNumberDuplicateTaskNames,
-                listExistingNames: async () => collectExistingTaskNames((await fetchAllTasks(instanceApi)).items),
                 checkTaskName: (name) => instanceApi.checkTaskName(name),
               })
             )[0]!,

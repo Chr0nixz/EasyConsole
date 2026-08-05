@@ -91,8 +91,9 @@ describe("CreateTaskDialog", () => {
     expect(screen.getByText("有同名实例自动增加编号")).toBeInTheDocument();
   });
 
-  it("auto-numbers colliding names from the task list before create", async () => {
-    mocks.tasks.mockResolvedValue({ items: [{ id: 1, name: "my-task" }], total: 1 });
+  it("auto-numbers colliding names via checkTaskName before create", async () => {
+    // Bare true = exists (taken).
+    mocks.checkTaskName.mockImplementation(async (name: string) => name === "my-task");
     renderDialog();
     await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
     await waitFor(() => expect(mocks.imageList).toHaveBeenCalled());
@@ -102,7 +103,7 @@ describe("CreateTaskDialog", () => {
     fireEvent.submit(document.querySelector("form")!);
 
     await waitFor(() => expect(mocks.createTask).toHaveBeenCalled());
-    expect(mocks.tasks).toHaveBeenCalled();
+    expect(mocks.checkTaskName).toHaveBeenCalled();
     expect(mocks.createTask).toHaveBeenCalledWith(expect.objectContaining({ name: "my-task_1" }));
   });
 

@@ -1,10 +1,20 @@
+# EasyConsole v0.4.14
+
+Speed up duplicate-name checks on create by dropping the full task-list scan.
+
+## Changes
+
+- **Auto-number performance**: Name allocation uses `checkTaskName` (plus any already-cached snapshot names) instead of paging through all instances, so create no longer stalls on “checking names”.
+
+---
+
 # EasyConsole v0.4.13
 
 Fix duplicate instance auto-numbering, stop clone from copying names, and replace the blocked Grafana iframe with an open-in-window prompt.
 
 ## Changes
 
-- **Auto-number duplicates**: Detect collisions from the existing task list (with `checkTaskName` as a secondary signal) so names correctly become `XXX_1`, `XXX_2`, ….
+- **Auto-number duplicates**: Detect collisions via `checkTaskName` (with optional cached snapshot names) so names correctly become `XXX_1`, `XXX_2`, ….
 - **Clone naming**: Clone again uses a fresh default name instead of copying the source instance name.
 - **Task monitor**: Grafana cannot be embedded (`X-Frame-Options: deny`); the detail Monitor tab shows a clear empty state and opens the dashboard in a new window.
 

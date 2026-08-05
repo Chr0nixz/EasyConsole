@@ -13,8 +13,7 @@ import {
   makeExecutionKey,
 } from "../lib/schedule-execution";
 import { isScheduleDue, mutateScheduledTasks, resetStaleRunningTasks, sortScheduledTasks, updateScheduledTask } from "../lib/scheduled-tasks";
-import { maybeAllocateUniqueCreateTaskNames, collectExistingTaskNames } from "../lib/task-name-unique";
-import { fetchAllTasks } from "../lib/fetch-all-tasks";
+import { maybeAllocateUniqueCreateTaskNames } from "../lib/task-name-unique";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import type { ScheduledTask } from "../lib/types";
 import { errorMessage } from "../lib/use-run-logger";
@@ -90,7 +89,6 @@ export function BackgroundScheduledTaskRunner() {
           try {
             const [payload] = await maybeAllocateUniqueCreateTaskNames([task.payload], {
               enabled: getRuntimeSettings().autoNumberDuplicateTaskNames,
-              listExistingNames: async () => collectExistingTaskNames((await fetchAllTasks(instanceApi)).items),
               checkTaskName: (name) => instanceApi.checkTaskName(name),
             });
             const result = await instanceApi.createTask(payload!);
