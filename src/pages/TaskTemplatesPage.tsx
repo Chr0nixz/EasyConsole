@@ -6,6 +6,7 @@ import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { FieldError, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
 import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
+import { ScriptEnvFields } from "../components/tasks/ScriptEnvFields";
 import { Button, Dialog, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
@@ -14,6 +15,12 @@ import { getReleaseConditionText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { parsePositivePrice } from "../lib/resource-price";
 import { normalizeStoragePath } from "../lib/remote-storage";
+import {
+  envVarsFromLegacyExperimentId,
+  findScriptEnvVarErrors,
+  normalizeScriptEnvVars,
+  type ScriptEnvVar,
+} from "../lib/script-command-env";
 import { browserRuntime } from "../lib/runtime";
 import { invalidateTaskQueries, taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
 import { maybeAllocateUniqueCreateTaskNames } from "../lib/task-name-unique";
@@ -72,6 +79,7 @@ function getDefaultTemplate(username: string, imageId = ""): EditableTaskTemplat
     releaseAfterHours: 24,
     workDirectory: "",
     scriptPath: "",
+    scriptEnv: [],
     variables: [],
   };
 }
@@ -108,7 +116,14 @@ function TemplateDialog({
 
   useEffect(() => {
     if (!open) return;
-    setForm(initialValue ?? getDefaultTemplate(username, imageOptions[0] ? String(imageOptions[0].id) : ""));
+    if (initialValue) {
+      setForm({
+        ...initialValue,
+        scriptEnv: envVarsFromLegacyExperimentId(initialValue.experimentId, initialValue.scriptEnv ?? []),
+      });
+    } else {
+      setForm(getDefaultTemplate(username, imageOptions[0] ? String(imageOptions[0].id) : ""));
+    }
     setFormError(null);
     setStoragePickerTarget(null);
     resetTouched();
@@ -135,13 +150,17 @@ function TemplateDialog({
     }
     if (form.releaseCondition === 3 && !form.workDirectory?.trim()) errors.workDirectory = text("请填写工作目录", "Enter the working directory");
     if (form.releaseCondition === 3 && !form.scriptPath?.trim()) errors.scriptPath = text("请填写脚本路径", "Enter the script path");
+    if (form.releaseCondition === 3) {
+      const envError = findScriptEnvVarErrors(form.scriptEnv ?? []);
+      if (envError) errors.scriptEnv = text(envError.messageZh, envError.messageEn);
+    }
     return errors;
   }, [form, text]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
     setFormError(null);
-    touchAll(["name", "taskNamePrefix", "image", "price", "cpu", "gpu", "memory", "batchCount", "releaseAfterHours", "workDirectory", "scriptPath"]);
+    touchAll(["name", "taskNamePrefix", "image", "price", "cpu", "gpu", "memory", "batchCount", "releaseAfterHours", "workDirectory", "scriptPath", "scriptEnv"]);
 
     const name = form.name.trim();
     const taskNamePrefix = form.taskNamePrefix.trim();
@@ -187,7 +206,15 @@ function TemplateDialog({
       setFormError(text("任务结束释放需要填写工作目录和脚本路径", "Release after task ends requires a working directory and script path"));
       return;
     }
+    if (form.releaseCondition === 3) {
+      const envError = findScriptEnvVarErrors(form.scriptEnv ?? []);
+      if (envError) {
+        setFormError(text(envError.messageZh, envError.messageEn));
+        return;
+      }
+    }
 
+    const scriptEnv = form.releaseCondition === 3 ? normalizeScriptEnvVars(form.scriptEnv ?? []) : undefined;
     onSave({
       ...form,
       name,
@@ -199,6 +226,8 @@ function TemplateDialog({
       mountPath: form.mountPath.trim() || `/home/ubuntu/${username}`,
       workDirectory: form.workDirectory?.trim(),
       scriptPath: form.scriptPath?.trim(),
+      scriptEnv: scriptEnv && scriptEnv.length > 0 ? scriptEnv : undefined,
+      experimentId: undefined,
       variables: (form.variables ?? []).filter((variable) => variable.key.trim()).map((variable) => ({
         key: variable.key.trim(),
         label: variable.label?.trim() || undefined,
@@ -332,7 +361,7 @@ function TemplateDialog({
           ) : null}
         </div>
         {form.releaseCondition === 3 ? (
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-4">
             <div className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
               <div className="flex gap-2">
@@ -355,6 +384,12 @@ function TemplateDialog({
               </div>
               <FieldError message={touchedFields.has("scriptPath") ? fieldErrors.scriptPath : undefined} />
             </div>
+            <ScriptEnvFields
+              envVars={form.scriptEnv ?? []}
+              scriptPath={form.scriptPath ?? ""}
+              onChange={(next: ScriptEnvVar[]) => update("scriptEnv", next)}
+              error={touchedFields.has("scriptEnv") ? fieldErrors.scriptEnv : undefined}
+            />
           </div>
         ) : null}
         <div className="space-y-2 rounded-md border border-app-border bg-app-surface p-3 text-sm">

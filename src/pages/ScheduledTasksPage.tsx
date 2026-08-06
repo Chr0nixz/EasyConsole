@@ -6,6 +6,7 @@ import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { FieldError, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
 import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
+import { ScriptEnvFields } from "../components/tasks/ScriptEnvFields";
 import { Button, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
@@ -15,6 +16,12 @@ import { useI18n } from "../lib/i18n";
 import { parsePositivePrice } from "../lib/resource-price";
 import { normalizeStoragePath } from "../lib/remote-storage";
 import { browserRuntime } from "../lib/runtime";
+import {
+  applyEnvToScriptCommand,
+  findScriptEnvVarErrors,
+  parseScriptCommandEnv,
+  type ScriptEnvVar,
+} from "../lib/script-command-env";
 import { cn } from "../lib/utils";
 import {
   createScheduledTask,
@@ -128,6 +135,7 @@ export function ScheduledTasksPage() {
   const [mountPath, setMountPath] = useState("");
   const [workDirectory, setWorkDirectory] = useState("");
   const [scriptPath, setScriptPath] = useState("");
+  const [scriptEnv, setScriptEnv] = useState<ScriptEnvVar[]>([]);
   const [recurrenceType, setRecurrenceType] = useState<TaskRecurrenceType>("once");
   const [recurrenceIntervalSec, setRecurrenceIntervalSec] = useState("3600");
   const [recurrenceCron, setRecurrenceCron] = useState("");
@@ -156,8 +164,12 @@ export function ScheduledTasksPage() {
     if (cond === 2 && !releaseTime) errors.releaseTime = text("请选择释放时间", "Select a release time");
     if (cond === 3 && !workDirectory.trim()) errors.workDirectory = text("请填写工作目录", "Enter the working directory");
     if (cond === 3 && !scriptPath.trim()) errors.scriptPath = text("请填写脚本路径", "Enter the script path");
+    if (cond === 3) {
+      const envError = findScriptEnvVarErrors(scriptEnv);
+      if (envError) errors.scriptEnv = text(envError.messageZh, envError.messageEn);
+    }
     return errors;
-  }, [cpu, gpu, imageId, memory, name, price, releaseCondition, releaseTime, scheduleTime, scriptPath, text, workDirectory]);
+  }, [cpu, gpu, imageId, memory, name, price, releaseCondition, releaseTime, scheduleTime, scriptEnv, scriptPath, text, workDirectory]);
 
   useEffect(() => {
     void loadScheduledTasks(browserRuntime.storage)
@@ -209,6 +221,7 @@ export function ScheduledTasksPage() {
     setMountPath(`/home/ubuntu/${username}`);
     setWorkDirectory("");
     setScriptPath("");
+    setScriptEnv([]);
     setRecurrenceType("once");
     setRecurrenceIntervalSec("3600");
     setRecurrenceCron("");
@@ -234,8 +247,10 @@ export function ScheduledTasksPage() {
     setReleaseTime(toDateTimeLocalInput(payload.releace_time));
     setStoragePath(String(payload.storage_path ?? `/${username}`));
     setMountPath(String(payload.mount_path ?? `/home/ubuntu/${username}`));
+    const parsedScript = parseScriptCommandEnv(String(payload.script_path ?? ""));
     setWorkDirectory(String(payload.work_directory ?? ""));
-    setScriptPath(String(payload.script_path ?? ""));
+    setScriptPath(parsedScript.command);
+    setScriptEnv(parsedScript.env);
     const recurrence = item.recurrence;
     setRecurrenceType(recurrence?.type ?? "once");
     setRecurrenceIntervalSec(String(recurrence?.intervalSec ?? 3600));
@@ -247,7 +262,7 @@ export function ScheduledTasksPage() {
   }
 
   function buildPayload(): CreateTaskPayload | null {
-    touchAll(["name", "scheduleTime", "image", "price", "cpu", "gpu", "memory", "releaseTime", "workDirectory", "scriptPath"]);
+    touchAll(["name", "scheduleTime", "image", "price", "cpu", "gpu", "memory", "releaseTime", "workDirectory", "scriptPath", "scriptEnv"]);
     const taskName = name.trim();
     if (!taskName) {
       setFormError(text("任务名称不能为空", "Task name is required"));
@@ -295,6 +310,13 @@ export function ScheduledTasksPage() {
       setFormError(text("请填写工作目录和脚本路径", "Enter the working directory and script path"));
       return null;
     }
+    if (releaceConditions === 3) {
+      const envError = findScriptEnvVarErrors(scriptEnv);
+      if (envError) {
+        setFormError(text(envError.messageZh, envError.messageEn));
+        return null;
+      }
+    }
 
     return {
       price: priceValue,
@@ -308,7 +330,7 @@ export function ScheduledTasksPage() {
       releace_conditions: releaceConditions,
       releace_time: releaceConditions === 2 ? formatDateTimeForApi(releaseTime) : undefined,
       work_directory: releaceConditions === 3 ? workDirectory.trim() : undefined,
-      script_path: releaceConditions === 3 ? scriptPath.trim() : undefined,
+      script_path: releaceConditions === 3 ? applyEnvToScriptCommand(scriptPath.trim(), scriptEnv) : undefined,
     };
   }
 
@@ -750,7 +772,7 @@ export function ScheduledTasksPage() {
             ) : null}
           </div>
           {releaseCondition === "3" ? (
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-4">
               <div className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
                 <div className="flex gap-2">
@@ -773,6 +795,12 @@ export function ScheduledTasksPage() {
                 </div>
                 <FieldError message={touchedFields.has("scriptPath") ? fieldErrors.scriptPath : undefined} />
               </div>
+              <ScriptEnvFields
+                envVars={scriptEnv}
+                scriptPath={scriptPath}
+                onChange={setScriptEnv}
+                error={touchedFields.has("scriptEnv") ? fieldErrors.scriptEnv : undefined}
+              />
             </div>
           ) : null}
           {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}

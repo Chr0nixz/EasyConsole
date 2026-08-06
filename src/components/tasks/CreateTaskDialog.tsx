@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ErrorState } from "../DataState";
 import { FieldError, FormSection, useFormFieldErrors } from "../form-fields";
 import { RemoteStoragePicker } from "../storage/RemoteStoragePicker";
-import { ResourcePriceFields } from "./ResourcePriceFields";
+import { ScriptEnvFields } from "./ScriptEnvFields";
 import { Button, Dialog, Input, Select } from "../ui";
 import { imageApi, instanceApi } from "../../lib/api";
 import { getRuntimeSettings } from "../../lib/app-settings";
@@ -18,6 +18,13 @@ import { useI18n } from "../../lib/i18n";
 import { queryKeys } from "../../lib/query-keys";
 import { parsePositivePrice } from "../../lib/resource-price";
 import { normalizeStoragePath } from "../../lib/remote-storage";
+import {
+  applyEnvToScriptCommand,
+  findScriptEnvVarErrors,
+  normalizeScriptEnvVars,
+  parseScriptCommandEnv,
+  type ScriptEnvVar,
+} from "../../lib/script-command-env";
 import { allocateUniqueTaskNames, collectExistingTaskNames, createCombinedTaskNameAvailabilityChecker } from "../../lib/task-name-unique";
 import { invalidateTaskQueries, TASK_SNAPSHOT_QUERY_KEY } from "../../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, ListResult, Task } from "../../lib/types";
@@ -45,8 +52,13 @@ type FormSnapshot = {
   mountPath: string;
   workDirectory: string;
   scriptPath: string;
+  scriptEnvJson: string;
   batchCount: string;
 };
+
+function serializeScriptEnv(env: ScriptEnvVar[]) {
+  return JSON.stringify(normalizeScriptEnvVars(env));
+}
 
 function buildFormSnapshot({
   isEditMode,
@@ -57,6 +69,7 @@ function buildFormSnapshot({
   initialTask?: Task | null;
   username: string;
 }): FormSnapshot {
+  const parsedScript = parseScriptCommandEnv(initialTask?.script_path ?? "");
   return {
     name: isEditMode ? (initialTask?.name ?? "") : formatTaskDefaultName(),
     imageId: String(getTaskImageId(initialTask)),
@@ -69,7 +82,8 @@ function buildFormSnapshot({
     storagePath: initialTask?.storage_path || `/${username}`,
     mountPath: initialTask?.mount_path || `/home/ubuntu/${username}`,
     workDirectory: initialTask?.work_directory ?? "",
-    scriptPath: initialTask?.script_path ?? "",
+    scriptPath: parsedScript.command,
+    scriptEnvJson: serializeScriptEnv(parsedScript.env),
     batchCount: "1",
   };
 }
@@ -204,9 +218,9 @@ export function CreateTaskDialog({
   const [mountPath, setMountPath] = useState("");
   const [workDirectory, setWorkDirectory] = useState("");
   const [scriptPath, setScriptPath] = useState("");
+  const [scriptEnv, setScriptEnv] = useState<ScriptEnvVar[]>([]);
   const [storagePickerTarget, setStoragePickerTarget] = useState<StoragePickerTarget | null>(null);
   const [batchCount, setBatchCount] = useState("1");
-  const [autoNumberDuplicates, setAutoNumberDuplicates] = useState(() => getRuntimeSettings().autoNumberDuplicateTaskNames);
   const [formError, setFormError] = useState<string | null>(null);
   const [resolvingNames, setResolvingNames] = useState(false);
   const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
@@ -226,9 +240,10 @@ export function CreateTaskDialog({
       mountPath,
       workDirectory,
       scriptPath,
+      scriptEnvJson: serializeScriptEnv(scriptEnv),
       batchCount,
     }),
-    [batchCount, cpu, gpu, imageId, memory, mountPath, name, price, releaseCondition, releaseTime, scriptPath, storagePath, workDirectory],
+    [batchCount, cpu, gpu, imageId, memory, mountPath, name, price, releaseCondition, releaseTime, scriptEnv, scriptPath, storagePath, workDirectory],
   );
   const dirty = open && isFormDirty(currentSnapshot, initialSnapshot);
   useUnsavedChanges(dirty, unsavedMessage);
@@ -250,12 +265,16 @@ export function CreateTaskDialog({
     if (cond === 2 && !releaseTime) errors.releaseTime = text("请选择释放时间", "Select a release time");
     if (cond === 3 && !workDirectory.trim()) errors.workDirectory = text("请填写工作目录", "Enter the working directory");
     if (cond === 3 && !scriptPath.trim()) errors.scriptPath = text("请填写脚本路径", "Enter the script path");
+    if (cond === 3) {
+      const envError = findScriptEnvVarErrors(scriptEnv);
+      if (envError) errors.scriptEnv = text(envError.messageZh, envError.messageEn);
+    }
     const count = Number(batchCount);
     if (!Number.isInteger(count) || count < 1 || count > MAX_BATCH_COUNT) {
       errors.batchCount = text(`数量必须在 1-${MAX_BATCH_COUNT} 之间`, `Count must be 1-${MAX_BATCH_COUNT}`);
     }
     return errors;
-  }, [batchCount, cpu, gpu, imageId, memory, name, price, releaseCondition, releaseTime, scriptPath, text, workDirectory]);
+  }, [batchCount, cpu, gpu, imageId, memory, name, price, releaseCondition, releaseTime, scriptEnv, scriptPath, text, workDirectory]);
 
   const imageOptions = useMemo(() => [...(images.data?.items ?? []), ...(systemImages.data?.items ?? [])], [images.data, systemImages.data]);
   const hasSelectedImageOption = imageOptions.some((image) => String(image.id) === imageId);
@@ -277,9 +296,9 @@ export function CreateTaskDialog({
       setMountPath(snapshot.mountPath);
       setWorkDirectory(snapshot.workDirectory);
       setScriptPath(snapshot.scriptPath);
+      setScriptEnv(JSON.parse(snapshot.scriptEnvJson) as ScriptEnvVar[]);
       setStoragePickerTarget(null);
       setBatchCount(snapshot.batchCount);
-      setAutoNumberDuplicates(getRuntimeSettings().autoNumberDuplicateTaskNames);
       setFormError(null);
       setResolvingNames(false);
       resetTouched();
@@ -383,7 +402,7 @@ export function CreateTaskDialog({
   async function submit(event: FormEvent) {
     event.preventDefault();
     setFormError(null);
-    touchAll(["name", "image", "price", "cpu", "gpu", "memory", "batchCount", "releaseTime", "workDirectory", "scriptPath"]);
+    touchAll(["name", "image", "cpu", "gpu", "memory", "batchCount", "releaseTime", "workDirectory", "scriptPath", "scriptEnv"]);
     const taskName = name.trim();
     if (!taskName) {
       setFormError(text("任务名称不能为空", "Task name is required"));
@@ -422,6 +441,13 @@ export function CreateTaskDialog({
       setFormError(text("请填写工作目录和脚本路径", "Enter the working directory and script path"));
       return;
     }
+    if (releaceConditions === 3) {
+      const envError = findScriptEnvVarErrors(scriptEnv);
+      if (envError) {
+        setFormError(text(envError.messageZh, envError.messageEn));
+        return;
+      }
+    }
 
     const selectedStoragePath = normalizeStoragePath(storagePath.trim() || `/${username}`);
     const selectedMountPath = mountPath.trim() || `/home/ubuntu/${username}`;
@@ -438,7 +464,8 @@ export function CreateTaskDialog({
       releace_conditions: releaceConditions,
       releace_time: releaceConditions === 2 ? formatDateTimeForApi(releaseTime) : undefined,
       work_directory: releaceConditions === 3 ? workDirectory.trim() : undefined,
-      script_path: releaceConditions === 3 ? scriptPath.trim() : undefined,
+      script_path:
+        releaceConditions === 3 ? applyEnvToScriptCommand(scriptPath.trim(), scriptEnv) : undefined,
     };
 
     if (isEditMode) {
@@ -454,7 +481,7 @@ export function CreateTaskDialog({
 
     const baseNames = Array.from({ length: count }, (_, index) => formatBatchTaskName(taskName, index, count));
     let resolvedNames = baseNames;
-    if (autoNumberDuplicates) {
+    if (getRuntimeSettings().autoNumberDuplicateTaskNames) {
       setResolvingNames(true);
       try {
         // Prefer a few checkTaskName calls over paging the entire task list.
@@ -529,22 +556,6 @@ export function CreateTaskDialog({
                 </label>
               )}
             </div>
-            {isEditMode ? null : (
-              <label className="flex items-start gap-2 text-sm">
-                <input
-                  className="mt-0.5"
-                  type="checkbox"
-                  checked={autoNumberDuplicates}
-                  onChange={(event) => setAutoNumberDuplicates(event.target.checked)}
-                />
-                <span>
-                  <span className="block text-app-text">{text("有同名实例自动增加编号", "Auto-number when name already exists")}</span>
-                  <span className="mt-0.5 block text-xs leading-5 text-app-muted">
-                    {text("例如已有 XXX 时创建为 XXX_1；默认开启。", "For example, create XXX_1 when XXX already exists. Enabled by default.")}
-                  </span>
-                </span>
-              </label>
-            )}
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("镜像", "Image")}</span>
               <Select className={cn("w-full", touchedFields.has("image") && fieldErrors.image && "border-app-danger")} value={imageId} onChange={(event) => setImageId(event.target.value)} onBlur={() => markTouched("image")}>
@@ -561,18 +572,6 @@ export function CreateTaskDialog({
           </FormSection>
 
           <FormSection title={text("资源配置", "Resources")} divided>
-            <ResourcePriceFields
-              price={price}
-              priceError={fieldErrors.price}
-              priceTouched={touchedFields.has("price")}
-              onPriceBlur={() => markTouched("price")}
-              onPriceChange={setPrice}
-              onApplySpec={({ cpu: nextCpu, gpu: nextGpu, memory: nextMemory }) => {
-                setCpu(nextCpu);
-                handleGpuChange(nextGpu);
-                setMemory(nextMemory);
-              }}
-            />
             <div className="grid gap-4 md:grid-cols-3">
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">CPU</span>
@@ -632,7 +631,7 @@ export function CreateTaskDialog({
               </label>
             ) : null}
             {releaseCondition === "3" ? (
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-4">
                 <div className="block text-sm">
                   <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
                   <div className="flex gap-2">
@@ -655,6 +654,12 @@ export function CreateTaskDialog({
                   </div>
                   <FieldError message={touchedFields.has("scriptPath") ? fieldErrors.scriptPath : undefined} />
                 </div>
+                <ScriptEnvFields
+                  envVars={scriptEnv}
+                  scriptPath={scriptPath}
+                  onChange={setScriptEnv}
+                  error={touchedFields.has("scriptEnv") ? fieldErrors.scriptEnv : undefined}
+                />
               </div>
             ) : null}
           </FormSection>

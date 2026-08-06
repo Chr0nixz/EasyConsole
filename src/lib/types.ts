@@ -258,6 +258,10 @@ export type TaskTemplate = {
   releaseAfterHours?: number;
   workDirectory?: string;
   scriptPath?: string;
+  /** Optional shell env assignments prepended to the script command when releaseCondition is 3. */
+  scriptEnv?: Array<{ key: string; value: string }>;
+  /** @deprecated Prefer scriptEnv. Migrated on load. */
+  experimentId?: string;
   /** Optional `${key}` variable definitions that the user fills in at execution time. */
   variables?: TaskTemplateVariable[];
   usageCount: number;

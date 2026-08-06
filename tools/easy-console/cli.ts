@@ -1,6 +1,7 @@
 import { Command, CommanderError } from "commander";
 
 import type { CreateTaskPayload, ImageCommitPayload, TaskQuery, TaskRecurrence, UnknownRecord } from "../../src/lib/types";
+import { applyEnvToScriptCommand, isValidEnvKey, isValidEnvValue } from "../../src/lib/script-command-env";
 import { appendRunLog, clearRunLogs, filterRunLogs, formatRunLogExport, loadRunLogs, type RunLogChannel, type RunLogResult, type RunLogSource } from "../../src/lib/run-logs";
 import { nonSecretBackupSections, secretBackupSections, type LocalDataBackupSection } from "../../src/lib/local-data-backup";
 import { saveEasyConsoleConfig } from "./config";
@@ -141,6 +142,32 @@ function shouldLogCommand(action: string) {
   return !action.startsWith("run-log.");
 }
 
+function parseEnvOptionList(value: unknown): Array<{ key: string; value: string }> {
+  const items = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+  return items.flatMap((item) => {
+    if (typeof item !== "string" || !item.trim()) return [];
+    const separator = item.indexOf("=");
+    if (separator <= 0) throw new Error(`Invalid --env value "${item}". Use KEY=VALUE.`);
+    const key = item.slice(0, separator).trim();
+    const envValue = item.slice(separator + 1).trim();
+    if (!isValidEnvKey(key) || !key) throw new Error(`Invalid env key in "${item}".`);
+    if (!isValidEnvValue(envValue) || !envValue) throw new Error(`Invalid env value in "${item}".`);
+    return [{ key, value: envValue }];
+  });
+}
+
+function applyScriptEnvOptions(scriptPath: unknown, options: UnknownRecord) {
+  if (typeof scriptPath !== "string" || !scriptPath) return scriptPath;
+  const env = parseEnvOptionList(options.env);
+  if (typeof options.experimentId === "string" && options.experimentId.trim()) {
+    const id = options.experimentId.trim();
+    if (!isValidEnvValue(id)) throw new Error("Experiment ID cannot contain whitespace.");
+    env.unshift({ key: "EXPERIMENT_ID", value: id });
+  }
+  if (env.length === 0) return scriptPath;
+  return applyEnvToScriptCommand(scriptPath, env);
+}
+
 function buildPayloadFromOptions(options: UnknownRecord): CreateTaskPayload {
   if (typeof options.payloadJson === "string") return buildCreateTaskPayload(parseJsonRecord(options.payloadJson));
   return buildCreateTaskPayload(
@@ -156,7 +183,7 @@ function buildPayloadFromOptions(options: UnknownRecord): CreateTaskPayload {
       releace_conditions: parseInteger(options.releaseCondition as string | undefined),
       releace_time: options.releaseTime,
       work_directory: options.workDirectory,
-      script_path: options.scriptPath,
+      script_path: applyScriptEnvOptions(options.scriptPath, options),
     }),
   );
 }
@@ -350,6 +377,8 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   taskCreate.option("--release-time <datetime>", "Release time");
   taskCreate.option("--work-directory <path>", "Work directory");
   taskCreate.option("--script-path <path>", "Script path");
+  taskCreate.option("--env <KEY=VALUE>", "Optional env assignment prefixed to script path (repeatable)", (value, previous: string[] = []) => [...previous, value], [] as string[]);
+  taskCreate.option("--experiment-id <id>", "Shortcut for --env EXPERIMENT_ID=<id>");
   taskCreate.option("--yes", "Execute instead of dry-run");
   taskCreate.action(
     run(taskCreate, (context) => {
@@ -405,6 +434,8 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   taskUpdate.option("--release-time <datetime>", "Release time");
   taskUpdate.option("--work-directory <path>", "Work directory");
   taskUpdate.option("--script-path <path>", "Script path");
+  taskUpdate.option("--env <KEY=VALUE>", "Optional env assignment prefixed to script path (repeatable)", (value, previous: string[] = []) => [...previous, value], [] as string[]);
+  taskUpdate.option("--experiment-id <id>", "Shortcut for --env EXPERIMENT_ID=<id>");
   taskUpdate.option("--yes", "Execute instead of dry-run");
   taskUpdate.action((taskId: string) =>
     run(taskUpdate, (context) => {
@@ -424,7 +455,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
               releace_conditions: parseInteger(options.releaseCondition as string | undefined),
               releace_time: options.releaseTime,
               work_directory: options.workDirectory,
-              script_path: options.scriptPath,
+              script_path: applyScriptEnvOptions(options.scriptPath, options),
             }),
           );
       return updateTask(context.api, parseId(taskId), payload, options.yes);

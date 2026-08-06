@@ -1,3 +1,15 @@
+# EasyConsole v0.4.15
+
+Task-end release scripts can carry free-form environment variables, with a clearer create-instance form.
+
+## Changes
+
+- **Script env vars**: When release condition is “release after task ends”, add optional `KEY=VALUE` assignments (collapsed by default; expanded when values exist). The final command is previewed, and clone/edit parse existing prefixes from `script_path`.
+- **Create dialog**: Move auto-number duplicates to Settings only; remove resource-spec and price pickers; put working directory and script path on separate rows.
+- **Templates / schedules / CLI**: Same env-var support; CLI accepts repeatable `--env KEY=VALUE` (and keeps `--experiment-id` as a shortcut).
+
+---
+
 # EasyConsole v0.4.14
 
 Speed up duplicate-name checks on create by dropping the full task-list scan.

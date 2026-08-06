@@ -988,7 +988,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             <span>
               <span className="block font-medium text-app-text">{text("有同名实例自动增加编号", "Auto-number when name already exists")}</span>
               <span className="mt-1 block text-xs leading-5 text-app-muted">
-                {text("例如已有 XXX 时创建为 XXX_1。默认开启；新建对话框也会显示此选项。", "For example, create XXX_1 when XXX already exists. Enabled by default; also shown in the create dialog.")}
+                {text("例如已有 XXX 时创建为 XXX_1。默认开启；作用于新建、克隆、模板和定时创建。", "For example, create XXX_1 when XXX already exists. Enabled by default; applies to create, clone, template, and scheduled creation.")}
               </span>
             </span>
           </label>

@@ -88,7 +88,9 @@ describe("CreateTaskDialog", () => {
   it("renders dialog with create title", async () => {
     renderDialog();
     await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
-    expect(screen.getByText("有同名实例自动增加编号")).toBeInTheDocument();
+    expect(screen.queryByText("有同名实例自动增加编号")).not.toBeInTheDocument();
+    expect(screen.queryByText("资源规格")).not.toBeInTheDocument();
+    expect(screen.queryByText("价格")).not.toBeInTheDocument();
   });
 
   it("auto-numbers colliding names via checkTaskName before create", async () => {

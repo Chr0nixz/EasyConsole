@@ -134,7 +134,7 @@ describe("task templates", () => {
       mount_path: "/workspace",
       releace_conditions: 3,
       work_directory: "/alice/data",
-      script_path: "/alice/data/run.sh",
+      script_path: "EXPERIMENT_ID=exp-9 CUDA_VISIBLE_DEVICES=0 /alice/data/run.sh",
     }, "alice");
 
     expect(template).toMatchObject({
@@ -150,6 +150,10 @@ describe("task templates", () => {
       releaseCondition: 3,
       workDirectory: "/alice/data",
       scriptPath: "/alice/data/run.sh",
+      scriptEnv: [
+        { key: "EXPERIMENT_ID", value: "exp-9" },
+        { key: "CUDA_VISIBLE_DEVICES", value: "0" },
+      ],
     });
   });
 
@@ -169,6 +173,23 @@ describe("task templates", () => {
       script_path: "/alice/project/run.sh",
     });
     expect(payload.releace_time).toBeUndefined();
+  });
+
+  it("prefixes scriptEnv assignments on script_path", () => {
+    const payload = taskTemplateToPayloads({
+      ...baseTemplate,
+      batchCount: 1,
+      releaseCondition: 3,
+      releaseAfterHours: undefined,
+      workDirectory: "/alice/project",
+      scriptPath: "/alice/project/run.sh",
+      scriptEnv: [
+        { key: "EXPERIMENT_ID", value: "exp-42" },
+        { key: "FOO", value: "bar" },
+      ],
+    })[0];
+
+    expect(payload.script_path).toBe("EXPERIMENT_ID=exp-42 FOO=bar /alice/project/run.sh");
   });
 });
 
