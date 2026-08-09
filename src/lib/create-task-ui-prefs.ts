@@ -8,6 +8,11 @@ export type CreateTaskUiPrefs = {
   sections: Record<CreateTaskSectionId, boolean>;
   /** Whether the nested script env editor is expanded. */
   scriptEnvOpen: boolean;
+  /**
+   * When true (and release-after-task-ends), keep the instance name equal to EXPERIMENT_ID
+   * in the form, then append a timestamp suffix on create. EXPERIMENT_ID itself is not numbered.
+   */
+  syncNameWithExperimentId: boolean;
 };
 
 export const DEFAULT_CREATE_TASK_UI_PREFS: CreateTaskUiPrefs = {
@@ -18,6 +23,7 @@ export const DEFAULT_CREATE_TASK_UI_PREFS: CreateTaskUiPrefs = {
     release: true,
   },
   scriptEnvOpen: false,
+  syncNameWithExperimentId: false,
 };
 
 const SECTION_IDS: CreateTaskSectionId[] = ["basic", "resources", "storage", "release"];
@@ -41,6 +47,10 @@ export function parseCreateTaskUiPrefs(raw: string | null | undefined): CreateTa
     return {
       sections,
       scriptEnvOpen: typeof parsed.scriptEnvOpen === "boolean" ? parsed.scriptEnvOpen : DEFAULT_CREATE_TASK_UI_PREFS.scriptEnvOpen,
+      syncNameWithExperimentId:
+        typeof parsed.syncNameWithExperimentId === "boolean"
+          ? parsed.syncNameWithExperimentId
+          : DEFAULT_CREATE_TASK_UI_PREFS.syncNameWithExperimentId,
     };
   } catch {
     return { ...DEFAULT_CREATE_TASK_UI_PREFS, sections: { ...DEFAULT_CREATE_TASK_UI_PREFS.sections } };

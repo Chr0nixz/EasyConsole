@@ -109,6 +109,42 @@ describe("CreateTaskDialog", () => {
     expect(mocks.createTask).toHaveBeenCalledWith(expect.objectContaining({ name: "my-task_1" }));
   });
 
+  it("appends a timestamp to the instance name but leaves EXPERIMENT_ID unnumbered when sync is enabled", async () => {
+    renderDialog();
+    await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
+    await waitFor(() => expect(mocks.imageList).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByDisplayValue("手动释放"), { target: { value: "3" } });
+    await waitFor(() => expect(screen.getByText("工作目录")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText(/实例名称与 EXPERIMENT_ID 一致/));
+
+    const addVariable = screen.getByRole("button", { name: /添加变量/ });
+    fireEvent.click(addVariable);
+    const textInputs = screen.getAllByRole("textbox") as HTMLInputElement[];
+    const envKey = textInputs.find((input) => input.placeholder.includes("EXPERIMENT_ID") || input.placeholder.includes("名称"));
+    const envValue = textInputs.find((input) => input.placeholder === "值" || input.placeholder.toLowerCase() === "value");
+    expect(envKey).toBeTruthy();
+    expect(envValue).toBeTruthy();
+    fireEvent.change(envKey!, { target: { value: "EXPERIMENT_ID" } });
+    fireEvent.change(envValue!, { target: { value: "exp-run" } });
+
+    const monoInputs = (screen.getAllByRole("textbox") as HTMLInputElement[]).filter((input) =>
+      input.className.includes("font-mono"),
+    );
+    const workDirectory = monoInputs.find((input) => input.closest("div")?.textContent?.includes("工作目录")) ?? monoInputs[2];
+    const scriptPath = monoInputs.find((input) => input.closest("div")?.textContent?.includes("脚本路径")) ?? monoInputs[3];
+    fireEvent.change(workDirectory, { target: { value: "/work" } });
+    fireEvent.change(scriptPath, { target: { value: "/work/run.sh" } });
+
+    fireEvent.submit(document.querySelector("form")!);
+
+    await waitFor(() => expect(mocks.createTask).toHaveBeenCalled());
+    const payload = mocks.createTask.mock.calls[0]?.[0] as { name: string; script_path: string };
+    expect(payload.name).toMatch(/^exp-run_\d{12}$/);
+    expect(payload.script_path).toBe("EXPERIMENT_ID=exp-run /work/run.sh");
+  });
+
   it("does not copy the source name when cloning", async () => {
     renderDialog({
       initialTask: {

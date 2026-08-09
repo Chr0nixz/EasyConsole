@@ -1,10 +1,23 @@
 import { describe, expect, it } from "vitest";
 
-import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatSecondsDuration, formatTaskDefaultName, getTaskNodeName } from "./format";
+import {
+  addHours,
+  formatDateTimeForApi,
+  formatDateTimeLocalInput,
+  formatExperimentTimedTaskName,
+  formatSecondsDuration,
+  formatTaskDefaultName,
+  getTaskNodeName,
+} from "./format";
 
 describe("format helpers", () => {
   it("formats default task names as compact local time", () => {
     expect(formatTaskDefaultName(new Date(2026, 4, 23, 0, 58, 32))).toBe("202605230058");
+  });
+
+  it("formats experiment-timed instance names without mutating the experiment id", () => {
+    expect(formatExperimentTimedTaskName("exp-run", new Date(2026, 4, 23, 0, 58, 32))).toBe("exp-run_202605230058");
+    expect(formatExperimentTimedTaskName("  ", new Date(2026, 4, 23, 0, 58, 32))).toBe("");
   });
 
   it("normalizes datetime-local values for API payloads", () => {

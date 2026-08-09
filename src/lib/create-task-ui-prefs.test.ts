@@ -18,11 +18,13 @@ describe("create-task-ui-prefs", () => {
         JSON.stringify({
           sections: { basic: true, resources: false, storage: false, release: true },
           scriptEnvOpen: true,
+          syncNameWithExperimentId: true,
         }),
       ),
     ).toEqual({
       sections: { basic: true, resources: false, storage: false, release: true },
       scriptEnvOpen: true,
+      syncNameWithExperimentId: true,
     });
   });
 
@@ -30,6 +32,7 @@ describe("create-task-ui-prefs", () => {
     expect(parseCreateTaskUiPrefs(JSON.stringify({ sections: { resources: false } }))).toEqual({
       sections: { basic: true, resources: false, storage: true, release: true },
       scriptEnvOpen: false,
+      syncNameWithExperimentId: false,
     });
   });
 

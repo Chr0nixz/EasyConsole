@@ -20,7 +20,15 @@ import {
 } from "../../lib/create-task-ui-prefs";
 import { useAuth } from "../../lib/use-auth";
 import { useToast } from "../../lib/use-toast";
-import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../../lib/format";
+import {
+  addHours,
+  formatDateTimeForApi,
+  formatDateTimeLocalInput,
+  formatExperimentTimedTaskName,
+  formatTaskDefaultName,
+  releaseConditionText,
+  releaseConditionTextEn,
+} from "../../lib/format";
 import { cn } from "../../lib/utils";
 import { useI18n } from "../../lib/i18n";
 import { queryKeys } from "../../lib/query-keys";
@@ -29,7 +37,9 @@ import { normalizeStoragePath } from "../../lib/remote-storage";
 import { browserRuntime } from "../../lib/runtime";
 import {
   applyEnvToScriptCommand,
+  EXPERIMENT_ID_ENV_KEY,
   findScriptEnvVarErrors,
+  getScriptEnvValue,
   normalizeScriptEnvVars,
   parseScriptCommandEnv,
   type ScriptEnvVar,
@@ -264,7 +274,7 @@ export function CreateTaskDialog({
     }
     const scriptEnvOpen = errors.scriptEnv ? true : uiPrefs.scriptEnvOpen;
     if (errors.scriptEnv && !uiPrefs.scriptEnvOpen) changed = true;
-    if (changed) persistUiPrefs({ sections, scriptEnvOpen });
+    if (changed) persistUiPrefs({ ...uiPrefs, sections, scriptEnvOpen });
   }
 
   const currentSnapshot = useMemo<FormSnapshot>(
@@ -296,7 +306,16 @@ export function CreateTaskDialog({
 
   const fieldErrors = useMemo(() => {
     const errors: Record<string, string> = {};
-    if (!name.trim()) errors.name = text("任务名称不能为空", "Task name is required");
+    const syncActive = !isEditMode && uiPrefs.syncNameWithExperimentId && Number(releaseCondition) === 3;
+    const experimentId = getScriptEnvValue(scriptEnv, EXPERIMENT_ID_ENV_KEY);
+    if (syncActive) {
+      if (!experimentId) {
+        errors.name = text("请填写 EXPERIMENT_ID（名称将与其一致）", "Enter EXPERIMENT_ID (the name follows it)");
+        errors.scriptEnv = text("请填写 EXPERIMENT_ID", "Enter EXPERIMENT_ID");
+      }
+    } else if (!name.trim()) {
+      errors.name = text("任务名称不能为空", "Task name is required");
+    }
     if (!imageId) errors.image = text("请选择镜像", "Select an image");
     if (parsePositivePrice(price) === null) errors.price = text("价格必须大于 0", "Price must be greater than 0");
     if (parsePositiveNumber(cpu) === null) errors.cpu = text("CPU 必须大于 0", "CPU must be greater than 0");
@@ -315,7 +334,7 @@ export function CreateTaskDialog({
       errors.batchCount = text(`数量必须在 1-${MAX_BATCH_COUNT} 之间`, `Count must be 1-${MAX_BATCH_COUNT}`);
     }
     return errors;
-  }, [batchCount, cpu, gpu, imageId, memory, name, price, releaseCondition, releaseTime, scriptEnv, scriptPath, text, workDirectory]);
+  }, [batchCount, cpu, gpu, imageId, isEditMode, memory, name, price, releaseCondition, releaseTime, scriptEnv, scriptPath, text, uiPrefs.syncNameWithExperimentId, workDirectory]);
 
   const imageOptions = useMemo(() => [...(images.data?.items ?? []), ...(systemImages.data?.items ?? [])], [images.data, systemImages.data]);
   const hasSelectedImageOption = imageOptions.some((image) => String(image.id) === imageId);
@@ -343,7 +362,13 @@ export function CreateTaskDialog({
       setFormError(null);
       setResolvingNames(false);
       resetTouched();
-      void loadCreateTaskUiPrefs(browserRuntime.storage).then(setUiPrefs);
+      void loadCreateTaskUiPrefs(browserRuntime.storage).then((prefs) => {
+        setUiPrefs(prefs);
+        if (!isEditMode && prefs.syncNameWithExperimentId && snapshot.releaseCondition === "3") {
+          const id = getScriptEnvValue(JSON.parse(snapshot.scriptEnvJson) as ScriptEnvVar[], EXPERIMENT_ID_ENV_KEY);
+          if (id) setName(id);
+        }
+      });
     } else {
       setInitialSnapshot(null);
     }
@@ -355,12 +380,35 @@ export function CreateTaskDialog({
     if (latest) setImageId(String(latest.id));
   }, [imageId, imageOptions, open]);
 
+  const syncNameWithExperimentId = !isEditMode && uiPrefs.syncNameWithExperimentId;
+  const experimentIdValue = getScriptEnvValue(scriptEnv, EXPERIMENT_ID_ENV_KEY);
+  const namePreviewFromExperiment =
+    syncNameWithExperimentId && releaseCondition === "3" && experimentIdValue
+      ? formatExperimentTimedTaskName(experimentIdValue)
+      : "";
+
+  function setSyncNameWithExperimentId(next: boolean) {
+    persistUiPrefs({
+      ...uiPrefs,
+      syncNameWithExperimentId: next,
+      scriptEnvOpen: next && releaseCondition === "3" ? true : uiPrefs.scriptEnvOpen,
+    });
+    if (next && releaseCondition === "3") {
+      const id = getScriptEnvValue(scriptEnv, EXPERIMENT_ID_ENV_KEY);
+      if (id) setName(id);
+    }
+  }
+
   function handleReleaseConditionChange(value: string) {
     setReleaseCondition(value);
     if (value === "2") {
       setReleaseTime(getDefaultReleaseTime(gpu));
     } else {
       setReleaseTime("");
+    }
+    if (value === "3" && uiPrefs.syncNameWithExperimentId && !isEditMode) {
+      const id = getScriptEnvValue(scriptEnv, EXPERIMENT_ID_ENV_KEY);
+      if (id) setName(id);
     }
   }
 
@@ -369,6 +417,14 @@ export function CreateTaskDialog({
     if (releaseCondition === "2") {
       setReleaseTime(getDefaultReleaseTime(value));
     }
+  }
+
+  function handleScriptEnvChange(next: ScriptEnvVar[]) {
+    setScriptEnv(next);
+    if (!syncNameWithExperimentId || releaseCondition !== "3") return;
+    const nextId = getScriptEnvValue(next, EXPERIMENT_ID_ENV_KEY);
+    const prevId = getScriptEnvValue(scriptEnv, EXPERIMENT_ID_ENV_KEY);
+    if (nextId !== prevId) setName(nextId);
   }
 
   const mutation = useMutation({
@@ -445,7 +501,14 @@ export function CreateTaskDialog({
     event.preventDefault();
     setFormError(null);
     touchAll(["name", "image", "cpu", "gpu", "memory", "batchCount", "releaseTime", "workDirectory", "scriptPath", "scriptEnv"]);
-    const taskName = name.trim();
+    const syncActive = !isEditMode && uiPrefs.syncNameWithExperimentId && Number(releaseCondition) === 3;
+    const experimentId = getScriptEnvValue(scriptEnv, EXPERIMENT_ID_ENV_KEY);
+    if (syncActive && !experimentId) {
+      openSectionsForErrors({ name: "required", scriptEnv: "required" });
+      setFormError(text("请填写 EXPERIMENT_ID（名称将与其一致）", "Enter EXPERIMENT_ID (the name follows it)"));
+      return;
+    }
+    const taskName = syncActive ? experimentId : name.trim();
     if (!taskName) {
       openSectionsForErrors({ name: "required" });
       setFormError(text("任务名称不能为空", "Task name is required"));
@@ -530,7 +593,9 @@ export function CreateTaskDialog({
       return;
     }
 
-    const baseNames = Array.from({ length: count }, (_, index) => formatBatchTaskName(taskName, index, count));
+    // Sync mode: name = EXPERIMENT_ID + timestamp; EXPERIMENT_ID itself stays unnumbered.
+    const createBaseName = syncActive ? formatExperimentTimedTaskName(taskName) : taskName;
+    const baseNames = Array.from({ length: count }, (_, index) => formatBatchTaskName(createBaseName, index, count));
     let resolvedNames = baseNames;
     if (getRuntimeSettings().autoNumberDuplicateTaskNames) {
       setResolvingNames(true);
@@ -592,7 +657,21 @@ export function CreateTaskDialog({
             <div className={cn("grid gap-4", isEditMode ? "grid-cols-1" : "md:grid-cols-2")}>
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("任务名称", "Task name")}</span>
-                <Input className={cn("w-full", touchedFields.has("name") && fieldErrors.name && "border-app-danger")} value={name} onChange={(event) => setName(event.target.value)} onBlur={() => markTouched("name")} required />
+                <Input
+                  className={cn("w-full", touchedFields.has("name") && fieldErrors.name && "border-app-danger")}
+                  value={syncNameWithExperimentId && releaseCondition === "3" ? experimentIdValue : name}
+                  onChange={(event) => setName(event.target.value)}
+                  onBlur={() => markTouched("name")}
+                  readOnly={syncNameWithExperimentId && releaseCondition === "3"}
+                  required={!syncNameWithExperimentId || releaseCondition !== "3"}
+                />
+                {syncNameWithExperimentId && releaseCondition === "3" ? (
+                  <span className="mt-1 block text-xs leading-5 text-app-muted">
+                    {namePreviewFromExperiment
+                      ? text(`创建时名称：${namePreviewFromExperiment}（EXPERIMENT_ID 不加编号）`, `Created as ${namePreviewFromExperiment} (EXPERIMENT_ID stays unnumbered)`)
+                      : text("名称跟随 EXPERIMENT_ID；创建时自动追加时间编号。", "Name follows EXPERIMENT_ID; a timestamp suffix is added on create.")}
+                  </span>
+                ) : null}
                 <FieldError message={touchedFields.has("name") ? fieldErrors.name : undefined} />
               </label>
               {isEditMode ? null : (
@@ -735,11 +814,30 @@ export function CreateTaskDialog({
                 <ScriptEnvFields
                   envVars={scriptEnv}
                   scriptPath={scriptPath}
-                  onChange={setScriptEnv}
+                  onChange={handleScriptEnvChange}
                   error={touchedFields.has("scriptEnv") ? fieldErrors.scriptEnv : undefined}
                   expanded={uiPrefs.scriptEnvOpen}
                   onExpandedChange={(next) => persistUiPrefs({ ...uiPrefs, scriptEnvOpen: next })}
                 />
+                {isEditMode ? null : (
+                  <label className="flex items-start gap-2 text-sm">
+                    <input
+                      className="mt-0.5"
+                      type="checkbox"
+                      checked={uiPrefs.syncNameWithExperimentId}
+                      onChange={(event) => setSyncNameWithExperimentId(event.target.checked)}
+                    />
+                    <span>
+                      <span className="block text-app-text">{text("实例名称与 EXPERIMENT_ID 一致", "Keep instance name equal to EXPERIMENT_ID")}</span>
+                      <span className="mt-0.5 block text-xs leading-5 text-app-muted">
+                        {text(
+                          "创建时在名称后追加时间编号（如 exp_202608091723）；EXPERIMENT_ID 本身不加编号。",
+                          "On create, append a timestamp to the name (e.g. exp_202608091723); EXPERIMENT_ID itself is not numbered.",
+                        )}
+                      </span>
+                    </span>
+                  </label>
+                )}
               </div>
             ) : null}
           </FormSection>

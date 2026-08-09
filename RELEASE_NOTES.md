@@ -1,3 +1,15 @@
+# EasyConsole v0.4.17
+
+Optional create-instance mode that keeps the task name aligned with EXPERIMENT_ID and appends a timestamp only to the instance name.
+
+## Changes
+
+- **Name ↔ EXPERIMENT_ID option**: When release-after-task-ends is selected, an optional checkbox makes the instance name follow `EXPERIMENT_ID` (read-only in the form).
+- **Timestamp on create**: Creating appends `_YYYYMMDDHHmm` to the instance name (e.g. `exp_202608091723`); `EXPERIMENT_ID` itself is not numbered.
+- **Remembered preference**: The checkbox state is stored with the other create-dialog UI prefs.
+
+---
+
 # EasyConsole v0.4.16
 
 Make create-instance form sections collapsible, and remember open/closed state locally.

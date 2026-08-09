@@ -9,6 +9,13 @@ export function formatTaskDefaultName(date = new Date()) {
   return `${date.getFullYear()}${pad2(date.getMonth() + 1)}${pad2(date.getDate())}${pad2(date.getHours())}${pad2(date.getMinutes())}`;
 }
 
+/** Instance name derived from EXPERIMENT_ID plus a minute-resolution timestamp suffix. */
+export function formatExperimentTimedTaskName(experimentId: string, date = new Date()) {
+  const id = experimentId.trim();
+  if (!id) return "";
+  return `${id}_${formatTaskDefaultName(date)}`;
+}
+
 export function formatDateTimeForApi(value: string) {
   if (!value) return "";
   const normalized = value.replace("T", " ");
