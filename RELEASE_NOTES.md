@@ -1,3 +1,15 @@
+# EasyConsole v0.4.16
+
+Make create-instance form sections collapsible, and remember open/closed state locally.
+
+## Changes
+
+- **Create dialog sections**: Basic / Resources / Storage / Release can each collapse; collapsed headers show a short summary.
+- **Remembered UI state**: Section open state and the nested script-env editor expand state persist via local runtime storage.
+- **Validation**: Submitting with errors auto-expands the sections that need attention.
+
+---
+
 # EasyConsole v0.4.15
 
 Task-end release scripts can carry free-form environment variables, with a clearer create-instance form.

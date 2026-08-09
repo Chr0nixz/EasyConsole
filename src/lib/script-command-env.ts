@@ -4,6 +4,37 @@ export type ScriptEnvVar = {
   value: string;
 };
 
+export const EXPERIMENT_ID_ENV_KEY = "EXPERIMENT_ID";
+
+/** Returns the value for a given env key (exact trimmed key match), or "". */
+export function getScriptEnvValue(env: ScriptEnvVar[], key: string): string {
+  const target = key.trim();
+  if (!target) return "";
+  for (const item of env) {
+    if (item.key.trim() === target) return item.value.trim();
+  }
+  return "";
+}
+
+/**
+ * Inserts or updates `key=value`. Empty value removes the row.
+ * Matching is by trimmed key; the stored key uses the provided `key` spelling.
+ */
+export function upsertScriptEnvValue(env: ScriptEnvVar[], key: string, value: string): ScriptEnvVar[] {
+  const normalizedKey = key.trim();
+  if (!normalizedKey) return env;
+  const normalizedValue = value.trim();
+  const index = env.findIndex((item) => item.key.trim() === normalizedKey);
+  if (!normalizedValue) {
+    if (index < 0) return env;
+    return env.filter((_, i) => i !== index);
+  }
+  if (index >= 0) {
+    return env.map((item, i) => (i === index ? { key: normalizedKey, value: normalizedValue } : item));
+  }
+  return [{ key: normalizedKey, value: normalizedValue }, ...env];
+}
+
 /** Matches a leading `KEY=VALUE ` assignment (no spaces in key/value). */
 const ENV_ASSIGNMENT_PREFIX = /^([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)\s+/;
 
@@ -93,5 +124,5 @@ export function envVarsFromLegacyExperimentId(experimentId?: string | null, pars
   if (parsedEnv.length > 0) return parsedEnv;
   const id = experimentId?.trim();
   if (!id) return [];
-  return [{ key: "EXPERIMENT_ID", value: id }];
+  return [{ key: EXPERIMENT_ID_ENV_KEY, value: id }];
 }

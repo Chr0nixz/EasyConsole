@@ -12,16 +12,34 @@ type ScriptEnvFieldsProps = {
   scriptPath: string;
   onChange: (envVars: ScriptEnvVar[]) => void;
   error?: string;
+  /** Controlled expand state; when omitted, defaults to open only when vars exist. */
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 };
 
-export function ScriptEnvFields({ envVars, scriptPath, onChange, error }: ScriptEnvFieldsProps) {
+export function ScriptEnvFields({
+  envVars,
+  scriptPath,
+  onChange,
+  error,
+  expanded: expandedProp,
+  onExpandedChange,
+}: ScriptEnvFieldsProps) {
   const { text } = useI18n();
   const filledCount = envVars.filter((item) => item.key.trim() || item.value.trim()).length;
-  const [expanded, setExpanded] = useState(filledCount > 0);
+  const controlled = expandedProp !== undefined;
+  const [uncontrolledExpanded, setUncontrolledExpanded] = useState(filledCount > 0);
+  const expanded = controlled ? Boolean(expandedProp) : uncontrolledExpanded;
 
   useEffect(() => {
-    if (filledCount > 0) setExpanded(true);
-  }, [filledCount]);
+    if (controlled || filledCount === 0) return;
+    setUncontrolledExpanded(true);
+  }, [controlled, filledCount]);
+
+  function setExpanded(next: boolean) {
+    if (controlled) onExpandedChange?.(next);
+    else setUncontrolledExpanded(next);
+  }
 
   const preview = previewScriptCommand(scriptPath, envVars);
 
@@ -43,7 +61,7 @@ export function ScriptEnvFields({ envVars, scriptPath, onChange, error }: Script
       <button
         type="button"
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm"
-        onClick={() => setExpanded((value) => !value)}
+        onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
       >
         {expanded ? <ChevronDown className="h-4 w-4 shrink-0 text-app-muted" /> : <ChevronRight className="h-4 w-4 shrink-0 text-app-muted" />}

@@ -10,6 +10,14 @@ import { Button, Dialog, Input, Select } from "../ui";
 import { imageApi, instanceApi } from "../../lib/api";
 import { getRuntimeSettings } from "../../lib/app-settings";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../../lib/batch";
+import {
+  DEFAULT_CREATE_TASK_UI_PREFS,
+  loadCreateTaskUiPrefs,
+  saveCreateTaskUiPrefs,
+  sectionsForFieldErrors,
+  type CreateTaskSectionId,
+  type CreateTaskUiPrefs,
+} from "../../lib/create-task-ui-prefs";
 import { useAuth } from "../../lib/use-auth";
 import { useToast } from "../../lib/use-toast";
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../../lib/format";
@@ -18,6 +26,7 @@ import { useI18n } from "../../lib/i18n";
 import { queryKeys } from "../../lib/query-keys";
 import { parsePositivePrice } from "../../lib/resource-price";
 import { normalizeStoragePath } from "../../lib/remote-storage";
+import { browserRuntime } from "../../lib/runtime";
 import {
   applyEnvToScriptCommand,
   findScriptEnvVarErrors,
@@ -223,8 +232,40 @@ export function CreateTaskDialog({
   const [batchCount, setBatchCount] = useState("1");
   const [formError, setFormError] = useState<string | null>(null);
   const [resolvingNames, setResolvingNames] = useState(false);
+  const [uiPrefs, setUiPrefs] = useState<CreateTaskUiPrefs>(() => ({
+    ...DEFAULT_CREATE_TASK_UI_PREFS,
+    sections: { ...DEFAULT_CREATE_TASK_UI_PREFS.sections },
+  }));
   const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
   const unsavedMessage = text("表单有未保存的更改，确定要关闭吗？", "You have unsaved changes. Discard them and close?");
+
+  function persistUiPrefs(next: CreateTaskUiPrefs) {
+    setUiPrefs(next);
+    void saveCreateTaskUiPrefs(browserRuntime.storage, next);
+  }
+
+  function setSectionOpen(id: CreateTaskSectionId, nextOpen: boolean) {
+    persistUiPrefs({
+      ...uiPrefs,
+      sections: { ...uiPrefs.sections, [id]: nextOpen },
+    });
+  }
+
+  function openSectionsForErrors(errors: Record<string, string>) {
+    const needed = sectionsForFieldErrors(errors);
+    if (needed.length === 0) return;
+    const sections = { ...uiPrefs.sections };
+    let changed = false;
+    for (const id of needed) {
+      if (!sections[id]) {
+        sections[id] = true;
+        changed = true;
+      }
+    }
+    const scriptEnvOpen = errors.scriptEnv ? true : uiPrefs.scriptEnvOpen;
+    if (errors.scriptEnv && !uiPrefs.scriptEnvOpen) changed = true;
+    if (changed) persistUiPrefs({ sections, scriptEnvOpen });
+  }
 
   const currentSnapshot = useMemo<FormSnapshot>(
     () => ({
@@ -302,6 +343,7 @@ export function CreateTaskDialog({
       setFormError(null);
       setResolvingNames(false);
       resetTouched();
+      void loadCreateTaskUiPrefs(browserRuntime.storage).then(setUiPrefs);
     } else {
       setInitialSnapshot(null);
     }
@@ -405,45 +447,54 @@ export function CreateTaskDialog({
     touchAll(["name", "image", "cpu", "gpu", "memory", "batchCount", "releaseTime", "workDirectory", "scriptPath", "scriptEnv"]);
     const taskName = name.trim();
     if (!taskName) {
+      openSectionsForErrors({ name: "required" });
       setFormError(text("任务名称不能为空", "Task name is required"));
       return;
     }
     if (!imageId) {
+      openSectionsForErrors({ image: "required" });
       setFormError(text("请选择镜像", "Select an image"));
       return;
     }
     const priceValue = parsePositivePrice(price);
     if (priceValue === null) {
+      openSectionsForErrors({ price: "required" });
       setFormError(text("价格必须大于 0", "Price must be greater than 0"));
       return;
     }
     const cpuValue = parsePositiveNumber(cpu);
     if (cpuValue === null) {
+      openSectionsForErrors({ cpu: "required" });
       setFormError(text("CPU 必须大于 0", "CPU must be greater than 0"));
       return;
     }
     const gpuValue = parseNonNegativeInteger(gpu);
     if (gpuValue === null) {
+      openSectionsForErrors({ gpu: "required" });
       setFormError(text("GPU 必须是非负整数", "GPU must be a non-negative integer"));
       return;
     }
     const memoryValue = parsePositiveInteger(memory);
     if (memoryValue === null) {
+      openSectionsForErrors({ memory: "required" });
       setFormError(text("内存必须是正整数", "Memory must be a positive integer"));
       return;
     }
     const releaceConditions = Number(releaseCondition);
     if (releaceConditions === 2 && !releaseTime) {
+      openSectionsForErrors({ releaseTime: "required" });
       setFormError(text("请选择释放时间", "Select a release time"));
       return;
     }
     if (releaceConditions === 3 && (!workDirectory.trim() || !scriptPath.trim())) {
+      openSectionsForErrors({ workDirectory: "required", scriptPath: "required" });
       setFormError(text("请填写工作目录和脚本路径", "Enter the working directory and script path"));
       return;
     }
     if (releaceConditions === 3) {
       const envError = findScriptEnvVarErrors(scriptEnv);
       if (envError) {
+        openSectionsForErrors({ scriptEnv: "invalid" });
         setFormError(text(envError.messageZh, envError.messageEn));
         return;
       }
@@ -529,9 +580,15 @@ export function CreateTaskDialog({
       onOverlayClick={requestClose}
       width="max-w-4xl"
     >
-      <form className="p-4" onSubmit={submit}>
+      <form className="p-4" noValidate onSubmit={submit}>
         <div className="space-y-5">
-          <FormSection title={text("基础", "Basic")}>
+          <FormSection
+            title={text("基础", "Basic")}
+            collapsible
+            open={uiPrefs.sections.basic}
+            onOpenChange={(next) => setSectionOpen("basic", next)}
+            hint={name.trim() || undefined}
+          >
             <div className={cn("grid gap-4", isEditMode ? "grid-cols-1" : "md:grid-cols-2")}>
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("任务名称", "Task name")}</span>
@@ -571,7 +628,14 @@ export function CreateTaskDialog({
             </label>
           </FormSection>
 
-          <FormSection title={text("资源配置", "Resources")} divided>
+          <FormSection
+            title={text("资源配置", "Resources")}
+            divided
+            collapsible
+            open={uiPrefs.sections.resources}
+            onOpenChange={(next) => setSectionOpen("resources", next)}
+            hint={`${cpu || "-"}C / ${gpu || "0"}GPU / ${memory || "-"}G`}
+          >
             <div className="grid gap-4 md:grid-cols-3">
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">CPU</span>
@@ -591,7 +655,14 @@ export function CreateTaskDialog({
             </div>
           </FormSection>
 
-          <FormSection title={text("存储", "Storage")} divided>
+          <FormSection
+            title={text("存储", "Storage")}
+            divided
+            collapsible
+            open={uiPrefs.sections.storage}
+            onOpenChange={(next) => setSectionOpen("storage", next)}
+            hint={storagePath.trim() || undefined}
+          >
             <div className="grid gap-4 text-sm md:grid-cols-2">
               <div>
                 <span className="mb-1 block text-app-muted">{text("存储路径", "Storage path")}</span>
@@ -610,7 +681,14 @@ export function CreateTaskDialog({
             </div>
           </FormSection>
 
-          <FormSection title={text("释放策略", "Release")} divided>
+          <FormSection
+            title={text("释放策略", "Release")}
+            divided
+            collapsible
+            open={uiPrefs.sections.release}
+            onOpenChange={(next) => setSectionOpen("release", next)}
+            hint={(locale === "en-US" ? releaseConditionTextEn : releaseConditionText)[Number(releaseCondition)] ?? undefined}
+          >
             <div className="grid gap-4 md:grid-cols-2">
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("释放条件", "Release condition")}</span>
@@ -659,6 +737,8 @@ export function CreateTaskDialog({
                   scriptPath={scriptPath}
                   onChange={setScriptEnv}
                   error={touchedFields.has("scriptEnv") ? fieldErrors.scriptEnv : undefined}
+                  expanded={uiPrefs.scriptEnvOpen}
+                  onExpandedChange={(next) => persistUiPrefs({ ...uiPrefs, scriptEnvOpen: next })}
                 />
               </div>
             ) : null}

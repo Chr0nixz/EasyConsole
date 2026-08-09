@@ -4,8 +4,10 @@ import {
   applyEnvToScriptCommand,
   envVarsFromLegacyExperimentId,
   findScriptEnvVarErrors,
+  getScriptEnvValue,
   parseScriptCommandEnv,
   previewScriptCommand,
+  upsertScriptEnvValue,
 } from "./script-command-env";
 
 describe("script-command-env", () => {
@@ -57,5 +59,17 @@ describe("script-command-env", () => {
   it("migrates legacy experiment id", () => {
     expect(envVarsFromLegacyExperimentId("exp-9")).toEqual([{ key: "EXPERIMENT_ID", value: "exp-9" }]);
     expect(envVarsFromLegacyExperimentId("exp-9", [{ key: "A", value: "1" }])).toEqual([{ key: "A", value: "1" }]);
+  });
+
+  it("reads and upserts env values by key", () => {
+    expect(getScriptEnvValue([{ key: "EXPERIMENT_ID", value: "exp-1" }], "EXPERIMENT_ID")).toBe("exp-1");
+    expect(upsertScriptEnvValue([{ key: "FOO", value: "1" }], "EXPERIMENT_ID", "exp-2")).toEqual([
+      { key: "EXPERIMENT_ID", value: "exp-2" },
+      { key: "FOO", value: "1" },
+    ]);
+    expect(upsertScriptEnvValue([{ key: "EXPERIMENT_ID", value: "old" }], "EXPERIMENT_ID", "new")).toEqual([
+      { key: "EXPERIMENT_ID", value: "new" },
+    ]);
+    expect(upsertScriptEnvValue([{ key: "EXPERIMENT_ID", value: "old" }], "EXPERIMENT_ID", "")).toEqual([]);
   });
 });
