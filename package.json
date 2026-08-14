@@ -69,7 +69,7 @@
     "@types/proper-lockfile": "^4.1.4",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
-    "@vitejs/plugin-react": "^6.0.2",
+    "@vitejs/plugin-react": "^6.0.5",
     "@yao-pkg/pkg": "^6.19.0",
     "autoprefixer": "^10.4.20",
     "esbuild": "^0.28.0",
