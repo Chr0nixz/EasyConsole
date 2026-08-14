@@ -1,4 +1,4 @@
-import { computeNextRunTime, isRecurring } from "./task-recurrence";
+import { computeNextRunTime, isRecurring, validateRecurrence } from "./task-recurrence";
 import { updateStorageValue } from "./storage-mutex";
 import type { CreateTaskPayload, RuntimeStorage, ScheduledTask, TaskRecurrence } from "./types";
 
@@ -20,7 +20,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
 }
 
-function normalizeRecurrence(raw: unknown): TaskRecurrence | undefined {
+function parseRecurrence(raw: unknown): TaskRecurrence | undefined {
   if (!isRecord(raw)) return undefined;
   const type = String(raw.type ?? "");
   if (!["once", "daily", "weekly", "interval", "cron"].includes(type)) return undefined;
@@ -40,13 +40,40 @@ function normalizeRecurrence(raw: unknown): TaskRecurrence | undefined {
   return recurrence;
 }
 
+function isInvalidRecurrence(recurrence: TaskRecurrence | undefined): boolean {
+  if (!recurrence) return false;
+  try {
+    validateRecurrence(recurrence);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Coerce stored recurrence. Incomplete weekly/interval/cron configs are
+ * degraded to a one-shot so `computeNextRunTime` cannot throw later.
+ */
+export function normalizeRecurrence(raw: unknown): { recurrence?: TaskRecurrence; invalid: boolean } {
+  const recurrence = parseRecurrence(raw);
+  if (!recurrence) return { recurrence: undefined, invalid: false };
+  if (isInvalidRecurrence(recurrence)) {
+    return { recurrence: { type: "once" }, invalid: true };
+  }
+  return { recurrence, invalid: false };
+}
+
 function normalizeSchedule(raw: unknown): ScheduledTask | null {
   if (!isRecord(raw) || !isRecord(raw.payload)) return null;
   const id = String(raw.id ?? "");
   const name = String(raw.name ?? "");
   const scheduleTime = String(raw.scheduleTime ?? "");
-  const status = String(raw.status ?? "pending");
+  let status = String(raw.status ?? "pending");
   if (!id || !name || !scheduleTime || !["pending", "running", "done", "failed", "paused", "needs_review"].includes(status)) return null;
+  const { recurrence, invalid } = normalizeRecurrence(raw.recurrence);
+  if (invalid && (status === "pending" || status === "running")) {
+    status = "needs_review";
+  }
   return {
     id,
     name,
@@ -57,8 +84,14 @@ function normalizeSchedule(raw: unknown): ScheduledTask | null {
     createdAt: String(raw.createdAt ?? nowIso()),
     updatedAt: String(raw.updatedAt ?? nowIso()),
     lastRunAt: typeof raw.lastRunAt === "string" ? raw.lastRunAt : undefined,
-    lastError: typeof raw.lastError === "string" ? raw.lastError : undefined,
-    recurrence: normalizeRecurrence(raw.recurrence),
+    lastError: invalid
+      ? typeof raw.lastError === "string" && raw.lastError
+        ? raw.lastError
+        : "Invalid recurrence configuration; confirm before running."
+      : typeof raw.lastError === "string"
+        ? raw.lastError
+        : undefined,
+    recurrence,
     executionKey: typeof raw.executionKey === "string" ? raw.executionKey : undefined,
     leaseStartedAt: typeof raw.leaseStartedAt === "string" ? raw.leaseStartedAt : undefined,
     lastRemoteTaskId: typeof raw.lastRemoteTaskId === "string" ? raw.lastRemoteTaskId : undefined,
@@ -127,22 +160,23 @@ export function createScheduledTask(input: {
 }
 
 export function isScheduleDue(task: ScheduledTask, now = new Date()) {
-  if (task.status !== "pending") return false;
+  try {
+    if (task.status !== "pending") return false;
 
-  if (!isRecurring(task)) {
-    // One-time task: original logic
+    if (!isRecurring(task)) {
+      const scheduledAt = Date.parse(task.scheduleTime);
+      return Number.isFinite(scheduledAt) && scheduledAt <= now.getTime();
+    }
+
+    const nextRun = computeNextRunTime(task, now);
+    if (!nextRun) return false;
+
     const scheduledAt = Date.parse(task.scheduleTime);
     return Number.isFinite(scheduledAt) && scheduledAt <= now.getTime();
+  } catch {
+    // A single corrupt recurrence must not abort the whole due-task loop.
+    return false;
   }
-
-  // Recurring task: check if the next scheduled time has passed
-  const nextRun = computeNextRunTime(task, now);
-  if (!nextRun) return false;
-
-  // For recurring tasks, the scheduleTime field is updated after each run to
-  // the next run time. So we check if scheduleTime <= now.
-  const scheduledAt = Date.parse(task.scheduleTime);
-  return Number.isFinite(scheduledAt) && scheduledAt <= now.getTime();
 }
 
 export function sortScheduledTasks(items: ScheduledTask[]) {

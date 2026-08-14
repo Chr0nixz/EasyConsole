@@ -43,7 +43,7 @@ vi.mock("../lib/app-update-context", () => ({
   }),
 }));
 
-vi.mock("../lib/download-queue-context", () => ({
+vi.mock("../lib/use-download-queue", () => ({
   useDownloadQueue: () => ({ items: [], totalProgress: 0, summary: { active: 0, completed: 0, failed: 0 }, clear: vi.fn(), cancel: vi.fn() }),
   formatDownloadProgress: () => "0%",
 }));

@@ -1,11 +1,14 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 import { buildMonitorDashboardUrl, DEFAULT_MONITOR_DASHBOARD_URL } from "../../src/lib/monitor-dashboard-core";
 import type { EasyConsoleApi } from "../../src/lib/api-factory";
 import { exportLocalDataBackup, importLocalDataBackup, parseLocalDataBackup, type LocalDataBackupSection } from "../../src/lib/local-data-backup";
 import { normalizeStoragePath } from "../../src/lib/remote-storage";
 import { createScheduledTask, loadScheduledTasks, pauseScheduledTask, resumeScheduledTask, saveScheduledTasks, updateScheduledTask } from "../../src/lib/scheduled-tasks";
+import { executeScheduledTask } from "../../src/lib/schedule-execution";
+import { withStorageTransaction } from "../../src/lib/storage-mutex";
 import {
   createTaskTemplate,
   loadTaskTemplates,
@@ -78,9 +81,56 @@ export async function blobToText(blob: Blob, limitBytes = DEFAULT_TEXT_LIMIT_BYT
   return truncateText(await blob.text(), limitBytes);
 }
 
-export async function writeBlobToFile(blob: Blob, outputPath: string) {
-  const resolvedPath = resolve(outputPath);
+/**
+ * Root that downloads are confined to.
+ *
+ * Writing to disk is a real side effect, but the download operations are
+ * reachable as read-only MCP tools, so an unconstrained `outputPath` would let
+ * a misled agent drop remote-controlled bytes onto `~/.bashrc`, an autostart
+ * entry, or an existing executable. Callers that genuinely need another
+ * location set `EASY_CONSOLE_DOWNLOAD_DIR`.
+ */
+export function getDownloadRoot() {
+  return resolve(process.env.EASY_CONSOLE_DOWNLOAD_DIR ?? join(homedir(), ".easy-console", "downloads"));
+}
+
+export type WriteBlobOptions = {
+  overwrite?: boolean;
+  /**
+   * Allow writing outside the download root.
+   *
+   * Set by the CLI, where `--output` is an explicit human instruction (same
+   * expectation as `curl -o`). Never set from MCP: there the path may originate
+   * from model output influenced by remote content.
+   */
+  allowOutsideRoot?: boolean;
+};
+
+function resolveDownloadPath(outputPath: string, allowOutsideRoot: boolean) {
+  if (allowOutsideRoot) return resolve(outputPath);
+
+  const root = getDownloadRoot();
+  // Relative paths resolve against the root rather than the process cwd, so a
+  // bare `report.json` stays inside it.
+  const resolvedPath = isAbsolute(outputPath) ? resolve(outputPath) : resolve(root, outputPath);
+  if (resolvedPath !== root && !resolvedPath.startsWith(root + sep)) {
+    throw new Error(`Refusing to write outside the download directory (${root}). Got: ${resolvedPath}`);
+  }
+  return resolvedPath;
+}
+
+export async function writeBlobToFile(blob: Blob, outputPath: string, options: WriteBlobOptions = {}) {
+  const resolvedPath = resolveDownloadPath(outputPath, options.allowOutsideRoot === true);
   await mkdir(dirname(resolvedPath), { recursive: true });
+  if (!options.overwrite) {
+    const exists = await stat(resolvedPath).then(
+      () => true,
+      () => false,
+    );
+    if (exists) {
+      throw new Error(`Refusing to overwrite an existing file: ${resolvedPath}. Pass overwrite to replace it.`);
+    }
+  }
   await writeFile(resolvedPath, Buffer.from(await blob.arrayBuffer()));
   return {
     path: resolvedPath,
@@ -173,14 +223,19 @@ export async function readStorageText(api: EasyConsoleApi, path: string, limitBy
   };
 }
 
-export async function downloadStoragePath(api: EasyConsoleApi, path: string, outputPath?: string) {
+export async function downloadStoragePath(
+  api: EasyConsoleApi,
+  path: string,
+  outputPath?: string,
+  options: WriteBlobOptions = {},
+) {
   const normalizedPath = normalizeStoragePath(path);
   const result = await api.storageApi.transmit({ path: normalizedPath });
   const blob = result instanceof Blob ? result : new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
   const targetPath = outputPath ?? (basename(normalizedPath) || "easy-console-download");
   return {
     remotePath: normalizedPath,
-    ...(await writeBlobToFile(blob, targetPath)),
+    ...(await writeBlobToFile(blob, targetPath, options)),
   };
 }
 
@@ -242,10 +297,15 @@ export function checkTaskName(api: EasyConsoleApi, name: string) {
   return api.instanceApi.checkTaskName(name);
 }
 
-export async function downloadTask(api: EasyConsoleApi, query: UnknownRecord, outputPath?: string) {
+export async function downloadTask(
+  api: EasyConsoleApi,
+  query: UnknownRecord,
+  outputPath?: string,
+  options: WriteBlobOptions = {},
+) {
   const blob = await api.instanceApi.downloadTask(query);
   const targetPath = outputPath ?? `task-${Date.now()}.zip`;
-  return writeBlobToFile(blob, targetPath);
+  return writeBlobToFile(blob, targetPath, options);
 }
 
 // === Dashboard ===
@@ -276,10 +336,15 @@ export function getImageDetail(api: EasyConsoleApi, imageId: string | number) {
   return api.imageApi.detail(imageId);
 }
 
-export async function downloadImage(api: EasyConsoleApi, imageId: string | number, outputPath?: string) {
+export async function downloadImage(
+  api: EasyConsoleApi,
+  imageId: string | number,
+  outputPath?: string,
+  options: WriteBlobOptions = {},
+) {
   const blob = await api.imageApi.download(imageId);
   const targetPath = outputPath ?? `image-${imageId}.tar`;
-  return writeBlobToFile(blob, targetPath);
+  return writeBlobToFile(blob, targetPath, options);
 }
 
 export function commitImage(api: EasyConsoleApi, payload: ImageCommitPayload, confirm?: boolean) {
@@ -319,12 +384,14 @@ export async function listTaskTemplates(storage: RuntimeStorage) {
 }
 
 export async function createTaskTemplateRecord(storage: RuntimeStorage, input: EditableTaskTemplate, confirm?: boolean) {
-  return maybeMutate("template.create", { name: input.name }, confirm, async () => {
-    const templates = await loadTaskTemplates(storage);
-    const created = createTaskTemplate(input);
-    await saveTaskTemplates(storage, [...templates, created]);
-    return created;
-  });
+  return maybeMutate("template.create", { name: input.name }, confirm, async () =>
+    withStorageTransaction(storage, async () => {
+      const templates = await loadTaskTemplates(storage);
+      const created = createTaskTemplate(input);
+      await saveTaskTemplates(storage, [...templates, created]);
+      return created;
+    }),
+  );
 }
 
 export async function updateTaskTemplateRecord(
@@ -333,16 +400,18 @@ export async function updateTaskTemplateRecord(
   input: EditableTaskTemplate,
   confirm?: boolean,
 ) {
-  const templates = await loadTaskTemplates(storage);
-  const existing = templates.find((item) => item.id === templateId);
-  if (!existing) throw new Error(`Task template not found: ${templateId}`);
-  return maybeMutate("template.update", { templateId, templateName: existing.name }, confirm, async () => {
-    const updated = updateTaskTemplate(existing, input);
-    await saveTaskTemplates(
-      storage,
-      templates.map((item) => (item.id === templateId ? updated : item)),
-    );
-    return updated;
+  return withStorageTransaction(storage, async () => {
+    const templates = await loadTaskTemplates(storage);
+    const existing = templates.find((item) => item.id === templateId);
+    if (!existing) throw new Error(`Task template not found: ${templateId}`);
+    return maybeMutate("template.update", { templateId, templateName: existing.name }, confirm, async () => {
+      const updated = updateTaskTemplate(existing, input);
+      await saveTaskTemplates(
+        storage,
+        templates.map((item) => (item.id === templateId ? updated : item)),
+      );
+      return updated;
+    });
   });
 }
 
@@ -366,21 +435,31 @@ export async function applyTaskTemplate(
       for (const payload of payloads) {
         results.push(await api.instanceApi.createTask(payload));
       }
-      const next = templates.map((item) => (item.id === templateId ? recordTaskTemplateUsage(item) : item));
-      await saveTaskTemplates(storage, next);
+      // Remote calls are kept outside the lock so a slow API cannot block other
+      // processes. Re-read inside the transaction because `templates` is now a
+      // stale snapshot from before those calls.
+      await withStorageTransaction(storage, async () => {
+        const current = await loadTaskTemplates(storage);
+        await saveTaskTemplates(
+          storage,
+          current.map((item) => (item.id === templateId ? recordTaskTemplateUsage(item) : item)),
+        );
+      });
       return { created: results.length, results };
     },
   );
 }
 
 export async function deleteTaskTemplate(storage: RuntimeStorage, templateId: string, confirm?: boolean) {
-  const templates = await loadTaskTemplates(storage);
-  const template = templates.find((item) => item.id === templateId);
-  if (!template) throw new Error(`Task template not found: ${templateId}`);
-  return maybeMutate("template.delete", { templateId, templateName: template.name }, confirm, async () => {
-    const remaining = templates.filter((item) => item.id !== templateId);
-    await saveTaskTemplates(storage, remaining);
-    return { deleted: true };
+  return withStorageTransaction(storage, async () => {
+    const templates = await loadTaskTemplates(storage);
+    const template = templates.find((item) => item.id === templateId);
+    if (!template) throw new Error(`Task template not found: ${templateId}`);
+    return maybeMutate("template.delete", { templateId, templateName: template.name }, confirm, async () => {
+      const remaining = templates.filter((item) => item.id !== templateId);
+      await saveTaskTemplates(storage, remaining);
+      return { deleted: true };
+    });
   });
 }
 
@@ -408,11 +487,12 @@ export async function createScheduledTaskRecord(
     "schedule.create",
     { task: draft, nextRuns },
     confirm,
-    async () => {
-      const items = await loadScheduledTasks(storage);
-      await saveScheduledTasks(storage, [...items, draft]);
-      return draft;
-    },
+    async () =>
+      withStorageTransaction(storage, async () => {
+        const items = await loadScheduledTasks(storage);
+        await saveScheduledTasks(storage, [...items, draft]);
+        return draft;
+      }),
   );
 }
 
@@ -422,40 +502,46 @@ export async function updateScheduledTaskRecord(
   patch: Partial<Pick<ScheduledTask, "name" | "description" | "scheduleTime" | "payload" | "recurrence">>,
   confirm?: boolean,
 ) {
-  const items = await loadScheduledTasks(storage);
-  const task = items.find((item) => item.id === taskId);
-  if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
-  const next: ScheduledTask = {
-    ...task,
-    ...patch,
-    payload: patch.payload ?? task.payload,
-  };
-  return maybeMutate("schedule.update", { taskId, taskName: task.name, patch }, confirm, async () => {
-    const updated = updateScheduledTask(items, next);
-    await saveScheduledTasks(storage, updated);
-    return updated.find((item) => item.id === taskId) ?? next;
+  return withStorageTransaction(storage, async () => {
+    const items = await loadScheduledTasks(storage);
+    const task = items.find((item) => item.id === taskId);
+    if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
+    const next: ScheduledTask = {
+      ...task,
+      ...patch,
+      payload: patch.payload ?? task.payload,
+    };
+    return maybeMutate("schedule.update", { taskId, taskName: task.name, patch }, confirm, async () => {
+      const updated = updateScheduledTask(items, next);
+      await saveScheduledTasks(storage, updated);
+      return updated.find((item) => item.id === taskId) ?? next;
+    });
   });
 }
 
 export async function pauseScheduledTaskRecord(storage: RuntimeStorage, taskId: string, confirm?: boolean) {
-  const items = await loadScheduledTasks(storage);
-  const task = items.find((item) => item.id === taskId);
-  if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
-  return maybeMutate("schedule.pause", { taskId, taskName: task.name }, confirm, async () => {
-    const paused = pauseScheduledTask(task);
-    await saveScheduledTasks(storage, updateScheduledTask(items, paused));
-    return paused;
+  return withStorageTransaction(storage, async () => {
+    const items = await loadScheduledTasks(storage);
+    const task = items.find((item) => item.id === taskId);
+    if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
+    return maybeMutate("schedule.pause", { taskId, taskName: task.name }, confirm, async () => {
+      const paused = pauseScheduledTask(task);
+      await saveScheduledTasks(storage, updateScheduledTask(items, paused));
+      return paused;
+    });
   });
 }
 
 export async function resumeScheduledTaskRecord(storage: RuntimeStorage, taskId: string, confirm?: boolean) {
-  const items = await loadScheduledTasks(storage);
-  const task = items.find((item) => item.id === taskId);
-  if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
-  return maybeMutate("schedule.resume", { taskId, taskName: task.name }, confirm, async () => {
-    const resumed = resumeScheduledTask(task);
-    await saveScheduledTasks(storage, updateScheduledTask(items, resumed));
-    return resumed;
+  return withStorageTransaction(storage, async () => {
+    const items = await loadScheduledTasks(storage);
+    const task = items.find((item) => item.id === taskId);
+    if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
+    return maybeMutate("schedule.resume", { taskId, taskName: task.name }, confirm, async () => {
+      const resumed = resumeScheduledTask(task);
+      await saveScheduledTasks(storage, updateScheduledTask(items, resumed));
+      return resumed;
+    });
   });
 }
 
@@ -464,43 +550,30 @@ export async function runScheduledTask(storage: RuntimeStorage, api: EasyConsole
   const task = items.find((item) => item.id === taskId);
   if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
   return maybeMutate("schedule.run", { taskId, taskName: task.name, executionKey: `${task.id}@${task.scheduleTime}` }, confirm, async () => {
-    const { beginScheduledExecution, completeScheduledExecution, failScheduledExecution, makeExecutionKey } = await import("../../src/lib/schedule-execution");
-    const executionKey = makeExecutionKey(task);
-    if (task.lastRemoteTaskId && task.executionKey === executionKey) {
-      return { result: { skipped: true, reason: "execution already completed", remoteTaskId: task.lastRemoteTaskId }, task };
+    const executed = await executeScheduledTask(storage, taskId, {
+      createTask: (payload) => api.instanceApi.createTask(payload),
+      force: true,
+    });
+    if (executed.skipped) {
+      return {
+        result: { skipped: true, reason: executed.reason, remoteTaskId: executed.task.lastRemoteTaskId },
+        task: executed.task,
+      };
     }
-    const leased = beginScheduledExecution(task);
-    let next = updateScheduledTask(items, leased);
-    await saveScheduledTasks(storage, next);
-    try {
-      const result = await api.instanceApi.createTask(task.payload);
-      const remoteTaskId =
-        result && typeof result === "object"
-          ? String((result as Record<string, unknown>).id ?? (result as Record<string, unknown>).task_id ?? "") || undefined
-          : undefined;
-      const withRemote = { ...leased, lastRemoteTaskId: remoteTaskId, lastRunAt: new Date().toISOString() };
-      next = updateScheduledTask(next, withRemote);
-      await saveScheduledTasks(storage, next);
-      const afterRun = completeScheduledExecution(withRemote, remoteTaskId);
-      next = updateScheduledTask(next, afterRun);
-      await saveScheduledTasks(storage, next);
-      return { result, task: afterRun };
-    } catch (error) {
-      const failed = failScheduledExecution(leased, error instanceof Error ? error.message : String(error));
-      await saveScheduledTasks(storage, updateScheduledTask(next, failed));
-      throw error;
-    }
+    return { result: executed.result, task: executed.task };
   });
 }
 
 export async function deleteScheduledTask(storage: RuntimeStorage, taskId: string, confirm?: boolean) {
-  const items = await loadScheduledTasks(storage);
-  const task = items.find((item) => item.id === taskId);
-  if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
-  return maybeMutate("schedule.delete", { taskId, taskName: task.name }, confirm, async () => {
-    const remaining = items.filter((item) => item.id !== taskId);
-    await saveScheduledTasks(storage, remaining);
-    return { deleted: true };
+  return withStorageTransaction(storage, async () => {
+    const items = await loadScheduledTasks(storage);
+    const task = items.find((item) => item.id === taskId);
+    if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
+    return maybeMutate("schedule.delete", { taskId, taskName: task.name }, confirm, async () => {
+      const remaining = items.filter((item) => item.id !== taskId);
+      await saveScheduledTasks(storage, remaining);
+      return { deleted: true };
+    });
   });
 }
 
@@ -513,6 +586,7 @@ export async function exportBackup(storage: RuntimeStorage, includeSecrets: bool
 export async function importBackup(storage: RuntimeStorage, backupText: string, sections: LocalDataBackupSection[], confirm?: boolean) {
   const backup = parseLocalDataBackup(backupText);
   return maybeMutate("backup.import", { sections, includeSecrets: backup.includeSecrets }, confirm, () =>
-    importLocalDataBackup(storage, backup, sections),
+    // An import writes several keys; they must land as one unit.
+    withStorageTransaction(storage, () => importLocalDataBackup(storage, backup, sections)),
   );
 }

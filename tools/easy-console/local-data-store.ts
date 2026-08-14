@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -10,7 +11,50 @@ export function getDefaultLocalDataPath(configPath: string) {
   return process.env.EASY_CONSOLE_LOCAL_DATA_PATH ?? join(dirname(configPath), "local-data.json");
 }
 
-async function atomicWriteFile(filePath: string, contents: string) {
+/**
+ * Files whose cross-process lock is held by the *current async call chain*.
+ *
+ * proper-lockfile is not reentrant, so a transaction whose body calls get/set
+ * on the same store must reuse the lock it already holds. Tracking that in a
+ * plain module-level map keyed by path would be wrong: two genuinely concurrent
+ * callers would each see "already held" and skip locking, silently destroying
+ * mutual exclusion. AsyncLocalStorage scopes the flag to one call chain, so
+ * nested calls reuse the lock while independent callers still contend for it.
+ */
+const heldLocks = new AsyncLocalStorage<ReadonlySet<string>>();
+
+export async function withFileLock<T>(
+  filePath: string,
+  fn: () => Promise<T>,
+  options: { initialContents?: string } = {},
+): Promise<T> {
+  const held = heldLocks.getStore();
+  if (held?.has(filePath)) return fn();
+
+  await mkdir(dirname(filePath), { recursive: true });
+  // proper-lockfile needs the target to exist before it can lock it.
+  try {
+    await writeFile(filePath, options.initialContents ?? "", { flag: "wx" });
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) {
+      // ignore non-EEXIST; the lock call below will surface real errors
+    }
+  }
+
+  const release = await lockfile.lock(filePath, {
+    retries: { retries: 15, factor: 1.5, minTimeout: 20, maxTimeout: 500 },
+    stale: 30_000,
+  });
+  const nested = new Set(held ?? []);
+  nested.add(filePath);
+  try {
+    return await heldLocks.run(nested, fn);
+  } finally {
+    await release();
+  }
+}
+
+export async function atomicWriteFile(filePath: string, contents: string) {
   await mkdir(dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {
@@ -32,27 +76,16 @@ async function atomicWriteFile(filePath: string, contents: string) {
 export function createFileLocalStorage(filePath: string): RuntimeStorage {
   let cache: Map<string, string> | null = null;
 
-  async function withLock<T>(fn: () => Promise<T>): Promise<T> {
-    await mkdir(dirname(filePath), { recursive: true });
-    // Ensure the target exists so proper-lockfile can lock it.
-    try {
-      await writeFile(filePath, "{}", { flag: "wx" });
-    } catch (error) {
-      if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) {
-        // ignore non-EEXIST; lock will surface real errors
-      }
-    }
-    const release = await lockfile.lock(filePath, {
-      retries: { retries: 10, factor: 1.5, minTimeout: 20, maxTimeout: 200 },
-      stale: 30_000,
-    });
-    try {
-      // Always reload under the lock so concurrent processes see latest data.
-      cache = null;
-      return await fn();
-    } finally {
-      await release();
-    }
+  function withLock<T>(fn: () => Promise<T>): Promise<T> {
+    return withFileLock(
+      filePath,
+      async () => {
+        // Always reload under the lock so concurrent processes see latest data.
+        cache = null;
+        return fn();
+      },
+      { initialContents: "{}" },
+    );
   }
 
   async function loadFresh(): Promise<Map<string, string>> {
@@ -97,6 +130,16 @@ export function createFileLocalStorage(filePath: string): RuntimeStorage {
         map.delete(key);
         await flush(map);
       });
+    },
+    /**
+     * Hold the cross-process file lock for the whole callback.
+     *
+     * Without this, a `load → modify → save` sequence takes the lock twice and
+     * a second process can slip in between, so the later writer silently
+     * overwrites the earlier one. Nested get/set reuse the same lock.
+     */
+    withTransaction<T>(fn: () => Promise<T>): Promise<T> {
+      return withLock(fn);
     },
   };
 }

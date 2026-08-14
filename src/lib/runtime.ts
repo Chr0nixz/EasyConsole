@@ -177,6 +177,9 @@ function isFormData(body: unknown): body is FormData {
   return typeof FormData !== "undefined" && body instanceof FormData;
 }
 
+/** Minimum gap between download progress callbacks, in ms. */
+const PROGRESS_REPORT_INTERVAL_MS = 200;
+
 function normalizeBody(body: unknown, headers: Record<string, string>) {
   if (body === undefined || body === null) return undefined;
   if (body instanceof Blob || isFormData(body) || typeof body === "string" || body instanceof URLSearchParams) return body;
@@ -199,13 +202,29 @@ async function readBlobWithProgress(response: Response, onProgress?: (progress: 
   let loaded = 0;
   onProgress?.(toProgress(0, knownTotal));
 
+  // Network chunks arrive every 16-64 KB. Reporting each one drives a global
+  // download-queue Context update, which re-renders the whole shell and the
+  // current page -- tens of thousands of renders for a 1 GB file. Report on a
+  // time/percent threshold instead; the final value is always emitted below.
+  let lastReportAt = 0;
+  let lastReportedPercent = -1;
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     if (!value) continue;
     chunks.push(value as BlobPart);
     loaded += value.byteLength;
-    onProgress?.(toProgress(loaded, knownTotal));
+
+    if (onProgress) {
+      const now = Date.now();
+      const percent = knownTotal ? Math.floor((loaded / knownTotal) * 100) : -1;
+      if (now - lastReportAt >= PROGRESS_REPORT_INTERVAL_MS || percent !== lastReportedPercent) {
+        lastReportAt = now;
+        lastReportedPercent = percent;
+        onProgress(toProgress(loaded, knownTotal));
+      }
+    }
   }
 
   const blob = new Blob(chunks);

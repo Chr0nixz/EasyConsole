@@ -1,44 +1,22 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { saveBlobToDownloads } from "./download";
 import { createDownloadQueueId, summarizeDownloadQueue } from "./download-queue";
-import { formatBytes } from "./format";
 import { useI18n } from "./i18n";
-import type { DownloadQueueItem, DownloadQueueSource, UploadProgress } from "./types";
+import type { DownloadQueueItem } from "./types";
 import { errorMessage, useRunLogger } from "./use-run-logger";
+import {
+  DownloadQueueActionsContext,
+  DownloadQueueDataContext,
+  type DownloadQueueActions,
+  type DownloadQueueData,
+  type EnqueueDownloadInput,
+} from "./use-download-queue";
 import { useToast } from "./use-toast";
-
-export type DownloadRequest = {
-  signal: AbortSignal;
-  onProgress: (progress: UploadProgress) => void;
-};
-
-export type EnqueueDownloadInput = {
-  source: DownloadQueueSource;
-  sourceLabel: string;
-  filename: string;
-  targetName: string;
-  targetId?: string | number;
-  successTitle: string;
-  failureTitle: string;
-  action: string;
-  request: (request: DownloadRequest) => Promise<Blob>;
-};
 
 type DownloadJob = EnqueueDownloadInput & {
   id: string;
 };
-
-type DownloadQueueContextValue = {
-  items: DownloadQueueItem[];
-  summary: ReturnType<typeof summarizeDownloadQueue>;
-  enqueue(input: EnqueueDownloadInput): string;
-  cancel(id: string): void;
-  retry(id: string): void;
-  clearCompleted(): void;
-};
-
-const DownloadQueueContext = createContext<DownloadQueueContextValue | null>(null);
 
 function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === "AbortError";
@@ -213,22 +191,16 @@ export function DownloadQueueProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const summary = useMemo(() => summarizeDownloadQueue(items), [items]);
-  const value = useMemo<DownloadQueueContextValue>(
-    () => ({ items, summary, enqueue, cancel, retry, clearCompleted }),
-    [cancel, clearCompleted, enqueue, items, retry, summary],
+  const actions = useMemo<DownloadQueueActions>(
+    () => ({ enqueue, cancel, retry, clearCompleted }),
+    [cancel, clearCompleted, enqueue, retry],
   );
+  const data = useMemo<DownloadQueueData>(() => ({ items, summary }), [items, summary]);
 
-  return <DownloadQueueContext.Provider value={value}>{children}</DownloadQueueContext.Provider>;
+  return (
+    <DownloadQueueActionsContext.Provider value={actions}>
+      <DownloadQueueDataContext.Provider value={data}>{children}</DownloadQueueDataContext.Provider>
+    </DownloadQueueActionsContext.Provider>
+  );
 }
 
-export function useDownloadQueue() {
-  const context = useContext(DownloadQueueContext);
-  if (!context) throw new Error("useDownloadQueue must be used within DownloadQueueProvider");
-  return context;
-}
-
-export function formatDownloadProgress(item: DownloadQueueItem) {
-  if (item.total) return `${item.progress}% ${formatBytes(item.loaded)} / ${formatBytes(item.total)}`;
-  if (item.loaded > 0) return formatBytes(item.loaded);
-  return "";
-}

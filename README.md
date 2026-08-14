@@ -87,7 +87,9 @@ EASY_CONSOLE_CONFIG=D:\path\to\config.json
 EASY_CONSOLE_ALLOW_INSECURE_HTTP=1
 ```
 
-Remote cleartext HTTP is rejected by default. Prefer HTTPS or a loopback tunnel (`http://127.0.0.1:...`). For lab APIs over plain HTTP, pass `--allow-insecure-http` or set `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1`. Production desktop builds also block remote cleartext API/monitor URLs in Settings.
+The CLI and MCP server reject remote cleartext HTTP by default. Prefer HTTPS or a loopback tunnel (`http://127.0.0.1:...`). For lab APIs over plain HTTP, pass `--allow-insecure-http` or set `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1`.
+
+The desktop and web app deliberately do **not** block remote cleartext URLs, because the default lab console is only reachable over plain HTTP. Settings shows a persistent warning whenever a remote `http://` API or monitor URL is in use: password digests and bearer tokens are replayable on such a link, so use it only on a trusted network.
 
 Login stores a normalized bearer token in the local config file:
 
@@ -246,8 +248,8 @@ For GitHub Actions releases, copy the private key content into `TAURI_SIGNING_PR
 
 GitHub Actions workflows live in `.github/workflows/`:
 
-- `ci.yml`: runs on pull requests and pushes to `main`/`master`; verifies Windows, macOS, and Linux with version consistency, typecheck, tool typecheck, lint, tests, desktop input build, Tauri shell check, and sidecar artifact upload.
-- `release.yml`: runs on `v*` tags or manual dispatch; verifies the project, builds Windows, macOS, and Linux Tauri desktop bundles, creates a draft GitHub release, signs updater artifacts, and uploads sidecar plus desktop artifacts.
+- `ci.yml`: runs on pull requests and pushes to `main`/`master`; verifies Windows, macOS, and Linux with version consistency, typecheck, tool typecheck, lint, tests, rustfmt, clippy, desktop input build, Tauri shell check, and sidecar artifact upload.
+- `release.yml`: runs on `v*` tags or manual dispatch; verifies the project (including rustfmt/clippy), builds Windows, macOS, and Linux Tauri desktop bundles serially, creates a draft GitHub release, signs updater artifacts, and uploads sidecar plus desktop artifacts.
 
 Create a release by pushing a version tag:
 

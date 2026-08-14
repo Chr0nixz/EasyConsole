@@ -312,6 +312,20 @@ export type RuntimeStorage = {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
   remove(key: string): Promise<void>;
+  /**
+   * Run `fn` with exclusive access to the whole store.
+   *
+   * Optional: backends that are already safe for a single process (browser and
+   * Tauri storage, which are serialized by `withStorageLock`) may omit it.
+   * Backends shared across OS processes -- the Node file store used by the CLI
+   * and MCP sidecars -- must implement it, otherwise a load→modify→save
+   * sequence spans two independent locks and concurrent processes overwrite
+   * each other. `updateStorageValue` uses it automatically when present.
+   *
+   * Implementations must tolerate nesting: `fn` will call `get`/`set` on the
+   * same store, and those must not try to re-acquire a non-reentrant lock.
+   */
+  withTransaction?<T>(fn: () => Promise<T>): Promise<T>;
 };
 
 export type RuntimeHttpRequest = {

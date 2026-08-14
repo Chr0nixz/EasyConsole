@@ -30,29 +30,18 @@ function saveBlobInBrowser(blob: Blob, filename: string) {
 
 async function writeBlobStreaming(path: string, blob: Blob) {
   const { writeFile } = await import("@tauri-apps/plugin-fs");
-  if (typeof blob.stream !== "function") {
-    await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
-    return;
-  }
-  const reader = blob.stream().getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  // Stream into a growing buffer without holding a second ArrayBuffer copy of the Blob internals.
-  // For very large files prefer http_download_to_file (URL → path) from Rust.
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    chunks.push(value);
-    total += value.byteLength;
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  await writeFile(path, merged);
+  // One copy of the payload, not three.
+  //
+  // The previous "streaming" variant read the Blob into an array of chunks and
+  // then merged those into one more contiguous buffer -- strictly more memory
+  // than this for no benefit, since the whole Blob is resident either way and
+  // the plugin call needs a contiguous buffer regardless.
+  //
+  // Bounded memory requires never materialising the Blob at all, which means
+  // going URL -> file path entirely in Rust (`http_download_to_file`). That
+  // command cannot carry auth headers yet, so it is not usable for API
+  // downloads; until then this is the cheapest correct form.
+  await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
 }
 
 export async function saveBlob(blob: Blob, filename: string) {

@@ -45,7 +45,7 @@ import { instanceApi } from "../lib/api";
 import { getTaskEditableState } from "../lib/api-factory";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { useCommitQueue } from "../lib/commit-queue-context";
-import { useDownloadQueue } from "../lib/download-queue-context";
+import { useDownloadQueueActions } from "../lib/use-download-queue";
 import { asJson, formatSecondsDuration, getTaskName, getTaskNodeName, taskStatusText, taskStatusTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { i18nText } from "../lib/i18n-text";
@@ -861,7 +861,7 @@ export function TasksPage() {
   const toast = useToast();
   const { locale, text } = useI18n();
   const runLogger = useRunLogger();
-  const downloadQueue = useDownloadQueue();
+  const downloadQueue = useDownloadQueueActions();
   const commitQueue = useCommitQueue();
   const auth = useAuth();
   const { confirm, confirmDialog } = useConfirmAction();

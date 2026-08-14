@@ -8,12 +8,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
-#[cfg(desktop)]
-use std::process::Command;
 use russh::keys::ssh_key::{self, HashAlg};
 use russh::keys::PrivateKeyWithHashAlg;
 use russh::{client, ChannelMsg};
 use russh_sftp::client::SftpSession;
+#[cfg(desktop)]
+use std::process::Command;
 use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -21,9 +21,7 @@ use uuid::Uuid;
 #[cfg(desktop)]
 use {
     tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    tauri::{
-        PhysicalPosition, Position, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
-    },
+    tauri::{PhysicalPosition, Position, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent},
 };
 
 const SSH_SESSION_EVENT: &str = "ssh-session-event";
@@ -123,7 +121,10 @@ struct PortForwardRuleValue {
 
 enum SshCommand {
     Write(String),
-    Resize { cols: u32, rows: u32 },
+    Resize {
+        cols: u32,
+        rows: u32,
+    },
     Close,
     SftpList {
         path: String,
@@ -164,7 +165,12 @@ enum SshCommand {
 
 #[derive(Default)]
 struct SshSessionState {
-    sessions: Mutex<HashMap<String, mpsc::UnboundedSender<SshCommand>>>,
+    sessions: Mutex<HashMap<String, SshSessionEntry>>,
+}
+
+struct SshSessionEntry {
+    tx: mpsc::UnboundedSender<SshCommand>,
+    window_label: String,
 }
 
 /// Pending SSH connection requests for popped-out windows, keyed by window
@@ -195,6 +201,7 @@ struct EasyConsoleSshClient {
     host_key_error: Arc<Mutex<Option<String>>>,
     /// When false, unknown hosts are rejected without prompting (e.g. VS Code setup).
     allow_host_key_prompt: bool,
+    window_label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,8 +220,25 @@ struct HostKeyPromptPayload {
     fingerprint: String,
 }
 
-fn pending_host_key_prompts() -> &'static Mutex<HashMap<String, oneshot::Sender<bool>>> {
-    static CELL: OnceLock<Mutex<HashMap<String, oneshot::Sender<bool>>>> = OnceLock::new();
+struct PendingHostKeyPrompt {
+    tx: oneshot::Sender<bool>,
+    window_label: String,
+}
+
+struct PendingHostKeyGuard {
+    prompt_id: String,
+}
+
+impl Drop for PendingHostKeyGuard {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = pending_host_key_prompts().lock() {
+            pending.remove(&self.prompt_id);
+        }
+    }
+}
+
+fn pending_host_key_prompts() -> &'static Mutex<HashMap<String, PendingHostKeyPrompt>> {
+    static CELL: OnceLock<Mutex<HashMap<String, PendingHostKeyPrompt>>> = OnceLock::new();
     CELL.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -248,8 +272,17 @@ impl client::Handler for EasyConsoleSshClient {
                 }
                 let prompt_id = Uuid::new_v4().to_string();
                 let (tx, rx) = oneshot::channel();
+                let _guard = PendingHostKeyGuard {
+                    prompt_id: prompt_id.clone(),
+                };
                 if let Ok(mut pending) = pending_host_key_prompts().lock() {
-                    pending.insert(prompt_id.clone(), tx);
+                    pending.insert(
+                        prompt_id.clone(),
+                        PendingHostKeyPrompt {
+                            tx,
+                            window_label: self.window_label.clone(),
+                        },
+                    );
                 } else {
                     if let Ok(mut guard) = self.host_key_error.lock() {
                         *guard = Some("无法等待主机密钥确认：内部状态已损坏".to_string());
@@ -283,12 +316,7 @@ impl client::Handler for EasyConsoleSshClient {
                 {
                     Ok(Ok(value)) => value,
                     Ok(Err(_)) => false,
-                    Err(_) => {
-                        if let Ok(mut pending) = pending_host_key_prompts().lock() {
-                            pending.remove(&prompt_id);
-                        }
-                        false
-                    }
+                    Err(_) => false,
                 };
 
                 if !accepted {
@@ -301,7 +329,8 @@ impl client::Handler for EasyConsoleSshClient {
                     return Ok(false);
                 }
 
-                if let Err(message) = persist_known_host(&self.app, &self.host, self.port, &fingerprint)
+                if let Err(message) =
+                    persist_known_host(&self.app, &self.host, self.port, &fingerprint)
                 {
                     if let Ok(mut guard) = self.host_key_error.lock() {
                         *guard = Some(format!("无法保存 SSH 主机密钥：{message}"));
@@ -341,7 +370,8 @@ fn load_string_map(path: &Path) -> Result<HashMap<String, String>, String> {
 }
 
 fn write_string_map(path: &Path, data: &HashMap<String, String>) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(data).map_err(|error| format!("本地数据序列化失败：{error}"))?;
+    let text = serde_json::to_string_pretty(data)
+        .map_err(|error| format!("本地数据序列化失败：{error}"))?;
     let parent = path
         .parent()
         .ok_or_else(|| "无法定位本地数据目录".to_string())?;
@@ -404,7 +434,33 @@ fn evaluate_known_host(
     Ok(evaluate_host_key(&known_hosts, &key, &fingerprint))
 }
 
-fn persist_known_host(app: &AppHandle, host: &str, port: u16, fingerprint: &str) -> Result<(), String> {
+/// Serializes read-modify-write on `known-ssh-hosts.json`.
+///
+/// Two sessions connecting to different unknown hosts at the same time would
+/// otherwise both load the same snapshot, and the second write would drop the
+/// first host key -- silently discarding security-relevant state.
+static KNOWN_HOSTS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn known_hosts_lock() -> &'static Mutex<()> {
+    KNOWN_HOSTS_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Serializes read-modify-write on `ssh-history.json`.
+static SSH_HISTORY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn ssh_history_lock() -> &'static Mutex<()> {
+    SSH_HISTORY_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn persist_known_host(
+    app: &AppHandle,
+    host: &str,
+    port: u16,
+    fingerprint: &str,
+) -> Result<(), String> {
+    let _guard = known_hosts_lock()
+        .lock()
+        .map_err(|e| format!("已知主机锁获取失败：{e}"))?;
     let path = app_data_file(app, "known-ssh-hosts.json")?;
     let mut known_hosts = load_string_map(&path)?;
     known_hosts.insert(known_host_key(host, port), fingerprint.to_string());
@@ -433,6 +489,36 @@ fn remove_session(state: &Arc<SshSessionState>, session_id: &str) {
     if let Ok(mut sessions) = state.sessions.lock() {
         sessions.remove(session_id);
     }
+}
+
+fn close_sessions_for_window(state: &SshSessionState, window_label: &str) {
+    let senders: Vec<_> = match state.sessions.lock() {
+        Ok(sessions) => sessions
+            .values()
+            .filter(|entry| entry.window_label == window_label)
+            .map(|entry| entry.tx.clone())
+            .collect(),
+        Err(_) => return,
+    };
+    for sender in senders {
+        let _ = sender.send(SshCommand::Close);
+    }
+    if let Ok(mut pending) = pending_host_key_prompts().lock() {
+        pending.retain(|_, prompt| prompt.window_label != window_label);
+    }
+}
+
+/// Bind host for local/dynamic forwards. Rejects non-loopback addresses so the
+/// unauthenticated SOCKS5 listener cannot be exposed on the LAN.
+fn normalize_port_forward_bind_host(host: &str) -> Result<String, String> {
+    let trimmed = host.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("localhost") || trimmed == "127.0.0.1" {
+        return Ok("127.0.0.1".to_string());
+    }
+    if trimmed == "::1" || trimmed.eq_ignore_ascii_case("[::1]") {
+        return Ok("::1".to_string());
+    }
+    Err("端口转发仅允许绑定本机回环地址（127.0.0.1 或 ::1）".to_string())
 }
 
 fn validate_host(host: &str) -> Result<String, String> {
@@ -535,8 +621,34 @@ fn validate_external_url(url: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
+/// UNC / network share paths (`\\host\share`, `\\?\...`).
+///
+/// Opening one can mount an attacker-controlled SMB share and, for `open`, run
+/// a binary straight off it. Neither command has a legitimate need for them.
 #[cfg(desktop)]
-fn validate_local_path(path: &str) -> Result<PathBuf, String> {
+fn is_unc_path(path: &str) -> bool {
+    let normalized = path.replace('/', "\\");
+    normalized.starts_with("\\\\")
+}
+
+/// Extensions `open_local_path` will hand to the OS handler.
+///
+/// An allowlist, not a denylist: on Windows the set of directly executable
+/// extensions is large and keeps growing (exe, bat, cmd, com, scr, pif, msi,
+/// hta, cpl, lnk, reg, vbs, wsf, ps1, ...), so enumerating what is dangerous is
+/// a losing game. Remote storage controls the file name of anything the user
+/// downloads, so "open the file I just downloaded" must not be able to become
+/// "execute a program". Anything not listed here can still be located with
+/// `reveal_local_path`, which only selects the file in the file manager.
+#[cfg(desktop)]
+const OPENABLE_EXTENSIONS: &[&str] = &[
+    "txt", "log", "json", "csv", "tsv", "md", "yaml", "yml", "xml", "ini", "conf", "toml", "pdf",
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "zip", "tar", "gz", "tgz", "bz2", "xz", "7z",
+    "rar", "mp4", "mkv", "mov", "mp3", "wav",
+];
+
+#[cfg(desktop)]
+fn validate_existing_path(path: &str) -> Result<PathBuf, String> {
     let path = path.trim();
     if path.is_empty() {
         return Err("本地路径为空，无法打开".to_string());
@@ -544,11 +656,83 @@ fn validate_local_path(path: &str) -> Result<PathBuf, String> {
     if path.chars().any(char::is_control) {
         return Err("本地路径包含不支持的字符".to_string());
     }
+    if is_unc_path(path) {
+        return Err("出于安全考虑，不支持访问网络共享路径".to_string());
+    }
     let path = PathBuf::from(path);
     if !path.exists() {
         return Err("本地路径不存在".to_string());
     }
     Ok(path)
+}
+
+/// Target for "reveal in file manager". Never executes, so only the basics.
+#[cfg(desktop)]
+fn validate_reveal_target(path: &str) -> Result<PathBuf, String> {
+    validate_existing_path(path)
+}
+
+/// Target for "open with the system handler". Restricted to inert file types.
+#[cfg(desktop)]
+fn validate_open_target(path: &str) -> Result<PathBuf, String> {
+    let path = validate_existing_path(path)?;
+    if path.is_dir() {
+        return Ok(path);
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !OPENABLE_EXTENSIONS.contains(&extension.as_str()) {
+        return Err(format!(
+            "出于安全考虑，不支持直接打开该类型文件（.{extension}）。请改用「在文件夹中显示」。"
+        ));
+    }
+    Ok(path)
+}
+
+/// Target for a download that does not exist yet.
+///
+/// Validates the *parent directory* rather than the file. The previous shared
+/// validator required the target to already exist, which made this command both
+/// unusable for real downloads and, when the target did exist, an
+/// overwrite-arbitrary-file primitive.
+#[cfg(desktop)]
+fn validate_download_target(path: &str, allowed_roots: &[PathBuf]) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("下载目标路径为空".to_string());
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("下载目标路径包含不支持的字符".to_string());
+    }
+    if is_unc_path(trimmed) {
+        return Err("出于安全考虑，不支持下载到网络共享路径".to_string());
+    }
+
+    let target = PathBuf::from(trimmed);
+    let parent = target
+        .parent()
+        .ok_or_else(|| "无法定位下载目标目录".to_string())?;
+    // Canonicalize the parent (it must exist) so `..` segments and symlinks
+    // cannot escape the allowed roots.
+    let parent = parent
+        .canonicalize()
+        .map_err(|error| format!("下载目标目录不存在：{error}"))?;
+    let file_name = target
+        .file_name()
+        .ok_or_else(|| "下载目标缺少文件名".to_string())?;
+
+    let allowed = allowed_roots.iter().any(|root| match root.canonicalize() {
+        Ok(root) => parent.starts_with(&root),
+        Err(_) => false,
+    });
+    if !allowed {
+        return Err("出于安全考虑，只能下载到下载目录或应用数据目录".to_string());
+    }
+
+    Ok(parent.join(file_name))
 }
 
 #[cfg(all(desktop, target_os = "windows"))]
@@ -677,21 +861,13 @@ fn ssh_config_identity_path(path: &Path) -> String {
     )
 }
 
+/// Remove a previously written EasyConsole block, keeping every other line.
+///
+/// Returns `None` when a start marker is found without its matching end marker.
+/// In that case the remainder of the file has already been swallowed by the
+/// skip state, so the caller must abort rather than persist the result.
 #[cfg(desktop)]
-fn write_vscode_ssh_config(
-    request: &SshConnectionRequest,
-    alias: &str,
-    identity_file: &Path,
-) -> Result<(), String> {
-    let host = validate_host(&request.host)?;
-    let username = require_username(request.username.as_deref())?;
-    let port = parse_port(request.port.as_deref())?;
-    let ssh_dir = user_ssh_dir()?;
-    fs::create_dir_all(&ssh_dir).map_err(|error| format!("无法创建本机 SSH 配置目录：{error}"))?;
-    let config_path = ssh_dir.join("config");
-    let current = fs::read_to_string(&config_path).unwrap_or_default();
-    let start_marker = format!("# >>> EasyConsole {alias}");
-    let end_marker = format!("# <<< EasyConsole {alias}");
+fn strip_easy_console_block(current: &str, start_marker: &str, end_marker: &str) -> Option<String> {
     let mut next = String::new();
     let mut skipping = false;
 
@@ -710,6 +886,80 @@ fn write_vscode_ssh_config(
         }
     }
 
+    if skipping {
+        return None;
+    }
+    Some(next)
+}
+
+/// Replace the user's SSH config atomically, keeping a recoverable copy.
+///
+/// A plain `fs::write` here is dangerous: a partial write leaves a truncated
+/// config, which in turn produces an unpaired EasyConsole marker, which the
+/// block parser would then treat as "skip everything after it". That failure
+/// mode compounds, so the write must be all-or-nothing.
+#[cfg(desktop)]
+fn write_user_ssh_config(config_path: &Path, contents: &str) -> Result<(), String> {
+    let parent = config_path
+        .parent()
+        .ok_or_else(|| "无法定位本机 SSH 配置目录".to_string())?;
+    let file_name = config_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config");
+    let tmp_path = parent.join(format!("{file_name}.easy-console.tmp"));
+
+    // Copy (not rename) so the original stays intact until the final rename.
+    if config_path.exists() {
+        let bak_path = parent.join(format!("{file_name}.easy-console.bak"));
+        fs::copy(config_path, &bak_path)
+            .map_err(|error| format!("无法备份本机 SSH 配置：{error}"))?;
+    }
+
+    fs::write(&tmp_path, contents)
+        .map_err(|error| format!("无法写入本机 SSH 配置临时文件：{error}"))?;
+
+    // Preserve the existing mode so we never loosen a config the user tightened.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(config_path)
+            .ok()
+            .map(|meta| meta.permissions().mode() & 0o777)
+            .unwrap_or(0o600);
+        let _ = fs::set_permissions(&tmp_path, fs::Permissions::from_mode(mode));
+    }
+
+    fs::rename(&tmp_path, config_path).map_err(|error| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("无法提交本机 SSH 配置写入：{error}")
+    })
+}
+
+#[cfg(desktop)]
+fn write_vscode_ssh_config(
+    request: &SshConnectionRequest,
+    alias: &str,
+    identity_file: &Path,
+) -> Result<(), String> {
+    let host = validate_host(&request.host)?;
+    let username = require_username(request.username.as_deref())?;
+    let port = parse_port(request.port.as_deref())?;
+    let ssh_dir = user_ssh_dir()?;
+    fs::create_dir_all(&ssh_dir).map_err(|error| format!("无法创建本机 SSH 配置目录：{error}"))?;
+    let config_path = ssh_dir.join("config");
+    let current = fs::read_to_string(&config_path).unwrap_or_default();
+    let start_marker = format!("# >>> EasyConsole {alias}");
+    let end_marker = format!("# <<< EasyConsole {alias}");
+
+    let mut next = strip_easy_console_block(&current, &start_marker, &end_marker).ok_or_else(|| {
+        format!(
+            "本机 SSH 配置中的 EasyConsole 标记不完整：找到「{start_marker}」但缺少对应的「{end_marker}」。\
+             为避免误删配置，本次未做任何修改。请手动修复 {} 后重试。",
+            config_path.display()
+        )
+    })?;
+
     if !next.ends_with('\n') {
         next.push('\n');
     }
@@ -718,7 +968,7 @@ fn write_vscode_ssh_config(
         ssh_config_identity_path(identity_file),
     ));
 
-    fs::write(&config_path, next).map_err(|error| format!("无法写入本机 SSH 配置：{error}"))
+    write_user_ssh_config(&config_path, &next)
 }
 
 #[cfg(desktop)]
@@ -911,6 +1161,7 @@ async fn install_vscode_public_key(
         port,
         host_key_error: Arc::clone(&host_key_error),
         allow_host_key_prompt: false,
+        window_label: String::new(),
     };
     let mut session = tokio::time::timeout(
         Duration::from_secs(15),
@@ -994,9 +1245,7 @@ fn format_socks5_ipv6_host(addr: &[u8; 16]) -> String {
     format!("[{ip}]")
 }
 
-async fn socks5_handshake(
-    stream: &mut tokio::net::TcpStream,
-) -> Result<(String, u16), String> {
+async fn socks5_handshake(stream: &mut tokio::net::TcpStream) -> Result<(String, u16), String> {
     // Greeting: version(1) + num_methods(1) + methods(N)
     let mut greeting = [0u8; 2];
     stream
@@ -1028,9 +1277,7 @@ async fn socks5_handshake(
     }
     if header[1] != 1 {
         // Only CONNECT supported
-        let _ = stream
-            .write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0])
-            .await;
+        let _ = stream.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]).await;
         return Err("SOCKS5 仅支持 CONNECT 命令".to_string());
     }
     let dest_host = match header[3] {
@@ -1067,9 +1314,7 @@ async fn socks5_handshake(
             format_socks5_ipv6_host(&addr)
         }
         _ => {
-            let _ = stream
-                .write_all(&[5, 8, 0, 1, 0, 0, 0, 0, 0, 0])
-                .await;
+            let _ = stream.write_all(&[5, 8, 0, 1, 0, 0, 0, 0, 0, 0]).await;
             return Err("SOCKS5 不支持的地址类型".to_string());
         }
     };
@@ -1094,10 +1339,16 @@ async fn socks5_handshake(
 /// canonicalize(".") once to get the absolute home directory and substitute.
 async fn resolve_sftp_path(sftp: &SftpSession, path: &str) -> Result<String, String> {
     if path == "~" || path == "~/" {
-        return sftp.canonicalize(".").await.map_err(|e| format!("SFTP 解析家目录失败：{e}"));
+        return sftp
+            .canonicalize(".")
+            .await
+            .map_err(|e| format!("SFTP 解析家目录失败：{e}"));
     }
     if let Some(rest) = path.strip_prefix("~/") {
-        let home = sftp.canonicalize(".").await.map_err(|e| format!("SFTP 解析家目录失败：{e}"))?;
+        let home = sftp
+            .canonicalize(".")
+            .await
+            .map_err(|e| format!("SFTP 解析家目录失败：{e}"))?;
         let rest = rest.trim_start_matches('/');
         return Ok(if home.ends_with('/') {
             format!("{home}{rest}")
@@ -1113,6 +1364,7 @@ async fn run_russh_session(
     session_id: String,
     request: SshConnectionRequest,
     mut rx: mpsc::UnboundedReceiver<SshCommand>,
+    window_label: String,
 ) -> Result<(), String> {
     let host = validate_host(&request.host)?;
     let port = parse_port(request.port.as_deref())?;
@@ -1132,18 +1384,16 @@ async fn run_russh_session(
     let term_type = request.term_type.as_deref().unwrap_or("xterm-256color");
 
     // In password mode, password is required. In key mode, it's optional (used as passphrase).
-    if auth_mode == "password" {
-        if password.is_none() {
-            return Err("SSH Password 为空，无法自动登录".to_string());
-        }
+    if auth_mode == "password" && password.is_none() {
+        return Err("SSH Password 为空，无法自动登录".to_string());
     }
 
     emit_session_event(
         &app,
         &session_id,
         "status",
-            None,
-            Some(format!("正在连接 {host}:{port}")),
+        None,
+        Some(format!("正在连接 {host}:{port}")),
     );
 
     let config = Arc::new(client::Config {
@@ -1160,35 +1410,48 @@ async fn run_russh_session(
         port,
         host_key_error: Arc::clone(&host_key_error),
         allow_host_key_prompt: true,
+        window_label,
     };
-    let mut session = tokio::time::timeout(
+    let tcp_stream = tokio::time::timeout(
         connect_timeout,
-        client::connect(config, (host.as_str(), port), handler),
+        tokio::net::TcpStream::connect((host.as_str(), port)),
     )
     .await
     .map_err(|_| "SSH 连接超时，请检查网络和主机是否可达".to_string())?
-    .map_err(|error| {
-        if let Ok(guard) = host_key_error.lock() {
-            if let Some(message) = guard.as_ref() {
-                return message.clone();
+    .map_err(|error| format!("SSH 连接失败：{error}"))?;
+    // Host-key confirmation (up to 120s) lives inside russh handshake, so it
+    // must not share the TCP connect timeout.
+    let mut session = client::connect_stream(config, tcp_stream, handler)
+        .await
+        .map_err(|error| {
+            if let Ok(guard) = host_key_error.lock() {
+                if let Some(message) = guard.as_ref() {
+                    return message.clone();
+                }
             }
-        }
-        format!("SSH 连接失败：{error}")
-    })?;
+            format!("SSH 连接失败：{error}")
+        })?;
 
     let auth_success = if auth_mode == "key" {
-        let key_path = request.ssh_key_path.as_deref()
+        let key_path = request
+            .ssh_key_path
+            .as_deref()
             .ok_or_else(|| "SSH 密钥路径为空".to_string())?;
         let passphrase = password.as_deref();
         let key_pair = russh::keys::load_secret_key(key_path, passphrase)
             .map_err(|e| format!("SSH 密钥加载失败：{e}"))?;
         let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(key_pair), Some(HashAlg::Sha256));
-        session.authenticate_publickey(&username, key_with_hash).await
+        session
+            .authenticate_publickey(&username, key_with_hash)
+            .await
             .map_err(|error| format!("SSH 密钥认证失败：{error}"))?
     } else {
-        let pwd = password.as_deref()
+        let pwd = password
+            .as_deref()
             .ok_or_else(|| "SSH Password 为空，无法自动登录".to_string())?;
-        session.authenticate_password(&username, pwd).await
+        session
+            .authenticate_password(&username, pwd)
+            .await
             .map_err(|error| format!("SSH 认证失败：{error}"))?
     };
     if !auth_success.success() {
@@ -1236,28 +1499,36 @@ async fn run_russh_session(
             command = rx.recv() => {
                 match command {
                     Some(SshCommand::Write(data)) => {
-                        channel
-                            .data(data.as_bytes())
-                            .await
-                            .map_err(|error| format!("SSH 写入失败：{error}"))?;
+                        if let Err(error) = channel.data(data.as_bytes()).await {
+                            emit_session_event(
+                                &app,
+                                &session_id,
+                                "error",
+                                None,
+                                Some(format!("SSH 写入失败：{error}")),
+                            );
+                            break;
+                        }
                     }
                     Some(SshCommand::Resize { cols, rows }) => {
-                        channel
+                        if let Err(error) = channel
                             .window_change(cols.max(1), rows.max(1), 0, 0)
                             .await
-                            .map_err(|error| format!("SSH 窗口尺寸更新失败：{error}"))?;
+                        {
+                            emit_session_event(
+                                &app,
+                                &session_id,
+                                "error",
+                                None,
+                                Some(format!("SSH 窗口尺寸更新失败：{error}")),
+                            );
+                            break;
+                        }
                     }
                     Some(SshCommand::Close) | None => {
                         if !output_buffer.is_empty() {
                             emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
                         }
-                        sftp_session.take();
-                        for (_, handle) in port_forward_handles.drain() {
-                            handle.abort();
-                        }
-                        let _ = channel.eof().await;
-                        let _ = channel.close().await;
-                        let _ = session.disconnect(russh::Disconnect::ByApplication, "", "en").await;
                         break;
                     }
                     Some(SshCommand::SftpList { path, response }) => {
@@ -1273,9 +1544,9 @@ async fn run_russh_session(
                             let sftp = sftp_session.as_ref().unwrap();
                             let effective_path = resolve_sftp_path(sftp, &path).await?;
                             let mut entries = Vec::new();
-                            let mut read_dir = sftp.read_dir(&effective_path).await
+                            let read_dir = sftp.read_dir(&effective_path).await
                                 .map_err(|e| format!("SFTP 列目录失败：{e}"))?;
-                            while let Some(entry) = read_dir.next() {
+                            for entry in read_dir {
                                 let name = entry.file_name();
                                 let file_type = entry.file_type();
                                 let metadata = entry.metadata();
@@ -1473,13 +1744,20 @@ async fn run_russh_session(
                             let _ = response.send(Err("端口转发规则已在运行".to_string()));
                             continue;
                         }
+                        let bind_host = match normalize_port_forward_bind_host(&rule.local_host) {
+                            Ok(host) => host,
+                            Err(error) => {
+                                let _ = response.send(Err(error));
+                                continue;
+                            }
+                        };
                         let session_clone = session.clone();
                         let app_clone = app.clone();
                         let session_id_clone = session_id.clone();
                         let rule_clone = rule.clone();
                         let handle = tokio::spawn(async move {
                             let listener = match tokio::net::TcpListener::bind((
-                                rule_clone.local_host.as_str(),
+                                bind_host.as_str(),
                                 rule_clone.local_port,
                             ))
                             .await
@@ -1641,11 +1919,31 @@ async fn run_russh_session(
         }
     }
 
+    if !output_buffer.is_empty() {
+        emit_session_event(
+            &app,
+            &session_id,
+            "output",
+            Some(std::mem::take(&mut output_buffer)),
+            None,
+        );
+    }
+    sftp_session.take();
+    for (_, handle) in port_forward_handles.drain() {
+        handle.abort();
+    }
+    let _ = channel.eof().await;
+    let _ = channel.close().await;
+    let _ = session
+        .disconnect(russh::Disconnect::ByApplication, "", "en")
+        .await;
+
     Ok(())
 }
 
 #[tauri::command]
 fn open_ssh_session(
+    window: tauri::WebviewWindow,
     app: AppHandle,
     state: State<'_, Arc<SshSessionState>>,
     request: SshConnectionRequest,
@@ -1655,18 +1953,31 @@ fn open_ssh_session(
     validate_username(request.username.as_deref())?;
 
     let session_id = Uuid::new_v4().to_string();
+    let window_label = window.label().to_string();
     let (tx, rx) = mpsc::unbounded_channel();
     state
         .sessions
         .lock()
         .map_err(|_| "SSH 会话状态已损坏".to_string())?
-        .insert(session_id.clone(), tx);
+        .insert(
+            session_id.clone(),
+            SshSessionEntry {
+                tx,
+                window_label: window_label.clone(),
+            },
+        );
 
     let task_state = Arc::clone(&state);
     let task_session_id = session_id.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) =
-            run_russh_session(app.clone(), task_session_id.clone(), request, rx).await
+        if let Err(error) = run_russh_session(
+            app.clone(),
+            task_session_id.clone(),
+            request,
+            rx,
+            window_label,
+        )
+        .await
         {
             emit_session_event(&app, &task_session_id, "error", None, Some(error));
         }
@@ -1693,7 +2004,7 @@ fn send_session_command(
             .sessions
             .lock()
             .map_err(|_| "SSH 会话状态已损坏".to_string())?;
-        sessions.get(session_id).cloned()
+        sessions.get(session_id).map(|entry| entry.tx.clone())
     }
     .ok_or_else(|| "SSH 会话不存在或已关闭".to_string())?;
 
@@ -1710,8 +2021,7 @@ async fn send_session_command_with_response<T>(
     let (tx, rx) = oneshot::channel();
     let command = build_command(tx);
     send_session_command(state, session_id, command)?;
-    rx.await
-        .map_err(|_| "SSH 命令响应通道已关闭".to_string())?
+    rx.await.map_err(|_| "SSH 命令响应通道已关闭".to_string())?
 }
 
 fn runtime_storage_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1779,7 +2089,9 @@ fn keychain_get(key: String) -> Result<Option<String>, String> {
 fn keychain_set(key: String, value: String) -> Result<(), String> {
     let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
         .map_err(|e| format!("keychain entry lookup failed: {e}"))?;
-    entry.set_password(&value).map_err(|e| format!("keychain set failed: {e}"))
+    entry
+        .set_password(&value)
+        .map_err(|e| format!("keychain set failed: {e}"))
 }
 
 #[cfg(desktop)]
@@ -1864,7 +2176,11 @@ fn set_quit_requested(state: &Arc<DesktopRuntimeState>, requested: bool) {
 
 #[cfg(desktop)]
 fn is_quit_requested(state: &Arc<DesktopRuntimeState>) -> bool {
-    state.quit_requested.lock().map(|value| *value).unwrap_or(false)
+    state
+        .quit_requested
+        .lock()
+        .map(|value| *value)
+        .unwrap_or(false)
 }
 
 #[cfg(desktop)]
@@ -1929,7 +2245,9 @@ fn show_tray_menu(app: &AppHandle, position: PhysicalPosition<f64>) {
     let x = (position.x - TRAY_MENU_WIDTH + 16.0).max(8.0);
     let y = (position.y - TRAY_MENU_HEIGHT - 8.0).max(8.0);
     if let Some(window) = app.get_webview_window(TRAY_MENU_LABEL) {
-        let _ = window.set_position(Position::Physical(PhysicalPosition::new(x as i32, y as i32)));
+        let _ = window.set_position(Position::Physical(PhysicalPosition::new(
+            x as i32, y as i32,
+        )));
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -2062,18 +2380,22 @@ async fn open_ssh_window(
         map.insert(label.clone(), request);
     }
 
-    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html#/ssh-terminal".into()))
-        .title(&title)
-        .inner_size(960.0, 640.0)
-        .min_inner_size(480.0, 320.0)
-        .resizable(true)
-        .decorations(true)
-        .always_on_top(false)
-        .skip_taskbar(false)
-        .visible(true)
-        .focused(true)
-        .build()
-        .map_err(|e| format!("SSH 窗口创建失败：{e}"))?;
+    WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::App("index.html#/ssh-terminal".into()),
+    )
+    .title(&title)
+    .inner_size(960.0, 640.0)
+    .min_inner_size(480.0, 320.0)
+    .resizable(true)
+    .decorations(true)
+    .always_on_top(false)
+    .skip_taskbar(false)
+    .visible(true)
+    .focused(true)
+    .build()
+    .map_err(|e| format!("SSH 窗口创建失败：{e}"))?;
 
     Ok(())
 }
@@ -2193,8 +2515,9 @@ async fn ssh_stop_port_forward(
     session_id: String,
     rule_id: String,
 ) -> Result<(), String> {
-    send_session_command_with_response(state, &session_id, |response| {
-        SshCommand::StopPortForward { rule_id, response }
+    send_session_command_with_response(state, &session_id, |response| SshCommand::StopPortForward {
+        rule_id,
+        response,
     })
     .await
 }
@@ -2220,12 +2543,16 @@ fn confirm_known_host(prompt_id: String, accept: bool) -> Result<(), String> {
         .remove(&prompt_id)
         .ok_or_else(|| "主机密钥确认请求已失效或超时".to_string())?;
     sender
+        .tx
         .send(accept)
         .map_err(|_| "主机密钥确认通道已关闭".to_string())
 }
 
 #[tauri::command]
 fn remove_known_host(app: AppHandle, host_port: String) -> Result<(), String> {
+    let _guard = known_hosts_lock()
+        .lock()
+        .map_err(|e| format!("已知主机锁获取失败：{e}"))?;
     let path = app_data_file(&app, "known-ssh-hosts.json")?;
     let mut known_hosts = load_string_map(&path)?;
     known_hosts.remove(&host_port);
@@ -2234,6 +2561,9 @@ fn remove_known_host(app: AppHandle, host_port: String) -> Result<(), String> {
 
 #[tauri::command]
 fn clear_known_hosts(app: AppHandle) -> Result<(), String> {
+    let _guard = known_hosts_lock()
+        .lock()
+        .map_err(|e| format!("已知主机锁获取失败：{e}"))?;
     let path = app_data_file(&app, "known-ssh-hosts.json")?;
     write_string_map(&path, &HashMap::new())
 }
@@ -2251,9 +2581,29 @@ fn load_ssh_history(path: &Path) -> Result<Vec<SshHistoryEntryValue>, String> {
     serde_json::from_str(&text).map_err(|error| format!("SSH 历史格式无法识别：{error}"))
 }
 
+/// Write via a temp file + rename so an interrupted write cannot leave
+/// truncated JSON behind. `fs::rename` replaces an existing file atomically on
+/// both Unix and Windows.
+fn write_json_atomically(path: &Path, text: &str, label: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("无法定位{label}目录"))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("无法定位{label}文件名"))?;
+    let tmp_path = parent.join(format!("{file_name}.tmp"));
+    fs::write(&tmp_path, text).map_err(|error| format!("无法写入{label}临时文件：{error}"))?;
+    fs::rename(&tmp_path, path).map_err(|error| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("无法提交{label}写入：{error}")
+    })
+}
+
 fn write_ssh_history(path: &Path, entries: &[SshHistoryEntryValue]) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(entries).map_err(|error| format!("SSH 历史序列化失败：{error}"))?;
-    fs::write(path, text).map_err(|error| format!("无法写入 SSH 历史：{error}"))
+    let text = serde_json::to_string_pretty(entries)
+        .map_err(|error| format!("SSH 历史序列化失败：{error}"))?;
+    write_json_atomically(path, &text, "SSH 历史")
 }
 
 #[tauri::command]
@@ -2270,6 +2620,9 @@ fn add_ssh_history(
     username: String,
     task_name: String,
 ) -> Result<(), String> {
+    let _guard = ssh_history_lock()
+        .lock()
+        .map_err(|e| format!("SSH 历史锁获取失败：{e}"))?;
     let path = app_data_file(&app, "ssh-history.json")?;
     let mut entries = load_ssh_history(&path)?;
     let now = std::time::SystemTime::now()
@@ -2277,21 +2630,27 @@ fn add_ssh_history(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     entries.retain(|e| !(e.host == host && e.port == port && e.username == username));
-    entries.insert(0, SshHistoryEntryValue {
-        id: format!("hist-{now}"),
-        host,
-        port,
-        username,
-        task_name,
-        connected_at: now,
-    });
-    entries.sort_by(|a, b| b.connected_at.cmp(&a.connected_at));
+    entries.insert(
+        0,
+        SshHistoryEntryValue {
+            id: format!("hist-{now}"),
+            host,
+            port,
+            username,
+            task_name,
+            connected_at: now,
+        },
+    );
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.connected_at));
     entries.truncate(MAX_SSH_HISTORY_ENTRIES);
     write_ssh_history(&path, &entries)
 }
 
 #[tauri::command]
 fn clear_ssh_history(app: AppHandle) -> Result<(), String> {
+    let _guard = ssh_history_lock()
+        .lock()
+        .map_err(|e| format!("SSH 历史锁获取失败：{e}"))?;
     let path = app_data_file(&app, "ssh-history.json")?;
     write_ssh_history(&path, &[])
 }
@@ -2337,11 +2696,18 @@ fn install_apk(app: AppHandle, path: String) -> Result<(), String> {
 
 #[cfg(desktop)]
 #[tauri::command]
-async fn http_download_to_file(url: String, path: String) -> Result<u64, String> {
+async fn http_download_to_file(app: AppHandle, url: String, path: String) -> Result<u64, String> {
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
-    let path = validate_local_path(&path)?;
+    let mut allowed_roots = Vec::new();
+    if let Ok(dir) = app.path().download_dir() {
+        allowed_roots.push(dir);
+    }
+    if let Ok(dir) = app.path().app_data_dir() {
+        allowed_roots.push(dir);
+    }
+    let path = validate_download_target(&path, &allowed_roots)?;
     let part_path = format!("{}.part", path.display());
     let response = reqwest::Client::new()
         .get(&url)
@@ -2375,14 +2741,14 @@ async fn http_download_to_file(url: String, path: String) -> Result<u64, String>
 #[cfg(desktop)]
 #[tauri::command]
 fn open_local_path(path: String) -> Result<(), String> {
-    let path = validate_local_path(&path)?;
+    let path = validate_open_target(&path)?;
     open_path_with_system(&path)
 }
 
 #[cfg(desktop)]
 #[tauri::command]
 fn reveal_local_path(path: String) -> Result<(), String> {
-    let path = validate_local_path(&path)?;
+    let path = validate_reveal_target(&path)?;
     reveal_path_with_system(&path)
 }
 
@@ -2477,10 +2843,10 @@ pub fn run() {
     let desktop_state = Arc::new(DesktopRuntimeState::default());
     #[cfg(desktop)]
     let pending_ssh_windows = Arc::new(PendingSshWindows::default());
+    let ssh_state = Arc::new(SshSessionState::default());
 
     log::info!("creating Tauri builder");
-    let mut builder = tauri::Builder::default()
-        .manage(Arc::new(SshSessionState::default()));
+    let mut builder = tauri::Builder::default().manage(Arc::clone(&ssh_state));
 
     #[cfg(desktop)]
     {
@@ -2560,7 +2926,8 @@ pub fn run() {
 
             #[cfg(desktop)]
             {
-                let (close_to_tray, close_prompt) = read_close_settings(app.handle()).unwrap_or((false, true));
+                let (close_to_tray, close_prompt) =
+                    read_close_settings(app.handle()).unwrap_or((false, true));
                 if let Err(error) = set_close_to_tray_state(&desktop_state, close_to_tray) {
                     log::warn!("failed to initialize close-to-tray state: {error}");
                 }
@@ -2668,19 +3035,24 @@ pub fn run() {
         }
     };
     app.run(move |app, event| {
-            #[cfg(desktop)]
-            {
-                handle_desktop_event(app, &event, &desktop_state);
-            }
-            #[cfg(not(desktop))]
-            {
-                let _ = (app, event);
-            }
-        });
+        #[cfg(desktop)]
+        {
+            handle_desktop_event(app, &event, &desktop_state, &ssh_state);
+        }
+        #[cfg(not(desktop))]
+        {
+            let _ = (app, event, &ssh_state);
+        }
+    });
 }
 
 #[cfg(desktop)]
-fn handle_desktop_event(app: &AppHandle, event: &RunEvent, desktop_state: &Arc<DesktopRuntimeState>) {
+fn handle_desktop_event(
+    app: &AppHandle,
+    event: &RunEvent,
+    desktop_state: &Arc<DesktopRuntimeState>,
+    ssh_state: &Arc<SshSessionState>,
+) {
     match event {
         RunEvent::WindowEvent {
             label,
@@ -2710,6 +3082,13 @@ fn handle_desktop_event(app: &AppHandle, event: &RunEvent, desktop_state: &Arc<D
         } if label == TRAY_MENU_LABEL => {
             hide_tray_menu(app);
         }
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Destroyed,
+            ..
+        } if label.starts_with("ssh-") => {
+            close_sessions_for_window(ssh_state, label);
+        }
         RunEvent::ExitRequested { api, .. } if !is_quit_requested(desktop_state) => {
             if get_close_prompt_state(desktop_state) {
                 api.prevent_exit();
@@ -2731,6 +3110,127 @@ mod tests {
     fn known_host_key_uses_host_port() {
         assert_eq!(known_host_key("example.com", 22), "example.com:22");
         assert_eq!(known_host_key("127.0.0.1", 2222), "127.0.0.1:2222");
+    }
+
+    #[test]
+    fn port_forward_bind_host_rejects_non_loopback() {
+        assert_eq!(normalize_port_forward_bind_host("").unwrap(), "127.0.0.1");
+        assert_eq!(
+            normalize_port_forward_bind_host("localhost").unwrap(),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            normalize_port_forward_bind_host("127.0.0.1").unwrap(),
+            "127.0.0.1"
+        );
+        assert_eq!(normalize_port_forward_bind_host("::1").unwrap(), "::1");
+        assert_eq!(normalize_port_forward_bind_host("[::1]").unwrap(), "::1");
+        assert!(normalize_port_forward_bind_host("0.0.0.0").is_err());
+        assert!(normalize_port_forward_bind_host("192.168.1.10").is_err());
+        assert!(normalize_port_forward_bind_host("::").is_err());
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn is_unc_path_detects_network_shares() {
+        assert!(is_unc_path("\\\\server\\share\\payload.exe"));
+        assert!(is_unc_path("//server/share/payload.exe"));
+        assert!(is_unc_path("\\\\?\\UNC\\server\\share"));
+        assert!(!is_unc_path("C:\\Users\\me\\Downloads\\log.txt"));
+        assert!(!is_unc_path("/home/me/log.txt"));
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn validate_open_target_rejects_executables_and_unc() {
+        // Remote storage controls downloaded file names, so "open" must not be
+        // reachable for anything the OS would execute.
+        let dir = std::env::temp_dir().join("easy-console-open-target-test");
+        let _ = fs::create_dir_all(&dir);
+
+        let allowed = dir.join("task.log");
+        fs::write(&allowed, "hello").expect("write log");
+        assert!(validate_open_target(allowed.to_str().unwrap()).is_ok());
+
+        let blocked = dir.join("payload.exe");
+        fs::write(&blocked, "MZ").expect("write exe");
+        let error =
+            validate_open_target(blocked.to_str().unwrap()).expect_err("exe must be rejected");
+        assert!(error.contains("exe"));
+
+        assert!(validate_open_target("\\\\attacker\\share\\payload.exe").is_err());
+        // Directories stay openable.
+        assert!(validate_open_target(dir.to_str().unwrap()).is_ok());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn validate_download_target_requires_an_allowed_root() {
+        let root = std::env::temp_dir().join("easy-console-download-root-test");
+        let outside = std::env::temp_dir().join("easy-console-download-outside-test");
+        let _ = fs::create_dir_all(&root);
+        let _ = fs::create_dir_all(&outside);
+        let roots = vec![root.clone()];
+
+        // A file that does not exist yet is the normal case and must be allowed.
+        let target = root.join("archive.tar");
+        assert!(validate_download_target(target.to_str().unwrap(), &roots).is_ok());
+
+        // Escaping the root via `..` must not work.
+        let escaped = root
+            .join("..")
+            .join("easy-console-download-outside-test")
+            .join("evil");
+        assert!(validate_download_target(escaped.to_str().unwrap(), &roots).is_err());
+
+        assert!(validate_download_target(outside.join("evil").to_str().unwrap(), &roots).is_err());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn strip_easy_console_block_removes_only_the_marked_block() {
+        let start = "# >>> EasyConsole task-1";
+        let end = "# <<< EasyConsole task-1";
+        let current = format!(
+            "Host personal\n  HostName personal.example\n{start}\nHost task-1\n  HostName 10.0.0.1\n{end}\nHost work\n  HostName work.example\n"
+        );
+
+        let stripped = strip_easy_console_block(&current, start, end).expect("paired markers");
+
+        assert_eq!(
+            stripped,
+            "Host personal\n  HostName personal.example\nHost work\n  HostName work.example\n"
+        );
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn strip_easy_console_block_keeps_unrelated_config_untouched() {
+        let current = "Host personal\n  HostName personal.example\n";
+        let stripped = strip_easy_console_block(
+            current,
+            "# >>> EasyConsole task-1",
+            "# <<< EasyConsole task-1",
+        )
+        .expect("no markers");
+        assert_eq!(stripped, current);
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn strip_easy_console_block_refuses_unpaired_start_marker() {
+        // A truncated write or a hand-edited file can leave the start marker
+        // without its end marker. Everything after it must not be dropped.
+        let start = "# >>> EasyConsole task-1";
+        let end = "# <<< EasyConsole task-1";
+        let current = format!("Host personal\n  HostName personal.example\n{start}\nHost task-1\nHost work\n  HostName work.example\n");
+
+        assert!(strip_easy_console_block(&current, start, end).is_none());
     }
 
     #[test]

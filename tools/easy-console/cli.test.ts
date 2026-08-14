@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { EasyConsoleContext } from "./context";
 import { runCli } from "./cli";
+import { RUN_LOGS_STORAGE_KEY } from "../../src/lib/run-logs";
 import type { RuntimeStorage } from "../../src/lib/types";
 import { TASK_TEMPLATES_STORAGE_KEY } from "../../src/lib/task-templates";
 import { SCHEDULED_TASKS_STORAGE_KEY } from "../../src/lib/scheduled-tasks";
@@ -153,6 +154,28 @@ describe("easy-console cli", () => {
     expect(logs.exitCode).toBe(0);
     const payload = JSON.parse(logs.stdout) as { data: Array<{ action: string; channel: string }> };
     expect(payload.data[0]).toMatchObject({ action: "whoami", channel: "cli" });
+  });
+
+  it("keeps change-password secrets out of the local run log", async () => {
+    const context = createFakeContext();
+
+    const flagResult = await runCli(
+      ["--json", "account", "change-password", "--old", "old-secret-pw", "--new", "new-secret-pw", "--yes"],
+      { createContext: async () => context },
+    );
+    expect(flagResult.exitCode).toBe(0);
+
+    const payloadResult = await runCli(
+      ["--json", "account", "change-password", "--payload-json", '{"old_password":"json-secret-pw"}', "--yes"],
+      { createContext: async () => context },
+    );
+    expect(payloadResult.exitCode).toBe(0);
+
+    const raw = (await context.runLogStorage.get(RUN_LOGS_STORAGE_KEY)) ?? "";
+    expect(raw).toContain("account.change-password");
+    expect(raw).not.toContain("old-secret-pw");
+    expect(raw).not.toContain("new-secret-pw");
+    expect(raw).not.toContain("json-secret-pw");
   });
 
   it("returns dry-run for task update without --yes", async () => {
@@ -329,6 +352,16 @@ describe("easy-console cli", () => {
     expect(result.exitCode).toBe(0);
     const payload = JSON.parse(result.stdout) as { data: { app: string; version: number } };
     expect(payload.data).toMatchObject({ app: "EasyConsole", version: 1 });
+  });
+
+  it("refuses to print a secrets backup to stdout", async () => {
+    const result = await runCli(["--json", "backup", "export", "--include-secrets"], {
+      createContext: async () => createFakeContext(),
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--output");
+    expect(result.stdout).not.toContain("Bearer");
   });
 
   it("returns dry-run for backup import without --yes", async () => {

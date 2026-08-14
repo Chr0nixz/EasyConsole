@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarClock, FolderOpen, Pause, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { FieldError, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
@@ -13,6 +13,7 @@ import { getRuntimeSettings } from "../lib/app-settings";
 import { queryKeys } from "../lib/query-keys";
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
+import { i18nText } from "../lib/i18n-text";
 import { parsePositivePrice } from "../lib/resource-price";
 import { normalizeStoragePath } from "../lib/remote-storage";
 import { browserRuntime } from "../lib/runtime";
@@ -27,12 +28,13 @@ import {
   createScheduledTask,
   isScheduleDue,
   loadScheduledTasks,
+  mutateScheduledTasks,
   pauseScheduledTask,
   resumeScheduledTask,
-  saveScheduledTasks,
   sortScheduledTasks,
   updateScheduledTask,
 } from "../lib/scheduled-tasks";
+import { executeScheduledTask } from "../lib/schedule-execution";
 import { describeRecurrence, RecurrenceValidationError, validateRecurrence } from "../lib/task-recurrence";
 import { maybeAllocateUniqueCreateTaskNames } from "../lib/task-name-unique";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
@@ -171,15 +173,28 @@ export function ScheduledTasksPage() {
     return errors;
   }, [cpu, gpu, imageId, memory, name, price, releaseCondition, releaseTime, scheduleTime, scriptEnv, scriptPath, text, workDirectory]);
 
+  const reload = useCallback(
+    () =>
+      loadScheduledTasks(browserRuntime.storage)
+        .then((loaded) => {
+          setItems(sortScheduledTasks(loaded));
+          setLoadError(null);
+        })
+        .catch((error) =>
+          setLoadError(error instanceof Error ? error : new Error(i18nText("定时任务读取失败", "Failed to read scheduled tasks"))),
+        )
+        .finally(() => setLoading(false)),
+    [],
+  );
+
   useEffect(() => {
-    void loadScheduledTasks(browserRuntime.storage)
-      .then((loaded) => {
-        setItems(sortScheduledTasks(loaded));
-        setLoadError(null);
-      })
-      .catch((error) => setLoadError(error instanceof Error ? error : new Error(text("定时任务读取失败", "Failed to read scheduled tasks"))))
-      .finally(() => setLoading(false));
-  }, [text]);
+    void reload();
+    // The background runner writes the same storage key, so re-read on focus
+    // instead of holding the mount-time snapshot for the whole session.
+    const onFocus = () => void reload();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [reload]);
 
   useEffect(() => {
     if (!imageId && imageOptions[0]) setImageId(String(imageOptions[0].id));
@@ -190,10 +205,28 @@ export function ScheduledTasksPage() {
     if (!mountPath) setMountPath(`/home/ubuntu/${username}`);
   }, [mountPath, storagePath, username]);
 
-  async function persist(nextItems: ScheduledTask[]) {
-    const sorted = sortScheduledTasks(nextItems);
-    setItems(sorted);
-    await saveScheduledTasks(browserRuntime.storage, sorted);
+  /**
+   * All writes go through an atomic load→modify→save so a concurrent background
+   * runner update (lease fields, lastRemoteTaskId) is never clobbered by a stale
+   * page snapshot. Losing lastRemoteTaskId would defeat the idempotency check and
+   * let the same schedule create a second billable instance.
+   */
+  async function persistWith(updater: (current: ScheduledTask[]) => ScheduledTask[]) {
+    const merged = await mutateScheduledTasks(browserRuntime.storage, (current) => sortScheduledTasks(updater(current)));
+    setItems(merged);
+    return merged;
+  }
+
+  async function persistOne(next: ScheduledTask) {
+    await persistWith((current) => updateScheduledTask(current, next));
+  }
+
+  async function persistAdd(task: ScheduledTask) {
+    await persistWith((current) => [task, ...current]);
+  }
+
+  async function persistRemove(id: string) {
+    await persistWith((current) => current.filter((item) => item.id !== id));
   }
 
   function handleReleaseConditionChange(value: string) {
@@ -382,7 +415,7 @@ export function ScheduledTasksPage() {
           status: nextStatus,
           lastError: nextStatus === "pending" ? undefined : existing.lastError,
         };
-        await persist(updateScheduledTask(items, updated));
+        await persistOne(updated);
         return updated;
       }
 
@@ -393,7 +426,7 @@ export function ScheduledTasksPage() {
         payload,
         recurrence,
       });
-      await persist([scheduled, ...items]);
+      await persistAdd(scheduled);
       return scheduled;
     },
     onSuccess: (scheduled) => {
@@ -429,25 +462,30 @@ export function ScheduledTasksPage() {
     },
   });
 
-  async function executeTargets(targets: ScheduledTask[]) {
+  async function executeTargets(targets: ScheduledTask[], force = true) {
     if (targets.length === 0 || isExecuting) return;
     setIsExecuting(true);
-    let next = items;
     try {
       for (const target of targets) {
-        next = updateScheduledTask(next, { ...target, status: "running", lastError: undefined });
-        await persist(next);
         try {
-          await instanceApi.createTask(
-            (
-              await maybeAllocateUniqueCreateTaskNames([target.payload], {
+          const result = await executeScheduledTask(browserRuntime.storage, target.id, {
+            createTask: (payload) => instanceApi.createTask(payload),
+            preparePayload: async (payload) => {
+              const [next] = await maybeAllocateUniqueCreateTaskNames([payload], {
                 enabled: getRuntimeSettings().autoNumberDuplicateTaskNames,
                 checkTaskName: (name) => instanceApi.checkTaskName(name),
-              })
-            )[0]!,
-          );
-          next = updateScheduledTask(next, { ...target, status: "done", lastRunAt: new Date().toISOString(), lastError: undefined });
-          await persist(next);
+              });
+              return next!;
+            },
+            force,
+          });
+          await reload();
+          if (result.skipped) {
+            if (result.reason === "in-flight") {
+              toast.info(text("定时任务正在执行", "Scheduled task is already running"), target.name);
+            }
+            continue;
+          }
           invalidateTaskQueries(queryClient);
           toast.success(text("定时任务已执行", "Scheduled task executed"), target.name);
           void runLogger.log({
@@ -458,15 +496,10 @@ export function ScheduledTasksPage() {
             title: text("定时任务已执行", "Scheduled task executed"),
             targetName: target.name,
             targetId: target.id,
+            metadata: { remoteTaskId: result.remoteTaskId },
           });
         } catch (error) {
-          next = updateScheduledTask(next, {
-            ...target,
-            status: "failed",
-            lastRunAt: new Date().toISOString(),
-            lastError: error instanceof Error ? error.message : text("执行失败", "Execution failed"),
-          });
-          await persist(next);
+          await reload();
           toast.error(text("定时任务执行失败", "Scheduled task execution failed"), `${target.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
           void runLogger.log({
             source: "scheduled-task",
@@ -493,26 +526,26 @@ export function ScheduledTasksPage() {
       tone: "danger",
       run: async () => {
         if (editingId === item.id) resetForm();
-        await persist(items.filter((current) => current.id !== item.id));
+        await persistRemove(item.id);
       },
     });
   }
 
   function retryItem(item: ScheduledTask) {
-    void executeTargets([{ ...item, status: "pending" }]);
+    void executeTargets([item], true);
   }
 
   async function pauseItem(item: ScheduledTask) {
     const next = pauseScheduledTask(item);
     if (next === item) return;
-    await persist(updateScheduledTask(items, next));
+    await persistOne(next);
     toast.success(text("定时任务已暂停", "Scheduled task paused"), item.name);
   }
 
   async function resumeItem(item: ScheduledTask) {
     const next = resumeScheduledTask(item);
     if (next === item) return;
-    await persist(updateScheduledTask(items, next));
+    await persistOne(next);
     toast.success(text("定时任务已恢复", "Scheduled task resumed"), item.name);
   }
 
@@ -598,7 +631,7 @@ export function ScheduledTasksPage() {
           <h2 className="text-base font-semibold">{text("定时任务", "Scheduled Tasks")}</h2>
           <p className="mt-1 text-sm text-app-muted">{text("按计划提交实例创建请求。浏览器或桌面壳打开时会自动检查到期计划。", "Submit instance creation requests on a schedule. The browser or desktop shell checks due plans while open.")}</p>
         </div>
-        <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => executeTargets(items.filter((item) => isScheduleDue(item)))}>
+        <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => executeTargets(items.filter((item) => isScheduleDue(item)), false)}>
           <RefreshCw className="h-4 w-4" />
           {text("执行到期", "Run due")} {dueCount > 0 ? dueCount : ""}
         </Button>

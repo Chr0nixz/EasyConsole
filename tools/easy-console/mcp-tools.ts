@@ -25,6 +25,7 @@ import {
   downloadTask,
   exportBackup,
   getDashboardCost,
+  getDownloadRoot,
   getDashboardCostMonth,
   getDashboardStats,
   getImageDetail,
@@ -40,6 +41,7 @@ import {
   listSystemImages,
   listTaskTemplates,
   listTasks,
+  maybeMutate,
   mkdirStorage,
   monitorUrl,
   pauseScheduledTaskRecord,
@@ -211,13 +213,23 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_storage_download",
-      description: "Download a remote storage path to a local file.",
+      description:
+        "Download a remote storage path to a local file. Writes to disk, so it requires confirm=true. " +
+        "outputPath is resolved inside the EasyConsole download directory and cannot escape it; existing files are not overwritten unless overwrite=true.",
       inputSchema: {
         path: z.string(),
         outputPath: z.string().optional(),
+        overwrite: z.boolean().optional(),
+        confirm: z.boolean().optional(),
       },
       handler(context, input) {
-        return downloadStoragePath(context.api, String(input.path), asOptionalString(input.outputPath));
+        const outputPath = asOptionalString(input.outputPath);
+        return maybeMutate(
+          "storage.download",
+          { path: String(input.path), outputPath: outputPath ?? null, downloadRoot: getDownloadRoot() },
+          asConfirm(input.confirm),
+          () => downloadStoragePath(context.api, String(input.path), outputPath, { overwrite: input.overwrite === true }),
+        );
       },
     },
     {
@@ -334,13 +346,23 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_task_download",
-      description: "Download task data to a local file.",
+      description:
+        "Download task data to a local file. Writes to disk, so it requires confirm=true. " +
+        "outputPath is resolved inside the EasyConsole download directory and cannot escape it; existing files are not overwritten unless overwrite=true.",
       inputSchema: {
         taskId: idSchema,
         outputPath: z.string().optional(),
+        overwrite: z.boolean().optional(),
+        confirm: z.boolean().optional(),
       },
       handler(context, input) {
-        return downloadTask(context.api, { task_id: asId(input.taskId) }, asOptionalString(input.outputPath));
+        const outputPath = asOptionalString(input.outputPath);
+        return maybeMutate(
+          "task.download",
+          { taskId: asId(input.taskId), outputPath: outputPath ?? null, downloadRoot: getDownloadRoot() },
+          asConfirm(input.confirm),
+          () => downloadTask(context.api, { task_id: asId(input.taskId) }, outputPath, { overwrite: input.overwrite === true }),
+        );
       },
     },
     {
@@ -403,13 +425,23 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_image_download",
-      description: "Download an image to a local file.",
+      description:
+        "Download an image to a local file. Writes to disk, so it requires confirm=true. " +
+        "outputPath is resolved inside the EasyConsole download directory and cannot escape it; existing files are not overwritten unless overwrite=true.",
       inputSchema: {
         imageId: idSchema,
         outputPath: z.string().optional(),
+        overwrite: z.boolean().optional(),
+        confirm: z.boolean().optional(),
       },
       handler(context, input) {
-        return downloadImage(context.api, asId(input.imageId), asOptionalString(input.outputPath));
+        const outputPath = asOptionalString(input.outputPath);
+        return maybeMutate(
+          "image.download",
+          { imageId: asId(input.imageId), outputPath: outputPath ?? null, downloadRoot: getDownloadRoot() },
+          asConfirm(input.confirm),
+          () => downloadImage(context.api, asId(input.imageId), outputPath, { overwrite: input.overwrite === true }),
+        );
       },
     },
     {
@@ -630,26 +662,34 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_backup_export",
-      description: "Export local data as a backup JSON object.",
-      inputSchema: {
-        includeSecrets: z.boolean().optional(),
-      },
-      handler(context, input) {
-        return exportBackup(context.storage, input.includeSecrets === true);
+      description:
+        "Export non-secret local data (settings, language, task templates, scheduled tasks, run logs) as a backup JSON object. " +
+        "Tokens and saved accounts are never included: export those from the desktop Settings page instead.",
+      inputSchema: {},
+      handler(context) {
+        // No includeSecrets option by design. This is a read-only tool, so it
+        // bypasses the mutation confirm gate entirely; letting it return a
+        // bearer token would hand credentials to the model with no checkpoint.
+        return exportBackup(context.storage, false);
       },
     },
     {
       name: "easyconsole_backup_import",
-      description: "Import local data from a backup JSON text. Requires confirm=true to execute.",
+      description:
+        "Import non-secret local data from a backup JSON text. Requires confirm=true to execute. " +
+        "Token and saved-account sections are rejected: importing them would overwrite local credentials.",
       inputSchema: {
         backupText: z.string(),
         sections: z.array(z.string()).optional(),
         confirm: z.boolean().optional(),
       },
       handler(context, input) {
-        const sections = Array.isArray(input.sections) && input.sections.length > 0
-          ? (input.sections as string[])
-          : [...nonSecretBackupSections, ...secretBackupSections];
+        const sections =
+          Array.isArray(input.sections) && input.sections.length > 0 ? (input.sections as string[]) : [...nonSecretBackupSections];
+        const rejected = sections.filter((section) => secretBackupSections.includes(section as never));
+        if (rejected.length > 0) {
+          throw new Error(`Refusing to import credential sections via MCP: ${rejected.join(", ")}. Use the desktop Settings page.`);
+        }
         return importBackup(context.storage, String(input.backupText), sections as never, asConfirm(input.confirm));
       },
     },

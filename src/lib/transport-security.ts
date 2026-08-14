@@ -9,29 +9,22 @@ export type TransportSecurityOptions = {
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
-type ImportMetaEnv = {
-  PROD?: boolean;
-  MODE?: string;
-};
-
-function readViteEnv(): ImportMetaEnv | undefined {
-  try {
-    return (import.meta as ImportMeta & { env?: ImportMetaEnv }).env;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
- * Whether the desktop/web renderer should reject remote cleartext HTTP/WS.
+ * Whether the renderer should reject remote cleartext HTTP/WS.
  *
- * Currently always off: the packaged app targets a lab console that only
- * serves remote HTTP. Prefer HTTPS or a loopback tunnel when available.
- * Callers can still pass `{ enforceSecureRemote: true }` explicitly.
- * CLI/MCP keep their own opt-in via `--allow-insecure-http`.
+ * Always false, including production builds. This is a deliberate trade-off,
+ * not an oversight: the packaged app targets a lab console reachable only over
+ * plain HTTP, so enforcing here would make the default deployment unusable.
+ * The Settings page compensates with a persistent warning whenever a remote
+ * cleartext URL is configured (see `settings.transportInsecureWarning`).
+ *
+ * Do not document this as "production blocks cleartext" anywhere -- it does not.
+ * CLI/MCP deliberately take the opposite default and reject remote cleartext
+ * unless the caller passes `--allow-insecure-http`.
+ *
+ * Callers that do want enforcement can pass `{ enforceSecureRemote: true }`.
  */
 export function shouldEnforceSecureRemoteTransport(): boolean {
-  void readViteEnv();
   return false;
 }
 
@@ -76,9 +69,12 @@ export function describeTransportViolation(value: string): string {
     );
   }
   if (classification === "cleartext-remote") {
+    // Reached from CLI/MCP, which reject remote cleartext by default. The
+    // renderer never hits this branch, so the wording must not claim that the
+    // desktop app blocks cleartext in production.
     return i18nText(
-      "生产环境禁止使用远程明文 HTTP/WS。请改用 HTTPS/WSS，或通过本机隧道使用 http://127.0.0.1:...。",
-      "Remote cleartext HTTP/WS is blocked in production. Use HTTPS/WSS, or a local tunnel such as http://127.0.0.1:....",
+      "当前配置不允许远程明文 HTTP/WS。请改用 HTTPS/WSS 或本机隧道 http://127.0.0.1:...；CLI/MCP 可用 --allow-insecure-http 显式放行。",
+      "Remote cleartext HTTP/WS is not allowed by the current configuration. Use HTTPS/WSS or a local tunnel such as http://127.0.0.1:...; CLI/MCP can opt in with --allow-insecure-http.",
     );
   }
   return i18nText("URL 不被允许", "URL is not allowed");

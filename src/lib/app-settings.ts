@@ -1,6 +1,7 @@
 import { API_BASE_URL } from "./api-client";
 import { DEFAULT_MONITOR_DASHBOARD_URL } from "./monitor-dashboard-core";
 import { DEFAULT_RUN_LOG_LIMIT, DEFAULT_RUN_LOG_RETENTION_DAYS } from "./run-logs";
+import { withStorageLock } from "./storage-mutex";
 import type { PortForwardRule, PortForwardType, SshAuthMode, SshCustomColors } from "./types";
 
 type ImportMetaWithEnv = ImportMeta & {
@@ -445,19 +446,29 @@ export async function loadAccountSettings(storage: Pick<SettingsStorage, "get">,
   return getAccountAppSettings(store, accountId);
 }
 
+/**
+ * Serialized because three call sites write this key independently: the
+ * Settings form, the AppShell close-prompt "remember my choice", and the
+ * account-id migration in auth-context. Without the lock the later read-modify-
+ * write silently discards whichever change landed first.
+ */
 export async function saveAccountSettings(
   storage: Pick<SettingsStorage, "get" | "set">,
   accountId: string,
   settings: Partial<AppSettings>,
 ) {
-  const store = await readAccountSettingsStore(storage);
-  const next = upsertAccountAppSettings(store, accountId, settings);
-  await writeAccountSettingsStore(storage, next);
-  return getAccountAppSettings(next, accountId);
+  return withStorageLock(APP_SETTINGS_STORAGE_KEY, async () => {
+    const store = await readAccountSettingsStore(storage);
+    const next = upsertAccountAppSettings(store, accountId, settings);
+    await writeAccountSettingsStore(storage, next);
+    return getAccountAppSettings(next, accountId);
+  });
 }
 
 export async function deleteAccountSettings(storage: Pick<SettingsStorage, "get" | "set">, accountId: string) {
-  const store = await readAccountSettingsStore(storage);
-  const next = removeAccountAppSettings(store, accountId);
-  await writeAccountSettingsStore(storage, next);
+  return withStorageLock(APP_SETTINGS_STORAGE_KEY, async () => {
+    const store = await readAccountSettingsStore(storage);
+    const next = removeAccountAppSettings(store, accountId);
+    await writeAccountSettingsStore(storage, next);
+  });
 }

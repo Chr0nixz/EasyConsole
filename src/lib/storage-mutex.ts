@@ -40,7 +40,7 @@ export async function updateStorageValue(
   key: string,
   updater: (current: string | null) => string | null | Promise<string | null>,
 ): Promise<string | null> {
-  return withStorageLock(key, async () => {
+  const apply = async () => {
     const current = await storage.get(key);
     const next = await updater(current);
     if (next === null) {
@@ -49,5 +49,23 @@ export async function updateStorageValue(
     }
     await storage.set(key, next);
     return next;
-  });
+  };
+
+  // `withStorageLock` only serializes within this process (plus other tabs via
+  // navigator.locks). Stores shared across OS processes provide their own
+  // cross-process transaction, which has to wrap the whole read-modify-write.
+  return withStorageLock(key, () => (storage.withTransaction ? storage.withTransaction(apply) : apply()));
+}
+
+/**
+ * Run a `load → modify → save` sequence as one cross-process unit.
+ *
+ * Deliberately does NOT go through `withStorageLock`: callers inside `fn`
+ * reach `updateStorageValue`, which takes the per-key lock itself. Acquiring
+ * the same key here first would make the inner call queue behind its own
+ * caller and deadlock. The cross-process lock is reentrant, the per-key
+ * process queue is not, so only the former belongs at this level.
+ */
+export async function withStorageTransaction<T>(storage: RuntimeStorage, fn: () => Promise<T>): Promise<T> {
+  return storage.withTransaction ? storage.withTransaction(fn) : fn();
 }

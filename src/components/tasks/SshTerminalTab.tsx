@@ -133,6 +133,16 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
   useEffect(() => {
     onStatusChangeRef.current = onStatusChange;
   }, [onStatusChange]);
+
+  // `text` from useI18n is recreated whenever the locale changes. The connection
+  // effect below tears down its session on any dependency change, so depending on
+  // `text` directly meant switching languages silently killed every live SSH
+  // session and wiped its scrollback. Route translation through a ref instead.
+  const textRef = useRef(text);
+  useEffect(() => {
+    textRef.current = text;
+  }, [text]);
+  const tt = useCallback((zh: string, en: string) => textRef.current(zh, en), []);
   useEffect(() => {
     onStatusChangeRef.current(status);
   }, [status]);
@@ -175,8 +185,11 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     }
   }
 
+  // Resets state for a new connection target. Depends on `request` only: keeping
+  // `text` here meant a language switch also cleared the status of a live session
+  // and silently discarded an in-progress recording.
   useEffect(() => {
-    setStatus(text("准备连接", "Ready to connect"));
+    setStatus(tt("准备连接", "Ready to connect"));
     setStatusKind("ready");
     setCanReconnect(false);
     setIsRecording(false);
@@ -184,7 +197,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     setHasNewOutput(false);
     recordingBufferRef.current = createRecordingBuffer();
     recordingCapNotifiedRef.current = false;
-  }, [request, text]);
+  }, [request, tt]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -319,7 +332,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         return true;
       });
       if (activeRef.current) terminal.focus();
-      terminal.writeln(text("正在建立 SSH 连接...", "Establishing SSH connection..."));
+      terminal.writeln(tt("正在建立 SSH 连接...", "Establishing SSH connection..."));
 
       dataDisposable = terminal.onData((data) => {
         const sessionId = sessionIdRef.current;
@@ -362,8 +375,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                 isRecordingRef.current = false;
                 setIsRecording(false);
                 toast.info(
-                  text("录制缓冲已满", "Recording buffer full"),
-                  text("已停止追加录制内容；请停止录制以保存已捕获部分。", "Stopped appending; stop recording to save what was captured."),
+                  tt("录制缓冲已满", "Recording buffer full"),
+                  tt("已停止追加录制内容；请停止录制以保存已捕获部分。", "Stopped appending; stop recording to save what was captured."),
                 );
               }
             }
@@ -388,19 +401,19 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             try {
               const payload = JSON.parse(event.data) as SshHostKeyPrompt;
               setHostKeyPrompt(payload);
-              setStatus(event.message ?? text("等待确认主机指纹", "Waiting for host key confirmation"));
+              setStatus(event.message ?? tt("等待确认主机指纹", "Waiting for host key confirmation"));
               setStatusKind("ready");
               activeTerminal.writeln(
-                `\r\n${event.message ?? text("首次连接，请确认主机指纹。", "First connection — confirm the host fingerprint.")}`,
+                `\r\n${event.message ?? tt("首次连接，请确认主机指纹。", "First connection — confirm the host fingerprint.")}`,
               );
             } catch {
-              setStatus(text("主机密钥提示无效", "Invalid host key prompt"));
+              setStatus(tt("主机密钥提示无效", "Invalid host key prompt"));
               setStatusKind("failed");
             }
             return;
           }
           if (event.kind === "error") {
-            const message = event.message ?? text("SSH 连接失败", "SSH connection failed");
+            const message = event.message ?? tt("SSH 连接失败", "SSH connection failed");
             setStatus(message);
             setStatusKind("failed");
             activeTerminal.writeln(`\r\n${message}`);
@@ -408,7 +421,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             return;
           }
           if (event.kind === "closed") {
-            setStatus(event.message ?? text("SSH 会话已关闭", "SSH session closed"));
+            setStatus(event.message ?? tt("SSH 会话已关闭", "SSH session closed"));
             setStatusKind("closed");
             setCanReconnect(true);
           }
@@ -434,7 +447,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           }
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : text("SSH 连接失败", "SSH connection failed");
+        const message = error instanceof Error ? error.message : tt("SSH 连接失败", "SSH connection failed");
         setStatus(message);
         setStatusKind("failed");
         terminal.writeln(`\r\n${message}`);
@@ -459,7 +472,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
       searchAddonRef.current = null;
       terminal?.dispose();
     };
-  }, [request, text, reconnectKey, toast]);
+  }, [request, reconnectKey, tt, toast]);
 
   const sendKeySeq = useCallback((rawKey: string, data: string) => {
     const sid = sessionIdRef.current;

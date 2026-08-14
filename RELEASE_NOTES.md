@@ -1,3 +1,19 @@
+# EasyConsole v0.4.18
+
+Audit remediations for scheduled-task races, resumable uploads, desktop SSH resource leaks, and CI quality gates (Phase 0 + Phase 1).
+
+## Changes
+
+- **Scheduled tasks**: Page saves merge by id instead of rewriting the whole table, so a background run cannot lose `lastRemoteTaskId` and create a second billable instance. Page, background runner, and CLI/MCP share `executeScheduledTask` (lease, idempotency, recurrence). Invalid weekly/interval/cron configs degrade to a one-shot `needs_review`; `isScheduleDue` swallows corrupt rows instead of stalling the whole loop.
+- **Uploads**: Resume seeds from the local checkpoint first; the server status endpoint is used when it answers. Failed uploads keep completed chunk indexes instead of wiping them.
+- **CLI / backup**: Run logs use a field whitelist and redact password/`old`/`new` payloads. Backup import defaults to non-secret sections; MCP cannot import tokens or saved accounts.
+- **SSH**: Unpaired `~/.ssh/config` markers abort the write (atomic replace + `.bak`). Switching language no longer tears down live sessions. Port forwards abort on every session exit and bind loopback only. Host-key confirmation is outside the TCP connect timeout. Destroying an `ssh-*` window closes its sessions.
+- **Storage / downloads**: Cross-process storage transactions; stricter open/download path contracts; download progress is throttled and no longer copies the whole blob several times.
+- **Quality gates**: Lint `--max-warnings` ratchet; CI rustfmt + clippy `-D warnings` + concurrency groups; Dependabot for npm/cargo/actions; production `npm audit` clean; release matrix `max-parallel: 1` so `latest.json` is not written concurrently.
+- **Docs**: Transport-security copy matches the lab HTTP policy (packaged app allows remote cleartext; CLI/MCP still opt in).
+
+---
+
 # EasyConsole v0.4.17
 
 Optional create-instance mode that keeps the task name aligned with EXPERIMENT_ID and appends a timestamp only to the instance name.

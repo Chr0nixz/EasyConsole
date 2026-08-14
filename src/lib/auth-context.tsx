@@ -214,12 +214,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             tokenError instanceof Error
               ? i18nText(`保存的登录已失效：${tokenError.message}`, `Saved sign-in expired: ${tokenError.message}`)
               : i18nText("保存的登录已失效，请重新输入密码", "Saved sign-in expired. Enter the password again."),
+            { cause: tokenError },
           );
         }
 
         try {
           const result = await authApi.login({ username: account.username, password });
-          if (!result.token) throw new Error(i18nText("登录响应未包含 token", "Sign-in response did not include a token"));
+          if (!result.token) {
+            throw new Error(i18nText("登录响应未包含 token", "Sign-in response did not include a token"), { cause: tokenError });
+          }
           activeToken = result.token;
           apiClient.setToken(activeToken);
           await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, activeToken);
@@ -242,6 +245,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             reloginError instanceof Error
               ? i18nText(`保存的登录已失效：${reloginError.message}`, `Saved sign-in expired: ${reloginError.message}`)
               : i18nText("保存的登录已失效，请重新输入密码", "Saved sign-in expired. Enter the password again."),
+            { cause: reloginError },
           );
         }
       }

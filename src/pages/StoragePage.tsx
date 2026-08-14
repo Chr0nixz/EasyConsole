@@ -4,7 +4,7 @@ import { useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import { EmptyState, ErrorState, FolderOpenIcon, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
-import { useDownloadQueue } from "../lib/download-queue-context";
+import { useDownloadQueueActions } from "../lib/use-download-queue";
 import { formatBytes } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import type { Locale } from "../lib/i18n-text";
@@ -56,7 +56,7 @@ export function StoragePage() {
   const toast = useToast();
   const { locale, text } = useI18n();
   const runLogger = useRunLogger();
-  const downloadQueue = useDownloadQueue();
+  const downloadQueue = useDownloadQueueActions();
   const { confirm, confirmDialog } = useConfirmAction();
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const uploadCancelledRef = useRef(false);
@@ -199,9 +199,18 @@ export function StoragePage() {
         );
 
         const fileKey = makeFileKey(item.file);
-        const resumeRecord = item.resumeFromUploadId ? { uploadId: item.resumeFromUploadId, fileKey } : await loadUploadResume(browserRuntime.storage, fileKey);
-        const resumeFromUploadId = resumeRecord?.uploadId;
-        let capturedUploadId: string | null = resumeFromUploadId ?? null;
+        const storedResume = await loadUploadResume(browserRuntime.storage, fileKey);
+        // An explicit retry may carry its own upload id; only reuse the stored
+        // chunk list when it belongs to that same upload session.
+        const resumeUploadId = item.resumeFromUploadId ?? storedResume?.uploadId;
+        const resume = resumeUploadId
+          ? {
+              uploadId: resumeUploadId,
+              completedChunks: storedResume?.uploadId === resumeUploadId ? storedResume.uploadedChunks : undefined,
+            }
+          : undefined;
+        let capturedUploadId: string | null = resumeUploadId ?? null;
+        let capturedChunks: number[] = resume?.completedChunks ?? [];
 
         try {
           const abortController = new AbortController();
@@ -215,12 +224,13 @@ export function StoragePage() {
               );
             },
             abortController.signal,
-            resumeFromUploadId,
+            resume,
             (uploadId) => {
               capturedUploadId = uploadId;
             },
             async (checkpoint) => {
               capturedUploadId = checkpoint.uploadId;
+              capturedChunks = checkpoint.completedIndices;
               await saveUploadResume(browserRuntime.storage, {
                 fileKey,
                 uploadId: checkpoint.uploadId,
@@ -239,7 +249,7 @@ export function StoragePage() {
             await saveUploadResume(browserRuntime.storage, {
               fileKey,
               uploadId: capturedUploadId,
-              uploadedChunks: [],
+              uploadedChunks: capturedChunks,
               createdAt: new Date().toISOString(),
             }).catch(() => undefined);
           }

@@ -1,7 +1,7 @@
 {
   "name": "easy-console",
   "private": true,
-  "version": "0.4.17",
+  "version": "0.4.18",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -22,7 +22,7 @@
     "typecheck": "tsc -b --noEmit",
     "typecheck:tools": "tsc -p tsconfig.tools.json --noEmit",
     "version:check": "node tools/easy-console/version-check.mjs",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings=49",
     "test": "vitest run",
     "test:watch": "vitest"
   },

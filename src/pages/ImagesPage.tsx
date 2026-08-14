@@ -7,7 +7,7 @@ import { ImageDetailDialog } from "../components/images/ImageDetailDialog";
 import { Button, Input, Panel, Select, TableRegion } from "../components/ui";
 import { imageApi } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
-import { useDownloadQueue } from "../lib/download-queue-context";
+import { useDownloadQueue } from "../lib/use-download-queue";
 import { loadFavoriteImages, toggleFavoriteImage } from "../lib/image-favorites";
 import { useI18n } from "../lib/i18n";
 import type { ImageItem } from "../lib/types";

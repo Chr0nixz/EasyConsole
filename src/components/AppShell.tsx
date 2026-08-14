@@ -13,7 +13,7 @@ import { getTransportBlockReason, subscribeTransportPolicy } from "../lib/api";
 import { useAppUpdate } from "../lib/app-update-context";
 import { useCommitQueue } from "../lib/commit-queue-context";
 import { downloadStatusText } from "../lib/download-queue";
-import { formatDownloadProgress, useDownloadQueue } from "../lib/download-queue-context";
+import { formatDownloadProgress, useDownloadQueue } from "../lib/use-download-queue";
 import { browserRuntime } from "../lib/runtime";
 import { resolveSavedAccountId } from "../lib/saved-accounts";
 import { useI18n, type TranslationKey } from "../lib/i18n";

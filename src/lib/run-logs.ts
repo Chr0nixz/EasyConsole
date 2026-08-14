@@ -57,7 +57,11 @@ type RunLogStoreOptions = {
   now?: () => Date;
 };
 
-const SENSITIVE_KEY_PATTERN = /(authorization|bearer|cookie|password|secret|token|passwd|pwd)/i;
+// Matches against key names, unanchored, so `oldPassword` is covered by `password`.
+// `old` / `new` are anchored because they are the bare option names used by
+// `ec account change-password`, and raw JSON payload options can embed credentials.
+const SENSITIVE_KEY_PATTERN =
+  /(authorization|bearer|cookie|password|secret|token|passwd|pwd|credential|payload_?json|^old$|^new$)/i;
 const MAX_METADATA_STRING_LENGTH = 1000;
 const MAX_METADATA_JSON_LENGTH = 12_000;
 

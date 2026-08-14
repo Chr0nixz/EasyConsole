@@ -39,6 +39,8 @@ npm.cmd run tauri:build
 npm.cmd run ec -- --help
 npm.cmd run ec:mcp
 cargo check --manifest-path src-tauri/Cargo.toml
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
 Run these before handing off functional changes:
@@ -50,9 +52,15 @@ npm.cmd run lint
 npm.cmd run test
 npm.cmd run build:desktop
 cargo check --manifest-path src-tauri/Cargo.toml
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
 Use `npm.cmd run build` for the web-only production build. Use `npm.cmd run build:desktop` for Tauri build inputs; it builds sidecars, typechecks the app, and runs Vite. Use `npm.cmd run tauri:build` when an actual desktop bundle or installer is required. When time is limited, prioritize desktop input build and Tauri shell checks over web-only verification.
+
+`lint` runs with `--max-warnings=49`, which is a ratchet rather than a target. The number may only go down: when you remove warnings, lower it in the same commit. Never raise it to make a build pass -- fix the new warning instead. Remaining warnings are `react-hooks/set-state-in-effect`, `react-refresh/only-export-components`, and `react-hooks/exhaustive-deps`.
+
+For `react-refresh/only-export-components` in context files, follow the existing split used by `use-toast.ts` and `use-download-queue.ts`: contexts, hooks, and plain helpers live in a `use-*.ts` file, and the `*Provider` component stays in its own file. That removes the warning instead of suppressing it.
 
 The production build may warn about a large JS chunk; that is currently acceptable unless the task is specifically about bundle splitting.
 

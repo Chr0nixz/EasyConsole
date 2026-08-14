@@ -15,7 +15,6 @@ export function assertValidCron(expr: string) {
   if (!trimmed) throw new RecurrenceValidationError("Cron expression is required");
   try {
     // croner uses local timezone by default; catch invalid patterns early.
-    // eslint-disable-next-line no-new
     new Cron(trimmed, { paused: true });
   } catch (error) {
     throw new RecurrenceValidationError(error instanceof Error ? error.message : "Invalid cron expression");

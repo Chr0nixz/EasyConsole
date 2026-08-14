@@ -21,7 +21,13 @@ vi.mock("../lib/remote-storage", async () => {
   };
 });
 
-vi.mock("../lib/download-queue-context", () => ({
+vi.mock("../lib/use-download-queue", () => ({
+  useDownloadQueueActions: () => ({
+    enqueue: mocks.enqueue,
+    cancel: vi.fn(),
+    retry: vi.fn(),
+    clearCompleted: vi.fn(),
+  }),
   useDownloadQueue: () => ({
     items: [],
     summary: { total: 0, active: 0, completed: 0, failed: 0, cancelled: 0, percent: 0 },

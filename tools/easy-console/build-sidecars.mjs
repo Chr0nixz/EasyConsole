@@ -97,7 +97,7 @@ async function bundle(entry, outfile) {
   });
 }
 
-async function packageExe(input, output) {
+async function packageExe(input, output, platform, arch) {
   execFileSync(
     process.execPath,
     [pkgBin, "--targets", pkgTarget(platform, arch), "--output", output, "--public-packages", "*", input],
@@ -121,7 +121,7 @@ for (const item of entries) {
   const tauriSidecarPath = join(tauriBinaryDir, `${item.name}-${triple}${extension}`);
 
   await bundle(item.entry, bundlePath);
-  await packageExe(bundlePath, executablePath);
+  await packageExe(bundlePath, executablePath, platform, arch);
   await copyFile(executablePath, tauriSidecarPath);
   console.log(`Created ${tauriSidecarPath}`);
 }

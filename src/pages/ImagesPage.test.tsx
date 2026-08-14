@@ -20,7 +20,7 @@ vi.mock("../lib/api", () => ({
   },
 }));
 
-vi.mock("../lib/download-queue-context", () => ({
+vi.mock("../lib/use-download-queue", () => ({
   useDownloadQueue: () => ({
     items: [],
     summary: { total: 0, active: 0, completed: 0, failed: 0, cancelled: 0, percent: 0 },

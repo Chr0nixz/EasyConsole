@@ -4,6 +4,8 @@ import {
   createScheduledTask,
   isScheduleDue,
   loadScheduledTasks,
+  mutateScheduledTasks,
+  normalizeRecurrence,
   pauseScheduledTask,
   resumeScheduledTask,
   saveScheduledTasks,
@@ -93,5 +95,71 @@ describe("scheduled tasks", () => {
 
     expect(next[0]).toEqual(first);
     expect(next[1]).toMatchObject({ id: "second", status: "failed", lastError: "boom" });
+  });
+
+  it("merges page edits without clobbering a concurrent runner lease", async () => {
+    const storage = createMemoryStorage();
+    const other = makeTask({ id: "other", name: "other" });
+    const staleSnapshot = [makeTask({ id: "leased" }), other];
+    await saveScheduledTasks(storage, staleSnapshot);
+
+    // Background runner records a completed remote create while the page still
+    // holds the pre-run snapshot above.
+    await saveScheduledTasks(storage, [
+      makeTask({ id: "leased", status: "running", executionKey: "leased@2026-05-24T10:00", lastRemoteTaskId: "remote-42" }),
+      other,
+    ]);
+
+    // Page edits an unrelated row from its stale snapshot.
+    const merged = await mutateScheduledTasks(storage, (current) =>
+      updateScheduledTask(current, { ...other, status: "paused" }),
+    );
+
+    expect(merged.find((item) => item.id === "leased")).toMatchObject({
+      status: "running",
+      lastRemoteTaskId: "remote-42",
+      executionKey: "leased@2026-05-24T10:00",
+    });
+    expect(merged.find((item) => item.id === "other")?.status).toBe("paused");
+  });
+
+  it("degrades incomplete recurrence to a one-shot and marks needs_review", async () => {
+    expect(normalizeRecurrence({ type: "weekly", weekdays: [] })).toEqual({
+      recurrence: { type: "once" },
+      invalid: true,
+    });
+    expect(normalizeRecurrence({ type: "interval" })).toEqual({
+      recurrence: { type: "once" },
+      invalid: true,
+    });
+    expect(normalizeRecurrence({ type: "cron", cron: "" })).toEqual({
+      recurrence: { type: "once" },
+      invalid: true,
+    });
+
+    const storage = createMemoryStorage();
+    await storage.set(
+      "easy-console.scheduledTasks",
+      JSON.stringify([
+        makeTask({
+          id: "bad-weekly",
+          recurrence: { type: "weekly", weekdays: [] },
+        }),
+      ]),
+    );
+    const loaded = await loadScheduledTasks(storage);
+    expect(loaded[0]).toMatchObject({
+      status: "needs_review",
+      recurrence: { type: "once" },
+    });
+    expect(isScheduleDue(loaded[0]!, new Date("2026-05-24T12:00:00"))).toBe(false);
+  });
+
+  it("does not throw from isScheduleDue on an in-memory invalid recurrence", () => {
+    const task = makeTask({
+      recurrence: { type: "weekly", weekdays: [] },
+    });
+    expect(() => isScheduleDue(task, new Date("2026-05-24T12:00:00"))).not.toThrow();
+    expect(isScheduleDue(task, new Date("2026-05-24T12:00:00"))).toBe(false);
   });
 });

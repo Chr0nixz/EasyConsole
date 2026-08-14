@@ -35,6 +35,13 @@ export type UploadCheckpoint = {
   chunkSize: number;
 };
 
+/** State needed to resume an interrupted chunked upload. */
+export type UploadResumeState = {
+  uploadId: string;
+  /** Chunk indices already confirmed, from the local checkpoint. */
+  completedChunks?: number[];
+};
+
 /** First missing chunk byte offset; treats uploadedChunks as an index set (sparse-safe). */
 export function resolveUploadResumeOffset(uploadedChunks: number[], chunkSize: number, fileSize: number): number {
   if (fileSize <= 0) return 0;
@@ -338,12 +345,13 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       path: string,
       onProgress?: (progress: UploadProgress) => void,
       signal?: AbortSignal,
-      resumeFromUploadId?: string,
+      resume?: UploadResumeState,
       onUploadId?: (uploadId: string) => void,
       onCheckpoint?: (checkpoint: UploadCheckpoint) => void | Promise<void>,
     ) {
       if (file.size === 0) return storageApi.uploadEmptyFile(file, path, onProgress, signal);
 
+      const resumeFromUploadId = resume?.uploadId;
       let uploadId: string | null = resumeFromUploadId ?? null;
       let startOffset = 0;
       const completedIndices = new Set<number>();
@@ -351,23 +359,36 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       if (resumeFromUploadId && onUploadId) onUploadId(resumeFromUploadId);
 
       if (resumeFromUploadId) {
+        // Seed from the locally persisted checkpoint first. The server-side
+        // status endpoint is optional (it returns null on 404/405), and without
+        // this fallback a resume silently restarted from offset 0 -- re-sending
+        // the entire file after a failure at 90%.
+        for (const index of resume?.completedChunks ?? []) {
+          if (typeof index === "number" && Number.isInteger(index) && index >= 0) completedIndices.add(index);
+        }
         try {
           const status = await storageApi.queryUploadedChunks(resumeFromUploadId);
           if (status && Array.isArray(status.uploadedChunks)) {
+            // The server is authoritative when it answers: it may have dropped
+            // chunks we believe are durable.
+            completedIndices.clear();
             for (const index of status.uploadedChunks) {
               if (typeof index === "number" && Number.isInteger(index) && index >= 0) completedIndices.add(index);
             }
-            startOffset = resolveUploadResumeOffset([...completedIndices], UPLOAD_CHUNK_SIZE, file.size);
-            if (startOffset >= file.size) {
-              const params = new URLSearchParams();
-              params.set("upload_id", uploadId!);
-              params.set("md5", await md5Blob(file));
-              params.set("path", path);
-              return storageApi.uploadComplete(params.toString(), signal);
-            }
           }
         } catch {
-          startOffset = 0;
+          // Keep the local checkpoint on a failed status query.
+        }
+
+        if (completedIndices.size > 0) {
+          startOffset = resolveUploadResumeOffset([...completedIndices], UPLOAD_CHUNK_SIZE, file.size);
+          if (startOffset >= file.size) {
+            const params = new URLSearchParams();
+            params.set("upload_id", uploadId!);
+            params.set("md5", await md5Blob(file));
+            params.set("path", path);
+            return storageApi.uploadComplete(params.toString(), signal);
+          }
         }
       }
 
@@ -375,6 +396,7 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
         signal?.throwIfAborted();
         const end = Math.min(start + UPLOAD_CHUNK_SIZE, file.size) - 1;
         const chunkIndex = Math.floor(start / UPLOAD_CHUNK_SIZE);
+        if (completedIndices.has(chunkIndex)) continue;
         const result = await storageApi.uploadChunk(file, { start, end, total: file.size }, path, uploadId ?? undefined, onProgress, signal);
         if (!uploadId) {
           uploadId = extractUploadId(result);

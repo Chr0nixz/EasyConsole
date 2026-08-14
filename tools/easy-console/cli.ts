@@ -142,6 +142,67 @@ function shouldLogCommand(action: string) {
   return !action.startsWith("run-log.");
 }
 
+/**
+ * Option names that are safe to write into the local run log.
+ *
+ * This is an allowlist, not a denylist: anything not listed here is dropped.
+ * Recording `command.opts()` wholesale used to leak `--old` / `--new` from
+ * `account change-password` and the credential-bearing `--payload-json` in
+ * cleartext, because run-log redaction matches key names and none of those
+ * names look sensitive. Option names are shared across commands, so a single
+ * allowlist covers every subcommand.
+ *
+ * Deliberately excluded: password, passwordStdin, old, new, token, and every
+ * raw `--*-json` option, since those can carry credentials or full payloads.
+ */
+const LOGGABLE_OPTION_KEYS = new Set([
+  "allowInsecureHttp",
+  "apiBaseUrl",
+  "channel",
+  "config",
+  "cpu",
+  "description",
+  "experimentId",
+  "gpu",
+  "imageId",
+  "includeSecrets",
+  "json",
+  "keyword",
+  "limit",
+  "limitBytes",
+  "memory",
+  "mountPath",
+  "name",
+  "output",
+  "overwrite",
+  "page",
+  "pageSize",
+  "podName",
+  "price",
+  "releaseCondition",
+  "releaseTime",
+  "runLogPath",
+  "scheduleTime",
+  "scriptPath",
+  "sections",
+  "source",
+  "status",
+  "storagePath",
+  "user",
+  "username",
+  "workDirectory",
+  "yes",
+]);
+
+function loggableOptions(options: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(options)) {
+    if (!LOGGABLE_OPTION_KEYS.has(key) || value === undefined) continue;
+    result[key] = value;
+  }
+  return result;
+}
+
 function parseEnvOptionList(value: unknown): Array<{ key: string; value: string }> {
   const items = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
   return items.flatMap((item) => {
@@ -264,7 +325,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
             result: "success",
             title: `CLI ${action} 成功`,
             durationMs: Date.now() - startedAt,
-            metadata: { options: command.opts() },
+            metadata: { options: loggableOptions(command.opts()) },
           });
         }
         emitSuccess(command, data);
@@ -279,7 +340,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
             title: `CLI ${action} 失败`,
             durationMs: Date.now() - startedAt,
             error: error instanceof Error ? error.message : String(error),
-            metadata: { options: command.opts() },
+            metadata: { options: loggableOptions(command.opts()) },
           });
         }
         emitFailure(command, error);
@@ -481,10 +542,16 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   const taskDownload = task.command("download").description("Download task data");
   taskDownload.argument("<taskId>", "Task id");
   taskDownload.option("--output <path>", "Local output path");
+  taskDownload.option("--overwrite", "Replace the output file if it already exists");
   taskDownload.action((taskId: string) =>
     run(taskDownload, (context) => {
-      const options = taskDownload.opts<{ output?: string }>();
-      return downloadTask(context.api, { task_id: parseId(taskId) }, options.output);
+      const options = taskDownload.opts<{ output?: string; overwrite?: boolean }>();
+      // `--output` is an explicit human instruction, so the CLI is not confined
+      // to the download root the way MCP tools are.
+      return downloadTask(context.api, { task_id: parseId(taskId) }, options.output, {
+        allowOutsideRoot: true,
+        overwrite: options.overwrite === true,
+      });
     })(),
   );
 
@@ -506,10 +573,14 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   const storageDownload = storage.command("download").description("Download remote file or path");
   storageDownload.argument("<path>", "Remote path");
   storageDownload.option("--output <path>", "Local output path");
+  storageDownload.option("--overwrite", "Replace the output file if it already exists");
   storageDownload.action((path: string) =>
     run(storageDownload, (context) => {
-      const options = storageDownload.opts<{ output?: string }>();
-      return downloadStoragePath(context.api, path, options.output);
+      const options = storageDownload.opts<{ output?: string; overwrite?: boolean }>();
+      return downloadStoragePath(context.api, path, options.output, {
+        allowOutsideRoot: true,
+        overwrite: options.overwrite === true,
+      });
     })(),
   );
 
@@ -570,10 +641,14 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   const imageDownload = image.command("download").description("Download an image");
   imageDownload.argument("<imageId>", "Image id");
   imageDownload.option("--output <path>", "Local output path");
+  imageDownload.option("--overwrite", "Replace the output file if it already exists");
   imageDownload.action((imageId: string) =>
     run(imageDownload, (context) => {
-      const options = imageDownload.opts<{ output?: string }>();
-      return downloadImage(context.api, parseId(imageId), options.output);
+      const options = imageDownload.opts<{ output?: string; overwrite?: boolean }>();
+      return downloadImage(context.api, parseId(imageId), options.output, {
+        allowOutsideRoot: true,
+        overwrite: options.overwrite === true,
+      });
     })(),
   );
 
@@ -823,26 +898,48 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
 
   const backup = program.command("backup").description("Local data backup operations");
   const backupExport = backup.command("export").description("Export local data as backup JSON");
-  backupExport.option("--include-secrets", "Include token and saved accounts in the backup");
+  backupExport.option("--include-secrets", "Include token and saved accounts (requires --output)");
+  backupExport.option("--output <file>", "Write the backup to a file instead of stdout");
   backupExport.action(
-    run(backupExport, (context) => {
-      const options = backupExport.opts<{ includeSecrets?: boolean }>();
-      return exportBackup(context.storage, Boolean(options.includeSecrets));
+    run(backupExport, async (context) => {
+      const options = backupExport.opts<{ includeSecrets?: boolean; output?: string }>();
+      const includeSecrets = Boolean(options.includeSecrets);
+      // Secrets must never reach stdout: it is captured by shells, CI logs and
+      // AI agent transcripts.
+      if (includeSecrets && !options.output) {
+        throw new Error("--include-secrets requires --output <file>; refusing to write credentials to stdout.");
+      }
+      const data = await exportBackup(context.storage, includeSecrets);
+      if (!options.output) return data;
+
+      const { writeFile, chmod } = await import("node:fs/promises");
+      await writeFile(options.output, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+      if (process.platform !== "win32") {
+        await chmod(options.output, 0o600).catch(() => {});
+      }
+      return { written: options.output, includeSecrets };
     }),
   );
 
   const backupImport = backup.command("import").description("Import local data from a backup file");
   backupImport.argument("<file>", "Backup JSON file path");
-  backupImport.option("--sections <sections>", "Comma-separated sections to import (default: all non-secret)");
+  backupImport.option("--sections <sections>", "Comma-separated sections to import (default: non-secret only)");
+  backupImport.option("--include-secrets", "Also import token and saved accounts, overwriting local credentials");
   backupImport.option("--yes", "Execute instead of dry-run");
   backupImport.action((file: string) =>
     run(backupImport, async (context) => {
-      const options = backupImport.opts<{ sections?: string; yes?: boolean }>();
+      const options = backupImport.opts<{ sections?: string; includeSecrets?: boolean; yes?: boolean }>();
       const { readFile } = await import("node:fs/promises");
       const backupText = await readFile(file, "utf8");
       const sections: LocalDataBackupSection[] = options.sections
         ? (options.sections.split(",").map((s) => s.trim()).filter(Boolean) as LocalDataBackupSection[])
-        : [...nonSecretBackupSections, ...secretBackupSections];
+        : [...nonSecretBackupSections, ...(options.includeSecrets ? secretBackupSections : [])];
+      // Importing token/savedAccounts replaces the local credentials with whatever
+      // the backup file carries, so it needs an explicit opt-in even when the
+      // sections were listed by hand.
+      if (!options.includeSecrets && sections.some((section) => secretBackupSections.includes(section))) {
+        throw new Error("Importing token/savedAccounts overwrites local credentials; pass --include-secrets to allow it.");
+      }
       return importBackup(context.storage, backupText, sections, options.yes);
     })(),
   );

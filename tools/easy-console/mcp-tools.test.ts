@@ -297,6 +297,58 @@ describe("easy-console MCP tools", () => {
     expect(result).toMatchObject({ app: "EasyConsole", version: 1 });
   });
 
+  it("requires confirm before writing a download to disk", async () => {
+    const result = await invokeMcpToolDefinition(getTool("easyconsole_storage_download"), createFakeContext(), {
+      path: "/remote/file.txt",
+    });
+    expect(result).toMatchObject({ dryRun: true, action: "storage.download" });
+  });
+
+  it("refuses download paths that escape the download root", async () => {
+    await expect(
+      invokeMcpToolDefinition(getTool("easyconsole_storage_download"), createFakeContext(), {
+        path: "/remote/file.txt",
+        outputPath: "../../../.bashrc",
+        confirm: true,
+      }),
+    ).rejects.toThrow(/outside the download directory/);
+  });
+
+  it("never exports credentials over MCP", async () => {
+    const context = createFakeContext();
+    await context.storage.set("easy-console.token", "Bearer super-secret-token");
+    await context.storage.set("easy-console.savedAccounts", JSON.stringify([{ id: "a", token: "Bearer super-secret-token" }]));
+
+    const result = (await invokeMcpToolDefinition(getTool("easyconsole_backup_export"), context, {})) as {
+      includeSecrets: boolean;
+      items: Record<string, unknown>;
+    };
+
+    expect(result.includeSecrets).toBe(false);
+    expect(result.items.token).toBeUndefined();
+    expect(result.items.savedAccounts).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("super-secret-token");
+  });
+
+  it("rejects importing credential sections over MCP", async () => {
+    const context = createFakeContext();
+    const backup = {
+      app: "EasyConsole",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      includeSecrets: true,
+      items: { token: "Bearer injected-token" },
+    };
+
+    await expect(
+      invokeMcpToolDefinition(getTool("easyconsole_backup_import"), context, {
+        backupText: JSON.stringify(backup),
+        sections: ["token"],
+        confirm: true,
+      }),
+    ).rejects.toThrow(/Refusing to import credential sections/);
+  });
+
   it("returns dry-run for template_apply without confirm", async () => {
     const context = createFakeContext();
     const template = {
