@@ -84,6 +84,9 @@ jobs:
       - name: Rustfmt
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
+      - name: Placeholder sidecar binaries
+        run: node tools/easy-console/ensure-sidecar-placeholders.mjs
+
       - name: Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 

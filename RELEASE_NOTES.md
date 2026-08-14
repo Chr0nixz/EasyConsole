@@ -1,3 +1,13 @@
+# EasyConsole v0.4.19
+
+Fix CI/release clippy: create sidecar path placeholders before compiling the Tauri crate.
+
+## Changes
+
+- **CI clippy**: `tauri-build` requires `src-tauri/binaries/easy-console-{cli,mcp}-{triple}` to exist. CI now writes empty placeholders before clippy; `build:desktop` / tauri-action still replace them with real sidecars.
+
+---
+
 # EasyConsole v0.4.18
 
 Audit remediations for scheduled-task races, resumable uploads, desktop SSH resource leaks, and CI quality gates (Phase 0 + Phase 1).
