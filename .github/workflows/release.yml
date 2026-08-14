@@ -116,14 +116,14 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: Upload sidecar artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: easy-console-sidecars-${{ matrix.artifact-suffix }}
           path: build/sidecars/*
           retention-days: 30
 
       - name: Upload desktop artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: easy-console-desktop-${{ matrix.artifact-suffix }}
           path: |
@@ -247,7 +247,7 @@ jobs:
           fi
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: easy-console-android-${{ matrix.target }}
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
