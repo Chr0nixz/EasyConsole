@@ -1,10 +1,23 @@
 import { describe, expect, it } from "vitest";
 
-import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatSecondsDuration, formatTaskDefaultName } from "./format";
+import {
+  addHours,
+  formatDateTimeForApi,
+  formatDateTimeLocalInput,
+  formatExperimentTimedTaskName,
+  formatSecondsDuration,
+  formatTaskDefaultName,
+  getTaskNodeName,
+} from "./format";
 
 describe("format helpers", () => {
   it("formats default task names as compact local time", () => {
     expect(formatTaskDefaultName(new Date(2026, 4, 23, 0, 58, 32))).toBe("202605230058");
+  });
+
+  it("formats experiment-timed instance names without mutating the experiment id", () => {
+    expect(formatExperimentTimedTaskName("exp-run", new Date(2026, 4, 23, 0, 58, 32))).toBe("exp-run_202605230058");
+    expect(formatExperimentTimedTaskName("  ", new Date(2026, 4, 23, 0, 58, 32))).toBe("");
   });
 
   it("normalizes datetime-local values for API payloads", () => {
@@ -23,5 +36,22 @@ describe("format helpers", () => {
   it("formats task use_time values as seconds-based durations", () => {
     expect(formatSecondsDuration(90)).toBe("1 分钟");
     expect(formatSecondsDuration(3660)).toBe("1 小时 1 分钟");
+  });
+
+  it("reads task node names from node.name with node_name fallback", () => {
+    expect(getTaskNodeName({ node: { name: "gpu-node-1" } })).toBe("gpu-node-1");
+    expect(getTaskNodeName({ node_name: "legacy-node" })).toBe("legacy-node");
+    expect(getTaskNodeName({ node: { name: "primary" }, node_name: "legacy" })).toBe("primary");
+    expect(getTaskNodeName({
+      id: 46097,
+      node: {
+        name: "gpu229-worker5",
+        node_type: "node",
+        ip: "116.172.93.229",
+        status: true,
+        id: 9,
+      },
+    })).toBe("gpu229-worker5");
+    expect(getTaskNodeName({})).toBe("");
   });
 });

@@ -1,4 +1,4 @@
-import type { TaskStatus } from "./types";
+import type { TaskStatus, UnknownRecord } from "./types";
 import type { Locale } from "./i18n-text";
 
 function pad2(value: number) {
@@ -7,6 +7,13 @@ function pad2(value: number) {
 
 export function formatTaskDefaultName(date = new Date()) {
   return `${date.getFullYear()}${pad2(date.getMonth() + 1)}${pad2(date.getDate())}${pad2(date.getHours())}${pad2(date.getMinutes())}`;
+}
+
+/** Instance name derived from EXPERIMENT_ID plus a minute-resolution timestamp suffix. */
+export function formatExperimentTimedTaskName(experimentId: string, date = new Date()) {
+  const id = experimentId.trim();
+  if (!id) return "";
+  return `${id}_${formatTaskDefaultName(date)}`;
 }
 
 export function formatDateTimeForApi(value: string) {
@@ -61,6 +68,14 @@ export const releaseConditionTextEn: Record<number, string> = {
 
 export function getTaskName(task: { name?: string; task_name?: string; id?: string | number }) {
   return task.name || task.task_name || `任务 ${task.id ?? ""}`.trim();
+}
+
+export function getTaskNodeName(task: UnknownRecord & {
+  node?: UnknownRecord & { name?: string };
+  node_name?: string;
+}) {
+  const node = task.node && typeof task.node === "object" ? task.node : undefined;
+  return node?.name || task.node_name || "";
 }
 
 export function getStatusText(status?: TaskStatus, locale: Locale = "zh-CN") {

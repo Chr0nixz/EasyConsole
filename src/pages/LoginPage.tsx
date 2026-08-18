@@ -1,29 +1,54 @@
-import { LockKeyhole, Server, Trash2, UserCheck, UserRoundPlus } from "lucide-react";
+import { Eye, EyeOff, LockKeyhole, Server, Trash2, UserCheck, UserRoundPlus } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { LoadingState } from "../components/DataState";
 import { LanguageSwitch } from "../components/LanguageSwitch";
 import { Button, Input } from "../components/ui";
+import { getTransportBlockReason } from "../lib/api";
 import { getSavedAccountLabel } from "../lib/saved-accounts";
 import { useI18n } from "../lib/i18n";
+import { useConfirmAction } from "../lib/use-confirm-action";
 import { useAuth } from "../lib/use-auth";
+
+function friendlyLoginError(message: string, fallbackZh: string, fallbackEn: string, locale: "zh-CN" | "en-US") {
+  const lower = message.toLowerCase();
+  const zh = locale === "zh-CN";
+  if (lower.includes("network") || lower.includes("fetch") || lower.includes("failed to fetch") || lower.includes("err_network")) {
+    return zh ? "网络连接异常，请检查网络后重试。" : "Network error. Check your connection and try again.";
+  }
+  if (lower.includes("401") || lower.includes("unauthorized")) {
+    return zh ? "用户名或密码不正确。" : "Username or password is incorrect.";
+  }
+  if (lower.includes("timeout")) {
+    return zh ? "请求超时，请稍后重试。" : "Request timed out. Please try again.";
+  }
+  if (lower.includes("500") || lower.includes("server")) {
+    return zh ? "服务器异常，请稍后重试或联系管理员。" : "Server error. Try again later or contact an administrator.";
+  }
+  // Preserve domain-specific messages (e.g. "Sign-in response did not include a token") but still keep them readable.
+  return message || (zh ? fallbackZh : fallbackEn);
+}
 
 export function LoginPage() {
   const auth = useAuth();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
+  const confirm = useConfirmAction();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberPassword, setRememberPassword] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [savedLoginId, setSavedLoginId] = useState<string | null>(null);
   const [showPasswordForm, setShowPasswordForm] = useState(false);
   const hasSavedAccounts = auth.savedAccounts.length > 0;
   const showSavedAccounts = hasSavedAccounts && !showPasswordForm;
+  const transportBlocked = Boolean(getTransportBlockReason());
 
-  if (!auth.ready) return <LoadingState label={t("login.restoreSession")} />;
+  if (!auth.ready || auth.restoringSession) return <LoadingState label={t("login.restoreSession")} />;
   if (auth.token) return <Navigate to="/dashboard" replace />;
 
   function navigateAfterLogin() {
@@ -34,12 +59,17 @@ export function LoginPage() {
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setError(null);
+    if (getTransportBlockReason()) {
+      setError(t("login.transportBlocked"));
+      return;
+    }
     setLoading(true);
     try {
-      await auth.login(username, password);
+      await auth.login(username, password, { rememberPassword });
       navigateAfterLogin();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : t("login.failed"));
+      const raw = nextError instanceof Error ? nextError.message : t("login.failed");
+      setError(friendlyLoginError(raw, "登录失败", "Sign-in failed", locale));
     } finally {
       setLoading(false);
     }
@@ -47,12 +77,17 @@ export function LoginPage() {
 
   async function onSavedLogin(accountId: string) {
     setError(null);
+    if (getTransportBlockReason()) {
+      setError(t("login.transportBlocked"));
+      return;
+    }
     setSavedLoginId(accountId);
     try {
       await auth.loginSaved(accountId);
       navigateAfterLogin();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : t("login.savedLoginFailed"));
+      const raw = nextError instanceof Error ? nextError.message : t("login.savedLoginFailed");
+      setError(friendlyLoginError(raw, "直接登录失败，请重新输入密码", "Saved sign-in failed. Enter the password again.", locale));
       const account = auth.savedAccounts.find((item) => item.id === accountId);
       if (account) setUsername(account.username);
       setShowPasswordForm(true);
@@ -61,13 +96,22 @@ export function LoginPage() {
     }
   }
 
-  async function onForgetSavedAccount(accountId: string) {
+  function onForgetSavedAccount(accountId: string, label: string) {
     setError(null);
-    await auth.forgetSavedAccount(accountId);
+    confirm.confirm({
+      title: t("login.forgetTitle"),
+      description: t("login.forgetDescription"),
+      confirmLabel: t("login.forgetConfirmLabel"),
+      tone: "danger",
+      run: () => auth.forgetSavedAccount(accountId).then(() => {
+        // Remove succeeded; nothing else to do. The list updates via auth context.
+        void label;
+      }),
+    });
   }
 
   return (
-    <main className="grid min-h-screen min-w-0 grid-cols-[minmax(0,1fr)] overflow-x-hidden bg-app-bg text-app-text lg:grid-cols-[minmax(0,1fr)_460px]">
+    <main className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)] overflow-x-hidden overflow-y-auto overscroll-contain bg-app-bg text-app-text lg:grid-cols-[minmax(0,1fr)_460px]">
       <section className="hidden flex-col justify-between border-r border-app-border bg-app-surface p-10 lg:flex">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-md bg-app-accent text-app-onAccent">
@@ -95,13 +139,16 @@ export function LoginPage() {
                 className="app-interactive rounded-md px-2 py-1 text-xs text-app-muted hover:bg-app-panel hover:text-app-text"
                 to="/login/settings"
               >
-                {t("common.settings")}
+                {t("common.apiSettings")}
               </Link>
             </div>
             <h2 className="text-lg font-semibold">{showSavedAccounts ? t("login.chooseSavedTitle") : t("login.passwordTitle")}</h2>
             <p className="mt-1 text-sm text-app-muted">
               {showSavedAccounts ? t("login.chooseSavedDescription") : t("login.passwordDescription")}
             </p>
+            {transportBlocked ? (
+              <div className="mt-3 rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{t("login.transportBlocked")}</div>
+            ) : null}
           </div>
 
           {showSavedAccounts ? (
@@ -128,7 +175,7 @@ export function LoginPage() {
                       <Button
                         aria-label={t("login.removeSavedAccount", { account: getSavedAccountLabel(account) })}
                         className="h-8 w-8 px-0"
-                        onClick={() => void onForgetSavedAccount(account.id)}
+                        onClick={() => onForgetSavedAccount(account.id, getSavedAccountLabel(account))}
                         type="button"
                         variant="ghost"
                       >
@@ -145,6 +192,7 @@ export function LoginPage() {
                   setError(null);
                   setUsername("");
                   setPassword("");
+                  setRememberPassword(false);
                   setShowPasswordForm(true);
                 }}
                 type="button"
@@ -169,14 +217,33 @@ export function LoginPage() {
               </label>
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">{t("login.password")}</span>
-                <Input
-                  autoComplete="current-password"
-                  className="w-full"
-                  onChange={(event) => setPassword(event.target.value)}
-                  required
-                  type="password"
-                  value={password}
+                <div className="relative">
+                  <Input
+                    autoComplete="current-password"
+                    className="w-full pr-10"
+                    onChange={(event) => setPassword(event.target.value)}
+                    required
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                  />
+                  <button
+                    type="button"
+                    className="app-interactive absolute inset-y-0 right-0 flex w-10 items-center justify-center text-app-muted hover:text-app-text"
+                    aria-label={showPassword ? t("login.hidePassword") : t("login.showPassword")}
+                    aria-pressed={showPassword}
+                    onClick={() => setShowPassword((value) => !value)}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </label>
+              <label className="flex items-center gap-2 text-xs text-app-muted">
+                <input
+                  type="checkbox"
+                  checked={rememberPassword}
+                  onChange={(event) => setRememberPassword(event.target.checked)}
                 />
+                {t("login.rememberPassword")}
               </label>
               {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
               <div className="flex flex-col gap-2">
@@ -204,6 +271,7 @@ export function LoginPage() {
           </div>
         </div>
       </section>
+      {confirm.confirmDialog}
     </main>
   );
 }

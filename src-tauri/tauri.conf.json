@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "EasyConsole",
   "mainBinaryName": "EasyConsole",
-  "version": "0.2.1",
+  "version": "0.4.19",
   "identifier": "com.easyconsole.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -53,6 +53,13 @@
       ],
       "windows": {
         "installMode": "passive"
+      }
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "easyconsole"
+        ]
       }
     }
   }

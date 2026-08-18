@@ -1,13 +1,342 @@
-# EasyConsole v0.2.1
+# EasyConsole v0.4.19
 
-This release improves task instance list usability on the desktop app.
+Fix CI/release clippy: create sidecar path placeholders before compiling the Tauri crate.
+
+## Changes
+
+- **CI clippy**: `tauri-build` requires `src-tauri/binaries/easy-console-{cli,mcp}-{triple}` to exist. CI now writes empty placeholders before clippy; `build:desktop` / tauri-action still replace them with real sidecars.
+
+---
+
+# EasyConsole v0.4.18
+
+Audit remediations for scheduled-task races, resumable uploads, desktop SSH resource leaks, and CI quality gates (Phase 0 + Phase 1).
+
+## Changes
+
+- **Scheduled tasks**: Page saves merge by id instead of rewriting the whole table, so a background run cannot lose `lastRemoteTaskId` and create a second billable instance. Page, background runner, and CLI/MCP share `executeScheduledTask` (lease, idempotency, recurrence). Invalid weekly/interval/cron configs degrade to a one-shot `needs_review`; `isScheduleDue` swallows corrupt rows instead of stalling the whole loop.
+- **Uploads**: Resume seeds from the local checkpoint first; the server status endpoint is used when it answers. Failed uploads keep completed chunk indexes instead of wiping them.
+- **CLI / backup**: Run logs use a field whitelist and redact password/`old`/`new` payloads. Backup import defaults to non-secret sections; MCP cannot import tokens or saved accounts.
+- **SSH**: Unpaired `~/.ssh/config` markers abort the write (atomic replace + `.bak`). Switching language no longer tears down live sessions. Port forwards abort on every session exit and bind loopback only. Host-key confirmation is outside the TCP connect timeout. Destroying an `ssh-*` window closes its sessions.
+- **Storage / downloads**: Cross-process storage transactions; stricter open/download path contracts; download progress is throttled and no longer copies the whole blob several times.
+- **Quality gates**: Lint `--max-warnings` ratchet; CI rustfmt + clippy `-D warnings` + concurrency groups; Dependabot for npm/cargo/actions; production `npm audit` clean; release matrix `max-parallel: 1` so `latest.json` is not written concurrently.
+- **Docs**: Transport-security copy matches the lab HTTP policy (packaged app allows remote cleartext; CLI/MCP still opt in).
+
+---
+
+# EasyConsole v0.4.17
+
+Optional create-instance mode that keeps the task name aligned with EXPERIMENT_ID and appends a timestamp only to the instance name.
+
+## Changes
+
+- **Name ↔ EXPERIMENT_ID option**: When release-after-task-ends is selected, an optional checkbox makes the instance name follow `EXPERIMENT_ID` (read-only in the form).
+- **Timestamp on create**: Creating appends `_YYYYMMDDHHmm` to the instance name (e.g. `exp_202608091723`); `EXPERIMENT_ID` itself is not numbered.
+- **Remembered preference**: The checkbox state is stored with the other create-dialog UI prefs.
+
+---
+
+# EasyConsole v0.4.16
+
+Make create-instance form sections collapsible, and remember open/closed state locally.
+
+## Changes
+
+- **Create dialog sections**: Basic / Resources / Storage / Release can each collapse; collapsed headers show a short summary.
+- **Remembered UI state**: Section open state and the nested script-env editor expand state persist via local runtime storage.
+- **Validation**: Submitting with errors auto-expands the sections that need attention.
+
+---
+
+# EasyConsole v0.4.15
+
+Task-end release scripts can carry free-form environment variables, with a clearer create-instance form.
+
+## Changes
+
+- **Script env vars**: When release condition is “release after task ends”, add optional `KEY=VALUE` assignments (collapsed by default; expanded when values exist). The final command is previewed, and clone/edit parse existing prefixes from `script_path`.
+- **Create dialog**: Move auto-number duplicates to Settings only; remove resource-spec and price pickers; put working directory and script path on separate rows.
+- **Templates / schedules / CLI**: Same env-var support; CLI accepts repeatable `--env KEY=VALUE` (and keeps `--experiment-id` as a shortcut).
+
+---
+
+# EasyConsole v0.4.14
+
+Speed up duplicate-name checks on create by dropping the full task-list scan.
+
+## Changes
+
+- **Auto-number performance**: Name allocation uses `checkTaskName` (plus any already-cached snapshot names) instead of paging through all instances, so create no longer stalls on “checking names”.
+
+---
+
+# EasyConsole v0.4.13
+
+Fix duplicate instance auto-numbering, stop clone from copying names, and replace the blocked Grafana iframe with an open-in-window prompt.
+
+## Changes
+
+- **Auto-number duplicates**: Detect collisions via `checkTaskName` (with optional cached snapshot names) so names correctly become `XXX_1`, `XXX_2`, ….
+- **Clone naming**: Clone again uses a fresh default name instead of copying the source instance name.
+- **Task monitor**: Grafana cannot be embedded (`X-Frame-Options: deny`); the detail Monitor tab shows a clear empty state and opens the dashboard in a new window.
+
+---
+
+# EasyConsole v0.4.12
+
+Softer in-app update prompts, background download support, and a shell scroll lock so long Settings pages no longer push the chrome away.
+
+## Changes
+
+- **Update UX**: Auto-check only shows a toast (with View) and status badge instead of forcing a dialog; Later / Skip this version / close semantics are clearer.
+- **Background update**: Download continues after closing the dialog; progress stays in the status bar, and completion/failure toasts can reopen the dialog.
+- **Settings updates**: Status row plus View update CTA; auto-check copy notes soft notifications.
+- **Shell scroll**: Keep the sidebar/header fixed while the main pane scrolls; lock document overflow so long Settings content cannot scroll the whole app away.
+
+---
+
+# EasyConsole v0.4.11
+
+Auto-number duplicate instance names on create, and keep the Tasks more-actions menu anchored while scrolling.
+
+## Changes
+
+- **Auto-number duplicates**: When creating instances, colliding names become `XXX_1`, `XXX_2`, … by checking the existing task list (and `checkTaskName` as a secondary signal). Enabled by default in the create dialog and Settings; also applies to templates and scheduled creation.
+- **Tasks more menu**: Host the menu in a document portal with sticky viewport positioning so it stays usable while the table scrolls; pause refresh / lock overflow while open.
+
+---
+
+# EasyConsole v0.4.10
+
+Keep Logs and Clone on the primary task action strip, and stop dialog re-renders from stealing focus in number fields.
+
+## Changes
+
+- **Tasks actions**: Logs and Clone stay on the primary row strip for every instance; Monitor remains under More. Failed/abnormal tasks still highlight Logs in danger color.
+- **More menu**: Avoid duplicating promoted actions; keep the menu usable while scrolling, pause auto-refresh while open, and lock table overflow so the trigger does not scroll away.
+- **Dialog focus**: Dialog/Drawer focus setup no longer re-runs when `onClose` identity changes, so typing in number inputs no longer jumps focus after the first digit.
+- **SSH paste**: Ctrl/Cmd+V no longer double-pastes; the context-menu paste path uses xterm `paste()` so input still goes through `onData` once.
+
+---
+
+# EasyConsole v0.4.9
+
+Restore the SSH connection-info drawer before connecting, and fix the host-key confirmation freeze.
+
+## Changes
+
+- **Tasks → terminal**: The primary action always opens the SSH connection-info drawer first; in-app SSH / system terminal / VS Code remain choices inside that panel.
+- **Host-key TOFU**: Replaced the nested confirmation dialog with an in-terminal panel, and stopped status updates from infinite-re-rendering the SSH window (app freeze after “trust this host”).
+
+---
+
+# EasyConsole v0.4.8
+
+Allow remote cleartext HTTP in the packaged desktop app so the lab console default URL works without a local tunnel.
+
+## Changes
+
+- **Transport policy**: Packaged builds no longer block remote `http://` / `ws://` API and monitor URLs. Settings still warns when remote cleartext is in use.
+- **Defaults**: Keep `http://116.172.93.164:28080/api` as the lab default; CLI/MCP still require `--allow-insecure-http` / `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` for remote HTTP.
+
+---
+
+# EasyConsole v0.4.7
+
+Audit remediations across security, scheduling, uploads, and desktop UX (P0–P2).
+
+## Changes
+
+- **Transport security (P0)**: Production blocks remote cleartext HTTP/WS; loopback and HTTPS/WSS remain allowed. Dev keeps a warning path; CLI/MCP gain `--allow-insecure-http` / `EASY_CONSOLE_ALLOW_INSECURE_HTTP`.
+- **Scheduled tasks (P1)**: Real cron via `croner`, weekday multi-select, execution leases / `needs_review`, and mutate gates (`--yes` / `confirm: true`) for schedule create.
+- **Upload & storage (P1)**: Sparse-safe resume offsets, checkpoints, no false success toasts; Tauri storage merges localStorage fallback; Node local data uses temp+fsync+rename with file locks.
+- **Desktop I/O & polling (P1)**: Streaming SFTP and HTTP download-to-file; visibility-aware task polling with AbortSignal budgets.
+- **Settings / a11y / auth (P2)**: Narrow-screen overflow fixes; labeled selects, task-detail Tabs, dashboard `aria-pressed` and chart summaries; remember-password defaults off with show/hide; change-password clears saved ciphertext.
+- **Tasks table (P2)**: Focus-scoped keyboard navigation, unsaved-change blockers, client-side URL sort, page jump, and `placeholderData` to avoid empty flashes.
+- **SSH terminal (P2)**: Conditional follow-bottom with “new output” affordance; bounded recording buffer.
+- **Perf / architecture (P2)**: Shared React Query keys with AbortSignal; release rolling file logs; `useTaskListController` extracted from TasksPage; app uses a data router for `useBlocker`.
+
+---
+
+# EasyConsole v0.4.6
+
+Audit remediation release: safer task workflows, coordinated polling, richer command palette / CLI coverage, and SSH first-connect confirmation.
+
+## Changes
+
+- **Task navigation & shortcuts**: Dashboard and lists link to `/tasks/:id`; task table gains j/k row focus plus Enter / l / t / r actions; Web no longer duplicates “connection info” in More when it is already the primary action.
+- **Command palette**: Matched tasks expand into detail, logs, terminal, and release actions (detail opens with `?tab=`).
+- **Task snapshot coordination**: Shared `TASK_SNAPSHOT_QUERY_KEY` so Watcher / Detail / Templates share one poll path and invalidate together.
+- **Create / schedule / templates**: Resource and price fields wired through create, edit, scheduled tasks, and templates.
+- **Reliability**: Tauri storage writes are atomic; browser storage uses a mutex; scheduled-task load failures are caught; API clients refresh on arbitrary-method 401; notifications cover the full `fetchAllTasks` set.
+- **SSH TOFU**: Unknown hosts prompt before writing known-host fingerprints; mismatches still reject with a clear Settings recovery path.
+- **Performance & UX**: Task table virtualization, streaming MD5 for uploads, truncated task logs, Settings password change, and clearer web-only SSH copy (no WebSSH UI by product decision).
+- **CLI / MCP**: Template create/update, schedule update/pause/resume with variable apply, and batch release.
+- **Tests**: Page smoke coverage for Settings / Storage / Images, plus Rust known-host helpers.
+
+---
+
+# EasyConsole v0.4.5
+
+Per-account settings with SSH default password, plus more reliable secure storage and session restore.
+
+## Changes
+
+- **Per-account settings**: App settings are stored independently per signed-in account. Switching accounts loads that account's runtime URLs, notifications, and SSH preferences.
+- **SSH default password**: Settings gains a default password field. When the API omits SSH credentials, the app uses the account setting, then falls back to the login username.
+- **Secure storage layering**: Keychain reads now consult the local fallback when the OS keychain returns empty (fixes Windows Credential Manager blob-size fallback losing saved accounts). Migration no longer deletes the plaintext copy after a fallback write.
+- **Session restore UX**: Startup shows a restore spinner while remembered sessions / passwords are being restored, instead of flashing the login form.
+
+---
+
+# EasyConsole v0.4.4
+
+Harden in-app SSH: fix Windows pop-out deadlock, event races, and credential/host-key edge cases.
+
+## Changes
+
+- **Fix SSH pop-out freeze**: Made `open_ssh_window` async so Windows WebView2 no longer deadlocks (white screen + frozen app). Same-label rebuild waits for the old window to close.
+- **SSH event race**: Global `ssh-session-event` listener with early event buffering so status/error/output emitted before the frontend handler registers are no longer dropped.
+- **Password mapping**: Stopped treating nested `user.username` as the SSH password when the API omits password fields.
+- **Pop-out gate**: Added `supportsSshPopOut` (desktop-only); pop-out failures surface a toast instead of failing silently.
+- **Known hosts errors**: Host-key IO failures and fingerprint mismatches now return clear Chinese error messages instead of a generic connection failure.
+- **SOCKS5 IPv6**: Dynamic port-forward destinations use standard `Ipv6Addr` formatting.
+
+---
+
+# EasyConsole v0.3.9
+
+Remember passwords for one-click saved-account sign-in, with automatic silent re-login after token expiry.
+
+## Changes
+
+- **Remember password**: Added a "Remember password" option on the login page. When enabled, the password is encrypted with AES-GCM (PBKDF2-derived key, per-account random salt/IV) and stored alongside the token in secure storage. The plaintext password is never persisted.
+- **Silent re-login**: `loginSaved` now tries the saved token first; if it has expired and a stored password is available, the app automatically re-logs in with the decrypted password and refreshes both token and ciphertext — no password retyping required. Accounts without a stored password still fall back to the password form.
+- **Password crypto module**: New `src/lib/password-crypto.ts` provides `encryptPassword`/`decryptPassword` with round-trip, randomness, unicode, and malformed-payload tests.
+- **Login UX**: Added a "Remember password" checkbox (default on) to the password form; updated i18n copy and the saved-account note. Backward compatible with existing saved accounts.
+
+---
+
+# EasyConsole v0.3.8
+
+Task detail page, encrypted backups, image commit queue, and CI reliability improvements.
+
+## Changes
+
+- **Task detail page**: New `TaskDetailPage` with tabbed views for logs, Grafana monitor, in-app SSH, and raw JSON data.
+- **Encrypted backups**: Added backup/restore with PBKDF2 key derivation and AES-GCM encryption for local data portability.
+- **Image commit queue**: Context provider for batching image commit operations with progress tracking.
+- **Image favorites and resumable uploads**: Mark images as favorites; resume interrupted uploads from the last completed chunk.
+- **Task recurrence**: Added cron, interval, and weekly recurrence support for scheduled tasks.
+- **ErrorBoundary**: Crash recovery wrapper for route pages to prevent full-app blank screens on component errors.
+- **MD5 web worker**: Off-thread file hashing for upload integrity checks, keeping the main thread responsive.
+- **Local data store**: Shared data layer for CLI/MCP sidecars to read and write app-local state.
+- **Desktop enhancements**: Added Tauri deep-link, global-shortcut, and keyring plugins. Added `recharts`, `react-virtual`, and xterm webgl/web-links addons.
+- **CI: Linux build fix**: Added `libglib2.0-dev` to apt dependencies — `libgtk-3-dev` alone doesn't reliably pull `glib-2.0.pc` on GitHub runners.
+- **CI: Android quality gates**: Added typecheck, lint, test, and cargo check steps to the Android CI workflow.
+
+---
+
+# EasyConsole v0.3.7
+
+Android in-app update support and mobile UI improvements.
+
+## Changes
+
+- **Android in-app update**: Added mobile update checking via GitHub API. The app now detects new releases, downloads the matching APK (aarch64 or x86_64), and launches the system installer through a native `install_apk` Tauri command using JNI and FileProvider.
+- **Mobile navigation**: Redesigned the sidebar for mobile with a compact bottom navigation bar (Dashboard, Tasks, Storage, Images) and a "More" overflow menu for secondary pages. Added online/offline status indicator.
+- **Create task dialog**: Restructured the form with grouped sections (`FormSection`) and inline field validation (`FieldError`) for better usability.
+- **Responsive tables**: Scheduled tasks and other pages now render card layouts on small screens instead of horizontally scrolling tables.
+- **Android manifest**: Added `REQUEST_INSTALL_PACKAGES` permission for in-app APK installation.
+
+---
+
+# EasyConsole v0.3.6
+
+This release improves the in-app SSH terminal on mobile and fixes CI pipeline issues for Android builds.
 
 ## Highlights
 
-- Template-created instance names now hide the template prefix by default and can be expanded to show the full name.
-- Added local instance pinning so important tasks stay at the top of the task list.
-- Pin and unpin actions live in the collapsed More menu to keep the main action row compact.
-- Pinned state persists locally and is cleaned up when instances disappear from the backend.
+- **Mobile SSH virtual keyboard**: Added an on-screen key bar for Android tablets when using the in-app SSH terminal. It provides Esc, Tab, arrow keys, a sticky Ctrl key, and common shortcuts (Ctrl+C, Ctrl+Z, Ctrl+D, Ctrl+L), making command-line interaction on touch devices much easier.
+- **Mobile SSH event handling**: Fixed the runtime guard that prevented SSH session events from being listened to on mobile. Mobile now uses the same Tauri event channel as desktop for in-app SSH.
+
+## Changes
+
+- **SSH terminal UX**: Added `termRef` to keep the terminal focused after tapping a virtual key, and wired Ctrl key combinations through the terminal's `onKey` handler so mobile users can send control sequences.
+- **CI: workflow optimization**: Added caching, job timeouts, and a streamlined matrix strategy to reduce build times and improve reliability.
+- **CI: Android NDK fixes**: Forced NDK 27 usage, removed Aliyun repository mirrors, and added verbose logging to diagnose Android cross-compilation issues.
+- **CI: executable permissions**: Set the `gradlew` executable bit on Linux runners so Android builds can run the wrapper script.
+- **Android debugging**: Added `android_logger`, WebView debugging, and Kotlin trace logs to help diagnose launch and runtime issues on Android.
+
+---
+
+# EasyConsole v0.3.5
+
+Fix Android white screen caused by a logger conflict and missing webview window on mobile.
+
+## Changes
+
+- **Fix logger panic**: Removed `android_logger::init_once()` from `run()` — it conflicted with `tauri_plugin_log` (both try to set the global logger, causing a `SIGABRT` at Tauri `app.rs:1417`). `tauri_plugin_log` now handles log output on all platforms.
+- **Plugin chain ordering**: Moved `tauri_plugin_log` registration from inside the `setup` closure into the main plugin chain, ensuring it initializes before any `log::info!` calls fire.
+- **Mobile webview window**: Added explicit `WebviewWindowBuilder` on mobile — the generated Tauri config has an empty `windows[]` array, so no window was being created, resulting in a blank screen.
+- **WebView DevTools**: `WebView.setWebContentsDebuggingEnabled(true)` retained in `MainActivity` for Chrome remote debugging during development.
+- **Gradle Aliyun mirrors**: Added `maven.aliyun.com` repository mirrors to `build.gradle.kts` for faster dependency resolution from China.
+
+---
+
+# EasyConsole v0.3.4
+
+Fix Android white screen on x86_64 emulators by building APKs for both ARM64 and x86_64.
+
+## Changes
+
+- **CI: dual-architecture Android builds**: Release and CI workflows now use a matrix strategy to build both `aarch64` (real devices) and `x86_64` (emulators) APKs. Previously, only `aarch64` was built, causing a white screen on x86_64 emulators (MuMu, etc.) because the Houdini ARM translation layer failed to load the native Rust library.
+- **Per-target NDK environment**: Each matrix target gets its own CC, AR, and linker environment variables, with architecture-specific Cargo cache keys.
+
+---
+
+# EasyConsole v0.3.3
+
+Fix Android white screen caused by blocked cleartext HTTP traffic.
+
+## Changes
+
+- **Android network security config**: Added `network_security_config.xml` allowing cleartext traffic to the API server (`116.172.93.164`). Without this, Android release builds block all `http://` connections, causing silent API failures and a blank screen on launch.
+
+---
+
+# EasyConsole v0.3.2
+
+CI pipeline fixes and Android release signing support.
+
+## Changes
+
+- **CI: fix gen/android paths**: Corrected `gen/android` to `src-tauri/gen/android` in both release and android-ci workflows.
+- **Android release signing**: Added `signingConfigs` block to `app/build.gradle.kts` that reads keystore from environment variables. CI decodes the keystore from a base64 GitHub secret at build time.
+- **Graceful fallback**: When signing secrets are not configured, the build produces an unsigned APK with a warning instead of failing.
+
+---
+
+# EasyConsole v0.3.1
+
+Maintenance release to fix the macOS x64 CI build failure.
+
+## Changes
+
+- **CI: macOS x64 runner migration**: Replaced deprecated `macos-13` runner with `macos-15-intel` in the release workflow. GitHub retired `macos-13` images in December 2025; the old runner caused DMG bundling failures due to `macos-latest` migrating to ARM64 (cross-compilation breaks Tauri's `bundle_dmg.sh`).
+
+---
+
+# EasyConsole v0.3.0
+
+This release adds Android tablet support with in-app SSH, enabling tablet users to connect to task instances directly from the app.
+
+## Highlights
+
+- **Android tablet SSH**: In-app SSH terminal now works on Android tablets via `russh` compiled with NDK, sharing the same Rust SSH pipeline as desktop.
+- **Runtime capability update**: `supportsInAppSsh` now returns `true` for both desktop and mobile runtimes; VS Code and system terminal remain desktop-only.
+- **Android CI**: Added GitHub Actions workflow for Android APK builds on `aarch64` with NDK 27 cross-compilation.
+- **Release pipeline**: Android APK is now included in the GitHub Release alongside desktop installers.
 
 ## Release Notes
 

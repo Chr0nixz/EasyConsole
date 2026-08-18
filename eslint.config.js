@@ -5,7 +5,7 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["build", "dist", "coverage", "node_modules", "src-tauri/target", "src-tauri/binaries"] },
+  { ignores: ["build", "dist", "coverage", "node_modules", "src-tauri/**", "reference"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],
@@ -49,6 +49,15 @@ export default tseslint.config(
         ...globals.node,
         ...globals.vitest,
       },
+    },
+  },
+  {
+    files: ["*.{js,mjs,cjs}", "tools/**/*.{js,mjs,cjs}"],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: globals.node,
     },
   },
 );

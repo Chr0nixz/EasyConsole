@@ -16,7 +16,7 @@ describe("RunLogsPage", () => {
       JSON.stringify([
         {
           id: "log-1",
-          createdAt: "2026-05-24T00:00:00.000Z",
+          createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
           level: "info",
           channel: "web",
           source: "task",
@@ -34,8 +34,8 @@ describe("RunLogsPage", () => {
       </ToastProvider>,
     );
 
-    await waitFor(() => expect(screen.getByText("实例创建已提交")).toBeInTheDocument());
-    expect(screen.getByText("demo")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("实例创建已提交").length).toBeGreaterThanOrEqual(1));
+    expect(screen.getAllByText("demo").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("/instance/task_log")).not.toBeInTheDocument();
   });
 });

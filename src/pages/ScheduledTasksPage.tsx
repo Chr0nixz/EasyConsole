@@ -1,30 +1,50 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, FolderOpen, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { CalendarClock, FolderOpen, Pause, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
+import { FieldError, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
+import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
+import { ScriptEnvFields } from "../components/tasks/ScriptEnvFields";
 import { Button, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
+import { getRuntimeSettings } from "../lib/app-settings";
+import { queryKeys } from "../lib/query-keys";
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
+import { i18nText } from "../lib/i18n-text";
+import { parsePositivePrice } from "../lib/resource-price";
 import { normalizeStoragePath } from "../lib/remote-storage";
 import { browserRuntime } from "../lib/runtime";
+import {
+  applyEnvToScriptCommand,
+  findScriptEnvVarErrors,
+  parseScriptCommandEnv,
+  type ScriptEnvVar,
+} from "../lib/script-command-env";
+import { cn } from "../lib/utils";
 import {
   createScheduledTask,
   isScheduleDue,
   loadScheduledTasks,
-  saveScheduledTasks,
+  mutateScheduledTasks,
+  pauseScheduledTask,
+  resumeScheduledTask,
   sortScheduledTasks,
   updateScheduledTask,
 } from "../lib/scheduled-tasks";
-import type { CreateTaskPayload, ImageItem, ScheduledTask, ScheduledTaskStatus } from "../lib/types";
+import { executeScheduledTask } from "../lib/schedule-execution";
+import { describeRecurrence, RecurrenceValidationError, validateRecurrence } from "../lib/task-recurrence";
+import { maybeAllocateUniqueCreateTaskNames } from "../lib/task-name-unique";
+import { invalidateTaskQueries } from "../lib/task-snapshot-query";
+import type { CreateTaskPayload, ImageItem, ScheduledTask, ScheduledTaskStatus, TaskRecurrence, TaskRecurrenceType } from "../lib/types";
 import { useAuth } from "../lib/use-auth";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
-const DEFAULT_PRICE = 1;
+const DEFAULT_PRICE = "1";
 const DEFAULT_CPU = "4";
 const DEFAULT_GPU = "0";
 const DEFAULT_MEMORY = "16";
@@ -37,6 +57,7 @@ const statusText: Record<ScheduledTaskStatus, { zh: string; en: string }> = {
   done: { zh: "已完成", en: "Done" },
   failed: { zh: "失败", en: "Failed" },
   paused: { zh: "已暂停", en: "Paused" },
+  needs_review: { zh: "待确认", en: "Needs review" },
 };
 
 function getImageOptionLabel(image: ImageItem) {
@@ -72,12 +93,18 @@ function statusClass(status: ScheduledTaskStatus) {
   if (status === "done") return "bg-app-successSoft text-app-success ring-app-successRing";
   if (status === "failed") return "bg-app-dangerSoft text-app-danger ring-app-dangerRing";
   if (status === "running") return "bg-app-warningSoft text-app-warning ring-app-warningRing";
+  if (status === "needs_review") return "bg-app-warningSoft text-app-warning ring-app-warningRing";
   if (status === "paused") return "bg-app-panel text-app-muted ring-app-border";
   return "bg-app-accentSoft text-app-accent ring-app-accent/20";
 }
 
 function formatScheduleTime(value: string) {
   return value.replace("T", " ").slice(0, 16);
+}
+
+function toDateTimeLocalInput(value?: string | null) {
+  if (!value) return "";
+  return value.replace(" ", "T").slice(0, 16);
 }
 
 export function ScheduledTasksPage() {
@@ -93,11 +120,14 @@ export function ScheduledTasksPage() {
   const [loadError, setLoadError] = useState<Error | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
   const [storagePickerTarget, setStoragePickerTarget] = useState<StoragePickerTarget | null>(null);
   const [name, setName] = useState(formatTaskDefaultName());
   const [description, setDescription] = useState("");
   const [scheduleTime, setScheduleTime] = useState(formatDateTimeLocalInput(addHours(new Date(), 1)).slice(0, 16));
   const [imageId, setImageId] = useState("");
+  const [price, setPrice] = useState(DEFAULT_PRICE);
   const [cpu, setCpu] = useState(DEFAULT_CPU);
   const [gpu, setGpu] = useState(DEFAULT_GPU);
   const [memory, setMemory] = useState(DEFAULT_MEMORY);
@@ -107,20 +137,64 @@ export function ScheduledTasksPage() {
   const [mountPath, setMountPath] = useState("");
   const [workDirectory, setWorkDirectory] = useState("");
   const [scriptPath, setScriptPath] = useState("");
+  const [scriptEnv, setScriptEnv] = useState<ScriptEnvVar[]>([]);
+  const [recurrenceType, setRecurrenceType] = useState<TaskRecurrenceType>("once");
+  const [recurrenceIntervalSec, setRecurrenceIntervalSec] = useState("3600");
+  const [recurrenceCron, setRecurrenceCron] = useState("");
+  const [recurrenceWeekdays, setRecurrenceWeekdays] = useState<number[]>([1]);
 
-  const images = useQuery({ queryKey: ["images", "scheduled-task"], queryFn: () => imageApi.list({ page: 1, page_size: 100 }) });
-  const systemImages = useQuery({ queryKey: ["images", "system", "scheduled-task"], queryFn: () => imageApi.system({}) });
+  const images = useQuery({
+    queryKey: queryKeys.images.list(),
+    queryFn: ({ signal }) => imageApi.list({ page: 1, page_size: 100 }, { signal }),
+  });
+  const systemImages = useQuery({
+    queryKey: queryKeys.images.system(),
+    queryFn: ({ signal }) => imageApi.system({}, { signal }),
+  });
   const imageOptions = useMemo(() => [...(images.data?.items ?? []), ...(systemImages.data?.items ?? [])], [images.data, systemImages.data]);
 
+  const fieldErrors = useMemo(() => {
+    const errors: Record<string, string> = {};
+    if (!name.trim()) errors.name = text("任务名称不能为空", "Task name is required");
+    if (!scheduleTime) errors.scheduleTime = text("请选择计划执行时间", "Select a scheduled execution time");
+    if (!imageId) errors.image = text("请选择镜像", "Select an image");
+    if (parsePositivePrice(price) === null) errors.price = text("价格必须大于 0", "Price must be greater than 0");
+    if (parsePositiveNumber(cpu) === null) errors.cpu = text("CPU 必须大于 0", "CPU must be greater than 0");
+    if (parseNonNegativeInteger(gpu) === null) errors.gpu = text("GPU 必须是非负整数", "GPU must be a non-negative integer");
+    if (parsePositiveInteger(memory) === null) errors.memory = text("内存必须是正整数", "Memory must be a positive integer");
+    const cond = Number(releaseCondition);
+    if (cond === 2 && !releaseTime) errors.releaseTime = text("请选择释放时间", "Select a release time");
+    if (cond === 3 && !workDirectory.trim()) errors.workDirectory = text("请填写工作目录", "Enter the working directory");
+    if (cond === 3 && !scriptPath.trim()) errors.scriptPath = text("请填写脚本路径", "Enter the script path");
+    if (cond === 3) {
+      const envError = findScriptEnvVarErrors(scriptEnv);
+      if (envError) errors.scriptEnv = text(envError.messageZh, envError.messageEn);
+    }
+    return errors;
+  }, [cpu, gpu, imageId, memory, name, price, releaseCondition, releaseTime, scheduleTime, scriptEnv, scriptPath, text, workDirectory]);
+
+  const reload = useCallback(
+    () =>
+      loadScheduledTasks(browserRuntime.storage)
+        .then((loaded) => {
+          setItems(sortScheduledTasks(loaded));
+          setLoadError(null);
+        })
+        .catch((error) =>
+          setLoadError(error instanceof Error ? error : new Error(i18nText("定时任务读取失败", "Failed to read scheduled tasks"))),
+        )
+        .finally(() => setLoading(false)),
+    [],
+  );
+
   useEffect(() => {
-    void loadScheduledTasks(browserRuntime.storage)
-      .then((loaded) => {
-        setItems(sortScheduledTasks(loaded));
-        setLoadError(null);
-      })
-      .catch((error) => setLoadError(error instanceof Error ? error : new Error(text("定时任务读取失败", "Failed to read scheduled tasks"))))
-      .finally(() => setLoading(false));
-  }, [text]);
+    void reload();
+    // The background runner writes the same storage key, so re-read on focus
+    // instead of holding the mount-time snapshot for the whole session.
+    const onFocus = () => void reload();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [reload]);
 
   useEffect(() => {
     if (!imageId && imageOptions[0]) setImageId(String(imageOptions[0].id));
@@ -131,10 +205,28 @@ export function ScheduledTasksPage() {
     if (!mountPath) setMountPath(`/home/ubuntu/${username}`);
   }, [mountPath, storagePath, username]);
 
-  async function persist(nextItems: ScheduledTask[]) {
-    const sorted = sortScheduledTasks(nextItems);
-    setItems(sorted);
-    await saveScheduledTasks(browserRuntime.storage, sorted);
+  /**
+   * All writes go through an atomic load→modify→save so a concurrent background
+   * runner update (lease fields, lastRemoteTaskId) is never clobbered by a stale
+   * page snapshot. Losing lastRemoteTaskId would defeat the idempotency check and
+   * let the same schedule create a second billable instance.
+   */
+  async function persistWith(updater: (current: ScheduledTask[]) => ScheduledTask[]) {
+    const merged = await mutateScheduledTasks(browserRuntime.storage, (current) => sortScheduledTasks(updater(current)));
+    setItems(merged);
+    return merged;
+  }
+
+  async function persistOne(next: ScheduledTask) {
+    await persistWith((current) => updateScheduledTask(current, next));
+  }
+
+  async function persistAdd(task: ScheduledTask) {
+    await persistWith((current) => [task, ...current]);
+  }
+
+  async function persistRemove(id: string) {
+    await persistWith((current) => current.filter((item) => item.id !== id));
   }
 
   function handleReleaseConditionChange(value: string) {
@@ -147,7 +239,63 @@ export function ScheduledTasksPage() {
     if (releaseCondition === "2") setReleaseTime(getDefaultReleaseTime(value));
   }
 
+  function resetForm() {
+    setEditingId(null);
+    setName(formatTaskDefaultName());
+    setDescription("");
+    setScheduleTime(formatDateTimeLocalInput(addHours(new Date(), 1)).slice(0, 16));
+    setPrice(DEFAULT_PRICE);
+    setCpu(DEFAULT_CPU);
+    setGpu(DEFAULT_GPU);
+    setMemory(DEFAULT_MEMORY);
+    setReleaseCondition("1");
+    setReleaseTime("");
+    setStoragePath(`/${username}`);
+    setMountPath(`/home/ubuntu/${username}`);
+    setWorkDirectory("");
+    setScriptPath("");
+    setScriptEnv([]);
+    setRecurrenceType("once");
+    setRecurrenceIntervalSec("3600");
+    setRecurrenceCron("");
+    setRecurrenceWeekdays([1]);
+    setFormError(null);
+    setStoragePickerTarget(null);
+    resetTouched();
+    if (imageOptions[0]) setImageId(String(imageOptions[0].id));
+  }
+
+  function beginEdit(item: ScheduledTask) {
+    const payload = item.payload;
+    setEditingId(item.id);
+    setName(item.name);
+    setDescription(item.description ?? "");
+    setScheduleTime(toDateTimeLocalInput(item.scheduleTime));
+    setImageId(String(payload.img ?? ""));
+    setPrice(String(payload.price ?? DEFAULT_PRICE));
+    setCpu(String(payload.cpu ?? DEFAULT_CPU));
+    setGpu(String(payload.gpu ?? DEFAULT_GPU));
+    setMemory(String(payload.memory ?? DEFAULT_MEMORY));
+    setReleaseCondition(String(payload.releace_conditions ?? "1"));
+    setReleaseTime(toDateTimeLocalInput(payload.releace_time));
+    setStoragePath(String(payload.storage_path ?? `/${username}`));
+    setMountPath(String(payload.mount_path ?? `/home/ubuntu/${username}`));
+    const parsedScript = parseScriptCommandEnv(String(payload.script_path ?? ""));
+    setWorkDirectory(String(payload.work_directory ?? ""));
+    setScriptPath(parsedScript.command);
+    setScriptEnv(parsedScript.env);
+    const recurrence = item.recurrence;
+    setRecurrenceType(recurrence?.type ?? "once");
+    setRecurrenceIntervalSec(String(recurrence?.intervalSec ?? 3600));
+    setRecurrenceCron(recurrence?.cron ?? "");
+    setRecurrenceWeekdays(recurrence?.weekdays?.length ? [...recurrence.weekdays] : [1]);
+    setFormError(null);
+    setStoragePickerTarget(null);
+    resetTouched();
+  }
+
   function buildPayload(): CreateTaskPayload | null {
+    touchAll(["name", "scheduleTime", "image", "price", "cpu", "gpu", "memory", "releaseTime", "workDirectory", "scriptPath", "scriptEnv"]);
     const taskName = name.trim();
     if (!taskName) {
       setFormError(text("任务名称不能为空", "Task name is required"));
@@ -157,13 +305,23 @@ export function ScheduledTasksPage() {
       setFormError(text("请选择计划执行时间", "Select a scheduled execution time"));
       return null;
     }
+    const scheduledTime = Date.parse(scheduleTime);
+    if (Number.isFinite(scheduledTime) && scheduledTime < Date.now()) {
+      setFormError(text("计划执行时间不能早于当前时间", "Scheduled time cannot be in the past"));
+      return null;
+    }
     if (!imageId) {
       setFormError(text("请选择镜像", "Select an image"));
       return null;
     }
+    const priceValue = parsePositivePrice(price);
     const cpuValue = parsePositiveNumber(cpu);
     const gpuValue = parseNonNegativeInteger(gpu);
     const memoryValue = parsePositiveInteger(memory);
+    if (priceValue === null) {
+      setFormError(text("价格必须大于 0", "Price must be greater than 0"));
+      return null;
+    }
     if (cpuValue === null) {
       setFormError(text("CPU 必须大于 0", "CPU must be greater than 0"));
       return null;
@@ -185,9 +343,16 @@ export function ScheduledTasksPage() {
       setFormError(text("请填写工作目录和脚本路径", "Enter the working directory and script path"));
       return null;
     }
+    if (releaceConditions === 3) {
+      const envError = findScriptEnvVarErrors(scriptEnv);
+      if (envError) {
+        setFormError(text(envError.messageZh, envError.messageEn));
+        return null;
+      }
+    }
 
     return {
-      price: DEFAULT_PRICE,
+      price: priceValue,
       name: taskName,
       cpu: cpuValue,
       gpu: gpuValue > 0 ? gpuValue : undefined,
@@ -198,69 +363,130 @@ export function ScheduledTasksPage() {
       releace_conditions: releaceConditions,
       releace_time: releaceConditions === 2 ? formatDateTimeForApi(releaseTime) : undefined,
       work_directory: releaceConditions === 3 ? workDirectory.trim() : undefined,
-      script_path: releaceConditions === 3 ? scriptPath.trim() : undefined,
+      script_path: releaceConditions === 3 ? applyEnvToScriptCommand(scriptPath.trim(), scriptEnv) : undefined,
     };
   }
 
-  const createMutation = useMutation({
+  const saveMutation = useMutation({
     mutationFn: async (event: FormEvent) => {
       event.preventDefault();
       setFormError(null);
       const payload = buildPayload();
       if (!payload) return null;
+      let recurrence: TaskRecurrence | undefined;
+      if (recurrenceType === "interval") {
+        const sec = parseInt(recurrenceIntervalSec, 10);
+        if (Number.isFinite(sec) && sec > 0) recurrence = { type: "interval", intervalSec: sec };
+      } else if (recurrenceType === "cron") {
+        if (!recurrenceCron.trim()) {
+          setFormError(text("请填写 Cron 表达式", "Enter a cron expression"));
+          return null;
+        }
+        recurrence = { type: "cron", cron: recurrenceCron.trim() };
+      } else if (recurrenceType === "weekly") {
+        recurrence = { type: "weekly", weekdays: [...recurrenceWeekdays].sort() };
+      } else if (recurrenceType === "daily") {
+        recurrence = { type: "daily" };
+      }
+
+      try {
+        validateRecurrence(recurrence);
+      } catch (error) {
+        const message =
+          error instanceof RecurrenceValidationError
+            ? error.message
+            : text("重复规则无效", "Invalid recurrence rule");
+        setFormError(message);
+        return null;
+      }
+
+      if (editingId) {
+        const existing = items.find((item) => item.id === editingId);
+        if (!existing) throw new Error(text("定时任务不存在", "Scheduled task not found"));
+        const nextStatus: ScheduledTaskStatus =
+          existing.status === "done" || existing.status === "failed" ? "pending" : existing.status === "running" ? "pending" : existing.status;
+        const updated: ScheduledTask = {
+          ...existing,
+          name: payload.name,
+          description: description.trim() || undefined,
+          scheduleTime,
+          payload,
+          recurrence,
+          status: nextStatus,
+          lastError: nextStatus === "pending" ? undefined : existing.lastError,
+        };
+        await persistOne(updated);
+        return updated;
+      }
+
       const scheduled = createScheduledTask({
         name: payload.name,
         description: description.trim() || undefined,
         scheduleTime,
         payload,
+        recurrence,
       });
-      await persist([scheduled, ...items]);
+      await persistAdd(scheduled);
       return scheduled;
     },
     onSuccess: (scheduled) => {
       if (!scheduled) return;
-      toast.success(text("定时任务已保存", "Scheduled task saved"), text(`${scheduled.name}，${formatScheduleTime(scheduled.scheduleTime)} 执行`, `${scheduled.name}, runs at ${formatScheduleTime(scheduled.scheduleTime)}`));
+      const title = editingId ? text("定时任务已更新", "Scheduled task updated") : text("定时任务已保存", "Scheduled task saved");
+      toast.success(title, text(`${scheduled.name}，${formatScheduleTime(scheduled.scheduleTime)} 执行`, `${scheduled.name}, runs at ${formatScheduleTime(scheduled.scheduleTime)}`));
       void runLogger.log({
         source: "scheduled-task",
         level: "info",
-        action: "scheduledTask.save",
+        action: editingId ? "scheduledTask.update" : "scheduledTask.save",
         result: "success",
-        title: text("定时任务已保存", "Scheduled task saved"),
+        title,
         targetName: scheduled.name,
         targetId: scheduled.id,
         metadata: { scheduleTime: scheduled.scheduleTime },
       });
-      setName(formatTaskDefaultName());
-      setDescription("");
-      setScheduleTime(formatDateTimeLocalInput(addHours(new Date(), 1)).slice(0, 16));
+      resetForm();
     },
     onError: (error) => {
-      toast.error(text("定时任务保存失败", "Failed to save scheduled task"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
+      toast.error(
+        editingId ? text("定时任务更新失败", "Failed to update scheduled task") : text("定时任务保存失败", "Failed to save scheduled task"),
+        error instanceof Error ? error.message : text("请稍后重试", "Try again later"),
+      );
       void runLogger.log({
         source: "scheduled-task",
         level: "error",
-        action: "scheduledTask.save",
+        action: editingId ? "scheduledTask.update" : "scheduledTask.save",
         result: "failure",
-        title: text("定时任务保存失败", "Failed to save scheduled task"),
+        title: editingId ? text("定时任务更新失败", "Failed to update scheduled task") : text("定时任务保存失败", "Failed to save scheduled task"),
         targetName: name.trim(),
         error: errorMessage(error, text("定时任务保存失败", "Failed to save scheduled task")),
       });
     },
   });
 
-  async function executeTargets(targets: ScheduledTask[]) {
+  async function executeTargets(targets: ScheduledTask[], force = true) {
     if (targets.length === 0 || isExecuting) return;
     setIsExecuting(true);
-    let next = items;
     try {
       for (const target of targets) {
-        next = updateScheduledTask(next, { ...target, status: "running", lastError: undefined });
-        await persist(next);
         try {
-          await instanceApi.createTask(target.payload);
-          next = updateScheduledTask(next, { ...target, status: "done", lastRunAt: new Date().toISOString(), lastError: undefined });
-          await persist(next);
-          queryClient.invalidateQueries({ queryKey: ["tasks"] });
+          const result = await executeScheduledTask(browserRuntime.storage, target.id, {
+            createTask: (payload) => instanceApi.createTask(payload),
+            preparePayload: async (payload) => {
+              const [next] = await maybeAllocateUniqueCreateTaskNames([payload], {
+                enabled: getRuntimeSettings().autoNumberDuplicateTaskNames,
+                checkTaskName: (name) => instanceApi.checkTaskName(name),
+              });
+              return next!;
+            },
+            force,
+          });
+          await reload();
+          if (result.skipped) {
+            if (result.reason === "in-flight") {
+              toast.info(text("定时任务正在执行", "Scheduled task is already running"), target.name);
+            }
+            continue;
+          }
+          invalidateTaskQueries(queryClient);
           toast.success(text("定时任务已执行", "Scheduled task executed"), target.name);
           void runLogger.log({
             source: "scheduled-task",
@@ -270,15 +496,10 @@ export function ScheduledTasksPage() {
             title: text("定时任务已执行", "Scheduled task executed"),
             targetName: target.name,
             targetId: target.id,
+            metadata: { remoteTaskId: result.remoteTaskId },
           });
         } catch (error) {
-          next = updateScheduledTask(next, {
-            ...target,
-            status: "failed",
-            lastRunAt: new Date().toISOString(),
-            lastError: error instanceof Error ? error.message : text("执行失败", "Execution failed"),
-          });
-          await persist(next);
+          await reload();
           toast.error(text("定时任务执行失败", "Scheduled task execution failed"), `${target.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
           void runLogger.log({
             source: "scheduled-task",
@@ -303,12 +524,93 @@ export function ScheduledTasksPage() {
       description: text(`将删除 ${item.name}。已创建的实例不受影响。`, `Delete ${item.name}. Created instances are not affected.`),
       confirmLabel: text("删除", "Delete"),
       tone: "danger",
-      run: () => persist(items.filter((current) => current.id !== item.id)),
+      run: async () => {
+        if (editingId === item.id) resetForm();
+        await persistRemove(item.id);
+      },
     });
   }
 
   function retryItem(item: ScheduledTask) {
-    void executeTargets([{ ...item, status: "pending" }]);
+    void executeTargets([item], true);
+  }
+
+  async function pauseItem(item: ScheduledTask) {
+    const next = pauseScheduledTask(item);
+    if (next === item) return;
+    await persistOne(next);
+    toast.success(text("定时任务已暂停", "Scheduled task paused"), item.name);
+  }
+
+  async function resumeItem(item: ScheduledTask) {
+    const next = resumeScheduledTask(item);
+    if (next === item) return;
+    await persistOne(next);
+    toast.success(text("定时任务已恢复", "Scheduled task resumed"), item.name);
+  }
+
+  function renderItemActions(item: ScheduledTask) {
+    return (
+      <>
+        <Button
+          className="h-8 px-2"
+          disabled={item.status === "running"}
+          title={text("编辑", "Edit")}
+          type="button"
+          variant="ghost"
+          onClick={() => beginEdit(item)}
+        >
+          <Pencil className="h-4 w-4" />
+          {text("编辑", "Edit")}
+        </Button>
+        {item.status === "pending" ? (
+          <Button
+            className="h-8 px-2"
+            title={text("暂停", "Pause")}
+            type="button"
+            variant="ghost"
+            onClick={() => void pauseItem(item)}
+          >
+            <Pause className="h-4 w-4" />
+            {text("暂停", "Pause")}
+          </Button>
+        ) : null}
+        {item.status === "paused" || item.status === "failed" || item.status === "needs_review" ? (
+          <Button
+            className="h-8 px-2"
+            title={text("恢复", "Resume")}
+            type="button"
+            variant="ghost"
+            onClick={() => void resumeItem(item)}
+          >
+            <Play className="h-4 w-4" />
+            {text("恢复", "Resume")}
+          </Button>
+        ) : null}
+        <Button
+          className="h-8 px-2"
+          disabled={isExecuting || item.status === "running"}
+          title={text("立即执行", "Run now")}
+          type="button"
+          variant="ghost"
+          onClick={() => retryItem(item)}
+        >
+          <Play className="h-4 w-4" />
+          {text("执行", "Run")}
+        </Button>
+        <Button
+          aria-label={text(`删除定时任务 ${item.name}`, `Delete scheduled task ${item.name}`)}
+          className="h-8 w-8 px-0 text-app-danger hover:text-app-danger"
+          title={text("删除", "Delete")}
+          type="button"
+          variant="ghost"
+          onClick={() => deleteItem(item)}
+        >
+          <Trash2 className="h-4 w-4" />
+          <span className="sr-only">{text("删除", "Delete")}</span>
+        </Button>
+      </>
+    );
   }
 
   const dueCount = items.filter((item) => isScheduleDue(item)).length;
@@ -329,7 +631,7 @@ export function ScheduledTasksPage() {
           <h2 className="text-base font-semibold">{text("定时任务", "Scheduled Tasks")}</h2>
           <p className="mt-1 text-sm text-app-muted">{text("按计划提交实例创建请求。浏览器或桌面壳打开时会自动检查到期计划。", "Submit instance creation requests on a schedule. The browser or desktop shell checks due plans while open.")}</p>
         </div>
-        <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => executeTargets(items.filter((item) => isScheduleDue(item)))}>
+        <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => executeTargets(items.filter((item) => isScheduleDue(item)), false)}>
           <RefreshCw className="h-4 w-4" />
           {text("执行到期", "Run due")} {dueCount > 0 ? dueCount : ""}
         </Button>
@@ -340,23 +642,90 @@ export function ScheduledTasksPage() {
       {systemImages.isError ? <ErrorState error={systemImages.error} /> : null}
 
       <Panel>
-        <form className="space-y-4 p-4" onSubmit={(event) => createMutation.mutate(event)}>
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <CalendarClock className="h-4 w-4 text-app-accent" />
-            {text("新建计划", "New Plan")}
+        <form className="space-y-4 p-4" onSubmit={(event) => saveMutation.mutate(event)}>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm font-semibold">
+            <div className="flex items-center gap-2">
+              <CalendarClock className="h-4 w-4 text-app-accent" />
+              {editingId ? text("编辑计划", "Edit Plan") : text("新建计划", "New Plan")}
+            </div>
+            {editingId ? (
+              <Button type="button" variant="secondary" onClick={resetForm}>
+                <X className="h-4 w-4" />
+                {text("取消编辑", "Cancel edit")}
+              </Button>
+            ) : null}
           </div>
           <div className="grid gap-4 md:grid-cols-3">
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("任务名称", "Task name")}</span>
-              <Input className="w-full" value={name} onChange={(event) => setName(event.target.value)} required />
+              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("name") && Boolean(fieldErrors.name)))} value={name} onChange={(event) => setName(event.target.value)} onBlur={() => markTouched("name")} required />
+              <FieldError message={touchedFields.has("name") ? fieldErrors.name : undefined} />
             </label>
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("计划执行时间", "Scheduled time")}</span>
-              <Input className="w-full" type="datetime-local" value={scheduleTime} onChange={(event) => setScheduleTime(event.target.value)} required />
+              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("scheduleTime") && Boolean(fieldErrors.scheduleTime)))} type="datetime-local" value={scheduleTime} onChange={(event) => setScheduleTime(event.target.value)} onBlur={() => markTouched("scheduleTime")} required />
+              <FieldError message={touchedFields.has("scheduleTime") ? fieldErrors.scheduleTime : undefined} />
             </label>
             <label className="block text-sm">
+              <span className="mb-1 block text-app-muted">{text("重复", "Repeat")}</span>
+              <Select className="w-full" value={recurrenceType} onChange={(event) => setRecurrenceType(event.target.value as TaskRecurrenceType)}>
+                <option value="once">{text("单次", "Once")}</option>
+                <option value="daily">{text("每天", "Daily")}</option>
+                <option value="weekly">{text("每周", "Weekly")}</option>
+                <option value="interval">{text("间隔", "Interval")}</option>
+                <option value="cron">{text("Cron 表达式", "Cron expression")}</option>
+              </Select>
+            </label>
+            {recurrenceType === "weekly" && (
+              <div className="block text-sm md:col-span-3">
+                <span className="mb-1 block text-app-muted">{text("重复星期", "Weekdays")}</span>
+                <div className="flex flex-wrap gap-2">
+                  {(
+                    [
+                      [0, text("日", "Sun")],
+                      [1, text("一", "Mon")],
+                      [2, text("二", "Tue")],
+                      [3, text("三", "Wed")],
+                      [4, text("四", "Thu")],
+                      [5, text("五", "Fri")],
+                      [6, text("六", "Sat")],
+                    ] as const
+                  ).map(([day, label]) => {
+                    const checked = recurrenceWeekdays.includes(day);
+                    return (
+                      <label key={day} className="inline-flex items-center gap-1.5 rounded-md border border-app-border bg-app-panel px-2.5 py-1.5 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setRecurrenceWeekdays((current) =>
+                              checked ? current.filter((value) => value !== day) : [...current, day].sort(),
+                            );
+                          }}
+                        />
+                        {label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {recurrenceType === "interval" && (
+              <label className="block text-sm">
+                <span className="mb-1 block text-app-muted">{text("间隔秒数", "Interval (seconds)")}</span>
+                <Input className="w-full" type="number" min="60" value={recurrenceIntervalSec} onChange={(event) => setRecurrenceIntervalSec(event.target.value)} />
+              </label>
+            )}
+            {recurrenceType === "cron" && (
+              <label className="block text-sm md:col-span-2">
+                <span className="mb-1 block text-app-muted">{text("Cron 表达式", "Cron expression")}</span>
+                <Input className="w-full" placeholder="*/30 * * * *" value={recurrenceCron} onChange={(event) => setRecurrenceCron(event.target.value)} />
+                <span className="mt-1 block text-xs text-app-muted">{text("支持 step/范围/列表，例如 */30 * * * *", "Supports step/range/list, e.g. */30 * * * *")}</span>
+              </label>
+            )}
+            <label className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("镜像", "Image")}</span>
-              <Select className="w-full" value={imageId} onChange={(event) => setImageId(event.target.value)} required>
+              <Select className={cn("w-full", fieldBorderClass(touchedFields.has("image") && Boolean(fieldErrors.image)))} value={imageId} onChange={(event) => setImageId(event.target.value)} onBlur={() => markTouched("image")} required>
                 <option value="">{text("请选择镜像", "Select an image")}</option>
                 {imageOptions.map((image) => (
                   <option key={String(image.id)} value={String(image.id)}>
@@ -364,24 +733,40 @@ export function ScheduledTasksPage() {
                   </option>
                 ))}
               </Select>
+              <FieldError message={touchedFields.has("image") ? fieldErrors.image : undefined} />
             </label>
           </div>
           <label className="block text-sm">
             <span className="mb-1 block text-app-muted">{text("备注", "Notes")}</span>
             <Textarea className="min-h-16 w-full" value={description} onChange={(event) => setDescription(event.target.value)} />
           </label>
+          <ResourcePriceFields
+            price={price}
+            priceError={fieldErrors.price}
+            priceTouched={touchedFields.has("price")}
+            onPriceBlur={() => markTouched("price")}
+            onPriceChange={setPrice}
+            onApplySpec={({ cpu: nextCpu, gpu: nextGpu, memory: nextMemory }) => {
+              setCpu(nextCpu);
+              handleGpuChange(nextGpu);
+              setMemory(nextMemory);
+            }}
+          />
           <div className="grid gap-4 md:grid-cols-3">
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">CPU</span>
-              <Input className="w-full" min="0.1" step="0.1" type="number" value={cpu} onChange={(event) => setCpu(event.target.value)} required />
+              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("cpu") && Boolean(fieldErrors.cpu)))} min="0.1" step="0.1" type="number" value={cpu} onChange={(event) => setCpu(event.target.value)} onBlur={() => markTouched("cpu")} required />
+              <FieldError message={touchedFields.has("cpu") ? fieldErrors.cpu : undefined} />
             </label>
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">GPU</span>
-              <Input className="w-full" min="0" step="1" type="number" value={gpu} onChange={(event) => handleGpuChange(event.target.value)} required />
+              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("gpu") && Boolean(fieldErrors.gpu)))} min="0" step="1" type="number" value={gpu} onChange={(event) => handleGpuChange(event.target.value)} onBlur={() => markTouched("gpu")} required />
+              <FieldError message={touchedFields.has("gpu") ? fieldErrors.gpu : undefined} />
             </label>
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("内存 (GiB)", "Memory (GiB)")}</span>
-              <Input className="w-full" min="1" step="1" type="number" value={memory} onChange={(event) => setMemory(event.target.value)} required />
+              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("memory") && Boolean(fieldErrors.memory)))} min="1" step="1" type="number" value={memory} onChange={(event) => setMemory(event.target.value)} onBlur={() => markTouched("memory")} required />
+              <FieldError message={touchedFields.has("memory") ? fieldErrors.memory : undefined} />
             </label>
           </div>
           <div className="grid gap-4 text-sm md:grid-cols-2">
@@ -414,39 +799,53 @@ export function ScheduledTasksPage() {
             {releaseCondition === "2" ? (
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("释放时间", "Release time")}</span>
-                <Input className="w-full" type="datetime-local" value={releaseTime} onChange={(event) => setReleaseTime(event.target.value)} required />
+                <Input className={cn("w-full", fieldBorderClass(touchedFields.has("releaseTime") && Boolean(fieldErrors.releaseTime)))} type="datetime-local" value={releaseTime} onChange={(event) => setReleaseTime(event.target.value)} onBlur={() => markTouched("releaseTime")} required />
+                <FieldError message={touchedFields.has("releaseTime") ? fieldErrors.releaseTime : undefined} />
               </label>
             ) : null}
           </div>
           {releaseCondition === "3" ? (
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-4">
               <div className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
                 <div className="flex gap-2">
-                  <Input className="w-full font-mono text-xs" value={workDirectory} onChange={(event) => setWorkDirectory(event.target.value)} required />
+                  <Input className={cn("w-full font-mono text-xs", fieldBorderClass(touchedFields.has("workDirectory") && Boolean(fieldErrors.workDirectory)))} value={workDirectory} onChange={(event) => setWorkDirectory(event.target.value)} onBlur={() => markTouched("workDirectory")} required />
                   <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("workDirectory")}>
                     <FolderOpen className="h-4 w-4" />
                     {text("选择", "Select")}
                   </Button>
                 </div>
+                <FieldError message={touchedFields.has("workDirectory") ? fieldErrors.workDirectory : undefined} />
               </div>
               <div className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("脚本路径", "Script path")}</span>
                 <div className="flex gap-2">
-                  <Input className="w-full font-mono text-xs" value={scriptPath} onChange={(event) => setScriptPath(event.target.value)} required />
+                  <Input className={cn("w-full font-mono text-xs", fieldBorderClass(touchedFields.has("scriptPath") && Boolean(fieldErrors.scriptPath)))} value={scriptPath} onChange={(event) => setScriptPath(event.target.value)} onBlur={() => markTouched("scriptPath")} required />
                   <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("scriptPath")}>
                     <FolderOpen className="h-4 w-4" />
                     {text("选择", "Select")}
                   </Button>
                 </div>
+                <FieldError message={touchedFields.has("scriptPath") ? fieldErrors.scriptPath : undefined} />
               </div>
+              <ScriptEnvFields
+                envVars={scriptEnv}
+                scriptPath={scriptPath}
+                onChange={setScriptEnv}
+                error={touchedFields.has("scriptEnv") ? fieldErrors.scriptEnv : undefined}
+              />
             </div>
           ) : null}
           {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
-          <div className="flex justify-end">
-            <Button disabled={createMutation.isPending}>
-              <Plus className="h-4 w-4" />
-              {text("保存定时任务", "Save scheduled task")}
+          <div className="flex justify-end gap-2">
+            {editingId ? (
+              <Button type="button" variant="secondary" onClick={resetForm}>
+                {text("取消", "Cancel")}
+              </Button>
+            ) : null}
+            <Button disabled={saveMutation.isPending}>
+              {editingId ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+              {editingId ? text("保存修改", "Save changes") : text("保存定时任务", "Save scheduled task")}
             </Button>
           </div>
         </form>
@@ -456,70 +855,91 @@ export function ScheduledTasksPage() {
         {items.length === 0 ? (
           <EmptyState title={text("还没有定时任务。设置计划时间后，EasyConsole 会在到期时提交实例创建请求。", "No scheduled tasks yet. After you set a schedule, EasyConsole submits the instance creation request when it is due.")} />
         ) : (
-          <TableRegion label={text("定时任务表格", "Scheduled tasks table")}>
-            <table className="w-max min-w-full table-auto border-collapse text-sm">
-              <thead className="bg-app-panel text-left text-xs text-app-muted">
-                <tr>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("计划", "Plan")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("执行时间", "Run time")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("资源", "Resources")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("状态", "Status")}</th>
-                  <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("最近结果", "Latest result")}</th>
-                  <th className="sticky right-0 z-20 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 text-center font-medium shadow-stickyColumn" scope="col">
-                    {text("操作", "Actions")}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
+          <>
+              {/* Mobile card view */}
+              <div className="divide-y divide-app-border sm:hidden">
                 {items.map((item) => (
-                  <tr key={item.id} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
-                    <td className="whitespace-nowrap px-3 py-2 align-middle">
-                      <div className="font-medium">{item.name}</div>
-                      <div className="mt-0.5 max-w-72 truncate text-xs text-app-muted">{item.description || item.payload.storage_path || "-"}</div>
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{formatScheduleTime(item.scheduleTime)}</td>
-                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">
-                      {item.payload.cpu ?? "-"}C / {item.payload.gpu ?? 0}GPU / {item.payload.memory ?? "-"}G
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-middle">
-                      <span className={`inline-flex h-6 items-center rounded-md px-2 text-xs font-medium ring-1 ${statusClass(item.status)}`}>
+                  <article key={item.id} className="space-y-3 px-3 py-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium">{item.name}</div>
+                        <div className="mt-0.5 truncate text-xs text-app-muted">{item.description || item.payload.storage_path || "-"}</div>
+                      </div>
+                      <span className={`inline-flex h-6 shrink-0 items-center rounded-md px-2 text-xs font-medium ring-1 ${statusClass(item.status)}`}>
                         {locale === "en-US" ? statusText[item.status].en : statusText[item.status].zh}
                       </span>
-                    </td>
-                    <td className="max-w-96 px-3 py-2 align-middle text-app-muted">
-                      {item.lastError ? <span className="text-app-danger">{item.lastError}</span> : item.lastRunAt ? formatScheduleTime(item.lastRunAt) : "-"}
-                    </td>
-                    <td className="sticky right-0 z-10 bg-app-surface px-3 py-2 align-middle shadow-stickyColumn">
-                      <div className="flex justify-end gap-1">
-                        <Button
-                          className="h-8 px-2"
-                          disabled={isExecuting || item.status === "running"}
-                          title={text("立即执行", "Run now")}
-                          type="button"
-                          variant="ghost"
-                          onClick={() => retryItem(item)}
-                        >
-                          <Play className="h-4 w-4" />
-                          {text("执行", "Run")}
-                        </Button>
-                        <Button
-                          aria-label={text(`删除定时任务 ${item.name}`, `Delete scheduled task ${item.name}`)}
-                          className="h-8 w-8 px-0 text-app-danger hover:text-app-danger"
-                          title={text("删除", "Delete")}
-                          type="button"
-                          variant="ghost"
-                          onClick={() => deleteItem(item)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                          <span className="sr-only">{text("删除", "Delete")}</span>
-                        </Button>
+                    </div>
+                    <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                      <div>
+                        <dt className="text-app-muted">{text("执行时间", "Run time")}</dt>
+                        <dd>{formatScheduleTime(item.scheduleTime)}</dd>
                       </div>
-                    </td>
-                  </tr>
+                      <div>
+                        <dt className="text-app-muted">{text("重复", "Repeat")}</dt>
+                        <dd>{item.recurrence ? describeRecurrence(item.recurrence) : text("单次", "Once")}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-app-muted">{text("资源", "Resources")}</dt>
+                        <dd>{item.payload.cpu ?? "-"}C / {item.payload.gpu ?? 0}GPU / {item.payload.memory ?? "-"}G</dd>
+                      </div>
+                      <div className="col-span-2">
+                        <dt className="text-app-muted">{text("最近结果", "Latest result")}</dt>
+                        <dd>
+                          {item.lastError ? <span className="text-app-danger">{item.lastError}</span> : item.lastRunAt ? formatScheduleTime(item.lastRunAt) : "-"}
+                        </dd>
+                      </div>
+                    </dl>
+                    <div className="flex flex-wrap gap-1.5">
+                      {renderItemActions(item)}
+                    </div>
+                  </article>
                 ))}
-              </tbody>
-            </table>
-          </TableRegion>
+              </div>
+              {/* Desktop table view */}
+              <TableRegion className="hidden sm:block" label={text("定时任务表格", "Scheduled tasks table")}>
+                <table className="w-max min-w-full table-auto border-collapse text-sm">
+                  <thead className="bg-app-panel text-left text-xs text-app-muted">
+                    <tr>
+                      <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("计划", "Plan")}</th>
+                      <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("执行时间", "Run time")}</th>
+                      <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("资源", "Resources")}</th>
+                      <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("状态", "Status")}</th>
+                      <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("最近结果", "Latest result")}</th>
+                      <th className="sticky right-0 z-20 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 text-center font-medium shadow-stickyColumn" scope="col">
+                        {text("操作", "Actions")}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((item) => (
+                      <tr key={item.id} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
+                        <td className="whitespace-nowrap px-3 py-2 align-middle">
+                          <div className="font-medium">{item.name}</div>
+                          <div className="mt-0.5 max-w-72 truncate text-xs text-app-muted">{item.description || item.payload.storage_path || "-"}</div>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">{formatScheduleTime(item.scheduleTime)}</td>
+                        <td className="whitespace-nowrap px-3 py-2 align-middle text-app-muted">
+                          {item.payload.cpu ?? "-"}C / {item.payload.gpu ?? 0}GPU / {item.payload.memory ?? "-"}G
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 align-middle">
+                          <span className={`inline-flex h-6 items-center rounded-md px-2 text-xs font-medium ring-1 ${statusClass(item.status)}`}>
+                            {locale === "en-US" ? statusText[item.status].en : statusText[item.status].zh}
+                          </span>
+                        </td>
+                        <td className="max-w-96 px-3 py-2 align-middle text-app-muted">
+                          {item.lastError ? <span className="text-app-danger">{item.lastError}</span> : item.lastRunAt ? formatScheduleTime(item.lastRunAt) : "-"}
+                        </td>
+                        <td className="sticky right-0 z-10 bg-app-surface px-3 py-2 align-middle shadow-stickyColumn">
+                          <div className="flex flex-wrap justify-end gap-1">
+                            {renderItemActions(item)}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableRegion>
+            </>
         )}
       </Panel>
       <RemoteStoragePicker

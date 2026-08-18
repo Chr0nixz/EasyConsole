@@ -2,11 +2,17 @@ import { createContext, useContext } from "react";
 
 export type ToastKind = "success" | "error" | "info";
 
+export type ToastAction = {
+  label: string;
+  onClick: () => void;
+};
+
 export type ToastItem = {
   id: string;
   kind: ToastKind;
   title: string;
   description?: string;
+  action?: ToastAction;
 };
 
 export type ToastInput = Omit<ToastItem, "id"> & {
@@ -15,9 +21,9 @@ export type ToastInput = Omit<ToastItem, "id"> & {
 
 export type ToastContextValue = {
   notify(input: ToastInput): void;
-  success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
-  info(title: string, description?: string): void;
+  success(title: string, description?: string, action?: ToastAction): void;
+  error(title: string, description?: string, action?: ToastAction): void;
+  info(title: string, description?: string, action?: ToastAction): void;
 };
 
 export const ToastContext = createContext<ToastContextValue | null>(null);

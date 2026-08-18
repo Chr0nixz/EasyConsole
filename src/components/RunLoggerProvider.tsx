@@ -1,4 +1,4 @@
-import { useCallback, type ReactNode } from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
 
 import { appendRunLog } from "../lib/run-logs";
 import { browserRuntime } from "../lib/runtime";
@@ -9,12 +9,14 @@ export function RunLoggerProvider({ children }: { children: ReactNode }) {
     try {
       await appendRunLog(browserRuntime.storage, {
         ...input,
-        channel: input.channel ?? (browserRuntime.isDesktop ? "tauri" : "web"),
+        channel: input.channel ?? browserRuntime.runLogChannel,
       });
     } catch (error) {
       console.warn("Failed to write EasyConsole run log.", error);
     }
   }, []);
 
-  return <RunLoggerContext.Provider value={{ log }}>{children}</RunLoggerContext.Provider>;
+  const value = useMemo(() => ({ log }), [log]);
+
+  return <RunLoggerContext.Provider value={value}>{children}</RunLoggerContext.Provider>;
 }

@@ -1,13 +1,30 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ApiClient, extractToken, joinUrl, normalizeToken, unwrapEnvelope } from "./api-client";
 import { ApiError, type RuntimeHttpRequest, type RuntimeTransport } from "./types";
+import * as transportSecurity from "./transport-security";
 
 function createRuntime() {
   const calls: unknown[] = [];
   const runtime: RuntimeTransport = {
     isDesktop: false,
+    isMobile: false,
+    runtimeKind: "web",
+    runLogChannel: "web",
+    supportsTray: false,
+    supportsSystemTerminal: false,
+    supportsInAppSsh: false,
+    supportsSshPopOut: false,
+    supportsUpdater: false,
+    supportsFileReveal: false,
     storage: {
+      async get() {
+        return null;
+      },
+      async set() {},
+      async remove() {},
+    },
+    secureStorage: {
       async get() {
         return null;
       },
@@ -41,6 +58,7 @@ function createRuntime() {
       };
     },
     async copyText() {},
+    async readClipboardText() { return ""; },
     async requestSystemNotificationPermission() {
       return "unsupported";
     },
@@ -59,8 +77,26 @@ function createRuntime() {
     async onSshSessionEvent() {
       return () => {};
     },
+    async listKnownHosts() { return []; },
+    async removeKnownHost() {},
+    async clearKnownHosts() {},
+    async confirmKnownHost() {},
     async openSystemSshTerminal() {},
     async openVscodeSsh() {},
+    async openSshWindow() {},
+    async sftpList() { return []; },
+    async sftpUpload() {},
+    async sftpDownload() {},
+    async sftpDelete() {},
+    async sftpRename() {},
+    async sftpMkdir() {},
+    async onSftpProgress() { return () => {}; },
+    async startPortForward() {},
+    async stopPortForward() {},
+    async onPortForwardStatus() { return () => {}; },
+    async listSshHistory() { return []; },
+    async addSshHistory() {},
+    async clearSshHistory() {},
     async setDesktopCloseToTray() {},
     async setDesktopClosePrompt() {},
     async cancelDesktopClosePrompt() {},
@@ -73,6 +109,9 @@ function createRuntime() {
       return () => {};
     },
     async onDesktopRunDueScheduledTasks() {
+      return () => {};
+    },
+    async onDeepLink() {
       return () => {};
     },
   };
@@ -118,5 +157,65 @@ describe("api client", () => {
 
     expect(client.getBaseUrl()).toBe("http://new-host/api");
     expect(calls[0]).toMatchObject({ url: "http://new-host/api/demo" });
+  });
+
+  it("refreshes and retries POST after 401", async () => {
+    const { runtime, calls } = createRuntime();
+    let attempt = 0;
+    runtime.request = async <T = unknown>(request: RuntimeHttpRequest) => {
+      calls.push(request);
+      attempt += 1;
+      if (attempt === 1) {
+        return { status: 401, headers: new Headers(), data: null as T };
+      }
+      return {
+        status: 200,
+        headers: new Headers(),
+        data: { code: 0, msg: "ok", data: { ok: true } } as T,
+      };
+    };
+
+    const client = new ApiClient(runtime, "http://host/api");
+    client.setToken("Bearer old");
+    client.setRefreshTokenHandler(async () => "Bearer refreshed");
+
+    const result = await client.post<{ ok: boolean }>("/mutate", { value: 1 });
+
+    expect(result).toEqual({ ok: true });
+    expect(client.getToken()).toBe("Bearer refreshed");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({ method: "POST", url: "http://host/api/mutate" });
+    expect(calls[1]).toMatchObject({
+      method: "POST",
+      url: "http://host/api/mutate",
+      headers: { Authorization: "Bearer refreshed" },
+    });
+  });
+
+  it("emits unauthorized when refresh fails after POST 401", async () => {
+    const { runtime } = createRuntime();
+    runtime.request = async <T = unknown>() => ({ status: 401, headers: new Headers(), data: null as T });
+
+    const client = new ApiClient(runtime, "http://host/api");
+    client.setToken("Bearer old");
+    client.setRefreshTokenHandler(async () => null);
+
+    await expect(client.post("/mutate", { value: 1 })).rejects.toThrow(/Token refresh returned null|Sign-in expired|登录已过期/);
+  });
+
+  it("rejects remote cleartext base urls and requests when policy enforces", async () => {
+    const spy = vi.spyOn(transportSecurity, "shouldEnforceSecureRemoteTransport").mockReturnValue(true);
+    try {
+      const { runtime, calls } = createRuntime();
+      const client = new ApiClient(runtime, "https://secure.example/api");
+      expect(() => client.setBaseUrl("http://example.com/api")).toThrow(/HTTPS|明文|cleartext/i);
+      expect(() => client.setBaseUrl("http://127.0.0.1:28080/api")).not.toThrow();
+
+      const insecure = new ApiClient(runtime, "http://example.com/api");
+      await expect(insecure.get("/demo")).rejects.toThrow(/HTTPS|明文|cleartext/i);
+      expect(calls).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

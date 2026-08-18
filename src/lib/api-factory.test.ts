@@ -9,7 +9,23 @@ function createRuntime(responseData: unknown) {
   const calls: RuntimeHttpRequest[] = [];
   const runtime: RuntimeTransport = {
     isDesktop: false,
+    isMobile: false,
+    runtimeKind: "web",
+    runLogChannel: "web",
+    supportsTray: false,
+    supportsSystemTerminal: false,
+    supportsInAppSsh: false,
+    supportsSshPopOut: false,
+    supportsUpdater: false,
+    supportsFileReveal: false,
     storage: {
+      async get() {
+        return null;
+      },
+      async set() {},
+      async remove() {},
+    },
+    secureStorage: {
       async get() {
         return null;
       },
@@ -28,6 +44,7 @@ function createRuntime(responseData: unknown) {
       throw new Error("not implemented");
     },
     async copyText() {},
+    async readClipboardText() { return ""; },
     async requestSystemNotificationPermission() {
       return "unsupported";
     },
@@ -46,8 +63,26 @@ function createRuntime(responseData: unknown) {
     async onSshSessionEvent() {
       return () => {};
     },
+    async listKnownHosts() { return []; },
+    async removeKnownHost() {},
+    async clearKnownHosts() {},
+    async confirmKnownHost() {},
     async openSystemSshTerminal() {},
     async openVscodeSsh() {},
+    async openSshWindow() {},
+    async sftpList() { return []; },
+    async sftpUpload() {},
+    async sftpDownload() {},
+    async sftpDelete() {},
+    async sftpRename() {},
+    async sftpMkdir() {},
+    async onSftpProgress() { return () => {}; },
+    async startPortForward() {},
+    async stopPortForward() {},
+    async onPortForwardStatus() { return () => {}; },
+    async listSshHistory() { return []; },
+    async addSshHistory() {},
+    async clearSshHistory() {},
     async setDesktopCloseToTray() {},
     async setDesktopClosePrompt() {},
     async cancelDesktopClosePrompt() {},
@@ -60,6 +95,9 @@ function createRuntime(responseData: unknown) {
       return () => {};
     },
     async onDesktopRunDueScheduledTasks() {
+      return () => {};
+    },
+    async onDeepLink() {
       return () => {};
     },
   };

@@ -1,4 +1,5 @@
 import type { RuntimeStorage, UnknownRecord } from "./types";
+import { updateStorageValue } from "./storage-mutex";
 
 export const RUN_LOGS_STORAGE_KEY = "easy-console.runLogs";
 export const DEFAULT_RUN_LOG_LIMIT = 1000;
@@ -6,7 +7,7 @@ export const DEFAULT_RUN_LOG_RETENTION_DAYS = 30;
 
 export type RunLogLevel = "info" | "warning" | "error";
 export type RunLogResult = "success" | "failure";
-export type RunLogChannel = "web" | "tauri" | "cli" | "mcp";
+export type RunLogChannel = "web" | "tauri" | "mobile" | "cli" | "mcp";
 export type RunLogSource =
   | "auth"
   | "task"
@@ -44,6 +45,8 @@ export type RunLogFilter = {
   channel?: RunLogChannel | "";
   result?: RunLogResult | "";
   level?: RunLogLevel | "";
+  userName?: string;
+  action?: string;
   keyword?: string;
   limit?: number;
 };
@@ -54,7 +57,11 @@ type RunLogStoreOptions = {
   now?: () => Date;
 };
 
-const SENSITIVE_KEY_PATTERN = /(authorization|bearer|cookie|password|secret|token|passwd|pwd)/i;
+// Matches against key names, unanchored, so `oldPassword` is covered by `password`.
+// `old` / `new` are anchored because they are the bare option names used by
+// `ec account change-password`, and raw JSON payload options can embed credentials.
+const SENSITIVE_KEY_PATTERN =
+  /(authorization|bearer|cookie|password|secret|token|passwd|pwd|credential|payload_?json|^old$|^new$)/i;
 const MAX_METADATA_STRING_LENGTH = 1000;
 const MAX_METADATA_JSON_LENGTH = 12_000;
 
@@ -181,28 +188,36 @@ export async function loadRunLogs(storage: RuntimeStorage, options: RunLogStoreO
 
 export async function saveRunLogs(storage: RuntimeStorage, items: RunLogEntry[], options: RunLogStoreOptions = {}) {
   const pruned = pruneRunLogs(items, options);
-  await storage.set(RUN_LOGS_STORAGE_KEY, JSON.stringify(pruned));
+  await updateStorageValue(storage, RUN_LOGS_STORAGE_KEY, () => JSON.stringify(pruned));
   return pruned;
 }
 
 export async function appendRunLog(storage: RuntimeStorage, input: RunLogInput, options: RunLogStoreOptions = {}) {
-  const current = await loadRunLogs(storage, options);
-  const next = pruneRunLogs([createRunLogEntry(input, options), ...current], options);
-  await storage.set(RUN_LOGS_STORAGE_KEY, JSON.stringify(next));
-  return next[0];
+  let created: RunLogEntry | undefined;
+  await updateStorageValue(storage, RUN_LOGS_STORAGE_KEY, (raw) => {
+    const current = pruneRunLogs(parseRunLogs(raw), options);
+    const next = pruneRunLogs([createRunLogEntry(input, options), ...current], options);
+    created = next[0];
+    return JSON.stringify(next);
+  });
+  return created!;
 }
 
 export async function clearRunLogs(storage: RuntimeStorage) {
-  await storage.set(RUN_LOGS_STORAGE_KEY, JSON.stringify([]));
+  await updateStorageValue(storage, RUN_LOGS_STORAGE_KEY, () => JSON.stringify([]));
 }
 
 export function filterRunLogs(items: RunLogEntry[], filter: RunLogFilter = {}) {
   const keyword = filter.keyword?.trim().toLowerCase();
+  const actionFilter = filter.action?.trim().toLowerCase();
+  const userNameFilter = filter.userName?.trim().toLowerCase();
   const filtered = items.filter((item) => {
     if (filter.source && item.source !== filter.source) return false;
     if (filter.channel && item.channel !== filter.channel) return false;
     if (filter.result && item.result !== filter.result) return false;
     if (filter.level && item.level !== filter.level) return false;
+    if (actionFilter && !item.action.toLowerCase().includes(actionFilter)) return false;
+    if (userNameFilter && (item.userName ?? "").toLowerCase() !== userNameFilter) return false;
     if (!keyword) return true;
     return [
       item.title,
@@ -223,4 +238,76 @@ export function filterRunLogs(items: RunLogEntry[], filter: RunLogFilter = {}) {
 
 export function formatRunLogExport(items: RunLogEntry[]) {
   return JSON.stringify({ exportedAt: new Date().toISOString(), items }, null, 2);
+}
+
+const ADVANCED_QUERY_KEY_PATTERN = /^(action|level|source|result|user|channel):(.*)$/i;
+const ADVANCED_QUERY_ALLOWED_LEVELS = ["info", "warning", "error"] as const;
+const ADVANCED_QUERY_ALLOWED_SOURCES = ["auth", "task", "scheduled-task", "task-template", "storage", "image", "settings", "system"] as const;
+const ADVANCED_QUERY_ALLOWED_CHANNELS = ["web", "tauri", "mobile", "cli", "mcp"] as const;
+const ADVANCED_QUERY_ALLOWED_RESULTS = ["success", "failure"] as const;
+
+/**
+ * Parses a structured query like `action:task.create level:error alice`.
+ * Recognized keys: action, level, source, result, user, channel.
+ * Unrecognized `key:value` tokens and bare words are combined into `keyword`.
+ */
+export function parseAdvancedQuery(query: string): RunLogFilter {
+  const trimmed = query.trim();
+  if (!trimmed) return {};
+  const tokens = trimmed.split(/\s+/);
+  const filter: RunLogFilter = {};
+  const keywords: string[] = [];
+  for (const token of tokens) {
+    const match = token.match(ADVANCED_QUERY_KEY_PATTERN);
+    if (!match) {
+      keywords.push(token);
+      continue;
+    }
+    const key = match[1].toLowerCase();
+    const value = match[2];
+    if (!value) continue;
+    if (key === "action") {
+      filter.action = value;
+    } else if (key === "level" && (ADVANCED_QUERY_ALLOWED_LEVELS as readonly string[]).includes(value.toLowerCase())) {
+      filter.level = value.toLowerCase() as RunLogLevel;
+    } else if (key === "source" && (ADVANCED_QUERY_ALLOWED_SOURCES as readonly string[]).includes(value.toLowerCase())) {
+      filter.source = value.toLowerCase() as RunLogSource;
+    } else if (key === "result" && (ADVANCED_QUERY_ALLOWED_RESULTS as readonly string[]).includes(value.toLowerCase())) {
+      filter.result = value.toLowerCase() as RunLogResult;
+    } else if (key === "channel" && (ADVANCED_QUERY_ALLOWED_CHANNELS as readonly string[]).includes(value.toLowerCase())) {
+      filter.channel = value.toLowerCase() as RunLogChannel;
+    } else if (key === "user") {
+      filter.userName = value;
+    } else {
+      keywords.push(token);
+    }
+  }
+  if (keywords.length > 0) filter.keyword = keywords.join(" ");
+  return filter;
+}
+
+function csvEscape(value: unknown) {
+  if (value === undefined || value === null) return "";
+  const str = String(value);
+  if (/[",\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+  return str;
+}
+
+export function formatRunLogCsv(items: RunLogEntry[]) {
+  const header = ["createdAt", "level", "source", "channel", "result", "action", "title", "targetName", "targetId", "userName", "durationMs", "error"];
+  const rows = items.map((item) =>
+    [item.createdAt, item.level, item.source, item.channel, item.result, item.action, item.title, item.targetName ?? "", item.targetId ?? "", item.userName ?? "", item.durationMs ?? "", item.error ?? ""]
+      .map(csvEscape)
+      .join(","),
+  );
+  return [header.join(","), ...rows].join("\n");
+}
+
+export function formatRunLogMarkdown(items: RunLogEntry[]) {
+  const header = "| Time | Level | Source | Channel | Result | Action | Title | Target | User | Duration | Error |";
+  const separator = "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |";
+  const rows = items.map((item) =>
+    `| ${item.createdAt} | ${item.level} | ${item.source} | ${item.channel} | ${item.result} | ${item.action} | ${item.title} | ${item.targetName ?? item.targetId ?? ""} | ${item.userName ?? ""} | ${item.durationMs === undefined ? "" : `${item.durationMs}ms`} | ${item.error ?? ""} |`,
+  );
+  return [header, separator, ...rows].join("\n");
 }

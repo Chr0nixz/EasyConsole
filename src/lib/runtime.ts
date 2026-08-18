@@ -1,15 +1,23 @@
 import { isTauri } from "@tauri-apps/api/core";
 
 import { i18nText } from "./i18n-text";
+import { createLayeredSecureStorage } from "./secure-storage";
 import type {
+  KnownHostEntry,
+  PortForwardStatus,
   RuntimeHttpRequest,
   RuntimeHttpResponse,
+  RuntimeKind,
+  RuntimeLogChannel,
   RuntimeStorage,
   RuntimeSystemNotification,
   RuntimeSystemNotificationPermission,
   RuntimeSystemNotificationResult,
   RuntimeTransport,
   RuntimeWebSocket,
+  SftpEntry,
+  SftpProgress,
+  SshHistoryEntry,
   SshSessionEvent,
   UploadProgress,
 } from "./types";
@@ -18,6 +26,47 @@ export const RUNTIME_SOCKET_OPEN = 1;
 const RUNTIME_SOCKET_CONNECTING = 0;
 const RUNTIME_SOCKET_CLOSING = 2;
 const RUNTIME_SOCKET_CLOSED = 3;
+
+/**
+ * Resolved runtime kind. Defaults to "web" and is filled in by
+ * {@link initRuntimeKind} before the renderer mounts, so the desktop/mobile
+ * distinction is known before any UI renders. In non-Tauri runtimes this stays
+ * "web" and init resolves immediately.
+ */
+let runtimeKind: RuntimeKind = "web";
+let runtimeKindReady: Promise<void> | null = null;
+
+/**
+ * Resolve the native runtime kind once. Safe to call multiple times; subsequent
+ * calls return the same promise. On web it resolves synchronously (no IPC).
+ * On Tauri it queries the `runtime_platform` command to distinguish desktop
+ * from mobile, since `isTauri()` is true for both.
+ */
+export function initRuntimeKind(): Promise<void> {
+  if (runtimeKindReady) return runtimeKindReady;
+  runtimeKindReady = (async () => {
+    if (!isTauri()) {
+      runtimeKind = "web";
+      return;
+    }
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      // Race the IPC so a hung command never blocks renderer startup.
+      const platform = await Promise.race([
+        invoke<string>("runtime_platform"),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+      ]);
+      runtimeKind = platform === "mobile" || platform === "desktop" ? platform : "desktop";
+    } catch {
+      runtimeKind = "desktop";
+    }
+  })();
+  return runtimeKindReady;
+}
+
+export function getRuntimeKind(): RuntimeKind {
+  return runtimeKind;
+}
 
 const localStorageAdapter: RuntimeStorage = {
   async get(key) {
@@ -31,32 +80,89 @@ const localStorageAdapter: RuntimeStorage = {
   },
 };
 
+// Front-end in-memory cache mirror for Tauri storage. Reduces IPC round-trips
+// for hot paths like appendRunLog and scheduled-task persist. The Rust-side
+// Mutex (RUNTIME_STORAGE_LOCK) guarantees correctness; this cache is purely a
+// read optimization.
+const tauriStorageCache = new Map<string, string | null>();
+
 const tauriStorageAdapter: RuntimeStorage = {
   async get(key) {
+    if (tauriStorageCache.has(key)) {
+      const cached = tauriStorageCache.get(key) ?? null;
+      if (cached !== null) return cached;
+      // Cached null may be from a prior IPC miss while fallback still holds data.
+    }
     try {
-      return await invokeTauriCommand<string | null>("runtime_storage_get", { key });
+      const value = await invokeTauriCommand<string | null>("runtime_storage_get", { key });
+      if (value !== null && value !== undefined) {
+        tauriStorageCache.set(key, value);
+        return value;
+      }
+      // IPC succeeded with null — check browser fallback and migrate back to native.
+      const fallback = await localStorageAdapter.get(key);
+      if (fallback !== null) {
+        try {
+          await invokeTauriCommand("runtime_storage_set", { key, value: fallback });
+          await localStorageAdapter.remove(key);
+        } catch (migrateError) {
+          console.warn("Tauri storage migrate-from-fallback failed.", migrateError);
+        }
+        tauriStorageCache.set(key, fallback);
+        return fallback;
+      }
+      tauriStorageCache.set(key, null);
+      return null;
     } catch (error) {
       console.warn("Tauri storage get failed, falling back to localStorage.", error);
       return localStorageAdapter.get(key);
     }
   },
   async set(key, value) {
+    tauriStorageCache.set(key, value);
     try {
       await invokeTauriCommand("runtime_storage_set", { key, value });
+      // Clear stale fallback copy after successful native write.
+      await localStorageAdapter.remove(key).catch(() => undefined);
     } catch (error) {
       console.warn("Tauri storage set failed, falling back to localStorage.", error);
       await localStorageAdapter.set(key, value);
     }
   },
   async remove(key) {
+    // Tombstone in cache so a later get does not revive stale fallback before native delete lands.
+    tauriStorageCache.set(key, null);
     try {
       await invokeTauriCommand("runtime_storage_remove", { key });
+      await localStorageAdapter.remove(key);
     } catch (error) {
       console.warn("Tauri storage remove failed, falling back to localStorage.", error);
       await localStorageAdapter.remove(key);
     }
   },
 };
+
+// Secure storage uses the OS keychain on desktop (macOS Keychain, Windows
+// Credential Manager, Linux Secret Service) and falls back to tauriStorage when
+// keychain is unavailable or rejects the value (Windows blob size limit).
+// get() must consult the fallback when keychain returns null — not only on
+// thrown errors — or a successful fallback write is lost on the next read.
+const tauriKeychainAdapter: RuntimeStorage = {
+  async get(key) {
+    return invokeTauriCommand<string | null>("keychain_get", { key });
+  },
+  async set(key, value) {
+    await invokeTauriCommand("keychain_set", { key, value });
+  },
+  async remove(key) {
+    await invokeTauriCommand("keychain_remove", { key });
+  },
+};
+
+const tauriSecureStorageAdapter: RuntimeStorage = createLayeredSecureStorage(
+  tauriKeychainAdapter,
+  tauriStorageAdapter,
+);
 
 function buildUrl(url: string, query?: Record<string, unknown>) {
   const next = new URL(url, window.location.origin);
@@ -70,6 +176,9 @@ function buildUrl(url: string, query?: Record<string, unknown>) {
 function isFormData(body: unknown): body is FormData {
   return typeof FormData !== "undefined" && body instanceof FormData;
 }
+
+/** Minimum gap between download progress callbacks, in ms. */
+const PROGRESS_REPORT_INTERVAL_MS = 200;
 
 function normalizeBody(body: unknown, headers: Record<string, string>) {
   if (body === undefined || body === null) return undefined;
@@ -93,13 +202,29 @@ async function readBlobWithProgress(response: Response, onProgress?: (progress: 
   let loaded = 0;
   onProgress?.(toProgress(0, knownTotal));
 
+  // Network chunks arrive every 16-64 KB. Reporting each one drives a global
+  // download-queue Context update, which re-renders the whole shell and the
+  // current page -- tens of thousands of renders for a 1 GB file. Report on a
+  // time/percent threshold instead; the final value is always emitted below.
+  let lastReportAt = 0;
+  let lastReportedPercent = -1;
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     if (!value) continue;
     chunks.push(value as BlobPart);
     loaded += value.byteLength;
-    onProgress?.(toProgress(loaded, knownTotal));
+
+    if (onProgress) {
+      const now = Date.now();
+      const percent = knownTotal ? Math.floor((loaded / knownTotal) * 100) : -1;
+      if (now - lastReportAt >= PROGRESS_REPORT_INTERVAL_MS || percent !== lastReportedPercent) {
+        lastReportAt = now;
+        lastReportedPercent = percent;
+        onProgress(toProgress(loaded, knownTotal));
+      }
+    }
   }
 
   const blob = new Blob(chunks);
@@ -300,15 +425,101 @@ function requireDesktopSsh(): never {
   throw new Error(i18nText("当前环境不是桌面端，无法使用应用内 SSH", "The current environment is not the desktop app, so in-app SSH is unavailable"));
 }
 
+const SSH_EARLY_EVENT_LIMIT = 64;
+
+type SshSessionEventHandler = (event: SshSessionEvent) => void;
+
+const sshSessionHandlers = new Map<string, SshSessionEventHandler>();
+const sshEarlyEventBuffer = new Map<string, SshSessionEvent[]>();
+let sshGlobalListenPromise: Promise<void> | null = null;
+
+function clearSshSessionEvents(sessionId: string) {
+  sshSessionHandlers.delete(sessionId);
+  sshEarlyEventBuffer.delete(sessionId);
+}
+
+function bufferSshSessionEvent(event: SshSessionEvent) {
+  const queued = sshEarlyEventBuffer.get(event.sessionId) ?? [];
+  if (queued.length >= SSH_EARLY_EVENT_LIMIT) {
+    queued.shift();
+  }
+  queued.push(event);
+  sshEarlyEventBuffer.set(event.sessionId, queued);
+}
+
+function dispatchSshSessionEvent(event: SshSessionEvent) {
+  const handler = sshSessionHandlers.get(event.sessionId);
+  if (handler) {
+    handler(event);
+    return;
+  }
+  bufferSshSessionEvent(event);
+}
+
+async function ensureGlobalSshListen() {
+  if (runtimeKind === "web") return;
+  if (sshGlobalListenPromise) {
+    await sshGlobalListenPromise;
+    return;
+  }
+  sshGlobalListenPromise = (async () => {
+    const { listen } = await import("@tauri-apps/api/event");
+    await listen<SshSessionEvent>("ssh-session-event", (event) => {
+      dispatchSshSessionEvent(event.payload);
+    });
+  })();
+  try {
+    await sshGlobalListenPromise;
+  } catch (error) {
+    sshGlobalListenPromise = null;
+    throw error;
+  }
+}
+
 export const browserRuntime: RuntimeTransport = {
-  isDesktop: isTauri(),
+  get isDesktop() {
+    return runtimeKind === "desktop";
+  },
+  get isMobile() {
+    return runtimeKind === "mobile";
+  },
+  get runtimeKind() {
+    return runtimeKind;
+  },
+  get runLogChannel(): RuntimeLogChannel {
+    return runtimeKind === "web" ? "web" : runtimeKind === "mobile" ? "mobile" : "tauri";
+  },
+  // Phase 1: all desktop-only capabilities are gated to desktop only.
+  // Mobile opens these up in later phases (e.g. in-app SSH via russh on NDK).
+  get supportsTray() {
+    return runtimeKind === "desktop";
+  },
+  get supportsSystemTerminal() {
+    return runtimeKind === "desktop";
+  },
+  get supportsInAppSsh() {
+    return runtimeKind !== "web";
+  },
+  get supportsSshPopOut() {
+    return runtimeKind === "desktop";
+  },
+  get supportsUpdater() {
+    return runtimeKind === "desktop" || runtimeKind === "mobile";
+  },
+  get supportsFileReveal() {
+    return runtimeKind === "desktop";
+  },
   storage: isTauri() ? tauriStorageAdapter : localStorageAdapter,
+  secureStorage: isTauri() ? tauriSecureStorageAdapter : localStorageAdapter,
   request: fetchRequest,
   async createWebSocket(url) {
     return isTauri() ? createTauriWebSocket(url) : createBrowserWebSocket(url);
   },
   async copyText(text) {
     await window.navigator.clipboard.writeText(text);
+  },
+  async readClipboardText() {
+    return window.navigator.clipboard.readText();
   },
   requestSystemNotificationPermission,
   notifySystem,
@@ -320,12 +531,15 @@ export const browserRuntime: RuntimeTransport = {
     window.open(url, "_blank", "noopener,noreferrer");
   },
   openLocalPath(path) {
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("open_local_path", { path });
   },
   revealLocalPath(path) {
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("reveal_local_path", { path });
   },
-  openSshSession(request) {
+  async openSshSession(request) {
+    await ensureGlobalSshListen();
     return invokeTauriCommand<string>("open_ssh_session", { request });
   },
   writeSshSession(sessionId, data) {
@@ -334,16 +548,43 @@ export const browserRuntime: RuntimeTransport = {
   resizeSshSession(sessionId, cols, rows) {
     return invokeTauriCommand("ssh_resize", { sessionId, cols, rows });
   },
-  closeSshSession(sessionId) {
-    return invokeTauriCommand("ssh_close", { sessionId });
+  async closeSshSession(sessionId) {
+    try {
+      await invokeTauriCommand("ssh_close", { sessionId });
+    } finally {
+      clearSshSessionEvents(sessionId);
+    }
   },
   async onSshSessionEvent(sessionId, handler) {
-    if (!isTauri()) requireDesktopSsh();
-    const { listen } = await import("@tauri-apps/api/event");
-    return listen<SshSessionEvent>("ssh-session-event", (event) => {
-      if (event.payload.sessionId !== sessionId) return;
-      handler(event.payload);
-    });
+    if (runtimeKind === "web") requireDesktopSsh();
+    await ensureGlobalSshListen();
+    sshSessionHandlers.set(sessionId, handler);
+    const buffered = sshEarlyEventBuffer.get(sessionId) ?? [];
+    sshEarlyEventBuffer.delete(sessionId);
+    for (const event of buffered) {
+      handler(event);
+    }
+    return () => {
+      if (sshSessionHandlers.get(sessionId) === handler) {
+        clearSshSessionEvents(sessionId);
+      }
+    };
+  },
+  async listKnownHosts() {
+    if (runtimeKind === "web") return [];
+    return invokeTauriCommand<KnownHostEntry[]>("list_known_hosts", {});
+  },
+  async removeKnownHost(hostPort) {
+    if (runtimeKind === "web") return;
+    await invokeTauriCommand("remove_known_host", { hostPort });
+  },
+  async clearKnownHosts() {
+    if (runtimeKind === "web") return;
+    await invokeTauriCommand("clear_known_hosts", {});
+  },
+  async confirmKnownHost(promptId, accept) {
+    if (runtimeKind === "web") return;
+    await invokeTauriCommand("confirm_known_host", { promptId, accept });
   },
   openSystemSshTerminal(request) {
     return invokeTauriCommand("open_system_ssh_terminal", { request });
@@ -351,47 +592,166 @@ export const browserRuntime: RuntimeTransport = {
   openVscodeSsh(request) {
     return invokeTauriCommand("open_vscode_ssh", { request });
   },
+  openSshWindow(request) {
+    if (runtimeKind !== "desktop") {
+      return Promise.reject(
+        new Error(
+          i18nText("当前环境不支持弹出独立窗口", "Popping out to a standalone window is not supported in this environment"),
+        ),
+      );
+    }
+    return invokeTauriCommand("open_ssh_window", { request });
+  },
+  sftpList(sessionId, path) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand<SftpEntry[]>("sftp_list", { sessionId, path });
+  },
+  sftpUpload(sessionId, localPath, remotePath) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand("sftp_upload", { sessionId, localPath, remotePath });
+  },
+  sftpDownload(sessionId, remotePath, localPath) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand("sftp_download", { sessionId, remotePath, localPath });
+  },
+  sftpDelete(sessionId, path) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand("sftp_delete", { sessionId, path });
+  },
+  sftpRename(sessionId, oldPath, newPath) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand("sftp_rename", { sessionId, oldPath, newPath });
+  },
+  sftpMkdir(sessionId, path) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand("sftp_mkdir", { sessionId, path });
+  },
+  async onSftpProgress(sessionId, handler) {
+    if (runtimeKind === "web") requireDesktopSsh();
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<SshSessionEvent>("ssh-session-event", (event) => {
+      if (event.payload.sessionId !== sessionId || event.payload.kind !== "sftp-progress") return;
+      try {
+        const progress = JSON.parse(event.payload.data ?? "{}") as SftpProgress;
+        handler(progress);
+      } catch {
+        // ignore malformed progress events
+      }
+    });
+  },
+  startPortForward(sessionId, rule) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持端口转发", "Port forwarding is not supported in this environment")));
+    return invokeTauriCommand("ssh_start_port_forward", { sessionId, rule });
+  },
+  stopPortForward(sessionId, ruleId) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持端口转发", "Port forwarding is not supported in this environment")));
+    return invokeTauriCommand("ssh_stop_port_forward", { sessionId, ruleId });
+  },
+  async onPortForwardStatus(sessionId, handler) {
+    if (runtimeKind === "web") requireDesktopSsh();
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<SshSessionEvent>("ssh-session-event", (event) => {
+      if (event.payload.sessionId !== sessionId || event.payload.kind !== "port-forward-status") return;
+      try {
+        const status = JSON.parse(event.payload.data ?? "{}") as PortForwardStatus;
+        handler(status);
+      } catch {
+        // ignore malformed status events
+      }
+    });
+  },
+  async listSshHistory() {
+    if (runtimeKind === "web") {
+      try {
+        const raw = window.localStorage.getItem("easy-console-ssh-history");
+        return raw ? (JSON.parse(raw) as SshHistoryEntry[]) : [];
+      } catch {
+        return [];
+      }
+    }
+    return invokeTauriCommand<SshHistoryEntry[]>("list_ssh_history", {});
+  },
+  async addSshHistory(entry) {
+    if (runtimeKind === "web") {
+      try {
+        const raw = window.localStorage.getItem("easy-console-ssh-history");
+        const existing = raw ? (JSON.parse(raw) as SshHistoryEntry[]) : [];
+        const filtered = existing.filter(
+          (h) => !(h.host === entry.host && h.port === entry.port && h.username === entry.username),
+        );
+        const newEntry: SshHistoryEntry = {
+          ...entry,
+          id: `hist-${Date.now()}`,
+          connectedAt: Date.now(),
+        };
+        filtered.unshift(newEntry);
+        const trimmed = filtered.slice(0, 20);
+        window.localStorage.setItem("easy-console-ssh-history", JSON.stringify(trimmed));
+      } catch {
+        // ignore storage errors
+      }
+      return;
+    }
+    await invokeTauriCommand("add_ssh_history", entry);
+  },
+  async clearSshHistory() {
+    if (runtimeKind === "web") {
+      window.localStorage.removeItem("easy-console-ssh-history");
+      return;
+    }
+    await invokeTauriCommand("clear_ssh_history", {});
+  },
   setDesktopCloseToTray(enabled) {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("set_desktop_close_to_tray", { enabled });
   },
   setDesktopClosePrompt(enabled) {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("set_desktop_close_prompt", { enabled });
   },
   cancelDesktopClosePrompt() {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("cancel_desktop_close_prompt", {});
   },
   completeDesktopClosePrompt(action) {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("complete_desktop_close_prompt", { action });
   },
   showDesktopMainWindow() {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("show_desktop_main_window", {});
   },
   hideDesktopTrayMenu() {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("hide_desktop_tray_menu", {});
   },
   runDueScheduledTasks() {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("run_due_scheduled_tasks", {});
   },
   quitDesktopApp() {
-    if (!isTauri()) return Promise.resolve();
+    if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("quit_desktop_app", {});
   },
   async onDesktopCloseRequested(handler) {
-    if (!isTauri()) return () => undefined;
+    if (runtimeKind !== "desktop") return () => undefined;
     const { listen } = await import("@tauri-apps/api/event");
     return listen("desktop-close-requested", handler);
   },
   async onDesktopRunDueScheduledTasks(handler) {
-    if (!isTauri()) return () => undefined;
+    if (runtimeKind !== "desktop") return () => undefined;
     const { listen } = await import("@tauri-apps/api/event");
     return listen("desktop-run-due-scheduled-tasks", handler);
+  },
+  async onDeepLink(handler: (urls: string[]) => void) {
+    if (runtimeKind !== "desktop") return () => undefined;
+    const { listen } = await import("@tauri-apps/api/event");
+    type DeepLinkPayload = { urls: string[] } | string[];
+    return listen<DeepLinkPayload>("deep-link://new-url", (event) => {
+      const payload = event.payload;
+      const urls = Array.isArray(payload) ? payload : payload?.urls ?? [];
+      if (urls.length > 0) handler(urls);
+    });
   },
 };
 

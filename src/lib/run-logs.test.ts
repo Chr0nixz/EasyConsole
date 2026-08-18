@@ -5,7 +5,10 @@ import {
   appendRunLog,
   clearRunLogs,
   filterRunLogs,
+  formatRunLogCsv,
+  formatRunLogMarkdown,
   loadRunLogs,
+  parseAdvancedQuery,
   parseRunLogs,
   pruneRunLogs,
   RUN_LOGS_STORAGE_KEY,
@@ -35,6 +38,7 @@ describe("run logs", () => {
 
   it("appends logs in newest-first order", async () => {
     const storage = memoryStorage();
+    const recent = (offsetDays: number) => new Date(Date.now() - offsetDays * 24 * 60 * 60 * 1000).toISOString();
     await appendRunLog(storage, {
       channel: "web",
       source: "task",
@@ -42,7 +46,7 @@ describe("run logs", () => {
       result: "success",
       level: "info",
       title: "created",
-      createdAt: "2026-05-23T00:00:00.000Z",
+      createdAt: recent(2),
     });
     await appendRunLog(storage, {
       channel: "cli",
@@ -51,7 +55,7 @@ describe("run logs", () => {
       result: "success",
       level: "info",
       title: "mkdir",
-      createdAt: "2026-05-24T00:00:00.000Z",
+      createdAt: recent(1),
     });
 
     expect((await loadRunLogs(storage)).map((item) => item.action)).toEqual(["storage.mkdir", "task.create"]);
@@ -101,6 +105,7 @@ describe("run logs", () => {
           level: "error",
           title: "release failed",
           targetName: "demo",
+          userName: "alice",
         },
         {
           id: "2",
@@ -117,6 +122,110 @@ describe("run logs", () => {
 
     expect(filterRunLogs(logs, { source: "task", channel: "cli", result: "failure", keyword: "demo" })).toHaveLength(1);
     expect(filterRunLogs(logs, { keyword: "folder" })).toHaveLength(1);
+  });
+
+  it("filters logs by level, action, and userName", () => {
+    const logs = parseRunLogs(
+      JSON.stringify([
+        {
+          id: "1",
+          createdAt: "2026-05-24T00:00:00.000Z",
+          channel: "cli",
+          source: "task",
+          action: "task.release",
+          result: "failure",
+          level: "error",
+          title: "release failed",
+          userName: "alice",
+        },
+        {
+          id: "2",
+          createdAt: "2026-05-23T00:00:00.000Z",
+          channel: "web",
+          source: "task",
+          action: "task.create",
+          result: "success",
+          level: "info",
+          title: "created",
+          userName: "bob",
+        },
+      ]),
+    );
+
+    expect(filterRunLogs(logs, { level: "error" })).toHaveLength(1);
+    expect(filterRunLogs(logs, { action: "task.create" })).toHaveLength(1);
+    expect(filterRunLogs(logs, { userName: "alice" })).toHaveLength(1);
+    expect(filterRunLogs(logs, { userName: "ALICE" })).toHaveLength(1);
+  });
+
+  it("parses advanced query syntax", () => {
+    expect(parseAdvancedQuery("")).toEqual({});
+    expect(parseAdvancedQuery("action:task.create level:error")).toEqual({
+      action: "task.create",
+      level: "error",
+    });
+    expect(parseAdvancedQuery("source:task result:success alice")).toEqual({
+      source: "task",
+      result: "success",
+      keyword: "alice",
+    });
+    expect(parseAdvancedQuery("user:bob keyword words")).toEqual({
+      userName: "bob",
+      keyword: "keyword words",
+    });
+    expect(parseAdvancedQuery("channel:web level:warning")).toEqual({
+      channel: "web",
+      level: "warning",
+    });
+    // Unknown key:value tokens become keywords
+    expect(parseAdvancedQuery("foo:bar baz")).toEqual({
+      keyword: "foo:bar baz",
+    });
+    // Invalid level value is treated as keyword
+    expect(parseAdvancedQuery("level:debug")).toEqual({
+      keyword: "level:debug",
+    });
+  });
+
+  it("exports logs as CSV", () => {
+    const logs = parseRunLogs(
+      JSON.stringify([
+        {
+          id: "1",
+          createdAt: "2026-05-24T00:00:00.000Z",
+          channel: "cli",
+          source: "task",
+          action: "task.release",
+          result: "failure",
+          level: "error",
+          title: "release, failed",
+          userName: "alice",
+        },
+      ]),
+    );
+    const csv = formatRunLogCsv(logs);
+    expect(csv.split("\n")[0]).toBe("createdAt,level,source,channel,result,action,title,targetName,targetId,userName,durationMs,error");
+    expect(csv).toContain('"release, failed"');
+  });
+
+  it("exports logs as Markdown", () => {
+    const logs = parseRunLogs(
+      JSON.stringify([
+        {
+          id: "1",
+          createdAt: "2026-05-24T00:00:00.000Z",
+          channel: "cli",
+          source: "task",
+          action: "task.release",
+          result: "failure",
+          level: "error",
+          title: "release failed",
+        },
+      ]),
+    );
+    const md = formatRunLogMarkdown(logs);
+    expect(md.split("\n")[0]).toBe("| Time | Level | Source | Channel | Result | Action | Title | Target | User | Duration | Error |");
+    expect(md).toContain("release failed");
   });
 
   it("clears stored logs", async () => {

@@ -23,11 +23,25 @@ describe("app update state", () => {
       lastAutoCheckAt: "now",
       dismissedVersion: undefined,
       dismissedAt: undefined,
+      dismissedUntilNextVersion: false,
+    });
+    expect(parseAppUpdateState(JSON.stringify({
+      dismissedVersion: "0.1.1",
+      dismissedUntilNextVersion: true,
+    }))).toEqual({
+      lastAutoCheckAt: undefined,
+      dismissedVersion: "0.1.1",
+      dismissedAt: undefined,
+      dismissedUntilNextVersion: true,
     });
   });
 
   it("serializes update state", () => {
-    const state = { lastAutoCheckAt: "2026-05-25T00:00:00.000Z", dismissedVersion: "0.1.1" };
+    const state = {
+      lastAutoCheckAt: "2026-05-25T00:00:00.000Z",
+      dismissedVersion: "0.1.1",
+      dismissedUntilNextVersion: true,
+    };
     expect(parseAppUpdateState(stringifyAppUpdateState(state))).toEqual({
       ...state,
       dismissedAt: undefined,
@@ -46,5 +60,23 @@ describe("app update state", () => {
     expect(shouldShowDismissedUpdate(updateInfo, { dismissedVersion: "0.1.0", dismissedAt: new Date(now).toISOString() }, now)).toBe(true);
     expect(shouldShowDismissedUpdate(updateInfo, { dismissedVersion: "0.1.1", dismissedAt: new Date(now - DISMISSED_UPDATE_INTERVAL_MS + 1).toISOString() }, now)).toBe(false);
     expect(shouldShowDismissedUpdate(updateInfo, { dismissedVersion: "0.1.1", dismissedAt: new Date(now - DISMISSED_UPDATE_INTERVAL_MS).toISOString() }, now)).toBe(true);
+  });
+
+  it("keeps skipping a version until the next release when ignored", () => {
+    const now = Date.parse("2026-05-25T12:00:00.000Z");
+    expect(shouldShowDismissedUpdate(updateInfo, {
+      dismissedVersion: "0.1.1",
+      dismissedAt: new Date(now - DISMISSED_UPDATE_INTERVAL_MS * 10).toISOString(),
+      dismissedUntilNextVersion: true,
+    }, now)).toBe(false);
+
+    expect(shouldShowDismissedUpdate({
+      currentVersion: "0.1.0",
+      version: "0.1.2",
+    }, {
+      dismissedVersion: "0.1.1",
+      dismissedAt: new Date(now).toISOString(),
+      dismissedUntilNextVersion: true,
+    }, now)).toBe(true);
   });
 });

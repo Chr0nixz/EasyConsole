@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createUploadQueueItems, summarizeUploadQueue } from "./upload-queue";
+import { createUploadQueueItems, finalizeUploadQueueResult, summarizeUploadQueue } from "./upload-queue";
 
 function file(name: string, size: number) {
   return new File([new Uint8Array(size)], name, { lastModified: 1 });
@@ -44,6 +44,12 @@ describe("upload queue", () => {
       skipped: 1,
       percent: 75,
       active: false,
+    });
+    expect(finalizeUploadQueueResult(next)).toMatchObject({
+      succeeded: 1,
+      failed: 1,
+      skipped: 1,
+      cancelled: 0,
     });
   });
 });

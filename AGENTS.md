@@ -39,6 +39,8 @@ npm.cmd run tauri:build
 npm.cmd run ec -- --help
 npm.cmd run ec:mcp
 cargo check --manifest-path src-tauri/Cargo.toml
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
 Run these before handing off functional changes:
@@ -50,9 +52,15 @@ npm.cmd run lint
 npm.cmd run test
 npm.cmd run build:desktop
 cargo check --manifest-path src-tauri/Cargo.toml
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
 Use `npm.cmd run build` for the web-only production build. Use `npm.cmd run build:desktop` for Tauri build inputs; it builds sidecars, typechecks the app, and runs Vite. Use `npm.cmd run tauri:build` when an actual desktop bundle or installer is required. When time is limited, prioritize desktop input build and Tauri shell checks over web-only verification.
+
+`lint` runs with `--max-warnings=49`, which is a ratchet rather than a target. The number may only go down: when you remove warnings, lower it in the same commit. Never raise it to make a build pass -- fix the new warning instead. Remaining warnings are `react-hooks/set-state-in-effect`, `react-refresh/only-export-components`, and `react-hooks/exhaustive-deps`.
+
+For `react-refresh/only-export-components` in context files, follow the existing split used by `use-toast.ts` and `use-download-queue.ts`: contexts, hooks, and plain helpers live in a `use-*.ts` file, and the `*Provider` component stays in its own file. That removes the warning instead of suppressing it.
 
 The production build may warn about a large JS chunk; that is currently acceptable unless the task is specifically about bundle splitting.
 
@@ -83,12 +91,16 @@ EASY_CONSOLE_API_BASE_URL=http://116.172.93.164:28080/api
 EASY_CONSOLE_MONITOR_DASHBOARD_URL=http://116.172.93.164:33000/d/da7c4fef-70c7-43eb-8103-31b7d283ca9f/pod-board?orgId=1
 EASY_CONSOLE_TOKEN=Bearer ...
 EASY_CONSOLE_CONFIG=D:\path\to\config.json
+EASY_CONSOLE_ALLOW_INSECURE_HTTP=1
 ```
+
+Packaged desktop builds currently allow remote cleartext `http://` / `ws://` (lab console). Settings still warn when remote HTTP is in use. Prefer `https://...` or `http://127.0.0.1:...` (local reverse proxy / VPN tunnel) when available. CLI/MCP reject remote cleartext by default; opt in with `--allow-insecure-http` or `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` for lab use.
 
 Do not commit real account credentials, tokens, or live test secrets.
 
 ## Architecture
 
+- `src/lib/transport-security.ts`: URL transport classification; packaged app does not block remote cleartext by default (CLI/MCP still opt-in).
 - `src/lib/types.ts`: shared API and runtime types. Keep backend fields tolerant with `UnknownRecord` intersections when the live API is not fully verified.
 - `src/lib/api-client.ts`: generic HTTP client, envelope unwrap, auth header injection, HTTP/business error mapping.
 - `src/lib/api-factory.ts`: typed endpoint wrappers grouped by domain: auth, instance/task, image, storage, resource/price. Reused by web, CLI, and MCP.
@@ -137,7 +149,7 @@ Avoid Node-only APIs in renderer code. If a feature needs platform behavior, des
 - Task status and release condition should be displayed as colored badges with text, not color-only state.
 - Task tables support column visibility settings; keep actions always visible.
 - The app has protected routes for dashboard, task instances, scheduled tasks, instance templates, storage, images, run logs, and settings.
-- Saved accounts store normalized tokens and user display metadata only, not passwords.
+- Saved accounts store normalized tokens, user display metadata, and (when the user opts in via "Remember password") an AES-GCM ciphertext of the password. The plaintext password is never persisted; on Tauri the ciphertext lives in the OS keychain via secureStorage, and on web it lives in localStorage (obfuscation-grade only). Use `encryptPassword`/`decryptPassword` from `src/lib/password-crypto.ts` to round-trip the password field. `loginSaved` silently re-logs in with the stored password when the saved token has expired; accounts without a stored password fall back to the password form.
 - Runtime URL settings affect login checks, task/image/storage requests, monitor links, and WebSSH URLs.
 - Task templates and scheduled tasks are local runtime data, not backend entities. Templates can generate up to 50 task payloads.
 - Run logs are local, pruned by count and age, and redact sensitive metadata keys.
@@ -165,6 +177,7 @@ Add focused tests for shared behavior and API adapters:
 - envelope parsing and business error mapping
 - auth header injection and token normalization
 - password hashing behavior
+- saved-password encryption/decryption round-trip and malformed-payload rejection
 - app settings parsing and runtime URL updates
 - saved accounts and token-only account persistence
 - blob downloads

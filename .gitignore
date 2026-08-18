@@ -29,7 +29,24 @@ build/
 src-tauri/target/
 src-tauri/gen/schemas/
 src-tauri/binaries/
+src-tauri/.cargo/config.toml
+src-tauri/cargo-check-android.bat
+src-tauri/*.keystore
 
 # Generated desktop installers
 *.msi
 *.exe
+
+# Local Android build scripts
+/build-android-x86_64.bat
+/run-gradle.bat
+
+# Android generated assets
+src-tauri/gen/android/app/src/main/assets/
+
+# Sensitive signing material
+src-tauri/*.keystore.b64
+
+# Agent working artifacts
+.impeccable/
+.trae/

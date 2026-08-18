@@ -1,44 +1,68 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use russh::keys::ssh_key::{self, HashAlg};
-use russh::{client, ChannelMsg};
 use serde::{Deserialize, Serialize};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, Position, RunEvent, State, WebviewUrl,
-    WebviewWindowBuilder, WindowEvent,
-};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
+
+use russh::keys::ssh_key::{self, HashAlg};
+use russh::keys::PrivateKeyWithHashAlg;
+use russh::{client, ChannelMsg};
+use russh_sftp::client::SftpSession;
+#[cfg(desktop)]
+use std::process::Command;
+use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use uuid::Uuid;
+#[cfg(desktop)]
+use {
+    tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tauri::{PhysicalPosition, Position, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent},
+};
 
 const SSH_SESSION_EVENT: &str = "ssh-session-event";
+const HOST_KEY_PROMPT_TIMEOUT_SECS: u64 = 120;
+#[cfg(desktop)]
 const DESKTOP_RUN_DUE_EVENT: &str = "desktop-run-due-scheduled-tasks";
+#[cfg(desktop)]
 const DESKTOP_CLOSE_REQUESTED_EVENT: &str = "desktop-close-requested";
+#[cfg(desktop)]
 const APP_SETTINGS_STORAGE_KEY: &str = "easy-console.settings";
+#[cfg(desktop)]
 const DESKTOP_RUN_DUE_INTERVAL_SECS: u64 = 30;
+#[cfg(desktop)]
 const TRAY_MENU_LABEL: &str = "tray-menu";
+#[cfg(desktop)]
 const TRAY_MENU_WIDTH: f64 = 320.0;
+#[cfg(desktop)]
 const TRAY_MENU_HEIGHT: f64 = 244.0;
 const DEFAULT_COLS: u32 = 120;
 const DEFAULT_ROWS: u32 = 32;
+#[cfg(desktop)]
 const VSCODE_KEY_NAME: &str = "easyconsole_vscode_ed25519";
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(not(desktop), allow(dead_code))]
 struct SshConnectionRequest {
     host: String,
     port: Option<String>,
     username: Option<String>,
     password: Option<String>,
+    command: Option<String>,
     task_id: Option<String>,
     task_name: Option<String>,
     cols: Option<u32>,
     rows: Option<u32>,
+    connect_timeout_sec: Option<u64>,
+    keepalive_interval_sec: Option<u64>,
+    term_type: Option<String>,
+    ssh_key_path: Option<String>,
+    auth_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -50,17 +74,117 @@ struct SshSessionEvent {
     message: Option<String>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct KnownHostEntry {
+    host_port: String,
+    fingerprint: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SshHistoryEntryValue {
+    id: String,
+    host: String,
+    port: String,
+    username: String,
+    task_name: String,
+    connected_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SftpEntryValue {
+    name: String,
+    long_name: String,
+    is_dir: bool,
+    is_file: bool,
+    is_symlink: bool,
+    size: u64,
+    modified_at: i64,
+    permissions: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PortForwardRuleValue {
+    id: String,
+    #[serde(rename = "type")]
+    forward_type: String,
+    local_host: String,
+    local_port: u16,
+    remote_host: String,
+    remote_port: u16,
+    #[allow(dead_code)]
+    enabled: bool,
+}
+
 enum SshCommand {
     Write(String),
-    Resize { cols: u32, rows: u32 },
+    Resize {
+        cols: u32,
+        rows: u32,
+    },
     Close,
+    SftpList {
+        path: String,
+        response: oneshot::Sender<Result<Vec<SftpEntryValue>, String>>,
+    },
+    SftpUpload {
+        local_path: String,
+        remote_path: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    SftpDownload {
+        remote_path: String,
+        local_path: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    SftpDelete {
+        path: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    SftpRename {
+        old_path: String,
+        new_path: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    SftpMkdir {
+        path: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    StartPortForward {
+        rule: PortForwardRuleValue,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    StopPortForward {
+        rule_id: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 #[derive(Default)]
 struct SshSessionState {
-    sessions: Mutex<HashMap<String, mpsc::UnboundedSender<SshCommand>>>,
+    sessions: Mutex<HashMap<String, SshSessionEntry>>,
 }
 
+struct SshSessionEntry {
+    tx: mpsc::UnboundedSender<SshCommand>,
+    window_label: String,
+}
+
+/// Pending SSH connection requests for popped-out windows, keyed by window
+/// label. The main window calls `open_ssh_window`, which stores the request
+/// here; the new window retrieves it via `get_ssh_window_request` after its
+/// React app mounts. This avoids fragile URL hash encoding and event
+/// timing races (Tauri emits before the frontend `listen` registers).
+#[cfg(desktop)]
+#[derive(Default)]
+struct PendingSshWindows {
+    requests: Mutex<HashMap<String, SshConnectionRequest>>,
+}
+
+#[cfg(desktop)]
 #[derive(Default)]
 struct DesktopRuntimeState {
     close_to_tray: Mutex<bool>,
@@ -71,8 +195,51 @@ struct DesktopRuntimeState {
 #[derive(Clone)]
 struct EasyConsoleSshClient {
     app: AppHandle,
+    session_id: String,
     host: String,
     port: u16,
+    host_key_error: Arc<Mutex<Option<String>>>,
+    /// When false, unknown hosts are rejected without prompting (e.g. VS Code setup).
+    allow_host_key_prompt: bool,
+    window_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HostKeyDecision {
+    Match,
+    Unknown { fingerprint: String },
+    Mismatch { fingerprint: String },
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostKeyPromptPayload {
+    prompt_id: String,
+    host: String,
+    port: u16,
+    fingerprint: String,
+}
+
+struct PendingHostKeyPrompt {
+    tx: oneshot::Sender<bool>,
+    window_label: String,
+}
+
+struct PendingHostKeyGuard {
+    prompt_id: String,
+}
+
+impl Drop for PendingHostKeyGuard {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = pending_host_key_prompts().lock() {
+            pending.remove(&self.prompt_id);
+        }
+    }
+}
+
+fn pending_host_key_prompts() -> &'static Mutex<HashMap<String, PendingHostKeyPrompt>> {
+    static CELL: OnceLock<Mutex<HashMap<String, PendingHostKeyPrompt>>> = OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 impl client::Handler for EasyConsoleSshClient {
@@ -82,7 +249,103 @@ impl client::Handler for EasyConsoleSshClient {
         &mut self,
         server_public_key: &ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(verify_known_host(&self.app, &self.host, self.port, server_public_key).unwrap_or(false))
+        match evaluate_known_host(&self.app, &self.host, self.port, server_public_key) {
+            Ok(HostKeyDecision::Match) => Ok(true),
+            Ok(HostKeyDecision::Mismatch { .. }) => {
+                if let Ok(mut guard) = self.host_key_error.lock() {
+                    *guard = Some(format!(
+                        "SSH 主机密钥与已知记录不符（{}:{}）。如确认主机已更换密钥，请在设置中删除该 known host 后重试。",
+                        self.host, self.port
+                    ));
+                }
+                Ok(false)
+            }
+            Ok(HostKeyDecision::Unknown { fingerprint }) => {
+                if !self.allow_host_key_prompt {
+                    if let Ok(mut guard) = self.host_key_error.lock() {
+                        *guard = Some(format!(
+                            "尚未信任 SSH 主机 {}:{}。请先通过应用内 SSH 确认指纹后再重试。",
+                            self.host, self.port
+                        ));
+                    }
+                    return Ok(false);
+                }
+                let prompt_id = Uuid::new_v4().to_string();
+                let (tx, rx) = oneshot::channel();
+                let _guard = PendingHostKeyGuard {
+                    prompt_id: prompt_id.clone(),
+                };
+                if let Ok(mut pending) = pending_host_key_prompts().lock() {
+                    pending.insert(
+                        prompt_id.clone(),
+                        PendingHostKeyPrompt {
+                            tx,
+                            window_label: self.window_label.clone(),
+                        },
+                    );
+                } else {
+                    if let Ok(mut guard) = self.host_key_error.lock() {
+                        *guard = Some("无法等待主机密钥确认：内部状态已损坏".to_string());
+                    }
+                    return Ok(false);
+                }
+
+                let payload = HostKeyPromptPayload {
+                    prompt_id: prompt_id.clone(),
+                    host: self.host.clone(),
+                    port: self.port,
+                    fingerprint: fingerprint.clone(),
+                };
+                let data = serde_json::to_string(&payload).ok();
+                emit_session_event(
+                    &self.app,
+                    &self.session_id,
+                    "host-key-prompt",
+                    data,
+                    Some(format!(
+                        "首次连接 {}:{}，请确认主机指纹后继续。",
+                        self.host, self.port
+                    )),
+                );
+
+                let accepted = match tokio::time::timeout(
+                    Duration::from_secs(HOST_KEY_PROMPT_TIMEOUT_SECS),
+                    rx,
+                )
+                .await
+                {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(_)) => false,
+                    Err(_) => false,
+                };
+
+                if !accepted {
+                    if let Ok(mut guard) = self.host_key_error.lock() {
+                        *guard = Some(format!(
+                            "已拒绝或超时未确认 SSH 主机密钥（{}:{}）。",
+                            self.host, self.port
+                        ));
+                    }
+                    return Ok(false);
+                }
+
+                if let Err(message) =
+                    persist_known_host(&self.app, &self.host, self.port, &fingerprint)
+                {
+                    if let Ok(mut guard) = self.host_key_error.lock() {
+                        *guard = Some(format!("无法保存 SSH 主机密钥：{message}"));
+                    }
+                    return Ok(false);
+                }
+                Ok(true)
+            }
+            Err(message) => {
+                if let Ok(mut guard) = self.host_key_error.lock() {
+                    *guard = Some(format!("无法校验 SSH 主机密钥：{message}"));
+                }
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -107,41 +370,101 @@ fn load_string_map(path: &Path) -> Result<HashMap<String, String>, String> {
 }
 
 fn write_string_map(path: &Path, data: &HashMap<String, String>) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(data).map_err(|error| format!("本地数据序列化失败：{error}"))?;
-    fs::write(path, text).map_err(|error| format!("无法写入本地数据：{error}"))
+    let text = serde_json::to_string_pretty(data)
+        .map_err(|error| format!("本地数据序列化失败：{error}"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "无法定位本地数据目录".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "无法定位本地数据文件名".to_string())?;
+    let tmp_path = parent.join(format!("{file_name}.tmp"));
+    let bak_path = parent.join(format!("{file_name}.bak"));
+
+    fs::write(&tmp_path, &text).map_err(|error| format!("无法写入本地数据临时文件：{error}"))?;
+
+    if path.exists() {
+        let _ = fs::remove_file(&bak_path);
+        fs::rename(path, &bak_path).map_err(|error| format!("无法备份本地数据：{error}"))?;
+    }
+
+    match fs::rename(&tmp_path, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if bak_path.exists() {
+                let _ = fs::rename(&bak_path, path);
+            }
+            let _ = fs::remove_file(&tmp_path);
+            Err(format!("无法提交本地数据写入：{error}"))
+        }
+    }
 }
 
 fn known_host_key(host: &str, port: u16) -> String {
     format!("{host}:{port}")
 }
 
-fn trust_on_first_use(
-    known_hosts: &mut HashMap<String, String>,
-    key: String,
-    fingerprint: String,
-) -> bool {
-    if let Some(known_fingerprint) = known_hosts.get(&key) {
-        return known_fingerprint == &fingerprint;
+fn evaluate_host_key(
+    known_hosts: &HashMap<String, String>,
+    key: &str,
+    fingerprint: &str,
+) -> HostKeyDecision {
+    match known_hosts.get(key) {
+        Some(known_fingerprint) if known_fingerprint == fingerprint => HostKeyDecision::Match,
+        Some(_) => HostKeyDecision::Mismatch {
+            fingerprint: fingerprint.to_string(),
+        },
+        None => HostKeyDecision::Unknown {
+            fingerprint: fingerprint.to_string(),
+        },
     }
-    known_hosts.insert(key, fingerprint);
-    true
 }
 
-fn verify_known_host(
+fn evaluate_known_host(
     app: &AppHandle,
     host: &str,
     port: u16,
     server_public_key: &ssh_key::PublicKey,
-) -> Result<bool, String> {
+) -> Result<HostKeyDecision, String> {
     let fingerprint = server_public_key.fingerprint(HashAlg::Sha256).to_string();
     let path = app_data_file(app, "known-ssh-hosts.json")?;
-    let mut known_hosts = load_string_map(&path)?;
+    let known_hosts = load_string_map(&path)?;
     let key = known_host_key(host, port);
-    let trusted = trust_on_first_use(&mut known_hosts, key, fingerprint);
-    if trusted {
-        write_string_map(&path, &known_hosts)?;
-    }
-    Ok(trusted)
+    Ok(evaluate_host_key(&known_hosts, &key, &fingerprint))
+}
+
+/// Serializes read-modify-write on `known-ssh-hosts.json`.
+///
+/// Two sessions connecting to different unknown hosts at the same time would
+/// otherwise both load the same snapshot, and the second write would drop the
+/// first host key -- silently discarding security-relevant state.
+static KNOWN_HOSTS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn known_hosts_lock() -> &'static Mutex<()> {
+    KNOWN_HOSTS_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Serializes read-modify-write on `ssh-history.json`.
+static SSH_HISTORY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn ssh_history_lock() -> &'static Mutex<()> {
+    SSH_HISTORY_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn persist_known_host(
+    app: &AppHandle,
+    host: &str,
+    port: u16,
+    fingerprint: &str,
+) -> Result<(), String> {
+    let _guard = known_hosts_lock()
+        .lock()
+        .map_err(|e| format!("已知主机锁获取失败：{e}"))?;
+    let path = app_data_file(app, "known-ssh-hosts.json")?;
+    let mut known_hosts = load_string_map(&path)?;
+    known_hosts.insert(known_host_key(host, port), fingerprint.to_string());
+    write_string_map(&path, &known_hosts)
 }
 
 fn emit_session_event(
@@ -166,6 +489,36 @@ fn remove_session(state: &Arc<SshSessionState>, session_id: &str) {
     if let Ok(mut sessions) = state.sessions.lock() {
         sessions.remove(session_id);
     }
+}
+
+fn close_sessions_for_window(state: &SshSessionState, window_label: &str) {
+    let senders: Vec<_> = match state.sessions.lock() {
+        Ok(sessions) => sessions
+            .values()
+            .filter(|entry| entry.window_label == window_label)
+            .map(|entry| entry.tx.clone())
+            .collect(),
+        Err(_) => return,
+    };
+    for sender in senders {
+        let _ = sender.send(SshCommand::Close);
+    }
+    if let Ok(mut pending) = pending_host_key_prompts().lock() {
+        pending.retain(|_, prompt| prompt.window_label != window_label);
+    }
+}
+
+/// Bind host for local/dynamic forwards. Rejects non-loopback addresses so the
+/// unauthenticated SOCKS5 listener cannot be exposed on the LAN.
+fn normalize_port_forward_bind_host(host: &str) -> Result<String, String> {
+    let trimmed = host.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("localhost") || trimmed == "127.0.0.1" {
+        return Ok("127.0.0.1".to_string());
+    }
+    if trimmed == "::1" || trimmed.eq_ignore_ascii_case("[::1]") {
+        return Ok("::1".to_string());
+    }
+    Err("端口转发仅允许绑定本机回环地址（127.0.0.1 或 ::1）".to_string())
 }
 
 fn validate_host(host: &str) -> Result<String, String> {
@@ -204,10 +557,12 @@ fn validate_username(username: Option<&str>) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+#[cfg(desktop)]
 fn require_username(username: Option<&str>) -> Result<String, String> {
     validate_username(username)?.ok_or_else(|| "SSH Username 为空，无法建立连接".to_string())
 }
 
+#[cfg(desktop)]
 fn require_password(password: Option<&str>) -> Result<String, String> {
     password
         .map(str::trim)
@@ -216,6 +571,7 @@ fn require_password(password: Option<&str>) -> Result<String, String> {
         .ok_or_else(|| "SSH Password 为空，无法为 VS Code 配置免密登录".to_string())
 }
 
+#[cfg(desktop)]
 fn sanitize_alias_part(value: &str) -> String {
     let mut sanitized = String::new();
     for ch in value.chars() {
@@ -232,6 +588,7 @@ fn sanitize_alias_part(value: &str) -> String {
         .collect::<String>()
 }
 
+#[cfg(desktop)]
 fn vscode_ssh_alias(request: &SshConnectionRequest) -> Result<String, String> {
     let host = validate_host(&request.host)?;
     let username = require_username(request.username.as_deref())?;
@@ -264,13 +621,43 @@ fn validate_external_url(url: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
-fn validate_local_path(path: &str) -> Result<PathBuf, String> {
+/// UNC / network share paths (`\\host\share`, `\\?\...`).
+///
+/// Opening one can mount an attacker-controlled SMB share and, for `open`, run
+/// a binary straight off it. Neither command has a legitimate need for them.
+#[cfg(desktop)]
+fn is_unc_path(path: &str) -> bool {
+    let normalized = path.replace('/', "\\");
+    normalized.starts_with("\\\\")
+}
+
+/// Extensions `open_local_path` will hand to the OS handler.
+///
+/// An allowlist, not a denylist: on Windows the set of directly executable
+/// extensions is large and keeps growing (exe, bat, cmd, com, scr, pif, msi,
+/// hta, cpl, lnk, reg, vbs, wsf, ps1, ...), so enumerating what is dangerous is
+/// a losing game. Remote storage controls the file name of anything the user
+/// downloads, so "open the file I just downloaded" must not be able to become
+/// "execute a program". Anything not listed here can still be located with
+/// `reveal_local_path`, which only selects the file in the file manager.
+#[cfg(desktop)]
+const OPENABLE_EXTENSIONS: &[&str] = &[
+    "txt", "log", "json", "csv", "tsv", "md", "yaml", "yml", "xml", "ini", "conf", "toml", "pdf",
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "zip", "tar", "gz", "tgz", "bz2", "xz", "7z",
+    "rar", "mp4", "mkv", "mov", "mp3", "wav",
+];
+
+#[cfg(desktop)]
+fn validate_existing_path(path: &str) -> Result<PathBuf, String> {
     let path = path.trim();
     if path.is_empty() {
         return Err("本地路径为空，无法打开".to_string());
     }
     if path.chars().any(char::is_control) {
         return Err("本地路径包含不支持的字符".to_string());
+    }
+    if is_unc_path(path) {
+        return Err("出于安全考虑，不支持访问网络共享路径".to_string());
     }
     let path = PathBuf::from(path);
     if !path.exists() {
@@ -279,7 +666,76 @@ fn validate_local_path(path: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-#[cfg(target_os = "windows")]
+/// Target for "reveal in file manager". Never executes, so only the basics.
+#[cfg(desktop)]
+fn validate_reveal_target(path: &str) -> Result<PathBuf, String> {
+    validate_existing_path(path)
+}
+
+/// Target for "open with the system handler". Restricted to inert file types.
+#[cfg(desktop)]
+fn validate_open_target(path: &str) -> Result<PathBuf, String> {
+    let path = validate_existing_path(path)?;
+    if path.is_dir() {
+        return Ok(path);
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !OPENABLE_EXTENSIONS.contains(&extension.as_str()) {
+        return Err(format!(
+            "出于安全考虑，不支持直接打开该类型文件（.{extension}）。请改用「在文件夹中显示」。"
+        ));
+    }
+    Ok(path)
+}
+
+/// Target for a download that does not exist yet.
+///
+/// Validates the *parent directory* rather than the file. The previous shared
+/// validator required the target to already exist, which made this command both
+/// unusable for real downloads and, when the target did exist, an
+/// overwrite-arbitrary-file primitive.
+#[cfg(desktop)]
+fn validate_download_target(path: &str, allowed_roots: &[PathBuf]) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("下载目标路径为空".to_string());
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("下载目标路径包含不支持的字符".to_string());
+    }
+    if is_unc_path(trimmed) {
+        return Err("出于安全考虑，不支持下载到网络共享路径".to_string());
+    }
+
+    let target = PathBuf::from(trimmed);
+    let parent = target
+        .parent()
+        .ok_or_else(|| "无法定位下载目标目录".to_string())?;
+    // Canonicalize the parent (it must exist) so `..` segments and symlinks
+    // cannot escape the allowed roots.
+    let parent = parent
+        .canonicalize()
+        .map_err(|error| format!("下载目标目录不存在：{error}"))?;
+    let file_name = target
+        .file_name()
+        .ok_or_else(|| "下载目标缺少文件名".to_string())?;
+
+    let allowed = allowed_roots.iter().any(|root| match root.canonicalize() {
+        Ok(root) => parent.starts_with(&root),
+        Err(_) => false,
+    });
+    if !allowed {
+        return Err("出于安全考虑，只能下载到下载目录或应用数据目录".to_string());
+    }
+
+    Ok(parent.join(file_name))
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
 fn open_path_with_system(path: &Path) -> Result<(), String> {
     Command::new("rundll32")
         .arg("url.dll,FileProtocolHandler")
@@ -289,7 +745,7 @@ fn open_path_with_system(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法打开本地路径：{error}"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(desktop, target_os = "macos"))]
 fn open_path_with_system(path: &Path) -> Result<(), String> {
     Command::new("open")
         .arg(path)
@@ -298,7 +754,7 @@ fn open_path_with_system(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法打开本地路径：{error}"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(desktop, target_os = "linux"))]
 fn open_path_with_system(path: &Path) -> Result<(), String> {
     Command::new("xdg-open")
         .arg(path)
@@ -307,12 +763,7 @@ fn open_path_with_system(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法打开本地路径：{error}"))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn open_path_with_system(_path: &Path) -> Result<(), String> {
-    Err("当前平台暂不支持打开本地路径".to_string())
-}
-
-#[cfg(target_os = "windows")]
+#[cfg(all(desktop, target_os = "windows"))]
 fn reveal_path_with_system(path: &Path) -> Result<(), String> {
     Command::new("explorer")
         .arg(format!("/select,{}", path.to_string_lossy()))
@@ -321,7 +772,7 @@ fn reveal_path_with_system(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法打开所在文件夹：{error}"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(desktop, target_os = "macos"))]
 fn reveal_path_with_system(path: &Path) -> Result<(), String> {
     Command::new("open")
         .arg("-R")
@@ -331,7 +782,7 @@ fn reveal_path_with_system(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法打开所在文件夹：{error}"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(desktop, target_os = "linux"))]
 fn reveal_path_with_system(path: &Path) -> Result<(), String> {
     let directory = if path.is_dir() {
         path
@@ -345,11 +796,7 @@ fn reveal_path_with_system(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法打开所在文件夹：{error}"))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn reveal_path_with_system(_path: &Path) -> Result<(), String> {
-    Err("当前平台暂不支持打开所在文件夹".to_string())
-}
-
+#[cfg(desktop)]
 fn user_ssh_dir() -> Result<PathBuf, String> {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -358,6 +805,7 @@ fn user_ssh_dir() -> Result<PathBuf, String> {
     Ok(home.join(".ssh"))
 }
 
+#[cfg(desktop)]
 fn ensure_vscode_key(app: &AppHandle) -> Result<(PathBuf, String), String> {
     let key_dir = app
         .path()
@@ -403,6 +851,7 @@ fn ensure_vscode_key(app: &AppHandle) -> Result<(PathBuf, String), String> {
     Ok((private_key, public_key_text))
 }
 
+#[cfg(desktop)]
 fn ssh_config_identity_path(path: &Path) -> String {
     format!(
         "\"{}\"",
@@ -412,20 +861,13 @@ fn ssh_config_identity_path(path: &Path) -> String {
     )
 }
 
-fn write_vscode_ssh_config(
-    request: &SshConnectionRequest,
-    alias: &str,
-    identity_file: &Path,
-) -> Result<(), String> {
-    let host = validate_host(&request.host)?;
-    let username = require_username(request.username.as_deref())?;
-    let port = parse_port(request.port.as_deref())?;
-    let ssh_dir = user_ssh_dir()?;
-    fs::create_dir_all(&ssh_dir).map_err(|error| format!("无法创建本机 SSH 配置目录：{error}"))?;
-    let config_path = ssh_dir.join("config");
-    let current = fs::read_to_string(&config_path).unwrap_or_default();
-    let start_marker = format!("# >>> EasyConsole {alias}");
-    let end_marker = format!("# <<< EasyConsole {alias}");
+/// Remove a previously written EasyConsole block, keeping every other line.
+///
+/// Returns `None` when a start marker is found without its matching end marker.
+/// In that case the remainder of the file has already been swallowed by the
+/// skip state, so the caller must abort rather than persist the result.
+#[cfg(desktop)]
+fn strip_easy_console_block(current: &str, start_marker: &str, end_marker: &str) -> Option<String> {
     let mut next = String::new();
     let mut skipping = false;
 
@@ -444,6 +886,80 @@ fn write_vscode_ssh_config(
         }
     }
 
+    if skipping {
+        return None;
+    }
+    Some(next)
+}
+
+/// Replace the user's SSH config atomically, keeping a recoverable copy.
+///
+/// A plain `fs::write` here is dangerous: a partial write leaves a truncated
+/// config, which in turn produces an unpaired EasyConsole marker, which the
+/// block parser would then treat as "skip everything after it". That failure
+/// mode compounds, so the write must be all-or-nothing.
+#[cfg(desktop)]
+fn write_user_ssh_config(config_path: &Path, contents: &str) -> Result<(), String> {
+    let parent = config_path
+        .parent()
+        .ok_or_else(|| "无法定位本机 SSH 配置目录".to_string())?;
+    let file_name = config_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config");
+    let tmp_path = parent.join(format!("{file_name}.easy-console.tmp"));
+
+    // Copy (not rename) so the original stays intact until the final rename.
+    if config_path.exists() {
+        let bak_path = parent.join(format!("{file_name}.easy-console.bak"));
+        fs::copy(config_path, &bak_path)
+            .map_err(|error| format!("无法备份本机 SSH 配置：{error}"))?;
+    }
+
+    fs::write(&tmp_path, contents)
+        .map_err(|error| format!("无法写入本机 SSH 配置临时文件：{error}"))?;
+
+    // Preserve the existing mode so we never loosen a config the user tightened.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(config_path)
+            .ok()
+            .map(|meta| meta.permissions().mode() & 0o777)
+            .unwrap_or(0o600);
+        let _ = fs::set_permissions(&tmp_path, fs::Permissions::from_mode(mode));
+    }
+
+    fs::rename(&tmp_path, config_path).map_err(|error| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("无法提交本机 SSH 配置写入：{error}")
+    })
+}
+
+#[cfg(desktop)]
+fn write_vscode_ssh_config(
+    request: &SshConnectionRequest,
+    alias: &str,
+    identity_file: &Path,
+) -> Result<(), String> {
+    let host = validate_host(&request.host)?;
+    let username = require_username(request.username.as_deref())?;
+    let port = parse_port(request.port.as_deref())?;
+    let ssh_dir = user_ssh_dir()?;
+    fs::create_dir_all(&ssh_dir).map_err(|error| format!("无法创建本机 SSH 配置目录：{error}"))?;
+    let config_path = ssh_dir.join("config");
+    let current = fs::read_to_string(&config_path).unwrap_or_default();
+    let start_marker = format!("# >>> EasyConsole {alias}");
+    let end_marker = format!("# <<< EasyConsole {alias}");
+
+    let mut next = strip_easy_console_block(&current, &start_marker, &end_marker).ok_or_else(|| {
+        format!(
+            "本机 SSH 配置中的 EasyConsole 标记不完整：找到「{start_marker}」但缺少对应的「{end_marker}」。\
+             为避免误删配置，本次未做任何修改。请手动修复 {} 后重试。",
+            config_path.display()
+        )
+    })?;
+
     if !next.ends_with('\n') {
         next.push('\n');
     }
@@ -452,14 +968,15 @@ fn write_vscode_ssh_config(
         ssh_config_identity_path(identity_file),
     ));
 
-    fs::write(&config_path, next).map_err(|error| format!("无法写入本机 SSH 配置：{error}"))
+    write_user_ssh_config(&config_path, &next)
 }
 
+#[cfg(desktop)]
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(desktop, target_os = "windows"))]
 fn open_url_in_browser(url: &str) -> Result<(), String> {
     Command::new("rundll32")
         .arg("url.dll,FileProtocolHandler")
@@ -469,7 +986,7 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
         .map_err(|error| format!("无法打开浏览器：{error}"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(desktop, target_os = "macos"))]
 fn open_url_in_browser(url: &str) -> Result<(), String> {
     Command::new("open")
         .arg(url)
@@ -478,7 +995,7 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
         .map_err(|error| format!("无法打开浏览器：{error}"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(desktop, target_os = "linux"))]
 fn open_url_in_browser(url: &str) -> Result<(), String> {
     Command::new("xdg-open")
         .arg(url)
@@ -487,11 +1004,7 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
         .map_err(|error| format!("无法打开浏览器：{error}"))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn open_url_in_browser(_url: &str) -> Result<(), String> {
-    Err("当前平台暂不支持打开系统浏览器".to_string())
-}
-
+#[cfg(desktop)]
 fn ssh_args(request: &SshConnectionRequest) -> Result<Vec<String>, String> {
     let host = validate_host(&request.host)?;
     let mut args = Vec::new();
@@ -516,7 +1029,7 @@ fn ssh_args(request: &SshConnectionRequest) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(desktop, target_os = "windows"))]
 fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
     let args = ssh_args(request)?;
     let mut wt_args = vec![
@@ -548,7 +1061,7 @@ fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(desktop, target_os = "macos"))]
 fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
     let args = ssh_args(request)?;
     let escaped = args
@@ -566,7 +1079,7 @@ fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
         .map_err(|error| format!("无法打开系统终端：{error}"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(desktop, target_os = "linux"))]
 fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
     let args = ssh_args(request)?;
     let terminals = [
@@ -596,11 +1109,7 @@ fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
     Err("无法打开系统终端，请确认本机已安装终端和 ssh 客户端".to_string())
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn spawn_ssh_terminal(_request: &SshConnectionRequest) -> Result<(), String> {
-    Err("当前平台暂不支持桌面端 SSH 启动".to_string())
-}
-
+#[cfg(desktop)]
 fn spawn_vscode_ssh(alias: &str) -> Result<(), String> {
     let authority = format!("ssh-remote+{alias}");
 
@@ -623,6 +1132,7 @@ fn spawn_vscode_ssh(alias: &str) -> Result<(), String> {
     open_url_in_browser(&uri).map_err(|error| format!("无法打开 VS Code：{error}"))
 }
 
+#[cfg(desktop)]
 async fn install_vscode_public_key(
     app: &AppHandle,
     request: &SshConnectionRequest,
@@ -643,14 +1153,30 @@ async fn install_vscode_public_key(
         keepalive_max: 0,
         ..<_>::default()
     });
+    let host_key_error = Arc::new(Mutex::new(None));
     let handler = EasyConsoleSshClient {
         app: app.clone(),
+        session_id: "vscode-setup".to_string(),
         host: host.clone(),
         port,
+        host_key_error: Arc::clone(&host_key_error),
+        allow_host_key_prompt: false,
+        window_label: String::new(),
     };
-    let mut session = client::connect(config, (host.as_str(), port), handler)
-        .await
-        .map_err(|error| format!("SSH 连接失败，无法配置 VS Code 免密：{error}"))?;
+    let mut session = tokio::time::timeout(
+        Duration::from_secs(15),
+        client::connect(config, (host.as_str(), port), handler),
+    )
+    .await
+    .map_err(|_| "SSH 连接超时，无法配置 VS Code 免密，请检查网络和主机是否可达".to_string())?
+    .map_err(|error| {
+        if let Ok(guard) = host_key_error.lock() {
+            if let Some(message) = guard.as_ref() {
+                return message.clone();
+            }
+        }
+        format!("SSH 连接失败，无法配置 VS Code 免密：{error}")
+    })?;
 
     let auth = session
         .authenticate_password(username, password)
@@ -702,6 +1228,7 @@ async fn install_vscode_public_key(
     Ok(())
 }
 
+#[cfg(desktop)]
 async fn prepare_vscode_ssh(
     app: &AppHandle,
     request: &SshConnectionRequest,
@@ -713,11 +1240,131 @@ async fn prepare_vscode_ssh(
     Ok(alias)
 }
 
+fn format_socks5_ipv6_host(addr: &[u8; 16]) -> String {
+    let ip = std::net::Ipv6Addr::from(*addr);
+    format!("[{ip}]")
+}
+
+async fn socks5_handshake(stream: &mut tokio::net::TcpStream) -> Result<(String, u16), String> {
+    // Greeting: version(1) + num_methods(1) + methods(N)
+    let mut greeting = [0u8; 2];
+    stream
+        .read_exact(&mut greeting)
+        .await
+        .map_err(|e| format!("SOCKS5 读取问候失败：{e}"))?;
+    if greeting[0] != 5 {
+        return Err("SOCKS5 版本不匹配".to_string());
+    }
+    let mut methods = vec![0u8; greeting[1] as usize];
+    stream
+        .read_exact(&mut methods)
+        .await
+        .map_err(|e| format!("SOCKS5 读取方法失败：{e}"))?;
+    // Reply: no auth
+    stream
+        .write_all(&[5, 0])
+        .await
+        .map_err(|e| format!("SOCKS5 写入方法回复失败：{e}"))?;
+
+    // Request: version(1) + cmd(1) + rsv(1) + atyp(1) + addr + port(2)
+    let mut header = [0u8; 4];
+    stream
+        .read_exact(&mut header)
+        .await
+        .map_err(|e| format!("SOCKS5 读取请求失败：{e}"))?;
+    if header[0] != 5 {
+        return Err("SOCKS5 请求版本不匹配".to_string());
+    }
+    if header[1] != 1 {
+        // Only CONNECT supported
+        let _ = stream.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+        return Err("SOCKS5 仅支持 CONNECT 命令".to_string());
+    }
+    let dest_host = match header[3] {
+        1 => {
+            // IPv4
+            let mut addr = [0u8; 4];
+            stream
+                .read_exact(&mut addr)
+                .await
+                .map_err(|e| format!("SOCKS5 读取 IPv4 地址失败：{e}"))?;
+            format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3])
+        }
+        3 => {
+            // Domain
+            let mut len_buf = [0u8; 1];
+            stream
+                .read_exact(&mut len_buf)
+                .await
+                .map_err(|e| format!("SOCKS5 读取域名长度失败：{e}"))?;
+            let mut domain = vec![0u8; len_buf[0] as usize];
+            stream
+                .read_exact(&mut domain)
+                .await
+                .map_err(|e| format!("SOCKS5 读取域名失败：{e}"))?;
+            String::from_utf8_lossy(&domain).to_string()
+        }
+        4 => {
+            // IPv6
+            let mut addr = [0u8; 16];
+            stream
+                .read_exact(&mut addr)
+                .await
+                .map_err(|e| format!("SOCKS5 读取 IPv6 地址失败：{e}"))?;
+            format_socks5_ipv6_host(&addr)
+        }
+        _ => {
+            let _ = stream.write_all(&[5, 8, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+            return Err("SOCKS5 不支持的地址类型".to_string());
+        }
+    };
+    let mut port_buf = [0u8; 2];
+    stream
+        .read_exact(&mut port_buf)
+        .await
+        .map_err(|e| format!("SOCKS5 读取端口失败：{e}"))?;
+    let dest_port = u16::from_be_bytes(port_buf);
+
+    // Reply: success
+    stream
+        .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
+        .await
+        .map_err(|e| format!("SOCKS5 写入回复失败：{e}"))?;
+
+    Ok((dest_host, dest_port))
+}
+
+/// Resolve a user-supplied SFTP path that may use the "~" home shortcut.
+/// SFTP protocol does not expand "~" (that's a shell convention), so we
+/// canonicalize(".") once to get the absolute home directory and substitute.
+async fn resolve_sftp_path(sftp: &SftpSession, path: &str) -> Result<String, String> {
+    if path == "~" || path == "~/" {
+        return sftp
+            .canonicalize(".")
+            .await
+            .map_err(|e| format!("SFTP 解析家目录失败：{e}"));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = sftp
+            .canonicalize(".")
+            .await
+            .map_err(|e| format!("SFTP 解析家目录失败：{e}"))?;
+        let rest = rest.trim_start_matches('/');
+        return Ok(if home.ends_with('/') {
+            format!("{home}{rest}")
+        } else {
+            format!("{home}/{rest}")
+        });
+    }
+    Ok(path.to_string())
+}
+
 async fn run_russh_session(
     app: AppHandle,
     session_id: String,
     request: SshConnectionRequest,
     mut rx: mpsc::UnboundedReceiver<SshCommand>,
+    window_label: String,
 ) -> Result<(), String> {
     let host = validate_host(&request.host)?;
     let port = parse_port(request.port.as_deref())?;
@@ -728,48 +1375,104 @@ async fn run_russh_session(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "SSH Password 为空，无法自动登录".to_string())?
-        .to_string();
+        .map(str::to_string);
+    let auth_mode = request.auth_mode.as_deref().unwrap_or("password");
     let cols = request.cols.unwrap_or(DEFAULT_COLS).max(1);
     let rows = request.rows.unwrap_or(DEFAULT_ROWS).max(1);
+    let keepalive = Duration::from_secs(request.keepalive_interval_sec.unwrap_or(20));
+    let connect_timeout = Duration::from_secs(request.connect_timeout_sec.unwrap_or(15));
+    let term_type = request.term_type.as_deref().unwrap_or("xterm-256color");
+
+    // In password mode, password is required. In key mode, it's optional (used as passphrase).
+    if auth_mode == "password" && password.is_none() {
+        return Err("SSH Password 为空，无法自动登录".to_string());
+    }
 
     emit_session_event(
         &app,
         &session_id,
         "status",
-            None,
-            Some(format!("正在连接 {host}:{port}")),
+        None,
+        Some(format!("正在连接 {host}:{port}")),
     );
 
     let config = Arc::new(client::Config {
         inactivity_timeout: None,
-        keepalive_interval: Some(Duration::from_secs(20)),
+        keepalive_interval: Some(keepalive),
         keepalive_max: 0,
         ..<_>::default()
     });
+    let host_key_error = Arc::new(Mutex::new(None));
     let handler = EasyConsoleSshClient {
         app: app.clone(),
+        session_id: session_id.clone(),
         host: host.clone(),
         port,
+        host_key_error: Arc::clone(&host_key_error),
+        allow_host_key_prompt: true,
+        window_label,
     };
-    let mut session = client::connect(config, (host.as_str(), port), handler)
+    let tcp_stream = tokio::time::timeout(
+        connect_timeout,
+        tokio::net::TcpStream::connect((host.as_str(), port)),
+    )
+    .await
+    .map_err(|_| "SSH 连接超时，请检查网络和主机是否可达".to_string())?
+    .map_err(|error| format!("SSH 连接失败：{error}"))?;
+    // Host-key confirmation (up to 120s) lives inside russh handshake, so it
+    // must not share the TCP connect timeout.
+    let mut session = client::connect_stream(config, tcp_stream, handler)
         .await
-        .map_err(|error| format!("SSH 连接失败：{error}"))?;
+        .map_err(|error| {
+            if let Ok(guard) = host_key_error.lock() {
+                if let Some(message) = guard.as_ref() {
+                    return message.clone();
+                }
+            }
+            format!("SSH 连接失败：{error}")
+        })?;
 
-    let auth = session
-        .authenticate_password(username, password)
-        .await
-        .map_err(|error| format!("SSH 认证失败：{error}"))?;
-    if !auth.success() {
-        return Err("SSH 认证失败：用户名或密码不正确".to_string());
+    let auth_success = if auth_mode == "key" {
+        let key_path = request
+            .ssh_key_path
+            .as_deref()
+            .ok_or_else(|| "SSH 密钥路径为空".to_string())?;
+        let passphrase = password.as_deref();
+        let key_pair = russh::keys::load_secret_key(key_path, passphrase)
+            .map_err(|e| format!("SSH 密钥加载失败：{e}"))?;
+        let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(key_pair), Some(HashAlg::Sha256));
+        session
+            .authenticate_publickey(&username, key_with_hash)
+            .await
+            .map_err(|error| format!("SSH 密钥认证失败：{error}"))?
+    } else {
+        let pwd = password
+            .as_deref()
+            .ok_or_else(|| "SSH Password 为空，无法自动登录".to_string())?;
+        session
+            .authenticate_password(&username, pwd)
+            .await
+            .map_err(|error| format!("SSH 认证失败：{error}"))?
+    };
+    if !auth_success.success() {
+        return Err(if auth_mode == "key" {
+            "SSH 密钥认证失败：密钥被拒绝".to_string()
+        } else {
+            "SSH 认证失败：用户名或密码不正确".to_string()
+        });
     }
+
+    // Wrap in Arc after authentication so it can be shared with spawned port
+    // forwarding tasks. Authentication methods require &mut self, so the Arc
+    // must come after all mutable calls.
+    let session = Arc::new(session);
 
     let mut channel = session
         .channel_open_session()
         .await
         .map_err(|error| format!("SSH 会话打开失败：{error}"))?;
     channel
-        .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
+        .request_pty(false, term_type, cols, rows, 0, 0, &[])
         .await
         .map_err(|error| format!("SSH PTY 请求失败：{error}"))?;
     channel
@@ -785,27 +1488,388 @@ async fn run_russh_session(
         Some("SSH 已连接".to_string()),
     );
 
+    let mut output_buffer = String::new();
+    let mut flush_interval = tokio::time::interval(Duration::from_millis(16));
+    flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut sftp_session: Option<SftpSession> = None;
+    let mut port_forward_handles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+
     loop {
         tokio::select! {
             command = rx.recv() => {
                 match command {
                     Some(SshCommand::Write(data)) => {
-                        channel
-                            .data(data.as_bytes())
-                            .await
-                            .map_err(|error| format!("SSH 写入失败：{error}"))?;
+                        if let Err(error) = channel.data(data.as_bytes()).await {
+                            emit_session_event(
+                                &app,
+                                &session_id,
+                                "error",
+                                None,
+                                Some(format!("SSH 写入失败：{error}")),
+                            );
+                            break;
+                        }
                     }
                     Some(SshCommand::Resize { cols, rows }) => {
-                        channel
+                        if let Err(error) = channel
                             .window_change(cols.max(1), rows.max(1), 0, 0)
                             .await
-                            .map_err(|error| format!("SSH 窗口尺寸更新失败：{error}"))?;
+                        {
+                            emit_session_event(
+                                &app,
+                                &session_id,
+                                "error",
+                                None,
+                                Some(format!("SSH 窗口尺寸更新失败：{error}")),
+                            );
+                            break;
+                        }
                     }
                     Some(SshCommand::Close) | None => {
-                        let _ = channel.eof().await;
-                        let _ = channel.close().await;
-                        let _ = session.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+                        if !output_buffer.is_empty() {
+                            emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
+                        }
                         break;
+                    }
+                    Some(SshCommand::SftpList { path, response }) => {
+                        let result = async {
+                            if sftp_session.is_none() {
+                                let sftp_channel = session.channel_open_session().await
+                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                sftp_channel.request_subsystem(true, "sftp").await
+                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
+                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                            }
+                            let sftp = sftp_session.as_ref().unwrap();
+                            let effective_path = resolve_sftp_path(sftp, &path).await?;
+                            let mut entries = Vec::new();
+                            let read_dir = sftp.read_dir(&effective_path).await
+                                .map_err(|e| format!("SFTP 列目录失败：{e}"))?;
+                            for entry in read_dir {
+                                let name = entry.file_name();
+                                let file_type = entry.file_type();
+                                let metadata = entry.metadata();
+                                let size = metadata.size.unwrap_or(0);
+                                let modified_at = metadata.mtime.map(|t| (t as i64) * 1000).unwrap_or(0);
+                                let perms = metadata.permissions.unwrap_or(0);
+                                let permissions = format!("{perms:04o}");
+                                let is_dir = file_type.is_dir();
+                                let is_file = file_type.is_file();
+                                let is_symlink = file_type.is_symlink();
+                                let long_name = format!("{} {} {}", permissions, size, name);
+                                entries.push(SftpEntryValue { name, long_name, is_dir, is_file, is_symlink, size, modified_at, permissions });
+                            }
+                            Ok::<Vec<SftpEntryValue>, String>(entries)
+                        }.await;
+                        match result {
+                            Ok(entries) => { let _ = response.send(Ok(entries)); }
+                            Err(e) => {
+                                sftp_session.take();
+                                let _ = response.send(Err(e));
+                            }
+                        }
+                    }
+                    Some(SshCommand::SftpUpload { local_path, remote_path, response }) => {
+                        let result = async {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                            if sftp_session.is_none() {
+                                let sftp_channel = session.channel_open_session().await
+                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                sftp_channel.request_subsystem(true, "sftp").await
+                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
+                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                            }
+                            let sftp = sftp_session.as_ref().unwrap();
+                            let remote_path = resolve_sftp_path(sftp, &remote_path).await?;
+                            let mut local = tokio::fs::File::open(&local_path).await
+                                .map_err(|e| format!("读取本地文件失败：{e}"))?;
+                            let total = local.metadata().await.map(|m| m.len()).unwrap_or(0);
+                            let mut remote = sftp.create(&remote_path).await
+                                .map_err(|e| format!("创建远端文件失败：{e}"))?;
+                            emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":0,"total":{total}}}"#)), None);
+                            let mut buf = vec![0_u8; 64 * 1024];
+                            let mut transferred: u64 = 0;
+                            loop {
+                                let n = local.read(&mut buf).await.map_err(|e| format!("读取本地文件失败：{e}"))?;
+                                if n == 0 { break; }
+                                remote.write_all(&buf[..n]).await.map_err(|e| format!("SFTP 上传失败：{e}"))?;
+                                transferred += n as u64;
+                                emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":{transferred},"total":{total}}}"#)), None);
+                            }
+                            remote.flush().await.map_err(|e| format!("SFTP 刷新失败：{e}"))?;
+                            remote.shutdown().await.map_err(|e| format!("SFTP 关闭失败：{e}"))?;
+                            Ok::<(), String>(())
+                        }.await;
+                        match result {
+                            Ok(()) => { let _ = response.send(Ok(())); }
+                            Err(e) => {
+                                sftp_session.take();
+                                let _ = response.send(Err(e));
+                            }
+                        }
+                    }
+                    Some(SshCommand::SftpDownload { remote_path, local_path, response }) => {
+                        let result = async {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                            if sftp_session.is_none() {
+                                let sftp_channel = session.channel_open_session().await
+                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                sftp_channel.request_subsystem(true, "sftp").await
+                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
+                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                            }
+                            let sftp = sftp_session.as_ref().unwrap();
+                            let remote_path = resolve_sftp_path(sftp, &remote_path).await?;
+                            let mut remote = sftp.open(&remote_path).await
+                                .map_err(|e| format!("打开远端文件失败：{e}"))?;
+                            let total = remote.metadata().await.ok().and_then(|m| m.size).unwrap_or(0);
+                            let part_path = format!("{local_path}.part");
+                            let mut local = tokio::fs::File::create(&part_path).await
+                                .map_err(|e| format!("创建本地临时文件失败：{e}"))?;
+                            emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":0,"total":{total}}}"#)), None);
+                            let mut buf = vec![0_u8; 64 * 1024];
+                            let mut transferred: u64 = 0;
+                            loop {
+                                let n = remote.read(&mut buf).await.map_err(|e| format!("SFTP 下载失败：{e}"))?;
+                                if n == 0 { break; }
+                                local.write_all(&buf[..n]).await.map_err(|e| format!("写入本地文件失败：{e}"))?;
+                                transferred += n as u64;
+                                emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":{transferred},"total":{total}}}"#)), None);
+                            }
+                            local.flush().await.map_err(|e| format!("刷新本地文件失败：{e}"))?;
+                            drop(local);
+                            tokio::fs::rename(&part_path, &local_path).await
+                                .map_err(|e| format!("完成下载重命名失败：{e}"))?;
+                            let _ = remote.shutdown().await;
+                            Ok::<(), String>(())
+                        }.await;
+                        match result {
+                            Ok(()) => { let _ = response.send(Ok(())); }
+                            Err(e) => {
+                                sftp_session.take();
+                                let _ = response.send(Err(e));
+                            }
+                        }
+                    }
+                    Some(SshCommand::SftpDelete { path, response }) => {
+                        let result = async {
+                            if sftp_session.is_none() {
+                                let sftp_channel = session.channel_open_session().await
+                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                sftp_channel.request_subsystem(true, "sftp").await
+                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
+                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                            }
+                            let sftp = sftp_session.as_ref().unwrap();
+                            let path = resolve_sftp_path(sftp, &path).await?;
+                            let metadata = sftp.metadata(&path).await
+                                .map_err(|e| format!("SFTP 获取文件信息失败：{e}"))?;
+                            if metadata.is_dir() {
+                                sftp.remove_dir(&path).await
+                                    .map_err(|e| format!("SFTP 删除目录失败：{e}"))?;
+                            } else {
+                                sftp.remove_file(&path).await
+                                    .map_err(|e| format!("SFTP 删除文件失败：{e}"))?;
+                            }
+                            Ok::<(), String>(())
+                        }.await;
+                        match result {
+                            Ok(()) => { let _ = response.send(Ok(())); }
+                            Err(e) => {
+                                sftp_session.take();
+                                let _ = response.send(Err(e));
+                            }
+                        }
+                    }
+                    Some(SshCommand::SftpRename { old_path, new_path, response }) => {
+                        let result = async {
+                            if sftp_session.is_none() {
+                                let sftp_channel = session.channel_open_session().await
+                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                sftp_channel.request_subsystem(true, "sftp").await
+                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
+                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                            }
+                            let sftp = sftp_session.as_ref().unwrap();
+                            let old_path = resolve_sftp_path(sftp, &old_path).await?;
+                            let new_path = resolve_sftp_path(sftp, &new_path).await?;
+                            sftp.rename(&old_path, &new_path).await
+                                .map_err(|e| format!("SFTP 重命名失败：{e}"))?;
+                            Ok::<(), String>(())
+                        }.await;
+                        match result {
+                            Ok(()) => { let _ = response.send(Ok(())); }
+                            Err(e) => {
+                                sftp_session.take();
+                                let _ = response.send(Err(e));
+                            }
+                        }
+                    }
+                    Some(SshCommand::SftpMkdir { path, response }) => {
+                        let result = async {
+                            if sftp_session.is_none() {
+                                let sftp_channel = session.channel_open_session().await
+                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                sftp_channel.request_subsystem(true, "sftp").await
+                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
+                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                            }
+                            let sftp = sftp_session.as_ref().unwrap();
+                            let path = resolve_sftp_path(sftp, &path).await?;
+                            sftp.create_dir(&path).await
+                                .map_err(|e| format!("SFTP 创建目录失败：{e}"))?;
+                            Ok::<(), String>(())
+                        }.await;
+                        match result {
+                            Ok(()) => { let _ = response.send(Ok(())); }
+                            Err(e) => {
+                                sftp_session.take();
+                                let _ = response.send(Err(e));
+                            }
+                        }
+                    }
+                    Some(SshCommand::StartPortForward { rule, response }) => {
+                        let rule_id = rule.id.clone();
+                        if rule.forward_type == "remote" {
+                            let _ = response.send(Err("远程端口转发 (-R) 暂不支持".to_string()));
+                            continue;
+                        }
+                        if port_forward_handles.contains_key(&rule_id) {
+                            let _ = response.send(Err("端口转发规则已在运行".to_string()));
+                            continue;
+                        }
+                        let bind_host = match normalize_port_forward_bind_host(&rule.local_host) {
+                            Ok(host) => host,
+                            Err(error) => {
+                                let _ = response.send(Err(error));
+                                continue;
+                            }
+                        };
+                        let session_clone = session.clone();
+                        let app_clone = app.clone();
+                        let session_id_clone = session_id.clone();
+                        let rule_clone = rule.clone();
+                        let handle = tokio::spawn(async move {
+                            let listener = match tokio::net::TcpListener::bind((
+                                bind_host.as_str(),
+                                rule_clone.local_port,
+                            ))
+                            .await
+                            {
+                                Ok(l) => l,
+                                Err(e) => {
+                                    emit_session_event(
+                                        &app_clone,
+                                        &session_id_clone,
+                                        "port-forward-status",
+                                        Some(
+                                            serde_json::json!({
+                                                "ruleId": rule_clone.id,
+                                                "active": false,
+                                                "error": format!("{e}"),
+                                            })
+                                            .to_string(),
+                                        ),
+                                        None,
+                                    );
+                                    return;
+                                }
+                            };
+                            emit_session_event(
+                                &app_clone,
+                                &session_id_clone,
+                                "port-forward-status",
+                                Some(
+                                    serde_json::json!({
+                                        "ruleId": rule_clone.id,
+                                        "active": true,
+                                    })
+                                    .to_string(),
+                                ),
+                                None,
+                            );
+                            let is_dynamic = rule_clone.forward_type == "dynamic";
+                            let remote_host = rule_clone.remote_host.clone();
+                            let remote_port = rule_clone.remote_port;
+                            loop {
+                                let (mut tcp_stream, peer_addr) = match listener.accept().await {
+                                    Ok(conn) => conn,
+                                    Err(_) => break,
+                                };
+                                let session = session_clone.clone();
+                                let app = app_clone.clone();
+                                let session_id = session_id_clone.clone();
+                                let rule_id = rule_clone.id.clone();
+                                let remote_host = remote_host.clone();
+                                tokio::spawn(async move {
+                                    let (dest_host, dest_port) = if is_dynamic {
+                                        match socks5_handshake(&mut tcp_stream).await {
+                                            Ok(result) => result,
+                                            Err(_) => return,
+                                        }
+                                    } else {
+                                        (remote_host, remote_port)
+                                    };
+                                    let channel = match session
+                                        .channel_open_direct_tcpip(
+                                            dest_host.as_str(),
+                                            dest_port.into(),
+                                            peer_addr.ip().to_string(),
+                                            peer_addr.port().into(),
+                                        )
+                                        .await
+                                    {
+                                        Ok(ch) => ch,
+                                        Err(e) => {
+                                            emit_session_event(
+                                                &app,
+                                                &session_id,
+                                                "port-forward-status",
+                                                Some(
+                                                    serde_json::json!({
+                                                        "ruleId": rule_id,
+                                                        "active": false,
+                                                        "error": format!("{e}"),
+                                                    })
+                                                    .to_string(),
+                                                ),
+                                                None,
+                                            );
+                                            return;
+                                        }
+                                    };
+                                    let mut channel_stream = channel.into_stream();
+                                    let _ = copy_bidirectional(&mut tcp_stream, &mut channel_stream).await;
+                                });
+                            }
+                        });
+                        port_forward_handles.insert(rule_id, handle);
+                        let _ = response.send(Ok(()));
+                    }
+                    Some(SshCommand::StopPortForward { rule_id, response }) => {
+                        if let Some(handle) = port_forward_handles.remove(&rule_id) {
+                            handle.abort();
+                        }
+                        emit_session_event(
+                            &app,
+                            &session_id,
+                            "port-forward-status",
+                            Some(
+                                serde_json::json!({
+                                    "ruleId": rule_id,
+                                    "active": false,
+                                })
+                                .to_string(),
+                            ),
+                            None,
+                        );
+                        let _ = response.send(Ok(()));
                     }
                 }
             }
@@ -815,18 +1879,21 @@ async fn run_russh_session(
                 };
                 match message {
                     ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
-                        emit_session_event(
-                            &app,
-                            &session_id,
-                            "output",
-                            Some(String::from_utf8_lossy(&data).to_string()),
-                            None,
-                        );
+                        output_buffer.push_str(&String::from_utf8_lossy(&data));
+                        if output_buffer.len() >= 8192 {
+                            emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
+                        }
                     }
                     ChannelMsg::ExitStatus { exit_status } => {
+                        if !output_buffer.is_empty() {
+                            emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
+                        }
                         emit_session_event(&app, &session_id, "status", None, Some(format!("SSH 进程已退出，状态码 {exit_status}")));
                     }
                     ChannelMsg::ExitSignal { signal_name, error_message, .. } => {
+                        if !output_buffer.is_empty() {
+                            emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
+                        }
                         emit_session_event(
                             &app,
                             &session_id,
@@ -836,19 +1903,47 @@ async fn run_russh_session(
                         );
                     }
                     ChannelMsg::Close | ChannelMsg::Eof => {
+                        if !output_buffer.is_empty() {
+                            emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
+                        }
                         break;
                     }
                     _ => {}
                 }
             }
+            _ = flush_interval.tick() => {
+                if !output_buffer.is_empty() {
+                    emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
+                }
+            }
         }
     }
+
+    if !output_buffer.is_empty() {
+        emit_session_event(
+            &app,
+            &session_id,
+            "output",
+            Some(std::mem::take(&mut output_buffer)),
+            None,
+        );
+    }
+    sftp_session.take();
+    for (_, handle) in port_forward_handles.drain() {
+        handle.abort();
+    }
+    let _ = channel.eof().await;
+    let _ = channel.close().await;
+    let _ = session
+        .disconnect(russh::Disconnect::ByApplication, "", "en")
+        .await;
 
     Ok(())
 }
 
 #[tauri::command]
 fn open_ssh_session(
+    window: tauri::WebviewWindow,
     app: AppHandle,
     state: State<'_, Arc<SshSessionState>>,
     request: SshConnectionRequest,
@@ -858,18 +1953,31 @@ fn open_ssh_session(
     validate_username(request.username.as_deref())?;
 
     let session_id = Uuid::new_v4().to_string();
+    let window_label = window.label().to_string();
     let (tx, rx) = mpsc::unbounded_channel();
     state
         .sessions
         .lock()
         .map_err(|_| "SSH 会话状态已损坏".to_string())?
-        .insert(session_id.clone(), tx);
+        .insert(
+            session_id.clone(),
+            SshSessionEntry {
+                tx,
+                window_label: window_label.clone(),
+            },
+        );
 
     let task_state = Arc::clone(&state);
     let task_session_id = session_id.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) =
-            run_russh_session(app.clone(), task_session_id.clone(), request, rx).await
+        if let Err(error) = run_russh_session(
+            app.clone(),
+            task_session_id.clone(),
+            request,
+            rx,
+            window_label,
+        )
+        .await
         {
             emit_session_event(&app, &task_session_id, "error", None, Some(error));
         }
@@ -896,7 +2004,7 @@ fn send_session_command(
             .sessions
             .lock()
             .map_err(|_| "SSH 会话状态已损坏".to_string())?;
-        sessions.get(session_id).cloned()
+        sessions.get(session_id).map(|entry| entry.tx.clone())
     }
     .ok_or_else(|| "SSH 会话不存在或已关闭".to_string())?;
 
@@ -905,12 +2013,35 @@ fn send_session_command(
         .map_err(|_| "SSH 会话已关闭".to_string())
 }
 
+async fn send_session_command_with_response<T>(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: &str,
+    build_command: impl FnOnce(oneshot::Sender<Result<T, String>>) -> SshCommand,
+) -> Result<T, String> {
+    let (tx, rx) = oneshot::channel();
+    let command = build_command(tx);
+    send_session_command(state, session_id, command)?;
+    rx.await.map_err(|_| "SSH 命令响应通道已关闭".to_string())?
+}
+
 fn runtime_storage_path(app: &AppHandle) -> Result<PathBuf, String> {
     app_data_file(app, "runtime-storage.json")
 }
 
+/// Global lock serializing all runtime-storage read-modify-write cycles.
+/// Prevents lost-update races when concurrent callers (e.g. run-log append and
+/// scheduled-task persist) write to the same file.
+static RUNTIME_STORAGE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn runtime_storage_lock() -> &'static Mutex<()> {
+    RUNTIME_STORAGE_LOCK.get_or_init(|| Mutex::new(()))
+}
+
 #[tauri::command]
 fn runtime_storage_get(app: AppHandle, key: String) -> Result<Option<String>, String> {
+    let _guard = runtime_storage_lock()
+        .lock()
+        .map_err(|e| format!("本地数据锁获取失败：{e}"))?;
     let path = runtime_storage_path(&app)?;
     let data = load_string_map(&path)?;
     Ok(data.get(&key).cloned())
@@ -918,6 +2049,9 @@ fn runtime_storage_get(app: AppHandle, key: String) -> Result<Option<String>, St
 
 #[tauri::command]
 fn runtime_storage_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
+    let _guard = runtime_storage_lock()
+        .lock()
+        .map_err(|e| format!("本地数据锁获取失败：{e}"))?;
     let path = runtime_storage_path(&app)?;
     let mut data = load_string_map(&path)?;
     data.insert(key, value);
@@ -926,44 +2060,76 @@ fn runtime_storage_set(app: AppHandle, key: String, value: String) -> Result<(),
 
 #[tauri::command]
 fn runtime_storage_remove(app: AppHandle, key: String) -> Result<(), String> {
+    let _guard = runtime_storage_lock()
+        .lock()
+        .map_err(|e| format!("本地数据锁获取失败：{e}"))?;
     let path = runtime_storage_path(&app)?;
     let mut data = load_string_map(&path)?;
     data.remove(&key);
     write_string_map(&path, &data)
 }
 
-fn read_close_to_tray_setting(app: &AppHandle) -> bool {
-    let Ok(path) = runtime_storage_path(app) else {
-        return false;
-    };
-    let Ok(data) = load_string_map(&path) else {
-        return false;
-    };
-    let Some(raw) = data.get(APP_SETTINGS_STORAGE_KEY) else {
-        return false;
-    };
-    serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|value| value.get("desktopCloseToTray").and_then(serde_json::Value::as_bool))
-        .unwrap_or(false)
+#[cfg(desktop)]
+const KEYCHAIN_SERVICE: &str = "easy-console";
+
+#[cfg(desktop)]
+#[tauri::command]
+fn keychain_get(key: String) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
+        .map_err(|e| format!("keychain entry lookup failed: {e}"))?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("keychain get failed: {e}")),
+    }
 }
 
-fn read_close_prompt_setting(app: &AppHandle) -> bool {
-    let Ok(path) = runtime_storage_path(app) else {
-        return true;
-    };
-    let Ok(data) = load_string_map(&path) else {
-        return true;
-    };
-    let Some(raw) = data.get(APP_SETTINGS_STORAGE_KEY) else {
-        return true;
-    };
-    serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|value| value.get("desktopClosePrompt").and_then(serde_json::Value::as_bool))
-        .unwrap_or(true)
+#[cfg(desktop)]
+#[tauri::command]
+fn keychain_set(key: String, value: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
+        .map_err(|e| format!("keychain entry lookup failed: {e}"))?;
+    entry
+        .set_password(&value)
+        .map_err(|e| format!("keychain set failed: {e}"))
 }
 
+#[cfg(desktop)]
+#[tauri::command]
+fn keychain_remove(key: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
+        .map_err(|e| format!("keychain entry lookup failed: {e}"))?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("keychain remove failed: {e}")),
+    }
+}
+
+/// Reads `desktopCloseToTray` and `desktopClosePrompt` from `runtime-storage.json`
+/// in a single file read + parse, instead of two separate passes.
+/// Returns `(close_to_tray, close_prompt)` with defaults `false` and `true`.
+#[cfg(desktop)]
+fn read_close_settings(app: &AppHandle) -> Result<(bool, bool), String> {
+    let path = runtime_storage_path(app)?;
+    let data = load_string_map(&path)?;
+    let Some(raw) = data.get(APP_SETTINGS_STORAGE_KEY) else {
+        return Ok((false, true));
+    };
+    let value = serde_json::from_str::<serde_json::Value>(raw)
+        .map_err(|error| format!("invalid app settings json: {error}"))?;
+    let close_to_tray = value
+        .get("desktopCloseToTray")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let close_prompt = value
+        .get("desktopClosePrompt")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    Ok((close_to_tray, close_prompt))
+}
+
+#[cfg(desktop)]
 fn set_close_to_tray_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> Result<(), String> {
     let mut close_to_tray = state
         .close_to_tray
@@ -973,6 +2139,7 @@ fn set_close_to_tray_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> R
     Ok(())
 }
 
+#[cfg(desktop)]
 fn set_close_prompt_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> Result<(), String> {
     let mut close_prompt_enabled = state
         .close_prompt_enabled
@@ -982,6 +2149,7 @@ fn set_close_prompt_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> Re
     Ok(())
 }
 
+#[cfg(desktop)]
 fn get_close_to_tray_state(state: &Arc<DesktopRuntimeState>) -> bool {
     state
         .close_to_tray
@@ -990,6 +2158,7 @@ fn get_close_to_tray_state(state: &Arc<DesktopRuntimeState>) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(desktop)]
 fn get_close_prompt_state(state: &Arc<DesktopRuntimeState>) -> bool {
     state
         .close_prompt_enabled
@@ -998,16 +2167,23 @@ fn get_close_prompt_state(state: &Arc<DesktopRuntimeState>) -> bool {
         .unwrap_or(true)
 }
 
+#[cfg(desktop)]
 fn set_quit_requested(state: &Arc<DesktopRuntimeState>, requested: bool) {
     if let Ok(mut value) = state.quit_requested.lock() {
         *value = requested;
     }
 }
 
+#[cfg(desktop)]
 fn is_quit_requested(state: &Arc<DesktopRuntimeState>) -> bool {
-    state.quit_requested.lock().map(|value| *value).unwrap_or(false)
+    state
+        .quit_requested
+        .lock()
+        .map(|value| *value)
+        .unwrap_or(false)
 }
 
+#[cfg(desktop)]
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -1016,18 +2192,21 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+#[cfg(desktop)]
 fn hide_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
 }
 
+#[cfg(desktop)]
 fn hide_tray_menu(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(TRAY_MENU_LABEL) {
         let _ = window.hide();
     }
 }
 
+#[cfg(desktop)]
 fn ensure_tray_menu_window(app: &AppHandle) -> tauri::Result<()> {
     if app.get_webview_window(TRAY_MENU_LABEL).is_some() {
         return Ok(());
@@ -1056,6 +2235,7 @@ fn ensure_tray_menu_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(desktop)]
 fn show_tray_menu(app: &AppHandle, position: PhysicalPosition<f64>) {
     if let Err(error) = ensure_tray_menu_window(app) {
         log::warn!("failed to create tray menu window: {error}");
@@ -1065,14 +2245,18 @@ fn show_tray_menu(app: &AppHandle, position: PhysicalPosition<f64>) {
     let x = (position.x - TRAY_MENU_WIDTH + 16.0).max(8.0);
     let y = (position.y - TRAY_MENU_HEIGHT - 8.0).max(8.0);
     if let Some(window) = app.get_webview_window(TRAY_MENU_LABEL) {
-        let _ = window.set_position(Position::Physical(PhysicalPosition::new(x as i32, y as i32)));
+        let _ = window.set_position(Position::Physical(PhysicalPosition::new(
+            x as i32, y as i32,
+        )));
         let _ = window.show();
         let _ = window.set_focus();
     }
 }
 
+#[cfg(desktop)]
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    ensure_tray_menu_window(app.handle())?;
+    // Tray menu window is created lazily by `show_tray_menu` on first right-click,
+    // avoiding a hidden webview at startup.
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("EasyConsole")
         .show_menu_on_left_click(false);
@@ -1103,6 +2287,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(desktop)]
 fn start_desktop_run_due_timer(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval =
@@ -1138,11 +2323,345 @@ fn ssh_close(state: State<'_, Arc<SshSessionState>>, session_id: String) -> Resu
     send_session_command(state, &session_id, SshCommand::Close)
 }
 
+/// Open a standalone SSH terminal window. The connection request is stashed
+/// in `PendingSshWindows` keyed by the new window's label; the popped-out
+/// window retrieves it via `get_ssh_window_request` after its React app
+/// mounts. This avoids fragile URL hash encoding/decoding (especially around
+/// `?` inside hash fragments), keeps `password` out of the URL, and sidesteps
+/// the event-timing race where Tauri emits before the frontend `listen`
+/// has registered.
+///
+/// Must be `async` on Windows: building a WebView2 window inside a synchronous
+/// command deadlocks the UI thread (blank window + frozen app).
+#[cfg(desktop)]
+#[tauri::command]
+async fn open_ssh_window(
+    app: AppHandle,
+    state: State<'_, Arc<PendingSshWindows>>,
+    request: SshConnectionRequest,
+) -> Result<(), String> {
+    let label = format!(
+        "ssh-{}",
+        request
+            .task_id
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| Uuid::new_v4().to_string())
+    );
+
+    // If a window with this label already exists, close it and wait until the
+    // label is free before rebuilding with the new connection request.
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.close();
+        for _ in 0..40 {
+            if app.get_webview_window(&label).is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        if app.get_webview_window(&label).is_some() {
+            return Err("无法关闭已有的 SSH 窗口，请先手动关闭后再试".to_string());
+        }
+    }
+
+    let title = format!(
+        "SSH - {}",
+        request
+            .task_name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&request.host)
+    );
+
+    // Stash the request so the new window can pull it by label.
+    {
+        let mut map = state.requests.lock().map_err(|e| format!("锁失败：{e}"))?;
+        map.insert(label.clone(), request);
+    }
+
+    WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::App("index.html#/ssh-terminal".into()),
+    )
+    .title(&title)
+    .inner_size(960.0, 640.0)
+    .min_inner_size(480.0, 320.0)
+    .resizable(true)
+    .decorations(true)
+    .always_on_top(false)
+    .skip_taskbar(false)
+    .visible(true)
+    .focused(true)
+    .build()
+    .map_err(|e| format!("SSH 窗口创建失败：{e}"))?;
+
+    Ok(())
+}
+
+/// Called by a popped-out SSH window to retrieve its pending connection
+/// request. The request is removed from the pending map on first read so
+/// it cannot be replayed.
+#[cfg(desktop)]
+#[tauri::command]
+fn get_ssh_window_request(
+    state: State<'_, Arc<PendingSshWindows>>,
+    label: String,
+) -> Result<Option<SshConnectionRequest>, String> {
+    let mut map = state.requests.lock().map_err(|e| format!("锁失败：{e}"))?;
+    Ok(map.remove(&label))
+}
+
+#[tauri::command]
+async fn sftp_list(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    path: String,
+) -> Result<Vec<SftpEntryValue>, String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::SftpList {
+        path,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sftp_upload(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    local_path: String,
+    remote_path: String,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::SftpUpload {
+        local_path,
+        remote_path,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sftp_download(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    remote_path: String,
+    local_path: String,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::SftpDownload {
+        remote_path,
+        local_path,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sftp_delete(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    path: String,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::SftpDelete {
+        path,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sftp_rename(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::SftpRename {
+        old_path,
+        new_path,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sftp_mkdir(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    path: String,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::SftpMkdir {
+        path,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn ssh_start_port_forward(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    rule: PortForwardRuleValue,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| {
+        SshCommand::StartPortForward { rule, response }
+    })
+    .await
+}
+
+#[tauri::command]
+async fn ssh_stop_port_forward(
+    state: State<'_, Arc<SshSessionState>>,
+    session_id: String,
+    rule_id: String,
+) -> Result<(), String> {
+    send_session_command_with_response(state, &session_id, |response| SshCommand::StopPortForward {
+        rule_id,
+        response,
+    })
+    .await
+}
+
+#[tauri::command]
+fn list_known_hosts(app: AppHandle) -> Result<Vec<KnownHostEntry>, String> {
+    let path = app_data_file(&app, "known-ssh-hosts.json")?;
+    let known_hosts = load_string_map(&path)?;
+    Ok(known_hosts
+        .iter()
+        .map(|(k, v)| KnownHostEntry {
+            host_port: k.clone(),
+            fingerprint: v.clone(),
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn confirm_known_host(prompt_id: String, accept: bool) -> Result<(), String> {
+    let sender = pending_host_key_prompts()
+        .lock()
+        .map_err(|_| "无法确认主机密钥：内部状态已损坏".to_string())?
+        .remove(&prompt_id)
+        .ok_or_else(|| "主机密钥确认请求已失效或超时".to_string())?;
+    sender
+        .tx
+        .send(accept)
+        .map_err(|_| "主机密钥确认通道已关闭".to_string())
+}
+
+#[tauri::command]
+fn remove_known_host(app: AppHandle, host_port: String) -> Result<(), String> {
+    let _guard = known_hosts_lock()
+        .lock()
+        .map_err(|e| format!("已知主机锁获取失败：{e}"))?;
+    let path = app_data_file(&app, "known-ssh-hosts.json")?;
+    let mut known_hosts = load_string_map(&path)?;
+    known_hosts.remove(&host_port);
+    write_string_map(&path, &known_hosts)
+}
+
+#[tauri::command]
+fn clear_known_hosts(app: AppHandle) -> Result<(), String> {
+    let _guard = known_hosts_lock()
+        .lock()
+        .map_err(|e| format!("已知主机锁获取失败：{e}"))?;
+    let path = app_data_file(&app, "known-ssh-hosts.json")?;
+    write_string_map(&path, &HashMap::new())
+}
+
+const MAX_SSH_HISTORY_ENTRIES: usize = 20;
+
+fn load_ssh_history(path: &Path) -> Result<Vec<SshHistoryEntryValue>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(path).map_err(|error| format!("无法读取 SSH 历史：{error}"))?;
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str(&text).map_err(|error| format!("SSH 历史格式无法识别：{error}"))
+}
+
+/// Write via a temp file + rename so an interrupted write cannot leave
+/// truncated JSON behind. `fs::rename` replaces an existing file atomically on
+/// both Unix and Windows.
+fn write_json_atomically(path: &Path, text: &str, label: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("无法定位{label}目录"))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("无法定位{label}文件名"))?;
+    let tmp_path = parent.join(format!("{file_name}.tmp"));
+    fs::write(&tmp_path, text).map_err(|error| format!("无法写入{label}临时文件：{error}"))?;
+    fs::rename(&tmp_path, path).map_err(|error| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("无法提交{label}写入：{error}")
+    })
+}
+
+fn write_ssh_history(path: &Path, entries: &[SshHistoryEntryValue]) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(entries)
+        .map_err(|error| format!("SSH 历史序列化失败：{error}"))?;
+    write_json_atomically(path, &text, "SSH 历史")
+}
+
+#[tauri::command]
+fn list_ssh_history(app: AppHandle) -> Result<Vec<SshHistoryEntryValue>, String> {
+    let path = app_data_file(&app, "ssh-history.json")?;
+    load_ssh_history(&path)
+}
+
+#[tauri::command]
+fn add_ssh_history(
+    app: AppHandle,
+    host: String,
+    port: String,
+    username: String,
+    task_name: String,
+) -> Result<(), String> {
+    let _guard = ssh_history_lock()
+        .lock()
+        .map_err(|e| format!("SSH 历史锁获取失败：{e}"))?;
+    let path = app_data_file(&app, "ssh-history.json")?;
+    let mut entries = load_ssh_history(&path)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    entries.retain(|e| !(e.host == host && e.port == port && e.username == username));
+    entries.insert(
+        0,
+        SshHistoryEntryValue {
+            id: format!("hist-{now}"),
+            host,
+            port,
+            username,
+            task_name,
+            connected_at: now,
+        },
+    );
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.connected_at));
+    entries.truncate(MAX_SSH_HISTORY_ENTRIES);
+    write_ssh_history(&path, &entries)
+}
+
+#[tauri::command]
+fn clear_ssh_history(app: AppHandle) -> Result<(), String> {
+    let _guard = ssh_history_lock()
+        .lock()
+        .map_err(|e| format!("SSH 历史锁获取失败：{e}"))?;
+    let path = app_data_file(&app, "ssh-history.json")?;
+    write_ssh_history(&path, &[])
+}
+
+#[cfg(desktop)]
 #[tauri::command]
 fn open_system_ssh_terminal(request: SshConnectionRequest) -> Result<(), String> {
     spawn_ssh_terminal(&request)
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 async fn open_vscode_ssh(app: AppHandle, request: SshConnectionRequest) -> Result<(), String> {
     let alias = prepare_vscode_ssh(&app, &request).await?;
@@ -1150,23 +2669,90 @@ async fn open_vscode_ssh(app: AppHandle, request: SshConnectionRequest) -> Resul
 }
 
 #[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
+fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
     let url = validate_external_url(&url)?;
-    open_url_in_browser(&url)
+    app.opener()
+        .open_url(url.clone(), None::<&str>)
+        .map_err(|error| format!("无法打开外部链接：{error}"))
 }
 
+#[cfg(mobile)]
+#[tauri::command]
+fn install_apk(app: AppHandle, path: String) -> Result<(), String> {
+    use std::path::Path;
+
+    let file_path = Path::new(&path);
+    if !file_path.exists() {
+        return Err(format!("APK 文件不存在：{path}"));
+    }
+
+    // Use tauri-plugin-opener to open the APK file with the system package
+    // installer. On Android, open_path fires an ACTION_VIEW intent. The MIME
+    // type hint helps the system resolve to the package installer activity.
+    app.opener()
+        .open_path(path, Some("application/vnd.android.package-archive"))
+        .map_err(|error| format!("无法触发 APK 安装：{error}"))
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn http_download_to_file(app: AppHandle, url: String, path: String) -> Result<u64, String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let mut allowed_roots = Vec::new();
+    if let Ok(dir) = app.path().download_dir() {
+        allowed_roots.push(dir);
+    }
+    if let Ok(dir) = app.path().app_data_dir() {
+        allowed_roots.push(dir);
+    }
+    let path = validate_download_target(&path, &allowed_roots)?;
+    let part_path = format!("{}.part", path.display());
+    let response = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|error| format!("下载请求失败：{error}"))?
+        .error_for_status()
+        .map_err(|error| format!("下载响应错误：{error}"))?;
+    let mut stream = response.bytes_stream();
+    let mut file = tokio::fs::File::create(&part_path)
+        .await
+        .map_err(|error| format!("创建临时文件失败：{error}"))?;
+    let mut written: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|error| format!("下载流中断：{error}"))?;
+        file.write_all(&bytes)
+            .await
+            .map_err(|error| format!("写入本地文件失败：{error}"))?;
+        written += bytes.len() as u64;
+    }
+    file.flush()
+        .await
+        .map_err(|error| format!("刷新本地文件失败：{error}"))?;
+    drop(file);
+    tokio::fs::rename(&part_path, &path)
+        .await
+        .map_err(|error| format!("完成下载重命名失败：{error}"))?;
+    Ok(written)
+}
+
+#[cfg(desktop)]
 #[tauri::command]
 fn open_local_path(path: String) -> Result<(), String> {
-    let path = validate_local_path(&path)?;
+    let path = validate_open_target(&path)?;
     open_path_with_system(&path)
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn reveal_local_path(path: String) -> Result<(), String> {
-    let path = validate_local_path(&path)?;
+    let path = validate_reveal_target(&path)?;
     reveal_path_with_system(&path)
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn set_desktop_close_to_tray(
     state: State<'_, Arc<DesktopRuntimeState>>,
@@ -1175,6 +2761,7 @@ fn set_desktop_close_to_tray(
     set_close_to_tray_state(&state, enabled)
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn set_desktop_close_prompt(
     state: State<'_, Arc<DesktopRuntimeState>>,
@@ -1183,9 +2770,11 @@ fn set_desktop_close_prompt(
     set_close_prompt_state(&state, enabled)
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn cancel_desktop_close_prompt() {}
 
+#[cfg(desktop)]
 #[tauri::command]
 fn complete_desktop_close_prompt(
     app: AppHandle,
@@ -1206,133 +2795,311 @@ fn complete_desktop_close_prompt(
     }
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn show_desktop_main_window(app: AppHandle) {
     hide_tray_menu(&app);
     show_main_window(&app);
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn hide_desktop_tray_menu(app: AppHandle) {
     hide_tray_menu(&app);
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn run_due_scheduled_tasks(app: AppHandle) {
     hide_tray_menu(&app);
     let _ = app.emit(DESKTOP_RUN_DUE_EVENT, ());
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn quit_desktop_app(app: AppHandle, state: State<'_, Arc<DesktopRuntimeState>>) {
     set_quit_requested(&state, true);
     app.exit(0);
 }
 
+/// Exposes the native runtime kind to the renderer so it can pick capability
+/// flags without relying on `isTauri()` alone (which is true on mobile too).
+#[tauri::command]
+fn runtime_platform() -> &'static str {
+    if cfg!(mobile) {
+        "mobile"
+    } else {
+        "desktop"
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // NOTE: Do NOT initialize android_logger here — it conflicts with
+    // tauri_plugin_log (both try to set the global logger, causing a panic).
+    // tauri_plugin_log handles log output on all platforms.
+
+    #[cfg(desktop)]
     let desktop_state = Arc::new(DesktopRuntimeState::default());
-    tauri::Builder::default()
-        .manage(Arc::new(SshSessionState::default()))
-        .manage(Arc::clone(&desktop_state))
+    #[cfg(desktop)]
+    let pending_ssh_windows = Arc::new(PendingSshWindows::default());
+    let ssh_state = Arc::new(SshSessionState::default());
+
+    log::info!("creating Tauri builder");
+    let mut builder = tauri::Builder::default().manage(Arc::clone(&ssh_state));
+
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .manage(Arc::clone(&desktop_state))
+            .manage(Arc::clone(&pending_ssh_windows))
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_deep_link::init())
+            .plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_shortcut("Alt+Shift+E")
+                    .unwrap_or_else(|error| {
+                        log::warn!("failed to register default global shortcut: {error}");
+                        tauri_plugin_global_shortcut::Builder::new()
+                    })
+                    .with_handler(|app, _shortcut, event| {
+                        if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                            if let Some(window) = app.get_webview_window("main") {
+                                if window.is_visible().unwrap_or(false) {
+                                    let _ = window.hide();
+                                } else {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                            }
+                        }
+                    })
+                    .build(),
+            );
+    }
+
+    builder = builder
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_websocket::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_http::init())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup({
-            let desktop_state = Arc::clone(&desktop_state);
-            move |app| {
+        .plugin(tauri_plugin_opener::init());
+
+    // Register tauri_plugin_log in the plugin chain (not inside setup)
+    // to ensure it initializes before the setup closure runs.
+    // Release builds persist rolling files under the OS log directory (Info+).
+    // Never log tokens, passwords, or private keys into these sinks.
+    {
+        let mut log_builder = tauri_plugin_log::Builder::default()
+            .level(log::LevelFilter::Info)
+            .max_file_size(5_000_000)
+            .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+            .target(tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::LogDir {
+                    file_name: Some("easyconsole".into()),
+                },
+            ));
+        if cfg!(debug_assertions) {
+            log_builder = log_builder.target(tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::Stdout,
+            ));
+        }
+        builder = builder.plugin(log_builder.build());
+    }
+
+    log::info!("all plugins registered, setting up");
+
+    builder = builder.setup({
+        #[cfg(desktop)]
+        let desktop_state = Arc::clone(&desktop_state);
+        move |app| {
+            log::info!("setup closure entered");
+
+            #[cfg(desktop)]
             if let Some(icon) = app.default_window_icon().cloned() {
                 for window in app.webview_windows().values() {
                     window.set_icon(icon.clone())?;
                 }
             }
-            let close_to_tray = read_close_to_tray_setting(app.handle());
-            if let Err(error) = set_close_to_tray_state(&desktop_state, close_to_tray) {
-                log::warn!("failed to initialize close-to-tray state: {error}");
+
+            #[cfg(desktop)]
+            {
+                let (close_to_tray, close_prompt) =
+                    read_close_settings(app.handle()).unwrap_or((false, true));
+                if let Err(error) = set_close_to_tray_state(&desktop_state, close_to_tray) {
+                    log::warn!("failed to initialize close-to-tray state: {error}");
+                }
+                if let Err(error) = set_close_prompt_state(&desktop_state, close_prompt) {
+                    log::warn!("failed to initialize close prompt state: {error}");
+                }
+                setup_tray(app)?;
+                start_desktop_run_due_timer(app.handle().clone());
             }
-            let close_prompt = read_close_prompt_setting(app.handle());
-            if let Err(error) = set_close_prompt_state(&desktop_state, close_prompt) {
-                log::warn!("failed to initialize close prompt state: {error}");
+
+            // On mobile, the generated config has an empty windows array,
+            // so we must create the webview window explicitly.
+            #[cfg(mobile)]
+            {
+                tauri::WebviewWindowBuilder::new(
+                    app,
+                    "main",
+                    tauri::WebviewUrl::App("index.html".into()),
+                )
+                .title("EasyConsole")
+                .build()?;
             }
-            setup_tray(app)?;
-            start_desktop_run_due_timer(app.handle().clone());
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+
+            log::info!("setup closure completed");
             Ok(())
-        }})
-        .invoke_handler(tauri::generate_handler![
-            open_ssh_session,
-            ssh_write,
-            ssh_resize,
-            ssh_close,
-            open_system_ssh_terminal,
-            open_vscode_ssh,
-            open_external_url,
-            open_local_path,
-            reveal_local_path,
-            set_desktop_close_to_tray,
-            set_desktop_close_prompt,
-            cancel_desktop_close_prompt,
-            complete_desktop_close_prompt,
-            show_desktop_main_window,
-            hide_desktop_tray_menu,
-            run_due_scheduled_tasks,
-            quit_desktop_app,
-            runtime_storage_get,
-            runtime_storage_set,
-            runtime_storage_remove
-        ])
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(move |app, event| match event {
-            RunEvent::WindowEvent {
-                label,
-                event: WindowEvent::CloseRequested { api, .. },
-                ..
-            } if label == "main" && !is_quit_requested(&desktop_state) => {
-                if get_close_prompt_state(&desktop_state) {
-                    api.prevent_close();
-                    let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
-                } else if get_close_to_tray_state(&desktop_state) {
-                    api.prevent_close();
-                    hide_main_window(app);
-                }
-            }
-            RunEvent::WindowEvent {
-                label,
-                event: WindowEvent::CloseRequested { api, .. },
-                ..
-            } if label == TRAY_MENU_LABEL => {
+        }
+    });
+
+    log::info!("building Tauri app");
+
+    builder = builder.invoke_handler(tauri::generate_handler![
+        open_external_url,
+        runtime_storage_get,
+        runtime_storage_set,
+        runtime_storage_remove,
+        #[cfg(desktop)]
+        keychain_get,
+        #[cfg(desktop)]
+        keychain_set,
+        #[cfg(desktop)]
+        keychain_remove,
+        runtime_platform,
+        open_ssh_session,
+        ssh_write,
+        ssh_resize,
+        ssh_close,
+        sftp_list,
+        sftp_upload,
+        sftp_download,
+        sftp_delete,
+        sftp_rename,
+        sftp_mkdir,
+        ssh_start_port_forward,
+        ssh_stop_port_forward,
+        #[cfg(desktop)]
+        open_ssh_window,
+        #[cfg(desktop)]
+        get_ssh_window_request,
+        list_known_hosts,
+        confirm_known_host,
+        remove_known_host,
+        clear_known_hosts,
+        list_ssh_history,
+        add_ssh_history,
+        clear_ssh_history,
+        #[cfg(mobile)]
+        install_apk,
+        #[cfg(desktop)]
+        open_system_ssh_terminal,
+        #[cfg(desktop)]
+        open_vscode_ssh,
+        #[cfg(desktop)]
+        open_local_path,
+        #[cfg(desktop)]
+        http_download_to_file,
+        #[cfg(desktop)]
+        reveal_local_path,
+        #[cfg(desktop)]
+        set_desktop_close_to_tray,
+        #[cfg(desktop)]
+        set_desktop_close_prompt,
+        #[cfg(desktop)]
+        cancel_desktop_close_prompt,
+        #[cfg(desktop)]
+        complete_desktop_close_prompt,
+        #[cfg(desktop)]
+        show_desktop_main_window,
+        #[cfg(desktop)]
+        hide_desktop_tray_menu,
+        #[cfg(desktop)]
+        run_due_scheduled_tasks,
+        #[cfg(desktop)]
+        quit_desktop_app
+    ]);
+
+    log::info!("invoke handler registered, building app");
+    let app = match builder.build(tauri::generate_context!()) {
+        Ok(app) => {
+            log::info!("Tauri app built successfully, starting event loop");
+            app
+        }
+        Err(e) => {
+            log::error!("FATAL: failed to build Tauri app: {e:?}");
+            panic!("error while building tauri application: {e:?}");
+        }
+    };
+    app.run(move |app, event| {
+        #[cfg(desktop)]
+        {
+            handle_desktop_event(app, &event, &desktop_state, &ssh_state);
+        }
+        #[cfg(not(desktop))]
+        {
+            let _ = (app, event, &ssh_state);
+        }
+    });
+}
+
+#[cfg(desktop)]
+fn handle_desktop_event(
+    app: &AppHandle,
+    event: &RunEvent,
+    desktop_state: &Arc<DesktopRuntimeState>,
+    ssh_state: &Arc<SshSessionState>,
+) {
+    match event {
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == "main" && !is_quit_requested(desktop_state) => {
+            if get_close_prompt_state(desktop_state) {
                 api.prevent_close();
-                hide_tray_menu(app);
+                let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
+            } else if get_close_to_tray_state(desktop_state) {
+                api.prevent_close();
+                hide_main_window(app);
             }
-            RunEvent::WindowEvent {
-                label,
-                event: WindowEvent::Focused(false),
-                ..
-            } if label == TRAY_MENU_LABEL => {
-                hide_tray_menu(app);
+        }
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == TRAY_MENU_LABEL => {
+            api.prevent_close();
+            hide_tray_menu(app);
+        }
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Focused(false),
+            ..
+        } if label == TRAY_MENU_LABEL => {
+            hide_tray_menu(app);
+        }
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Destroyed,
+            ..
+        } if label.starts_with("ssh-") => {
+            close_sessions_for_window(ssh_state, label);
+        }
+        RunEvent::ExitRequested { api, .. } if !is_quit_requested(desktop_state) => {
+            if get_close_prompt_state(desktop_state) {
+                api.prevent_exit();
+                let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
+            } else if get_close_to_tray_state(desktop_state) {
+                api.prevent_exit();
+                hide_main_window(app);
             }
-            RunEvent::ExitRequested { api, .. } if !is_quit_requested(&desktop_state) => {
-                if get_close_prompt_state(&desktop_state) {
-                    api.prevent_exit();
-                    let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
-                } else if get_close_to_tray_state(&desktop_state) {
-                    api.prevent_exit();
-                    hide_main_window(app);
-                }
-            }
-            _ => {}
-        });
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -1340,12 +3107,171 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trust_on_first_use_records_and_rejects_changed_fingerprint() {
+    fn known_host_key_uses_host_port() {
+        assert_eq!(known_host_key("example.com", 22), "example.com:22");
+        assert_eq!(known_host_key("127.0.0.1", 2222), "127.0.0.1:2222");
+    }
+
+    #[test]
+    fn port_forward_bind_host_rejects_non_loopback() {
+        assert_eq!(normalize_port_forward_bind_host("").unwrap(), "127.0.0.1");
+        assert_eq!(
+            normalize_port_forward_bind_host("localhost").unwrap(),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            normalize_port_forward_bind_host("127.0.0.1").unwrap(),
+            "127.0.0.1"
+        );
+        assert_eq!(normalize_port_forward_bind_host("::1").unwrap(), "::1");
+        assert_eq!(normalize_port_forward_bind_host("[::1]").unwrap(), "::1");
+        assert!(normalize_port_forward_bind_host("0.0.0.0").is_err());
+        assert!(normalize_port_forward_bind_host("192.168.1.10").is_err());
+        assert!(normalize_port_forward_bind_host("::").is_err());
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn is_unc_path_detects_network_shares() {
+        assert!(is_unc_path("\\\\server\\share\\payload.exe"));
+        assert!(is_unc_path("//server/share/payload.exe"));
+        assert!(is_unc_path("\\\\?\\UNC\\server\\share"));
+        assert!(!is_unc_path("C:\\Users\\me\\Downloads\\log.txt"));
+        assert!(!is_unc_path("/home/me/log.txt"));
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn validate_open_target_rejects_executables_and_unc() {
+        // Remote storage controls downloaded file names, so "open" must not be
+        // reachable for anything the OS would execute.
+        let dir = std::env::temp_dir().join("easy-console-open-target-test");
+        let _ = fs::create_dir_all(&dir);
+
+        let allowed = dir.join("task.log");
+        fs::write(&allowed, "hello").expect("write log");
+        assert!(validate_open_target(allowed.to_str().unwrap()).is_ok());
+
+        let blocked = dir.join("payload.exe");
+        fs::write(&blocked, "MZ").expect("write exe");
+        let error =
+            validate_open_target(blocked.to_str().unwrap()).expect_err("exe must be rejected");
+        assert!(error.contains("exe"));
+
+        assert!(validate_open_target("\\\\attacker\\share\\payload.exe").is_err());
+        // Directories stay openable.
+        assert!(validate_open_target(dir.to_str().unwrap()).is_ok());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn validate_download_target_requires_an_allowed_root() {
+        let root = std::env::temp_dir().join("easy-console-download-root-test");
+        let outside = std::env::temp_dir().join("easy-console-download-outside-test");
+        let _ = fs::create_dir_all(&root);
+        let _ = fs::create_dir_all(&outside);
+        let roots = vec![root.clone()];
+
+        // A file that does not exist yet is the normal case and must be allowed.
+        let target = root.join("archive.tar");
+        assert!(validate_download_target(target.to_str().unwrap(), &roots).is_ok());
+
+        // Escaping the root via `..` must not work.
+        let escaped = root
+            .join("..")
+            .join("easy-console-download-outside-test")
+            .join("evil");
+        assert!(validate_download_target(escaped.to_str().unwrap(), &roots).is_err());
+
+        assert!(validate_download_target(outside.join("evil").to_str().unwrap(), &roots).is_err());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn strip_easy_console_block_removes_only_the_marked_block() {
+        let start = "# >>> EasyConsole task-1";
+        let end = "# <<< EasyConsole task-1";
+        let current = format!(
+            "Host personal\n  HostName personal.example\n{start}\nHost task-1\n  HostName 10.0.0.1\n{end}\nHost work\n  HostName work.example\n"
+        );
+
+        let stripped = strip_easy_console_block(&current, start, end).expect("paired markers");
+
+        assert_eq!(
+            stripped,
+            "Host personal\n  HostName personal.example\nHost work\n  HostName work.example\n"
+        );
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn strip_easy_console_block_keeps_unrelated_config_untouched() {
+        let current = "Host personal\n  HostName personal.example\n";
+        let stripped = strip_easy_console_block(
+            current,
+            "# >>> EasyConsole task-1",
+            "# <<< EasyConsole task-1",
+        )
+        .expect("no markers");
+        assert_eq!(stripped, current);
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn strip_easy_console_block_refuses_unpaired_start_marker() {
+        // A truncated write or a hand-edited file can leave the start marker
+        // without its end marker. Everything after it must not be dropped.
+        let start = "# >>> EasyConsole task-1";
+        let end = "# <<< EasyConsole task-1";
+        let current = format!("Host personal\n  HostName personal.example\n{start}\nHost task-1\nHost work\n  HostName work.example\n");
+
+        assert!(strip_easy_console_block(&current, start, end).is_none());
+    }
+
+    #[test]
+    fn evaluate_host_key_distinguishes_unknown_match_and_mismatch() {
         let mut known_hosts = HashMap::new();
         let key = known_host_key("example.com", 22);
 
-        assert!(trust_on_first_use(&mut known_hosts, key.clone(), "SHA256:first".to_string()));
-        assert!(trust_on_first_use(&mut known_hosts, key.clone(), "SHA256:first".to_string()));
-        assert!(!trust_on_first_use(&mut known_hosts, key, "SHA256:changed".to_string()));
+        assert_eq!(
+            evaluate_host_key(&known_hosts, &key, "SHA256:first"),
+            HostKeyDecision::Unknown {
+                fingerprint: "SHA256:first".to_string()
+            }
+        );
+
+        known_hosts.insert(key.clone(), "SHA256:first".to_string());
+        assert_eq!(
+            evaluate_host_key(&known_hosts, &key, "SHA256:first"),
+            HostKeyDecision::Match
+        );
+        assert_eq!(
+            evaluate_host_key(&known_hosts, &key, "SHA256:changed"),
+            HostKeyDecision::Mismatch {
+                fingerprint: "SHA256:changed".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn evaluate_host_key_treats_empty_map_as_unknown() {
+        let known_hosts = HashMap::new();
+        assert_eq!(
+            evaluate_host_key(&known_hosts, "host:22", "SHA256:abc"),
+            HostKeyDecision::Unknown {
+                fingerprint: "SHA256:abc".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn format_socks5_ipv6_host_uses_standard_notation() {
+        let addr = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1).octets();
+        assert_eq!(format_socks5_ipv6_host(&addr), "[2001:db8::1]");
     }
 }

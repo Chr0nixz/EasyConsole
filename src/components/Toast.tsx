@@ -30,10 +30,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const notify = useCallback(
-    ({ durationMs = 3500, ...input }: ToastInput) => {
+    ({ durationMs, ...input }: ToastInput) => {
       const id = createToastId();
+      const resolvedDuration = durationMs ?? (input.kind === "error" ? 8000 : 3500);
       setToasts((items) => [...items, { id, ...input }].slice(-4));
-      window.setTimeout(() => remove(id), durationMs);
+      window.setTimeout(() => remove(id), resolvedDuration);
     },
     [remove],
   );
@@ -41,9 +42,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const value = useMemo<ToastContextValue>(
     () => ({
       notify,
-      success: (title, description) => notify({ kind: "success", title, description }),
-      error: (title, description) => notify({ kind: "error", title, description }),
-      info: (title, description) => notify({ kind: "info", title, description }),
+      success: (title, description, action) => notify({ kind: "success", title, description, action }),
+      error: (title, description, action) => notify({ kind: "error", title, description, action }),
+      info: (title, description, action) => notify({ kind: "info", title, description, action }),
     }),
     [notify],
   );
@@ -51,7 +52,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="fixed bottom-4 right-4 z-[60] flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2" role="status" aria-live="polite">
+      <div className="app-toast-container fixed bottom-4 right-4 z-[60] flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2" style={{ bottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }} role="status" aria-live="polite">
         {toasts.map((toast) => (
           <div
             key={toast.id}
@@ -65,6 +66,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium text-app-text">{toast.title}</div>
                 {toast.description ? <div className="mt-1 text-xs leading-5 text-app-muted">{toast.description}</div> : null}
+                {toast.action ? (
+                  <button
+                    type="button"
+                    className="app-interactive mt-2 rounded border border-app-border px-2 py-0.5 text-xs font-medium text-app-text hover:bg-app-panel"
+                    onClick={() => {
+                      toast.action?.onClick();
+                      remove(toast.id);
+                    }}
+                  >
+                    {toast.action.label}
+                  </button>
+                ) : null}
               </div>
               <button
                 className="app-interactive rounded p-1 text-app-muted hover:bg-app-panel hover:text-app-text"

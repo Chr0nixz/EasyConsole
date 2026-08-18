@@ -1,9 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "enables the default permissions",
+  "description": "enables the default permissions on desktop runtimes",
+  "platforms": [
+    "linux",
+    "macOS",
+    "windows"
+  ],
   "windows": [
-    "main"
+    "main",
+    "ssh-*"
   ],
   "permissions": [
     "core:default",
@@ -24,10 +30,12 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        "$DOWNLOAD/**",
-        "$DOCUMENT/**",
-        "$DESKTOP/**"
+        "$DOWNLOAD/**"
       ]
-    }
+    },
+    "opener:default",
+    "deep-link:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister"
   ]
 }

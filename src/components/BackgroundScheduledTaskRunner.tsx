@@ -2,10 +2,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 
 import { instanceApi } from "../lib/api";
+import { getRuntimeSettings } from "../lib/app-settings";
 import { useI18n } from "../lib/i18n";
 import { appendRunLog } from "../lib/run-logs";
 import { browserRuntime } from "../lib/runtime";
-import { isScheduleDue, loadScheduledTasks, saveScheduledTasks, sortScheduledTasks, updateScheduledTask } from "../lib/scheduled-tasks";
+import { executeScheduledTask } from "../lib/schedule-execution";
+import { isScheduleDue, mutateScheduledTasks, resetStaleRunningTasks, sortScheduledTasks } from "../lib/scheduled-tasks";
+import { maybeAllocateUniqueCreateTaskNames } from "../lib/task-name-unique";
+import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import type { ScheduledTask } from "../lib/types";
 import { errorMessage } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
@@ -51,48 +55,49 @@ export function BackgroundScheduledTaskRunner() {
   useEffect(() => {
     let disposed = false;
 
-    async function persist(items: ScheduledTask[]) {
-      const sorted = sortScheduledTasks(items);
-      await saveScheduledTasks(browserRuntime.storage, sorted);
-      return sorted;
+    async function persistUpdate(updater: (items: ScheduledTask[]) => ScheduledTask[]) {
+      return mutateScheduledTasks(browserRuntime.storage, (current) => sortScheduledTasks(updater(current)));
     }
 
     async function executeDueTasks() {
       if (disposed || runningRef.current) return;
       runningRef.current = true;
       try {
-        let items = sortScheduledTasks(await loadScheduledTasks(browserRuntime.storage));
+        const items = await persistUpdate((current) => resetStaleRunningTasks(current));
         const due = items.filter((item) => isScheduleDue(item));
         for (const task of due) {
           if (disposed) return;
-          items = await persist(updateScheduledTask(items, { ...task, status: "running", lastError: undefined }));
           try {
-            await instanceApi.createTask(task.payload);
-            items = await persist(updateScheduledTask(items, { ...task, status: "done", lastRunAt: new Date().toISOString(), lastError: undefined }));
-            queryClient.invalidateQueries({ queryKey: ["tasks"] });
+            const result = await executeScheduledTask(browserRuntime.storage, task.id, {
+              createTask: (payload) => instanceApi.createTask(payload),
+              preparePayload: async (payload) => {
+                const [next] = await maybeAllocateUniqueCreateTaskNames([payload], {
+                  enabled: getRuntimeSettings().autoNumberDuplicateTaskNames,
+                  checkTaskName: (name) => instanceApi.checkTaskName(name),
+                });
+                return next!;
+              },
+            });
+            if (result.skipped) continue;
+            invalidateTaskQueries(queryClient);
             toast.success(text("定时任务已执行", "Scheduled task executed"), task.name);
             void appendRunLog(browserRuntime.storage, {
               source: "scheduled-task",
               level: "info",
-              channel: browserRuntime.isDesktop ? "tauri" : "web",
+              channel: browserRuntime.runLogChannel,
               action: "scheduledTask.execute",
               result: "success",
               title: text("定时任务已执行", "Scheduled task executed"),
               targetName: task.name,
               targetId: task.id,
+              metadata: { remoteTaskId: result.remoteTaskId },
             });
           } catch (error) {
-            items = await persist(updateScheduledTask(items, {
-              ...task,
-              status: "failed",
-              lastRunAt: new Date().toISOString(),
-              lastError: error instanceof Error ? error.message : text("执行失败", "Execution failed"),
-            }));
             toast.error(text("定时任务执行失败", "Scheduled task execution failed"), `${task.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
             void appendRunLog(browserRuntime.storage, {
               source: "scheduled-task",
               level: "error",
-              channel: browserRuntime.isDesktop ? "tauri" : "web",
+              channel: browserRuntime.runLogChannel,
               action: "scheduledTask.execute",
               result: "failure",
               title: text("定时任务执行失败", "Scheduled task execution failed"),

@@ -43,5 +43,25 @@ export function summarizeUploadQueue(items: UploadQueueItem[]) {
     cancelled,
     percent: Math.min(100, totalProgress),
     active: items.some((item) => item.status === "uploading" || item.status === "queued"),
+    succeeded: completed,
+  };
+}
+
+export type UploadQueueRunResult = {
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  skipped: number;
+  items: UploadQueueItem[];
+};
+
+export function finalizeUploadQueueResult(items: UploadQueueItem[]): UploadQueueRunResult {
+  const summary = summarizeUploadQueue(items);
+  return {
+    succeeded: summary.completed,
+    failed: summary.failed,
+    cancelled: summary.cancelled,
+    skipped: summary.skipped,
+    items: items.map((item) => ({ ...item })),
   };
 }

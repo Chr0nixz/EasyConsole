@@ -1,0 +1,13 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "app": {
+    "windows": []
+  },
+  "build": {
+    "beforeBuildCommand": "node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build"
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "externalBin": []
+  }
+}

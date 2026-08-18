@@ -2,9 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, Download, Eye, FileText, Folder, FolderOpen, FolderPlus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { useMemo, useRef, useState, type ChangeEvent } from "react";
 
-import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
+import { EmptyState, ErrorState, FolderOpenIcon, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
-import { useDownloadQueue } from "../lib/download-queue-context";
+import { useDownloadQueueActions } from "../lib/use-download-queue";
 import { formatBytes } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import type { Locale } from "../lib/i18n-text";
@@ -18,7 +18,8 @@ import {
   joinStoragePath,
   remoteStorage,
 } from "../lib/remote-storage";
-import { createUploadQueueItems, summarizeUploadQueue } from "../lib/upload-queue";
+import { createUploadQueueItems, finalizeUploadQueueResult, summarizeUploadQueue } from "../lib/upload-queue";
+import { clearUploadResume, loadUploadResume, makeFileKey, saveUploadResume } from "../lib/upload-resume";
 import type { StorageEntry, UploadQueueItem } from "../lib/types";
 import { browserRuntime } from "../lib/runtime";
 import { useConfirmAction } from "../lib/use-confirm-action";
@@ -27,6 +28,20 @@ import { useToast } from "../lib/use-toast";
 
 type StorageSortField = "name" | "size" | "modified" | "type";
 type StorageSortDirection = "asc" | "desc";
+
+const uploadStatusText: Record<UploadQueueItem["status"], { zh: string; en: string }> = {
+  queued: { zh: "排队中", en: "Queued" },
+  uploading: { zh: "上传中", en: "Uploading" },
+  done: { zh: "已完成", en: "Done" },
+  failed: { zh: "失败", en: "Failed" },
+  skipped: { zh: "已跳过", en: "Skipped" },
+  cancelled: { zh: "已取消", en: "Cancelled" },
+};
+
+function getUploadStatusText(status: UploadQueueItem["status"], locale: Locale) {
+  const entry = uploadStatusText[status];
+  return locale === "en-US" ? entry.en : entry.zh;
+}
 
 function compareText(left: string, right: string, locale: Locale) {
   return left.localeCompare(right, locale, { numeric: true, sensitivity: "base" });
@@ -41,7 +56,7 @@ export function StoragePage() {
   const toast = useToast();
   const { locale, text } = useI18n();
   const runLogger = useRunLogger();
-  const downloadQueue = useDownloadQueue();
+  const downloadQueue = useDownloadQueueActions();
   const { confirm, confirmDialog } = useConfirmAction();
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const uploadCancelledRef = useRef(false);
@@ -154,9 +169,14 @@ export function StoragePage() {
 
   async function runUploadQueue(items: UploadQueueItem[]) {
     uploadCancelledRef.current = false;
-    setUploadQueue(items);
+    let latestItems = items.map((item) => ({ ...item }));
+    setUploadQueue(latestItems);
+    const patchQueue = (updater: (current: UploadQueueItem[]) => UploadQueueItem[]) => {
+      latestItems = updater(latestItems);
+      setUploadQueue(latestItems);
+    };
     try {
-      const directories = [...new Set(items.filter((item) => item.status !== "skipped").map((item) => item.remoteDirectory))]
+      const directories = [...new Set(latestItems.filter((item) => item.status !== "skipped").map((item) => item.remoteDirectory))]
         .filter((directory) => directory !== "/")
         .sort((left, right) => left.split("/").length - right.split("/").length);
       for (const directory of directories) {
@@ -166,47 +186,103 @@ export function StoragePage() {
           // Existing directories can be reused during recursive uploads.
         }
       }
-      for (const item of items) {
+      for (const item of [...latestItems]) {
         if (item.status === "skipped") continue;
         if (uploadCancelledRef.current) {
-          setUploadQueue((current) =>
+          patchQueue((current) =>
             current.map((queueItem) => (queueItem.status === "queued" ? { ...queueItem, status: "cancelled" } : queueItem)),
           );
           break;
         }
-        setUploadQueue((current) =>
+        patchQueue((current) =>
           current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "uploading", progress: 1, error: undefined } : queueItem)),
         );
+
+        const fileKey = makeFileKey(item.file);
+        const storedResume = await loadUploadResume(browserRuntime.storage, fileKey);
+        // An explicit retry may carry its own upload id; only reuse the stored
+        // chunk list when it belongs to that same upload session.
+        const resumeUploadId = item.resumeFromUploadId ?? storedResume?.uploadId;
+        const resume = resumeUploadId
+          ? {
+              uploadId: resumeUploadId,
+              completedChunks: storedResume?.uploadId === resumeUploadId ? storedResume.uploadedChunks : undefined,
+            }
+          : undefined;
+        let capturedUploadId: string | null = resumeUploadId ?? null;
+        let capturedChunks: number[] = resume?.completedChunks ?? [];
+
         try {
           const abortController = new AbortController();
           uploadAbortRef.current = abortController;
-          await remoteStorage.uploadLocalFile(item.file, item.remoteDirectory, (progress) => {
-            setUploadQueue((current) =>
-              current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, progress: progress.percent } : queueItem)),
-            );
-          }, abortController.signal);
-          setUploadQueue((current) =>
+          await remoteStorage.uploadLocalFile(
+            item.file,
+            item.remoteDirectory,
+            (progress) => {
+              patchQueue((current) =>
+                current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, progress: progress.percent } : queueItem)),
+              );
+            },
+            abortController.signal,
+            resume,
+            (uploadId) => {
+              capturedUploadId = uploadId;
+            },
+            async (checkpoint) => {
+              capturedUploadId = checkpoint.uploadId;
+              capturedChunks = checkpoint.completedIndices;
+              await saveUploadResume(browserRuntime.storage, {
+                fileKey,
+                uploadId: checkpoint.uploadId,
+                uploadedChunks: checkpoint.completedIndices,
+                createdAt: new Date().toISOString(),
+              });
+            },
+          );
+          await clearUploadResume(browserRuntime.storage, fileKey);
+          patchQueue((current) =>
             current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: "done", progress: 100 } : queueItem)),
           );
         } catch (error) {
           const message = error instanceof Error ? error.message : text("上传失败", "Upload failed");
-          setUploadQueue((current) =>
-            current.map((queueItem) => (queueItem.id === item.id ? { ...queueItem, status: uploadCancelledRef.current ? "cancelled" : "failed", error: uploadCancelledRef.current ? text("已取消", "Cancelled") : message } : queueItem)),
+          if (capturedUploadId) {
+            await saveUploadResume(browserRuntime.storage, {
+              fileKey,
+              uploadId: capturedUploadId,
+              uploadedChunks: capturedChunks,
+              createdAt: new Date().toISOString(),
+            }).catch(() => undefined);
+          }
+          patchQueue((current) =>
+            current.map((queueItem) =>
+              queueItem.id === item.id
+                ? { ...queueItem, status: uploadCancelledRef.current ? "cancelled" : "failed", error: uploadCancelledRef.current ? text("已取消", "Cancelled") : message }
+                : queueItem,
+            ),
           );
         } finally {
           uploadAbortRef.current = null;
         }
       }
       queryClient.invalidateQueries({ queryKey: ["storage"] });
-      toast.success(text("上传队列已处理", "Upload queue processed"), text(`${items.length} 个文件`, `${items.length} files`));
+      const result = finalizeUploadQueueResult(latestItems);
+      if (result.failed > 0 || result.cancelled > 0) {
+        toast.error(
+          text("上传队列未全部成功", "Upload queue finished with errors"),
+          text(`成功 ${result.succeeded}，失败 ${result.failed}，取消 ${result.cancelled}`, `${result.succeeded} succeeded, ${result.failed} failed, ${result.cancelled} cancelled`),
+        );
+      } else {
+        toast.success(text("上传队列已处理", "Upload queue processed"), text(`${result.succeeded} 个文件`, `${result.succeeded} files`));
+      }
       void runLogger.log({
         source: "storage",
-        level: "info",
+        level: result.failed > 0 ? "error" : "info",
         action: "storage.upload",
-        result: "success",
-        title: text("上传队列已处理", "Upload queue processed"),
-        metadata: { count: items.length, failed: items.filter((item) => item.status === "failed").length, path },
+        result: result.failed > 0 ? "failure" : "success",
+        title: result.failed > 0 ? text("上传队列未全部成功", "Upload queue finished with errors") : text("上传队列已处理", "Upload queue processed"),
+        metadata: { count: result.items.length, failed: result.failed, cancelled: result.cancelled, succeeded: result.succeeded, path },
       });
+      return result;
     } finally {
       uploadCancelledRef.current = false;
     }
@@ -246,7 +322,10 @@ export function StoragePage() {
   }
 
   function copyPath(value: string) {
-    void browserRuntime.copyText(value).then(() => toast.success(text("路径已复制", "Path copied"), value));
+    void browserRuntime.copyText(value).then(
+      () => toast.success(text("路径已复制", "Path copied"), value),
+      () => toast.error(text("复制失败", "Copy failed")),
+    );
   }
 
   function openFolderUploadDialog() {
@@ -347,10 +426,12 @@ export function StoragePage() {
             {text("上传到远程", "Upload to remote")}
             <input className="sr-only" type="file" onChange={(event) => void upload(event)} />
           </label>
-          <Button type="button" variant="secondary" onClick={openFolderUploadDialog}>
-            <FolderOpen className="h-4 w-4" />
-            {text("上传文件夹", "Upload folder")}
-          </Button>
+          {browserRuntime.isMobile ? null : (
+            <Button type="button" variant="secondary" onClick={openFolderUploadDialog}>
+              <FolderOpen className="h-4 w-4" />
+              {text("上传文件夹", "Upload folder")}
+            </Button>
+          )}
           <input
             ref={folderInputRef}
             className="sr-only"
@@ -391,7 +472,7 @@ export function StoragePage() {
             {uploadQueue.map((item) => (
               <div key={item.id} className="grid gap-2 border-b border-app-border px-3 py-2 text-xs last:border-0 sm:grid-cols-[1fr_6rem_4rem]">
                 <span className="truncate font-mono text-app-text">{item.relativePath}</span>
-                <span className="text-app-muted">{item.status}</span>
+                <span className="text-app-muted">{getUploadStatusText(item.status, locale)}</span>
                 <span className={item.status === "failed" ? "text-app-danger" : "text-app-muted"}>
                   {item.error ?? item.skipReason ?? `${item.progress}%`}
                 </span>
@@ -407,12 +488,13 @@ export function StoragePage() {
         ) : query.isError ? (
           <ErrorState error={query.error} />
         ) : visibleEntries.length === 0 && searchKeyword.trim() ? (
-          <EmptyState title={text("未找到匹配文件", "No matching files")} action={<Button variant="secondary" onClick={() => setSearchKeyword("")}>{text("清空搜索", "Clear search")}</Button>} />
-        ) : visibleEntries.length === 0 ? (
-          <EmptyState title={text("当前目录为空", "Current directory is empty")} />
+          <EmptyState icon={SearchXIcon} title={text("未找到匹配文件", "No matching files")} action={<Button variant="secondary" onClick={() => setSearchKeyword("")}>{text("清空搜索", "Clear search")}</Button>} />
+        ) : entries.length === 0 ? (
+          <EmptyState icon={FolderOpenIcon} title={text("当前目录为空", "Current directory is empty")} />
         ) : (
           <>
-          <div className="divide-y divide-app-border sm:hidden">
+          {browserRuntime.isMobile ? (
+          <div className="divide-y divide-app-border">
             {visibleEntries.map((entry, index) => {
               const directory = isStorageDirectory(entry, path);
               const entryPath = getStorageEntryPath(entry, path);
@@ -504,7 +586,8 @@ export function StoragePage() {
               );
             })}
           </div>
-          <TableRegion className="hidden sm:block" label={text("远程文件表格", "Remote files table")}>
+          ) : (
+          <TableRegion label={text("远程文件表格", "Remote files table")}>
             <table className="w-full min-w-[760px] border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 <tr>
@@ -538,7 +621,7 @@ export function StoragePage() {
                         disabled={!directory}
                         onClick={() => setPath(entryPath)}
                       >
-                        {directory ? <Folder className="h-4 w-4 text-app-accent" /> : <FileText className="h-4 w-4 text-app-muted" />}
+                        {directory ? <Folder className="h-4 w-4 text-app-accent" /> : <FileText className="h-4 w-4 text-app-text" />}
                         {entry.name}
                       </button>
                       <button
@@ -552,8 +635,8 @@ export function StoragePage() {
                         <span className="sr-only">{text("复制远程路径", "Copy remote path")}</span>
                       </button>
                     </td>
-                    <td className="px-3 py-2 text-app-muted">{directory ? text("目录", "Directory") : text("文件", "File")}</td>
-                    <td className="px-3 py-2 text-app-muted">
+                    <td className="px-3 py-2 text-app-text">{directory ? text("目录", "Directory") : text("文件", "File")}</td>
+                    <td className="px-3 py-2 text-app-text">
                       <div className="flex items-center gap-2">
                         <span>{entrySizeText}</span>
                         {directory ? (
@@ -569,7 +652,7 @@ export function StoragePage() {
                         ) : null}
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-app-muted">{getStorageEntryModified(entry)}</td>
+                    <td className="px-3 py-2 text-app-text">{getStorageEntryModified(entry)}</td>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap gap-1">
                         {directory ? (
@@ -617,6 +700,7 @@ export function StoragePage() {
               </tbody>
             </table>
           </TableRegion>
+          )}
           </>
         )}
       </Panel>

@@ -1,19 +1,23 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   createColumnHelper,
   flexRender,
   getCoreRowModel,
   useReactTable,
-  type RowSelectionState,
   type VisibilityState,
 } from "@tanstack/react-table";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ActivitySquare,
+  ArrowDown,
+  ArrowUp,
   Braces,
-  Copy,
+  CopyPlus,
   Download,
   FileText,
+  KeyRound,
   MoreHorizontal,
+  Pencil,
   Pin,
   PinOff,
   Plus,
@@ -22,25 +26,27 @@ import {
   Save,
   Search,
   Settings2,
-  Terminal,
   Trash2,
   Upload,
 } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
-import { EmptyState, ErrorState, TableSkeleton } from "../components/DataState";
+import { needsLogAttention } from "../lib/task-status-notifications";
+
+import { EmptyState, ErrorState, LoadingState, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
-import { CreateTaskDialog } from "../components/tasks/CreateTaskDialog";
+import { AppSshTerminalDialog } from "../components/tasks/AppSshTerminalDialog";
 import { TaskInstanceName } from "../components/tasks/TaskInstanceName";
-import { TaskLogDialog } from "../components/tasks/TaskLogDialog";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
-import { imageApi, instanceApi } from "../lib/api";
+import { instanceApi } from "../lib/api";
+import { getTaskEditableState } from "../lib/api-factory";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
-import { useDownloadQueue } from "../lib/download-queue-context";
-import { asJson, formatSecondsDuration, getTaskName, taskStatusText, taskStatusTextEn } from "../lib/format";
+import { useCommitQueue } from "../lib/commit-queue-context";
+import { useDownloadQueueActions } from "../lib/use-download-queue";
+import { asJson, formatSecondsDuration, getTaskName, getTaskNodeName, taskStatusText, taskStatusTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { i18nText } from "../lib/i18n-text";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
@@ -50,26 +56,22 @@ import {
   loadTaskPins,
   pruneTaskPins,
   saveTaskPins,
-  sortTasksWithPins,
   toggleTaskPin,
 } from "../lib/task-pins";
-import { filterAndSortTasks } from "../lib/task-search";
 import { createTaskTemplate, loadTaskTemplates, saveTaskTemplates, taskToEditableTaskTemplate } from "../lib/task-templates";
-import {
-  parseTaskListQuery,
-  serializeTaskListQuery,
-  TASK_PAGE_SIZE_OPTIONS,
-  taskMatchesQuery,
-  toTaskApiQuery,
-  type TaskListQueryState,
-} from "../lib/task-list-query";
-import type { Task } from "../lib/types";
+import { TASK_PAGE_SIZE_OPTIONS, type TaskListSortBy } from "../lib/task-list-query";
+import { invalidateTaskQueries } from "../lib/task-snapshot-query";
+import { queryKeys } from "../lib/query-keys";
+import type { SshConnectionRequest, Task } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useAuth } from "../lib/use-auth";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
+import { useTaskListController } from "./tasks/use-task-list-controller";
 
 const columnHelper = createColumnHelper<Task>();
+const CreateTaskDialog = lazy(() => import("../components/tasks/CreateTaskDialog").then((module) => ({ default: module.CreateTaskDialog })));
+const TaskLogDialog = lazy(() => import("../components/tasks/TaskLogDialog").then((module) => ({ default: module.TaskLogDialog })));
 const TerminalDialog = lazy(() => import("../components/tasks/TerminalDialog").then((module) => ({ default: module.TerminalDialog })));
 const COLUMN_VISIBILITY_KEY = "easy-console.tasks.columnVisibility";
 const AUTO_REFRESH_KEY = "easy-console.tasks.autoRefresh";
@@ -104,7 +106,11 @@ const columnLabels: Record<string, { zh: string; en: string }> = {
   releaseCondition: { zh: "释放条件", en: "Release condition" },
   deleted: { zh: "删除状态", en: "Delete status" },
 };
-const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_2rem_2rem_5rem_2rem] items-center gap-1";
+const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_2rem_4rem_2rem] items-center gap-1";
+const MENU_ITEM_CLASS =
+  "flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel disabled:cursor-not-allowed disabled:opacity-50 [@media(pointer:coarse)]:min-h-11";
+const CHECKBOX_HIT_CLASS =
+  "inline-flex min-h-6 min-w-6 cursor-pointer items-center justify-center [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11";
 const commitPodFields = ["description", "pod_name", "podName", "pod", "k8s_pod_name", "k8sPodName"];
 
 function resourceText(task: Task) {
@@ -141,9 +147,9 @@ function getTaskCommitUser(task: Task) {
 
 function buildTaskCommitPayload(task: Task) {
   const podName = getTaskCommitPodName(task);
-  if (!podName) throw new Error(i18nText("后端未返回 pod 标识，无法 Commit。请刷新实例列表或查看原始 JSON。", "The backend did not return a pod identifier, so Commit cannot continue. Refresh the instance list or inspect the raw JSON."));
+  if (!podName) throw new Error(i18nText("后端未返回 pod 标识，无法提交镜像。请刷新实例列表或查看原始 JSON。", "The backend did not return a pod identifier, so commit cannot continue. Refresh the instance list or inspect the raw JSON."));
   const user = getTaskCommitUser(task);
-  if (!user) throw new Error(i18nText("后端未返回用户信息，无法 Commit。请刷新实例列表或查看原始 JSON。", "The backend did not return user information, so Commit cannot continue. Refresh the instance list or inspect the raw JSON."));
+  if (!user) throw new Error(i18nText("后端未返回用户信息，无法提交镜像。请刷新实例列表或查看原始 JSON。", "The backend did not return user information, so commit cannot continue. Refresh the instance list or inspect the raw JSON."));
   return { user, pod_name: podName };
 }
 
@@ -181,19 +187,43 @@ function ActionHeader() {
   const { text } = useI18n();
   return (
     <div className={`${ACTION_GRID_CLASS} text-center text-xs text-app-muted`}>
-      <span>{text("监控", "Monitor")}</span>
+      <span>{text("终端/连接", "SSH")}</span>
       <span>{text("日志", "Logs")}</span>
-      <span>{text("终端", "Terminal")}</span>
-      <span>{text("复制", "Copy")}</span>
+      <span>{text("复制", "Clone")}</span>
       <span>{text("释放/删除", "Release/Delete")}</span>
       <span>{text("更多", "More")}</span>
     </div>
   );
 }
 
-function loadColumnVisibility(): VisibilityState {
+function autoRefreshIntervalLabel(intervalMs: number, locale: string) {
+  const option = autoRefreshOptions.find((item) => item.value === intervalMs);
+  if (!option) return `${Math.round(intervalMs / 1000)}s`;
+  return locale === "en-US" ? option.en : option.zh;
+}
+
+function formatRelativeUpdatedAt(
+  updatedAt: number,
+  now: number,
+  text: (zh: string, en: string) => string,
+) {
+  const deltaMs = Math.max(0, now - updatedAt);
+  if (deltaMs < 5_000) return text("刚刚", "Just now");
+  if (deltaMs < 60_000) {
+    const seconds = Math.max(1, Math.floor(deltaMs / 1_000));
+    return text(`${seconds} 秒前`, `${seconds}s ago`);
+  }
+  if (deltaMs < 3_600_000) {
+    const minutes = Math.max(1, Math.floor(deltaMs / 60_000));
+    return text(`${minutes} 分钟前`, `${minutes}m ago`);
+  }
+  const hours = Math.max(1, Math.floor(deltaMs / 3_600_000));
+  return text(`${hours} 小时前`, `${hours}h ago`);
+}
+
+async function loadColumnVisibility(): Promise<VisibilityState> {
   try {
-    const raw = window.localStorage.getItem(COLUMN_VISIBILITY_KEY);
+    const raw = await browserRuntime.storage.get(COLUMN_VISIBILITY_KEY);
     if (!raw) return defaultColumnVisibility;
     const parsed = JSON.parse(raw) as VisibilityState;
     delete parsed.actions;
@@ -218,64 +248,271 @@ function loadColumnVisibility(): VisibilityState {
   }
 }
 
-function loadBooleanSetting(key: string, fallback = false) {
+async function loadBooleanSetting(key: string, fallback = false) {
   try {
-    return window.localStorage.getItem(key) === "true" || fallback;
+    const raw = await browserRuntime.storage.get(key);
+    return raw === "true" || fallback;
   } catch {
     return fallback;
   }
 }
 
-function loadNumberSetting(key: string, fallback: number) {
+async function loadNumberSetting(key: string, fallback: number) {
   try {
-    const value = Number(window.localStorage.getItem(key));
+    const raw = await browserRuntime.storage.get(key);
+    const value = Number(raw);
     return Number.isFinite(value) && value > 0 ? value : fallback;
   } catch {
     return fallback;
   }
 }
 
-function taskQueryKey(state: TaskListQueryState) {
-  return [
-    "tasks",
-    state.page,
-    state.pageSize,
-    state.keyword,
-    state.status,
-  ];
+type MoreMenuPosition = { left: number; top: number };
+
+type MoreMenuItem = {
+  key: string;
+  label: string;
+  icon: ReactNode;
+  disabled?: boolean;
+  title?: string;
+  onSelect: () => void;
+};
+
+type MoreMenuSection = { id: string; items: MoreMenuItem[] };
+
+function computeMoreMenuPosition(anchor: DOMRect, itemCount: number, sectionCount: number): MoreMenuPosition {
+  const width = 176;
+  const margin = 8;
+  const estimatedHeight = Math.min(320, 8 + itemCount * 32 + Math.max(0, sectionCount - 1) * 9);
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 768;
+  const left = Math.min(Math.max(margin, anchor.right - width), Math.max(margin, viewportWidth - width - margin));
+  const top =
+    anchor.bottom + estimatedHeight + margin > viewportHeight ? anchor.top - estimatedHeight - 4 : anchor.bottom + 4;
+  return { left, top: Math.max(margin, top) };
 }
 
-export function MoreActionsMenu({
+function buildMoreMenuSections({
   task,
   isPinned,
+  canEdit,
+  promoteLog,
+  promoteClone,
+  showSshInfo,
+  text,
+  onLog,
+  onClone,
+  onSshInfo,
+  onMonitor,
   onRaw,
   onDownload,
   onCommit,
+  onEdit,
   onSaveTemplate,
   onTogglePin,
 }: {
   task: Task;
   isPinned: boolean;
+  canEdit: boolean;
+  promoteLog: boolean;
+  promoteClone: boolean;
+  showSshInfo: boolean;
+  text: (zh: string, en: string) => string;
+  onLog: (task: Task) => void;
+  onClone: (task: Task) => void;
+  onSshInfo: (task: Task) => void;
+  onMonitor?: (task: Task) => void;
   onRaw: (task: Task) => void;
   onDownload: (task: Task) => void;
   onCommit: (task: Task) => void;
+  onEdit: (task: Task) => void;
+  onSaveTemplate: (task: Task) => void;
+  onTogglePin: (task: Task) => void;
+}): MoreMenuSection[] {
+  const running = isRunningTask(task);
+  const logItem: MoreMenuItem = {
+    key: "log",
+    label: text("日志", "Logs"),
+    icon: <FileText className="h-4 w-4 text-app-muted" />,
+    onSelect: () => onLog(task),
+  };
+  const monitorItem: MoreMenuItem | null =
+    promoteLog && onMonitor
+      ? {
+          key: "monitor",
+          label: text("监控", "Monitor"),
+          icon: <ActivitySquare className="h-4 w-4 text-app-muted" />,
+          onSelect: () => onMonitor(task),
+        }
+      : null;
+  const sshInfoItem: MoreMenuItem | null = showSshInfo
+    ? {
+        key: "ssh-info",
+        label: text("连接信息", "Connection info"),
+        icon: <KeyRound className="h-4 w-4 text-app-muted" />,
+        onSelect: () => onSshInfo(task),
+      }
+    : null;
+
+  const connect: MoreMenuItem[] = promoteLog
+    ? [...(monitorItem ? [monitorItem] : []), ...(sshInfoItem ? [sshInfoItem] : [])]
+    : [logItem, ...(sshInfoItem ? [sshInfoItem] : [])];
+
+  const lifecycle: MoreMenuItem[] = [];
+  if (!promoteClone) {
+    lifecycle.push({
+      key: "clone",
+      label: text("克隆", "Clone"),
+      icon: <CopyPlus className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onClone(task),
+    });
+  }
+  if (canEdit) {
+    lifecycle.push({
+      key: "edit",
+      label: text("编辑", "Edit"),
+      icon: <Pencil className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onEdit(task),
+    });
+  }
+  lifecycle.push({
+    key: "commit",
+    label: text("提交镜像", "Commit image"),
+    icon: <Upload className="h-4 w-4 text-app-muted" />,
+    disabled: !running,
+    title: running
+      ? text("提交镜像", "Commit image")
+      : text("仅运行中实例可提交镜像", "Only running instances can be committed"),
+    onSelect: () => onCommit(task),
+  });
+
+  const local: MoreMenuItem[] = [
+    {
+      key: "download",
+      label: text("下载", "Download"),
+      icon: <Download className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onDownload(task),
+    },
+    {
+      key: "template",
+      label: text("存为模板", "Save as template"),
+      icon: <Save className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onSaveTemplate(task),
+    },
+    {
+      key: "pin",
+      label: isPinned ? text("取消置顶", "Unpin") : text("置顶", "Pin"),
+      icon: isPinned ? <PinOff className="h-4 w-4 text-app-muted" /> : <Pin className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onTogglePin(task),
+    },
+    {
+      key: "raw",
+      label: text("原始 JSON", "Raw JSON"),
+      icon: <Braces className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onRaw(task),
+    },
+  ];
+
+  return [
+    { id: "connect", items: connect },
+    { id: "lifecycle", items: lifecycle },
+    { id: "local", items: local },
+  ];
+}
+
+function MoreActionsMenuPanel({
+  task,
+  position,
+  menuId,
+  initialFocusIndex,
+  triggerRef,
+  promoteLog,
+  promoteClone,
+  showSshInfo,
+  isPinned,
+  canEdit,
+  onClose,
+  onLog,
+  onClone,
+  onSshInfo,
+  onMonitor,
+  onRaw,
+  onDownload,
+  onCommit,
+  onEdit,
+  onSaveTemplate,
+  onTogglePin,
+}: {
+  task: Task;
+  position: MoreMenuPosition;
+  menuId: string;
+  initialFocusIndex: number;
+  triggerRef: MutableRefObject<HTMLElement | null>;
+  promoteLog: boolean;
+  promoteClone: boolean;
+  showSshInfo: boolean;
+  isPinned: boolean;
+  canEdit: boolean;
+  onClose: (restoreFocus?: boolean) => void;
+  onLog: (task: Task) => void;
+  onClone: (task: Task) => void;
+  onSshInfo: (task: Task) => void;
+  onMonitor?: (task: Task) => void;
+  onRaw: (task: Task) => void;
+  onDownload: (task: Task) => void;
+  onCommit: (task: Task) => void;
+  onEdit: (task: Task) => void;
   onSaveTemplate: (task: Task) => void;
   onTogglePin: (task: Task) => void;
 }) {
   const { text } = useI18n();
-  const menuId = useId();
-  const [open, setOpen] = useState(false);
-  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
-  const triggerRef = useRef<HTMLDivElement>(null);
-  const triggerButtonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const initialFocusIndexRef = useRef(0);
+  const [menuPosition, setMenuPosition] = useState(position);
+  const taskId = taskRowId(task);
 
-  const closeMenu = useCallback((restoreFocus = false) => {
-    setOpen(false);
-    if (restoreFocus) window.setTimeout(() => triggerButtonRef.current?.focus(), 0);
-  }, []);
+  const menuSections = useMemo(
+    () =>
+      buildMoreMenuSections({
+        task,
+        isPinned,
+        canEdit,
+        promoteLog,
+        promoteClone,
+        showSshInfo,
+        text,
+        onLog,
+        onClone,
+        onSshInfo,
+        onMonitor,
+        onRaw,
+        onDownload,
+        onCommit,
+        onEdit,
+        onSaveTemplate,
+        onTogglePin,
+      }),
+    [
+      canEdit,
+      isPinned,
+      onClone,
+      onCommit,
+      onDownload,
+      onEdit,
+      onLog,
+      onMonitor,
+      onRaw,
+      onSaveTemplate,
+      onSshInfo,
+      onTogglePin,
+      promoteClone,
+      promoteLog,
+      showSshInfo,
+      task,
+      text,
+    ],
+  );
+  const menuItems = useMemo(() => menuSections.flatMap((section) => section.items), [menuSections]);
 
   const focusMenuItem = useCallback((index: number) => {
     const items = menuItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
@@ -284,61 +521,74 @@ export function MoreActionsMenu({
     items[nextIndex].focus();
   }, []);
 
+  const resolveTrigger = useCallback(() => {
+    const current = triggerRef.current;
+    if (current && document.contains(current)) return current;
+    const rebound = document.querySelector<HTMLElement>(`[data-task-more-trigger="${taskId}"]`);
+    if (rebound) {
+      triggerRef.current = rebound;
+      return rebound;
+    }
+    return null;
+  }, [taskId, triggerRef]);
+
   useEffect(() => {
-    if (!open) return undefined;
+    setMenuPosition(position);
+  }, [position]);
 
+  useEffect(() => {
+    window.setTimeout(() => focusMenuItem(initialFocusIndex), 0);
+  }, [focusMenuItem, initialFocusIndex]);
+
+  useEffect(() => {
     const updatePosition = () => {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-
-      const width = 160;
-      const estimatedHeight = 112;
-      const margin = 8;
-      const left = Math.min(Math.max(margin, rect.right - width), window.innerWidth - width - margin);
-      const top =
-        rect.bottom + estimatedHeight + margin > window.innerHeight ? rect.top - estimatedHeight - 4 : rect.bottom + 4;
-
-      setMenuPosition({ left, top: Math.max(margin, top) });
+      const trigger = resolveTrigger();
+      if (!trigger) {
+        onClose();
+        return;
+      }
+      const rect = trigger.getBoundingClientRect();
+      // Keep the menu open through transient zero-rect layout passes (virtualized rows / jsdom).
+      if (rect.width <= 0 && rect.height <= 0) return;
+      setMenuPosition(computeMoreMenuPosition(rect, menuItems.length, menuSections.length));
     };
 
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
-      if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
-      closeMenu();
+      const trigger = resolveTrigger();
+      if (trigger?.contains(target) || menuRef.current?.contains(target)) return;
+      onClose();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.stopPropagation();
-        closeMenu(true);
+        onClose(true);
       }
     };
-    const handleScroll = () => closeMenu();
+    const handleScroll = (event: Event) => {
+      if (menuRef.current && event.target instanceof Node && menuRef.current.contains(event.target)) return;
+      updatePosition();
+    };
+    const handleWheel = (event: WheelEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) return;
+      event.stopPropagation();
+      const menu = menuRef.current;
+      if (menu.scrollHeight <= menu.clientHeight) event.preventDefault();
+    };
 
-    updatePosition();
     document.addEventListener("pointerdown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("wheel", handleWheel, { capture: true, passive: false });
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", handleScroll, true);
-
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("wheel", handleWheel, true);
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", handleScroll, true);
     };
-  }, [closeMenu, open]);
-
-  useEffect(() => {
-    if (!open || !menuPosition) return;
-    window.setTimeout(() => focusMenuItem(initialFocusIndexRef.current), 0);
-  }, [focusMenuItem, menuPosition, open]);
-
-  const handleTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    event.preventDefault();
-    initialFocusIndexRef.current = event.key === "ArrowUp" ? -1 : 0;
-    setOpen(true);
-  };
+  }, [menuItems.length, menuSections.length, onClose, resolveTrigger]);
 
   const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const items = menuItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
@@ -346,41 +596,215 @@ export function MoreActionsMenu({
 
     if (event.key === "Escape") {
       event.preventDefault();
-      closeMenu(true);
+      onClose(true);
       return;
     }
-
     if (event.key === "Tab") {
-      closeMenu();
+      onClose();
       return;
     }
-
     if (event.key === "ArrowDown") {
       event.preventDefault();
       focusMenuItem(currentIndex + 1);
       return;
     }
-
     if (event.key === "ArrowUp") {
       event.preventDefault();
       focusMenuItem(currentIndex - 1);
       return;
     }
-
     if (event.key === "Home") {
       event.preventDefault();
       focusMenuItem(0);
       return;
     }
-
     if (event.key === "End") {
       event.preventDefault();
       focusMenuItem(items.length - 1);
     }
   };
 
+  return createPortal(
+    <div
+      id={menuId}
+      ref={menuRef}
+      className="fixed z-[100] max-h-[min(20rem,calc(100vh-1rem))] w-44 overflow-y-auto overscroll-contain rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
+      role="menu"
+      aria-label={text(`实例操作 ${getTaskName(task)}`, `Instance actions for ${getTaskName(task)}`)}
+      style={{ left: menuPosition.left, top: menuPosition.top }}
+      onKeyDown={handleMenuKeyDown}
+    >
+      {menuSections.map((section, sectionIndex) => (
+        <div key={section.id}>
+          {sectionIndex > 0 ? <div className="my-1 border-t border-app-border" role="separator" /> : null}
+          {section.items.map((item) => {
+            const index = menuItems.findIndex((candidate) => candidate.key === item.key);
+            return (
+              <button
+                key={item.key}
+                ref={(element) => {
+                  menuItemRefs.current[index] = element;
+                }}
+                className={MENU_ITEM_CLASS}
+                disabled={item.disabled}
+                role="menuitem"
+                tabIndex={-1}
+                title={item.title}
+                type="button"
+                onClick={() => {
+                  if (item.disabled) return;
+                  onClose();
+                  item.onSelect();
+                }}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
+export function MoreActionsMenu({
+  task,
+  isPinned,
+  canEdit,
+  promoteLog = false,
+  promoteClone = false,
+  showSshInfo = true,
+  open: openControlled,
+  onLog,
+  onClone,
+  onSshInfo,
+  onMonitor,
+  onRaw,
+  onDownload,
+  onCommit,
+  onEdit,
+  onSaveTemplate,
+  onTogglePin,
+  onOpenChange,
+}: {
+  task: Task;
+  isPinned: boolean;
+  canEdit: boolean;
+  /** When true, logs are on the primary action strip; expose monitor in More instead (and omit Logs there). */
+  promoteLog?: boolean;
+  /** When true, clone is on the primary action strip; omit Clone from More. */
+  promoteClone?: boolean;
+  /** Controlled open state. When set, the parent owns open/close (needed for virtualized rows). */
+  open?: boolean;
+  onLog: (task: Task) => void;
+  onClone: (task: Task) => void;
+  onSshInfo: (task: Task) => void;
+  onMonitor?: (task: Task) => void;
+  onRaw: (task: Task) => void;
+  onDownload: (task: Task) => void;
+  onCommit: (task: Task) => void;
+  onEdit: (task: Task) => void;
+  onSaveTemplate: (task: Task) => void;
+  onTogglePin: (task: Task) => void;
+  /** When false, hide connection info in More (already on the action strip). */
+  showSshInfo?: boolean;
+  /** Notify parent when the menu opens/closes. Position is included so the parent can host the portal. */
+  onOpenChange?: (taskId: string, open: boolean, position?: MoreMenuPosition, trigger?: HTMLElement | null) => void;
+}) {
+  const { text } = useI18n();
+  const menuId = useId();
+  const [openUncontrolled, setOpenUncontrolled] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<MoreMenuPosition | null>(null);
+  const [initialFocusIndex, setInitialFocusIndex] = useState(0);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const triggerButtonRef = useRef<HTMLButtonElement>(null);
+  const taskId = taskRowId(task);
+  const controlled = openControlled !== undefined;
+  const open = controlled ? openControlled : openUncontrolled;
+
+  const menuItemCount = useMemo(() => {
+    const sections = buildMoreMenuSections({
+      task,
+      isPinned,
+      canEdit,
+      promoteLog,
+      promoteClone,
+      showSshInfo,
+      text,
+      onLog,
+      onClone,
+      onSshInfo,
+      onMonitor,
+      onRaw,
+      onDownload,
+      onCommit,
+      onEdit,
+      onSaveTemplate,
+      onTogglePin,
+    });
+    return {
+      items: sections.reduce((sum, section) => sum + section.items.length, 0),
+      sections: sections.length,
+    };
+  }, [
+    canEdit,
+    isPinned,
+    onClone,
+    onCommit,
+    onDownload,
+    onEdit,
+    onLog,
+    onMonitor,
+    onRaw,
+    onSaveTemplate,
+    onSshInfo,
+    onTogglePin,
+    promoteClone,
+    promoteLog,
+    showSshInfo,
+    task,
+    text,
+  ]);
+
+  const closeMenu = useCallback(
+    (restoreFocus = false) => {
+      if (!controlled) {
+        setOpenUncontrolled(false);
+        setMenuPosition(null);
+      }
+      onOpenChange?.(taskId, false);
+      if (restoreFocus) window.setTimeout(() => triggerButtonRef.current?.focus(), 0);
+    },
+    [controlled, onOpenChange, taskId],
+  );
+
+  const openMenu = useCallback(
+    (focusIndex: number) => {
+      const rect = triggerRef.current?.getBoundingClientRect() ?? triggerButtonRef.current?.getBoundingClientRect();
+      const position = rect
+        ? computeMoreMenuPosition(rect, menuItemCount.items, menuItemCount.sections)
+        : { left: 8, top: 8 };
+      setInitialFocusIndex(focusIndex);
+      if (!controlled) {
+        setMenuPosition(position);
+        setOpenUncontrolled(true);
+      }
+      onOpenChange?.(taskId, true, position, triggerRef.current);
+    },
+    [controlled, menuItemCount.items, menuItemCount.sections, onOpenChange, taskId],
+  );
+
+  const handleTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    if (open) return;
+    openMenu(event.key === "ArrowUp" ? -1 : 0);
+  };
+
   return (
-    <div ref={triggerRef} className="relative z-30">
+    <div ref={triggerRef} className="relative z-30" data-task-more-trigger={taskId}>
       <Button
         ref={triggerButtonRef}
         aria-controls={open ? menuId : undefined}
@@ -392,143 +816,111 @@ export function MoreActionsMenu({
         type="button"
         variant="ghost"
         onClick={() => {
-          initialFocusIndexRef.current = 0;
-          setOpen((value) => !value);
+          if (open) {
+            closeMenu();
+            return;
+          }
+          openMenu(0);
         }}
         onKeyDown={handleTriggerKeyDown}
       >
         <MoreHorizontal className="h-4 w-4" />
       </Button>
-      {open && menuPosition
-        ? createPortal(
-          <div
-            id={menuId}
-            ref={menuRef}
-            className="fixed z-[100] w-40 rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
-            role="menu"
-            aria-label={text(`实例操作 ${getTaskName(task)}`, `Instance actions for ${getTaskName(task)}`)}
-            style={{ left: menuPosition.left, top: menuPosition.top }}
-            onKeyDown={handleMenuKeyDown}
-          >
-            <button
-              ref={(element) => {
-                menuItemRefs.current[0] = element;
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
-              role="menuitem"
-              tabIndex={-1}
-              type="button"
-              onClick={() => {
-                closeMenu();
-                onDownload(task);
-              }}
-            >
-              <Download className="h-4 w-4 text-app-muted" />
-              {text("下载", "Download")}
-            </button>
-            <button
-              ref={(element) => {
-                menuItemRefs.current[1] = element;
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!isRunningTask(task)}
-              role="menuitem"
-              tabIndex={-1}
-              title={isRunningTask(task) ? "Commit" : text("仅运行中实例可 Commit", "Only running instances can be committed")}
-              type="button"
-              onClick={() => {
-                closeMenu();
-                onCommit(task);
-              }}
-            >
-              <Upload className="h-4 w-4 text-app-muted" />
-              Commit
-            </button>
-            <button
-              ref={(element) => {
-                menuItemRefs.current[2] = element;
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
-              role="menuitem"
-              tabIndex={-1}
-              type="button"
-              onClick={() => {
-                closeMenu();
-                onSaveTemplate(task);
-              }}
-            >
-              <Save className="h-4 w-4 text-app-muted" />
-              {text("存为模板", "Save as template")}
-            </button>
-            <button
-              ref={(element) => {
-                menuItemRefs.current[3] = element;
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
-              role="menuitem"
-              tabIndex={-1}
-              type="button"
-              onClick={() => {
-                closeMenu();
-                onTogglePin(task);
-              }}
-            >
-              {isPinned ? <PinOff className="h-4 w-4 text-app-muted" /> : <Pin className="h-4 w-4 text-app-muted" />}
-              {isPinned ? text("取消置顶", "Unpin") : text("置顶", "Pin")}
-            </button>
-            <button
-              ref={(element) => {
-                menuItemRefs.current[4] = element;
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel"
-              role="menuitem"
-              tabIndex={-1}
-              type="button"
-              onClick={() => {
-                closeMenu();
-                onRaw(task);
-              }}
-            >
-              <Braces className="h-4 w-4 text-app-muted" />
-              {text("原始 JSON", "Raw JSON")}
-            </button>
-          </div>,
-          document.body,
-        )
-        : null}
+      {!controlled && open && menuPosition ? (
+        <MoreActionsMenuPanel
+          task={task}
+          position={menuPosition}
+          menuId={menuId}
+          initialFocusIndex={initialFocusIndex}
+          triggerRef={triggerRef}
+          promoteLog={promoteLog}
+          promoteClone={promoteClone}
+          showSshInfo={showSshInfo}
+          isPinned={isPinned}
+          canEdit={canEdit}
+          onClose={closeMenu}
+          onLog={onLog}
+          onClone={onClone}
+          onSshInfo={onSshInfo}
+          onMonitor={onMonitor}
+          onRaw={onRaw}
+          onDownload={onDownload}
+          onCommit={onCommit}
+          onEdit={onEdit}
+          onSaveTemplate={onSaveTemplate}
+          onTogglePin={onTogglePin}
+        />
+      ) : null}
     </div>
   );
 }
 
 export function TasksPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const toast = useToast();
   const { locale, text } = useI18n();
   const runLogger = useRunLogger();
-  const downloadQueue = useDownloadQueue();
+  const downloadQueue = useDownloadQueueActions();
+  const commitQueue = useCommitQueue();
   const auth = useAuth();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const queryState = useMemo(() => parseTaskListQuery(searchParams), [searchParams]);
   const { confirm, confirmDialog } = useConfirmAction();
   const [createOpen, setCreateOpen] = useState(false);
   const [cloneTask, setCloneTask] = useState<Task | null>(null);
+  const [editTask, setEditTask] = useState<Task | null>(null);
   const [logTask, setLogTask] = useState<Task | null>(null);
-  const [terminalTask, setTerminalTask] = useState<Task | null>(null);
+  const [sshInfoTask, setSshInfoTask] = useState<Task | null>(null);
+  const [appSshRequest, setAppSshRequest] = useState<SshConnectionRequest | null>(null);
   const [rawTask, setRawTask] = useState<Task | null>(null);
   const [columnSettingsOpen, setColumnSettingsOpen] = useState(false);
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => loadColumnVisibility());
-  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
-  const [autoRefresh, setAutoRefresh] = useState(() => loadBooleanSetting(AUTO_REFRESH_KEY));
-  const [autoRefreshInterval, setAutoRefreshInterval] = useState(() =>
-    loadNumberSetting(AUTO_REFRESH_INTERVAL_KEY, DEFAULT_AUTO_REFRESH_INTERVAL),
-  );
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(defaultColumnVisibility);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState(DEFAULT_AUTO_REFRESH_INTERVAL);
   const [pinnedTaskIds, setPinnedTaskIds] = useState<string[]>([]);
+  const [autoRefreshMenuOpen, setAutoRefreshMenuOpen] = useState(false);
+  const [moreMenu, setMoreMenu] = useState<null | {
+    taskId: string;
+    left: number;
+    top: number;
+  }>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [pageJumpInput, setPageJumpInput] = useState("");
+  const autoRefreshMenuId = useId();
+  const moreActionsMenuId = useId();
+  const autoRefreshMenuRef = useRef<HTMLDivElement>(null);
+  const autoRefreshTriggerRef = useRef<HTMLButtonElement>(null);
+  const autoRefreshMenuListRef = useRef<HTMLDivElement>(null);
+  const autoRefreshItemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const autoRefreshInitialFocusRef = useRef(0);
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const mobileCardsRef = useRef<HTMLDivElement>(null);
+  const moreMenuTriggerRef = useRef<HTMLElement | null>(null);
+  const moreMenuOpen = moreMenu !== null;
 
-  const updateTaskQuery = useCallback((patch: Partial<TaskListQueryState>) => {
-    const next = { ...queryState, ...patch };
-    if (!("page" in patch)) next.page = 1;
-    setSearchParams(serializeTaskListQuery(next), { replace: true });
-  }, [queryState, setSearchParams]);
+  const handleMoreMenuOpenChange = useCallback((
+    taskId: string,
+    open: boolean,
+    position?: MoreMenuPosition,
+    trigger?: HTMLElement | null,
+  ) => {
+    if (!open) {
+      setMoreMenu((prev) => (prev?.taskId === taskId ? null : prev));
+      if (moreMenuTriggerRef.current && (!trigger || moreMenuTriggerRef.current === trigger)) {
+        moreMenuTriggerRef.current = null;
+      }
+      return;
+    }
+    if (!position) return;
+    moreMenuTriggerRef.current = trigger ?? null;
+    setMoreMenu({ taskId, left: position.left, top: position.top });
+  }, []);
+
+  const closeMoreMenu = useCallback((restoreFocus = false) => {
+    const trigger = moreMenuTriggerRef.current;
+    moreMenuTriggerRef.current = null;
+    setMoreMenu(null);
+    if (restoreFocus) window.setTimeout(() => trigger?.querySelector("button")?.focus(), 0);
+  }, []);
 
   const deleteMutation = useMutation({
     mutationFn: (task: Task) => instanceApi.deleteTask(task.id),
@@ -543,7 +935,7 @@ export function TasksPage() {
         targetName: getTaskName(task),
         targetId: task.id,
       });
-      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      invalidateTaskQueries(queryClient);
     },
     onError: (error, task) => {
       toast.error(text("实例删除失败", "Instance deletion failed"), `${getTaskName(task)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
@@ -573,7 +965,7 @@ export function TasksPage() {
         targetName: getTaskName(task),
         targetId: task.id,
       });
-      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      invalidateTaskQueries(queryClient);
     },
     onError: (error, task) => {
       toast.error(text("实例释放失败", "Instance release failed"), `${getTaskName(task)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
@@ -586,36 +978,6 @@ export function TasksPage() {
         targetName: getTaskName(task),
         targetId: task.id,
         error: errorMessage(error, text("实例释放失败", "Instance release failed")),
-      });
-    },
-  });
-
-  const commitMutation = useMutation({
-    mutationFn: (task: Task) => imageApi.commitImage(buildTaskCommitPayload(task)),
-    onSuccess: (_data, task) => {
-      toast.success(text("Commit 已提交", "Commit submitted"), getTaskName(task));
-      void runLogger.log({
-        source: "image",
-        level: "info",
-        action: "image.commit",
-        result: "success",
-        title: text("Commit 已提交", "Commit submitted"),
-        targetName: getTaskName(task),
-        targetId: task.id,
-      });
-      queryClient.invalidateQueries({ queryKey: ["images"] });
-    },
-    onError: (error, task) => {
-      toast.error(text("Commit 失败", "Commit failed"), `${getTaskName(task)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
-      void runLogger.log({
-        source: "image",
-        level: "error",
-        action: "image.commit",
-        result: "failure",
-        title: text("Commit 失败", "Commit failed"),
-        targetName: getTaskName(task),
-        targetId: task.id,
-        error: errorMessage(error, text("Commit 失败", "Commit failed")),
       });
     },
   });
@@ -672,7 +1034,7 @@ export function TasksPage() {
         metadata: { count: tasks.length, ids: tasks.map((task) => task.id) },
       });
       setRowSelection({});
-      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      invalidateTaskQueries(queryClient);
     },
     onError: (error) => {
       toast.error(text("批量删除失败", "Batch deletion failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
@@ -702,7 +1064,7 @@ export function TasksPage() {
         metadata: { count: tasks.length, ids: tasks.map((task) => task.id) },
       });
       setRowSelection({});
-      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      invalidateTaskQueries(queryClient);
     },
     onError: (error) => {
       toast.error(text("批量释放失败", "Batch release failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
@@ -717,24 +1079,63 @@ export function TasksPage() {
     },
   });
 
-  const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending || commitMutation.isPending;
-  const autoRefreshPaused = batchPending || createOpen || Boolean(logTask) || Boolean(terminalTask) || Boolean(rawTask) || columnSettingsOpen;
-  const query = useQuery({
-    queryKey: taskQueryKey(queryState),
-    queryFn: () => instanceApi.tasks(toTaskApiQuery(queryState)),
-    refetchInterval: autoRefresh && !autoRefreshPaused ? autoRefreshInterval : false,
-    refetchIntervalInBackground: false,
+  const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending;
+  const autoRefreshPaused =
+    batchPending ||
+    createOpen ||
+    Boolean(editTask) ||
+    Boolean(logTask) ||
+    Boolean(sshInfoTask) ||
+    Boolean(appSshRequest) ||
+    Boolean(rawTask) ||
+    columnSettingsOpen ||
+    moreMenuOpen;
+  const {
+    queryState,
+    keywordInput,
+    setKeywordInput,
+    updateTaskQuery,
+    query,
+    filteredTasks,
+    activeRowIndex,
+    setActiveRowIndex,
+    rowSelection,
+    setRowSelection,
+    total,
+    hasKnownTotal,
+    totalPages,
+    hasNextPage,
+  } = useTaskListController({
+    pinnedTaskIds,
+    autoRefresh,
+    autoRefreshInterval,
+    autoRefreshPaused,
   });
 
-  const filteredTasks = useMemo(() => {
-    const tasks = query.data?.items ?? [];
-    const matched = filterAndSortTasks(tasks.filter((task) => taskMatchesQuery(task, queryState)), queryState.keyword);
-    return sortTasksWithPins(matched, pinnedTaskIds);
-  }, [pinnedTaskIds, query.data?.items, queryState]);
+  const moreMenuTask = useMemo(() => {
+    if (!moreMenu) return null;
+    return filteredTasks.find((task) => taskRowId(task) === moreMenu.taskId) ?? null;
+  }, [filteredTasks, moreMenu]);
+
+  useEffect(() => {
+    if (moreMenu && !moreMenuTask) closeMoreMenu();
+  }, [closeMoreMenu, moreMenu, moreMenuTask]);
+
+  useEffect(() => {
+    setPageJumpInput(String(queryState.page));
+  }, [queryState.page]);
 
   useEffect(() => {
     void loadTaskPins(browserRuntime.storage).then(setPinnedTaskIds);
   }, []);
+
+  const prevCommitDoneRef = useRef(0);
+  useEffect(() => {
+    if (commitQueue.summary.completed > prevCommitDoneRef.current) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.images.all });
+    }
+    prevCommitDoneRef.current = commitQueue.summary.completed;
+  }, [commitQueue.summary.completed, queryClient]);
 
   useEffect(() => {
     const tasks = query.data?.items;
@@ -780,15 +1181,35 @@ export function TasksPage() {
     setCreateOpen(true);
   };
 
+  const openSshInfo = useCallback((task: Task) => {
+    setSshInfoTask(task);
+  }, []);
+
+  /** Always open the SSH connection-info drawer first; connect actions live inside it. */
+  const openTerminal = useCallback((task: Task) => {
+    setSshInfoTask(task);
+  }, []);
+
   const closeCreateTask = () => {
     setCreateOpen(false);
     setCloneTask(null);
   };
 
+  const openEditTask = (task: Task) => {
+    setEditTask(task);
+  };
+
+  const closeEditTask = () => {
+    setEditTask(null);
+  };
+
   const confirmReleaseTask = useCallback((task: Task) => {
     confirm({
       title: text("确认释放实例", "Confirm Instance Release"),
-      description: text(`将释放 ${getTaskName(task)}。释放后实例会停止运行，请确认当前任务状态。`, `Release ${getTaskName(task)}. The instance will stop running after release. Confirm the current task state.`),
+      description: text(
+        `将释放 ${getTaskName(task)}。释放会停止实例并回收计算资源；适用于运行中/排队等可释放状态。此操作不可从 EasyConsole 撤销。`,
+        `Release ${getTaskName(task)}. Release stops the instance and reclaims compute resources; use it for releasable states (running, queued, etc.). EasyConsole cannot undo this.`,
+      ),
       confirmLabel: text("释放", "Release"),
       tone: "danger",
       run: () => releaseMutation.mutateAsync(task),
@@ -798,7 +1219,10 @@ export function TasksPage() {
   const confirmDeleteTask = useCallback((task: Task) => {
     confirm({
       title: text("确认删除实例", "Confirm Instance Deletion"),
-      description: text(`将删除 ${getTaskName(task)}。此操作不可从 EasyConsole 撤销。`, `Delete ${getTaskName(task)}. EasyConsole cannot undo this operation.`),
+      description: text(
+        `将删除 ${getTaskName(task)}。删除用于已结束等不可释放实例，从列表中移除记录；与「释放」不同，不会先停止仍在运行的任务。此操作不可从 EasyConsole 撤销。`,
+        `Delete ${getTaskName(task)}. Delete removes finished / non-releasable instances from the list. Unlike Release, it is not for stopping a still-running task. EasyConsole cannot undo this.`,
+      ),
       confirmLabel: text("删除", "Delete"),
       tone: "danger",
       run: () => deleteMutation.mutateAsync(task),
@@ -806,13 +1230,27 @@ export function TasksPage() {
   }, [confirm, deleteMutation, text]);
 
   const confirmCommitTask = useCallback((task: Task) => {
+    let payload: ReturnType<typeof buildTaskCommitPayload>;
+    try {
+      payload = buildTaskCommitPayload(task);
+    } catch (error) {
+      toast.error(text("提交镜像失败", "Commit image failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
+      return;
+    }
     confirm({
-      title: text("确认 Commit 实例", "Confirm Instance Commit"),
+      title: text("确认提交镜像", "Confirm Commit Image"),
       description: text(`将把 ${getTaskName(task)} 的当前运行环境提交为镜像。此操作可能需要一段时间，请确认实例内文件状态已经稳定。`, `Commit the current runtime environment of ${getTaskName(task)} as an image. This may take some time; confirm files inside the instance are stable.`),
-      confirmLabel: "Commit",
-      run: () => commitMutation.mutateAsync(task),
+      confirmLabel: text("提交镜像", "Commit image"),
+      run: () => {
+        commitQueue.enqueue({
+          taskName: getTaskName(task),
+          taskId: task.id,
+          podName: getTaskCommitPodName(task),
+          payload,
+        });
+      },
     });
-  }, [commitMutation, confirm, text]);
+  }, [commitQueue, confirm, text, toast]);
 
   const confirmBatchRelease = useCallback((tasks: Task[]) => {
     confirm({
@@ -839,22 +1277,26 @@ export function TasksPage() {
       columnHelper.display({
         id: "select",
         header: ({ table }) => (
-          <input
-            aria-label={text("选择当前页实例", "Select current page instances")}
-            className="h-4 w-4 accent-app-accent"
-            type="checkbox"
-            checked={table.getIsAllPageRowsSelected()}
-            onChange={table.getToggleAllPageRowsSelectedHandler()}
-          />
+          <label className={CHECKBOX_HIT_CLASS}>
+            <input
+              aria-label={text("选择当前页实例", "Select current page instances")}
+              className="h-4 w-4 accent-app-accent"
+              type="checkbox"
+              checked={table.getIsAllPageRowsSelected()}
+              onChange={table.getToggleAllPageRowsSelectedHandler()}
+            />
+          </label>
         ),
         cell: ({ row }) => (
-          <input
-            aria-label={text(`选择实例 ${getTaskName(row.original)}`, `Select instance ${getTaskName(row.original)}`)}
-            className="h-4 w-4 accent-app-accent"
-            type="checkbox"
-            checked={row.getIsSelected()}
-            onChange={row.getToggleSelectedHandler()}
-          />
+          <label className={CHECKBOX_HIT_CLASS}>
+            <input
+              aria-label={text(`选择实例 ${getTaskName(row.original)}`, `Select instance ${getTaskName(row.original)}`)}
+              className="h-4 w-4 accent-app-accent"
+              type="checkbox"
+              checked={row.getIsSelected()}
+              onChange={row.getToggleSelectedHandler()}
+            />
+          </label>
         ),
       }),
       columnHelper.accessor((row) => getTaskName(row), {
@@ -867,7 +1309,7 @@ export function TasksPage() {
               <div className="flex items-start gap-1.5">
                 {pinned ? <Pin className="mt-1 h-3.5 w-3.5 shrink-0 text-app-accent" aria-label={text("已置顶", "Pinned")} /> : null}
                 <div>
-                  <TaskInstanceName name={getValue()} />
+                  <TaskInstanceName name={getValue()} taskId={row.original.id} />
                   <div className="mt-0.5 text-xs text-app-muted">#{row.original.id}</div>
                 </div>
               </div>
@@ -882,42 +1324,42 @@ export function TasksPage() {
       columnHelper.accessor((row) => resourceText(row), {
         id: "resource",
         header: text("资源", "Resources"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
-      columnHelper.accessor((row) => row.node_name || "-", {
+      columnHelper.accessor((row) => getTaskNodeName(row) || "-", {
         id: "node",
         header: text("节点", "Node"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => endpointText(row), {
         id: "endpoint",
         header: text("入口", "Endpoint"),
-        cell: (info) => <span className="whitespace-nowrap font-mono text-xs text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap font-mono text-xs text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => ownerText(row), {
         id: "owner",
         header: text("用户", "User"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => groupText(row), {
         id: "group",
         header: text("用户组", "User group"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.use_time, {
         id: "duration",
         header: text("时长", "Duration"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{formatSecondsDuration(info.getValue(), locale)}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{formatSecondsDuration(info.getValue(), locale)}</span>,
       }),
       columnHelper.accessor((row) => row.create_time ?? row.created_at ?? "-", {
         id: "created",
         header: text("创建时间", "Created"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.releace_time ?? "-", {
         id: "release",
         header: text("释放时间", "Release time"),
-        cell: (info) => <span className="whitespace-nowrap text-app-muted">{info.getValue()}</span>,
+        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.releace_conditions ?? row.release_condition, {
         id: "releaseCondition",
@@ -928,7 +1370,7 @@ export function TasksPage() {
         id: "deleted",
         header: text("删除状态", "Delete status"),
         cell: (info) => (
-          <span className={info.getValue() === text("已删除", "Deleted") ? "text-app-danger" : "text-app-muted"}>{info.getValue()}</span>
+          <span className={info.getValue() === text("已删除", "Deleted") ? "text-app-danger" : "text-app-text"}>{info.getValue()}</span>
         ),
       }),
       columnHelper.display({
@@ -937,25 +1379,42 @@ export function TasksPage() {
         cell: ({ row }) => {
           const task = row.original;
           const release = isReleasableTask(task);
+          const terminalLabel = text("连接信息", "Connection info");
+          const logAttention = needsLogAttention(task);
           return (
             <div className={ACTION_GRID_CLASS}>
-              <Button aria-label={text(`打开 ${getTaskName(task)} 的监控`, `Open monitor for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("监控", "Monitor")} onClick={() => openMonitorDashboard(task)}>
-                <ActivitySquare className="h-4 w-4" />
+              <Button
+                aria-label={text(`查看 ${getTaskName(task)} 的连接信息`, `View connection info for ${getTaskName(task)}`)}
+                className="h-8 w-8 px-0"
+                variant="ghost"
+                title={terminalLabel}
+                onClick={() => openTerminal(task)}
+              >
+                <KeyRound className="h-4 w-4" />
               </Button>
-              <Button aria-label={text(`查看 ${getTaskName(task)} 的日志`, `View logs for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("日志", "Logs")} onClick={() => setLogTask(task)}>
+              <Button
+                aria-label={text(`打开 ${getTaskName(task)} 的日志`, `Open logs for ${getTaskName(task)}`)}
+                className={["h-8 w-8 px-0", logAttention ? "text-app-danger" : ""].join(" ")}
+                title={text("日志", "Logs")}
+                variant="ghost"
+                onClick={() => setLogTask(task)}
+              >
                 <FileText className="h-4 w-4" />
               </Button>
-              <Button aria-label={text(`打开 ${getTaskName(task)} 的终端`, `Open terminal for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("终端", "Terminal")} onClick={() => setTerminalTask(task)}>
-                <Terminal className="h-4 w-4" />
-              </Button>
-              <Button aria-label={text(`复制 ${getTaskName(task)} 的配置`, `Copy configuration for ${getTaskName(task)}`)} className="h-8 w-8 px-0" variant="ghost" title={text("复制", "Copy")} onClick={() => openCloneTask(task)}>
-                <Copy className="h-4 w-4" />
+              <Button
+                aria-label={text(`复制实例 ${getTaskName(task)}`, `Clone instance ${getTaskName(task)}`)}
+                className="h-8 w-8 px-0"
+                title={text("复制实例", "Clone instance")}
+                variant="ghost"
+                onClick={() => openCloneTask(task)}
+              >
+                <CopyPlus className="h-4 w-4" />
               </Button>
               {release ? (
                 <Button
-                  className="h-8 w-20 justify-center px-2 text-app-warning hover:text-app-warning"
+                  className="h-8 w-16 justify-center px-1.5 text-app-muted hover:text-app-warning"
                   disabled={releaseMutation.isPending}
-                  title={text("释放", "Release")}
+                  title={text("释放：停止实例并回收资源", "Release: stop instance and reclaim resources")}
                   variant="ghost"
                   onClick={() => confirmReleaseTask(task)}
                 >
@@ -964,9 +1423,9 @@ export function TasksPage() {
                 </Button>
               ) : (
                 <Button
-                  className="h-8 w-20 justify-center px-2 text-app-danger hover:text-app-danger"
+                  className="h-8 w-16 justify-center px-1.5 text-app-muted hover:text-app-danger"
                   disabled={deleteMutation.isPending}
-                  title={text("删除", "Delete")}
+                  title={text("删除：移除不可释放实例", "Delete: remove a non-releasable instance")}
                   variant="ghost"
                   onClick={() => confirmDeleteTask(task)}
                 >
@@ -975,12 +1434,23 @@ export function TasksPage() {
                 </Button>
               )}
               <MoreActionsMenu
+                canEdit={getTaskEditableState() !== false}
                 isPinned={isTaskPinned(pinnedTaskIds, task)}
+                open={moreMenu?.taskId === taskRowId(task)}
+                promoteClone
+                promoteLog
+                showSshInfo={false}
                 task={task}
+                onClone={openCloneTask}
                 onCommit={confirmCommitTask}
                 onDownload={handleDownloadTask}
+                onEdit={openEditTask}
+                onLog={setLogTask}
+                onMonitor={openMonitorDashboard}
+                onOpenChange={handleMoreMenuOpenChange}
                 onRaw={setRawTask}
                 onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
+                onSshInfo={openSshInfo}
                 onTogglePin={handleTogglePin}
               />
             </div>
@@ -988,7 +1458,7 @@ export function TasksPage() {
         },
       }),
     ],
-    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, handleTogglePin, locale, pinnedTaskIds, releaseMutation.isPending, saveTemplateMutation, text],
+    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, deleteMutation.isPending, handleDownloadTask, handleMoreMenuOpenChange, handleTogglePin, locale, moreMenu?.taskId, openSshInfo, openTerminal, pinnedTaskIds, releaseMutation.isPending, saveTemplateMutation.mutate, text],
   );
 
   const table = useReactTable({
@@ -1005,45 +1475,297 @@ export function TasksPage() {
     onRowSelectionChange: setRowSelection,
   });
 
+  const tableRows = table.getRowModel().rows;
+  const rowVirtualizer = useVirtualizer({
+    count: tableRows.length,
+    getScrollElement: () => tableScrollRef.current,
+    estimateSize: () => 44,
+    overscan: 10,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0;
+  const paddingBottom =
+    virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0;
+
+  const settingsHydratedRef = useRef(false);
   useEffect(() => {
-    window.localStorage.setItem(COLUMN_VISIBILITY_KEY, JSON.stringify(columnVisibility));
+    let cancelled = false;
+    (async () => {
+      const [savedVisibility, savedAutoRefresh, savedInterval] = await Promise.all([
+        loadColumnVisibility(),
+        loadBooleanSetting(AUTO_REFRESH_KEY),
+        loadNumberSetting(AUTO_REFRESH_INTERVAL_KEY, DEFAULT_AUTO_REFRESH_INTERVAL),
+      ]);
+      if (cancelled) return;
+      setColumnVisibility(savedVisibility);
+      setAutoRefresh(savedAutoRefresh);
+      setAutoRefreshInterval(savedInterval);
+      settingsHydratedRef.current = true;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!settingsHydratedRef.current) return;
+    void browserRuntime.storage.set(COLUMN_VISIBILITY_KEY, JSON.stringify(columnVisibility));
   }, [columnVisibility]);
 
   useEffect(() => {
-    window.localStorage.setItem(AUTO_REFRESH_KEY, String(autoRefresh));
+    if (!settingsHydratedRef.current) return;
+    void browserRuntime.storage.set(AUTO_REFRESH_KEY, String(autoRefresh));
   }, [autoRefresh]);
 
   useEffect(() => {
-    window.localStorage.setItem(AUTO_REFRESH_INTERVAL_KEY, String(autoRefreshInterval));
+    if (!settingsHydratedRef.current) return;
+    void browserRuntime.storage.set(AUTO_REFRESH_INTERVAL_KEY, String(autoRefreshInterval));
   }, [autoRefreshInterval]);
 
   const configurableColumns = table.getAllLeafColumns().filter((column) => !ALWAYS_VISIBLE_COLUMNS.has(column.id));
   const selectedTasks = table.getSelectedRowModel().flatRows.map((row) => row.original);
   const selectedReleasableTasks = selectedTasks.filter(isReleasableTask);
   const selectedNonReleasableTasks = selectedTasks.filter((task) => !isReleasableTask(task));
-  const total = query.data?.total;
-  const hasKnownTotal = typeof total === "number";
-  const totalPages = hasKnownTotal ? Math.max(1, Math.ceil(total / queryState.pageSize)) : undefined;
-  const hasNextPage = hasKnownTotal ? queryState.page < (totalPages ?? 1) : (query.data?.items.length ?? 0) >= queryState.pageSize;
 
   useEffect(() => {
-    setRowSelection({});
-  }, [queryState.page, queryState.pageSize, queryState.keyword, queryState.status]);
+    const timer = window.setInterval(() => setNowMs(Date.now()), 5_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const isListNavigationTarget = useCallback(() => {
+    const active = document.activeElement;
+    if (!active) return false;
+    const tableEl = tableScrollRef.current;
+    if (tableEl && (tableEl === active || tableEl.contains(active))) return true;
+    const cardsEl = mobileCardsRef.current;
+    return Boolean(cardsEl && (cardsEl === active || cardsEl.contains(active)));
+  }, []);
+
+  useEffect(() => {
+    const container = browserRuntime.isMobile ? mobileCardsRef.current : tableScrollRef.current;
+    if (!container) return;
+    container.querySelector(`[data-task-row-index="${activeRowIndex}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [activeRowIndex]);
+
+  useEffect(() => {
+    // Do not toggle overflow on the virtualized table — that remounts rows and kills the menu.
+    // Block wheel/touch scrolling on the list instead so the trigger row stays mounted.
+    const scrollRoots = [tableScrollRef.current, mobileCardsRef.current].filter(
+      (el): el is HTMLDivElement => Boolean(el),
+    );
+    if (!moreMenuOpen || scrollRoots.length === 0) return undefined;
+
+    const preventScroll = (event: Event) => {
+      event.preventDefault();
+    };
+
+    for (const el of scrollRoots) {
+      el.addEventListener("wheel", preventScroll, { passive: false });
+      el.addEventListener("touchmove", preventScroll, { passive: false });
+    }
+    return () => {
+      for (const el of scrollRoots) {
+        el.removeEventListener("wheel", preventScroll);
+        el.removeEventListener("touchmove", preventScroll);
+      }
+    };
+  }, [moreMenuOpen]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      const isTyping =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+      if (isTyping) return;
+      if (!isListNavigationTarget()) return;
+      if (
+        createOpen ||
+        Boolean(editTask) ||
+        Boolean(logTask) ||
+        Boolean(sshInfoTask) ||
+        Boolean(appSshRequest) ||
+        Boolean(rawTask) ||
+        columnSettingsOpen ||
+        autoRefreshMenuOpen ||
+        moreMenuOpen
+      ) {
+        return;
+      }
+      if (filteredTasks.length === 0) return;
+
+      const key = event.key.toLowerCase();
+      if (key === "j" || key === "arrowdown") {
+        event.preventDefault();
+        setActiveRowIndex((index) => Math.min(index + 1, filteredTasks.length - 1));
+        return;
+      }
+      if (key === "k" || key === "arrowup") {
+        event.preventDefault();
+        setActiveRowIndex((index) => Math.max(index - 1, 0));
+        return;
+      }
+
+      const task = filteredTasks[activeRowIndex];
+      if (!task) return;
+
+      if (key === "enter") {
+        event.preventDefault();
+        navigate(`/tasks/${task.id}`);
+        return;
+      }
+      if (key === "l") {
+        event.preventDefault();
+        setLogTask(task);
+        return;
+      }
+      if (key === "t") {
+        event.preventDefault();
+        openTerminal(task);
+        return;
+      }
+      if (key === "r" && isReleasableTask(task)) {
+        event.preventDefault();
+        confirmReleaseTask(task);
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [
+    activeRowIndex,
+    appSshRequest,
+    autoRefreshMenuOpen,
+    columnSettingsOpen,
+    confirmReleaseTask,
+    createOpen,
+    editTask,
+    filteredTasks,
+    isListNavigationTarget,
+    logTask,
+    moreMenuOpen,
+    navigate,
+    openTerminal,
+    rawTask,
+    sshInfoTask,
+  ]);
+
+  const closeAutoRefreshMenu = useCallback((restoreFocus = false) => {
+    setAutoRefreshMenuOpen(false);
+    if (restoreFocus) {
+      window.setTimeout(() => autoRefreshTriggerRef.current?.focus(), 0);
+    }
+  }, []);
+
+  const focusAutoRefreshMenuItem = useCallback((index: number) => {
+    const items = autoRefreshItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
+    if (items.length === 0) return;
+    const nextIndex = ((index % items.length) + items.length) % items.length;
+    items[nextIndex]?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!autoRefreshMenuOpen) return undefined;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!autoRefreshMenuRef.current?.contains(event.target as Node)) {
+        closeAutoRefreshMenu();
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        closeAutoRefreshMenu(true);
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [autoRefreshMenuOpen, closeAutoRefreshMenu]);
+
+  useEffect(() => {
+    if (!autoRefreshMenuOpen) return;
+    window.setTimeout(() => focusAutoRefreshMenuItem(autoRefreshInitialFocusRef.current), 0);
+  }, [autoRefreshMenuOpen, focusAutoRefreshMenuItem]);
+
+  const handleAutoRefreshTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    autoRefreshInitialFocusRef.current = event.key === "ArrowUp" ? -1 : 0;
+    setAutoRefreshMenuOpen(true);
+  };
+
+  const handleAutoRefreshMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const items = autoRefreshItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
+    const currentIndex = items.findIndex((item) => item === document.activeElement);
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeAutoRefreshMenu(true);
+      return;
+    }
+
+    if (event.key === "Tab") {
+      closeAutoRefreshMenu();
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusAutoRefreshMenuItem(currentIndex + 1);
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusAutoRefreshMenuItem(currentIndex - 1);
+      return;
+    }
+
+    if (event.key === "Home") {
+      event.preventDefault();
+      focusAutoRefreshMenuItem(0);
+      return;
+    }
+
+    if (event.key === "End") {
+      event.preventDefault();
+      focusAutoRefreshMenuItem(items.length - 1);
+    }
+  };
+
+  const listUpdatedLabel = query.isFetching
+    ? text("刷新中", "Refreshing")
+    : query.dataUpdatedAt
+      ? formatRelativeUpdatedAt(query.dataUpdatedAt, nowMs, text)
+      : null;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
           <div className="relative w-full sm:w-auto">
-            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" />
+            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" aria-hidden="true" />
             <Input
+              aria-label={text("搜索实例名称", "Search instance name")}
               className="w-full pl-9 sm:w-64"
               placeholder={text("搜索实例名称", "Search instance name")}
-              value={queryState.keyword}
-              onChange={(event) => updateTaskQuery({ keyword: event.target.value })}
+              value={keywordInput}
+              onChange={(event) => setKeywordInput(event.target.value)}
             />
           </div>
-          <Select className="w-32" value={queryState.status} onChange={(event) => updateTaskQuery({ status: event.target.value })}>
+          <Select
+            aria-label={text("按状态筛选", "Filter by status")}
+            className="w-32"
+            value={queryState.status}
+            onChange={(event) => updateTaskQuery({ status: event.target.value })}
+          >
             <option value="">{text("全部状态", "All statuses")}</option>
             {Object.entries(locale === "en-US" ? taskStatusTextEn : taskStatusText).map(([value, label]) => (
               <option key={value} value={value}>
@@ -1051,33 +1773,124 @@ export function TasksPage() {
               </option>
             ))}
           </Select>
-          <Button variant="secondary" onClick={() => query.refetch()}>
-            <RefreshCw className="h-4 w-4" />
+          <Select
+            aria-label={text("排序字段", "Sort by")}
+            className="w-32"
+            value={queryState.sortBy}
+            onChange={(event) => updateTaskQuery({ sortBy: event.target.value as TaskListSortBy })}
+          >
+            <option value="">{text("默认排序", "Default")}</option>
+            <option value="name">{text("名称", "Name")}</option>
+            <option value="status">{text("状态", "Status")}</option>
+            <option value="created">{text("创建时间", "Created")}</option>
+            <option value="updated">{text("更新时间", "Updated")}</option>
+          </Select>
+          <Button
+            aria-label={text("切换排序方向", "Toggle sort direction")}
+            disabled={!queryState.sortBy}
+            title={queryState.sortDir === "asc" ? text("升序", "Ascending") : text("降序", "Descending")}
+            type="button"
+            variant="secondary"
+            onClick={() => updateTaskQuery({ sortDir: queryState.sortDir === "asc" ? "desc" : "asc" })}
+          >
+            {queryState.sortDir === "asc" ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
+          </Button>
+          <Button disabled={query.isFetching} variant="secondary" onClick={() => void query.refetch()}>
+            <RefreshCw className={["h-4 w-4", query.isFetching ? "animate-spin" : ""].join(" ")} aria-hidden="true" />
             {text("刷新", "Refresh")}
           </Button>
-          <div className="flex min-h-9 items-center gap-2 rounded-md border border-app-border bg-app-surface px-3 text-sm [@media(pointer:coarse)]:min-h-11">
-            <label className="flex cursor-pointer items-center gap-2 text-app-text">
-              <input
-                type="checkbox"
-                className="h-4 w-4 accent-app-accent"
-                checked={autoRefresh}
-                onChange={(event) => setAutoRefresh(event.target.checked)}
-              />
-              {text("自动刷新", "Auto refresh")}
-            </label>
-            <Select
-              className="h-7 border-0 bg-app-panel px-2 text-xs"
-              disabled={!autoRefresh}
-              value={String(autoRefreshInterval)}
-              onChange={(event) => setAutoRefreshInterval(Number(event.target.value))}
+          <div ref={autoRefreshMenuRef} className="relative flex items-center gap-2">
+            <Button
+              ref={autoRefreshTriggerRef}
+              aria-controls={autoRefreshMenuOpen ? autoRefreshMenuId : undefined}
+              aria-expanded={autoRefreshMenuOpen}
+              aria-haspopup="menu"
+              aria-pressed={autoRefresh}
+              className={
+                autoRefresh
+                  ? autoRefreshPaused
+                    ? "border-app-warning/40 text-app-warning hover:bg-app-warningSoft"
+                    : "border-app-accent/40 text-app-accent hover:bg-app-accentSoft"
+                  : undefined
+              }
+              title={
+                autoRefresh
+                  ? autoRefreshPaused
+                    ? text("自动刷新已暂停（面板打开时）", "Auto refresh paused (panel open)")
+                    : text(`每 ${autoRefreshIntervalLabel(autoRefreshInterval, locale)} 自动刷新`, `Auto refresh every ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`)
+                  : text("自动刷新间隔", "Auto refresh interval")
+              }
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                autoRefreshInitialFocusRef.current = 0;
+                setAutoRefreshMenuOpen((open) => !open);
+              }}
+              onKeyDown={handleAutoRefreshTriggerKeyDown}
             >
-              {autoRefreshOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {locale === "en-US" ? option.en : option.zh}
-                </option>
-              ))}
-            </Select>
-            {autoRefresh && autoRefreshPaused ? <span className="text-xs text-app-warning">{text("已暂停", "Paused")}</span> : null}
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              {autoRefresh
+                ? autoRefreshPaused
+                  ? text(`已暂停 · ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`, `Paused · ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`)
+                  : text(`自动 · ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`, `Auto · ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`)
+                : text("自动刷新", "Auto refresh")}
+            </Button>
+            {listUpdatedLabel ? (
+              <span className="hidden text-xs text-app-muted sm:inline" aria-live="polite">
+                {listUpdatedLabel}
+              </span>
+            ) : null}
+            {autoRefreshMenuOpen ? (
+              <div
+                id={autoRefreshMenuId}
+                ref={autoRefreshMenuListRef}
+                role="menu"
+                aria-label={text("自动刷新间隔", "Auto refresh interval")}
+                className="absolute left-0 top-full z-30 mt-1 w-40 rounded-lg border border-app-border bg-app-surface p-1 shadow-popover"
+                onKeyDown={handleAutoRefreshMenuKeyDown}
+              >
+                <button
+                  ref={(element) => {
+                    autoRefreshItemRefs.current[0] = element;
+                  }}
+                  className={MENU_ITEM_CLASS}
+                  role="menuitemradio"
+                  aria-checked={!autoRefresh}
+                  tabIndex={-1}
+                  type="button"
+                  onClick={() => {
+                    setAutoRefresh(false);
+                    closeAutoRefreshMenu();
+                  }}
+                >
+                  {text("关闭", "Off")}
+                </button>
+                {autoRefreshOptions.map((option, optionIndex) => {
+                  const selected = autoRefresh && autoRefreshInterval === option.value;
+                  const itemIndex = optionIndex + 1;
+                  return (
+                    <button
+                      key={option.value}
+                      ref={(element) => {
+                        autoRefreshItemRefs.current[itemIndex] = element;
+                      }}
+                      className={MENU_ITEM_CLASS}
+                      role="menuitemradio"
+                      aria-checked={selected}
+                      tabIndex={-1}
+                      type="button"
+                      onClick={() => {
+                        setAutoRefresh(true);
+                        setAutoRefreshInterval(option.value);
+                        closeAutoRefreshMenu();
+                      }}
+                    >
+                      {locale === "en-US" ? option.en : option.zh}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
           <Button variant="secondary" onClick={() => setColumnSettingsOpen(true)}>
             <Settings2 className="h-4 w-4" />
@@ -1092,10 +1905,18 @@ export function TasksPage() {
 
       {selectedTasks.length > 0 ? (
         <Panel className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
-          <div className="text-sm text-app-muted">
-            {text("已选", "Selected")} <span className="font-medium text-app-text">{selectedTasks.length}</span> {text("个实例", "instances")}
-            {selectedReleasableTasks.length > 0 ? text(`，可释放 ${selectedReleasableTasks.length} 个`, `, releasable ${selectedReleasableTasks.length}`) : ""}
-            {selectedNonReleasableTasks.length > 0 ? text(`，不可释放 ${selectedNonReleasableTasks.length} 个`, `, non-releasable ${selectedNonReleasableTasks.length}`) : ""}
+          <div className="min-w-0 space-y-0.5 text-sm text-app-muted">
+            <div>
+              {text("已选", "Selected")} <span className="font-medium text-app-text">{selectedTasks.length}</span> {text("个实例", "instances")}
+              {selectedReleasableTasks.length > 0 ? text(`，可释放 ${selectedReleasableTasks.length} 个`, `, releasable ${selectedReleasableTasks.length}`) : ""}
+              {selectedNonReleasableTasks.length > 0 ? text(`，不可释放 ${selectedNonReleasableTasks.length} 个`, `, non-releasable ${selectedNonReleasableTasks.length}`) : ""}
+            </div>
+            <p className="text-xs text-app-muted">
+              {text(
+                "释放：停止并回收可释放实例。删除：移除不可释放（通常已结束）实例，不可撤销。",
+                "Release: stop and reclaim releasable instances. Delete: remove non-releasable (usually finished) instances; cannot undo.",
+              )}
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {selectedReleasableTasks.length > 0 ? (
@@ -1127,36 +1948,49 @@ export function TasksPage() {
       ) : null}
 
       <Panel className="overflow-hidden">
-        {query.isLoading ? (
+        {!query.data && query.isLoading ? (
           <TableSkeleton columns={7} />
         ) : query.isError ? (
           <ErrorState error={query.error} action={<Button variant="secondary" onClick={() => query.refetch()}>{text("重试", "Retry")}</Button>} />
         ) : table.getRowModel().rows.length === 0 && queryState.keyword.trim() ? (
-          <EmptyState title={text("未找到匹配实例", "No matching instances")} action={<Button variant="secondary" onClick={() => updateTaskQuery({ keyword: "" })}>{text("清空搜索", "Clear search")}</Button>} />
+          <EmptyState icon={SearchXIcon} title={text("未找到匹配实例", "No matching instances")} action={<Button variant="secondary" onClick={() => updateTaskQuery({ keyword: "" })}>{text("清空搜索", "Clear search")}</Button>} />
         ) : table.getRowModel().rows.length === 0 ? (
           <EmptyState title={text("暂无任务实例", "No task instances")} action={<Button onClick={openCreateTask}>{text("新建任务", "New task")}</Button>} />
         ) : (
           <>
-          <div className="divide-y divide-app-border sm:hidden">
-            {table.getRowModel().rows.map((row) => {
+          {browserRuntime.isMobile ? (
+          <div ref={mobileCardsRef} className="divide-y divide-app-border" tabIndex={0}>
+            {table.getRowModel().rows.map((row, rowIndex) => {
               const task = row.original;
               const release = isReleasableTask(task);
               const taskName = getTaskName(task);
               return (
-                <article key={row.id} className="space-y-3 px-3 py-3" aria-labelledby={`task-card-${row.id}`}>
+                <article
+                  key={row.id}
+                  id={`task-row-${rowIndex}`}
+                  data-task-row-index={rowIndex}
+                  className={[
+                    "space-y-3 px-3 py-3",
+                    isRunningTask(task) ? "bg-app-infoSoft/40" : "",
+                    activeRowIndex === rowIndex ? "bg-app-accentSoft/50 ring-1 ring-inset ring-app-accent/30" : "",
+                  ].join(" ")}
+                  aria-labelledby={`task-card-${row.id}`}
+                >
                   <div className="flex items-start gap-3">
-                    <input
-                      aria-label={text(`选择 ${taskName}`, `Select ${taskName}`)}
-                      className="mt-1 h-4 w-4 shrink-0 accent-app-accent"
-                      type="checkbox"
-                      checked={row.getIsSelected()}
-                      onChange={row.getToggleSelectedHandler()}
-                    />
+                    <label className={`${CHECKBOX_HIT_CLASS} mt-0.5 shrink-0`}>
+                      <input
+                        aria-label={text(`选择 ${taskName}`, `Select ${taskName}`)}
+                        className="h-4 w-4 accent-app-accent"
+                        type="checkbox"
+                        checked={row.getIsSelected()}
+                        onChange={row.getToggleSelectedHandler()}
+                      />
+                    </label>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 id={`task-card-${row.id}`} className="flex min-w-0 flex-1 items-center gap-1.5">
                           {isTaskPinned(pinnedTaskIds, task) ? <Pin className="h-3.5 w-3.5 shrink-0 text-app-accent" aria-label={text("已置顶", "Pinned")} /> : null}
-                          <span className="min-w-0 flex-1"><TaskInstanceName compact name={taskName} /></span>
+                          <span className="min-w-0 flex-1"><TaskInstanceName compact name={taskName} taskId={task.id} /></span>
                         </h3>
                         <StatusBadge status={task.status} />
                       </div>
@@ -1186,44 +2020,96 @@ export function TasksPage() {
                     </div>
                   </dl>
                   <div className="flex flex-wrap gap-1.5">
-                    <Button aria-label={text(`打开 ${taskName} 的监控`, `Open monitor for ${taskName}`)} className="h-9 px-2" variant="ghost" title={text("监控", "Monitor")} onClick={() => openMonitorDashboard(task)}>
-                      <ActivitySquare className="h-4 w-4" />
-                      {text("监控", "Monitor")}
-                    </Button>
-                    <Button aria-label={text(`查看 ${taskName} 的日志`, `View logs for ${taskName}`)} className="h-9 px-2" variant="ghost" title={text("日志", "Logs")} onClick={() => setLogTask(task)}>
-                      <FileText className="h-4 w-4" />
-                      {text("日志", "Logs")}
-                    </Button>
-                    <Button aria-label={text(`打开 ${taskName} 的终端`, `Open terminal for ${taskName}`)} className="h-9 px-2" variant="ghost" title={text("终端", "Terminal")} onClick={() => setTerminalTask(task)}>
-                      <Terminal className="h-4 w-4" />
-                      {text("终端", "Terminal")}
-                    </Button>
-                    {release ? (
-                      <Button className="h-9 px-2 text-app-warning hover:text-app-warning" disabled={releaseMutation.isPending} title={text("释放", "Release")} variant="ghost" onClick={() => confirmReleaseTask(task)}>
-                        <Power className="h-4 w-4" />
-                        {text("释放", "Release")}
-                      </Button>
-                    ) : (
-                      <Button className="h-9 px-2 text-app-danger hover:text-app-danger" disabled={deleteMutation.isPending} title={text("删除", "Delete")} variant="ghost" onClick={() => confirmDeleteTask(task)}>
-                        <Trash2 className="h-4 w-4" />
-                        {text("删除", "Delete")}
-                      </Button>
-                    )}
-                    <MoreActionsMenu
-                      isPinned={isTaskPinned(pinnedTaskIds, task)}
-                      task={task}
-                      onCommit={confirmCommitTask}
-                      onDownload={handleDownloadTask}
-                      onRaw={setRawTask}
-                      onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
-                      onTogglePin={handleTogglePin}
-                    />
+                    {(() => {
+                      const terminalLabel = text("连接信息", "Connection info");
+                      const logAttention = needsLogAttention(task);
+                      return (
+                        <>
+                        <Button
+                          aria-label={text(`查看 ${taskName} 的连接信息`, `View connection info for ${taskName}`)}
+                          className="h-9 px-2"
+                          variant="ghost"
+                          title={terminalLabel}
+                          onClick={() => openTerminal(task)}
+                        >
+                          <KeyRound className="h-4 w-4" />
+                          {terminalLabel}
+                        </Button>
+                        <Button
+                          className={["h-9 px-2", logAttention ? "text-app-danger" : ""].join(" ")}
+                          title={text("日志", "Logs")}
+                          variant="ghost"
+                          onClick={() => setLogTask(task)}
+                        >
+                          <FileText className="h-4 w-4" />
+                          {text("日志", "Logs")}
+                        </Button>
+                        <Button
+                          className="h-9 px-2"
+                          title={text("复制实例", "Clone instance")}
+                          variant="ghost"
+                          onClick={() => openCloneTask(task)}
+                        >
+                          <CopyPlus className="h-4 w-4" />
+                          {text("复制", "Clone")}
+                        </Button>
+                        {release ? (
+                          <Button
+                            className="h-9 px-2 text-app-muted hover:text-app-warning"
+                            disabled={releaseMutation.isPending}
+                            title={text("释放：停止实例并回收资源", "Release: stop instance and reclaim resources")}
+                            variant="ghost"
+                            onClick={() => confirmReleaseTask(task)}
+                          >
+                            <Power className="h-4 w-4" />
+                            {text("释放", "Release")}
+                          </Button>
+                        ) : (
+                          <Button
+                            className="h-9 px-2 text-app-muted hover:text-app-danger"
+                            disabled={deleteMutation.isPending}
+                            title={text("删除：移除不可释放实例", "Delete: remove a non-releasable instance")}
+                            variant="ghost"
+                            onClick={() => confirmDeleteTask(task)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            {text("删除", "Delete")}
+                          </Button>
+                        )}
+                        <MoreActionsMenu
+                          canEdit={getTaskEditableState() !== false}
+                          isPinned={isTaskPinned(pinnedTaskIds, task)}
+                          open={moreMenu?.taskId === taskRowId(task)}
+                          promoteClone
+                          promoteLog
+                          showSshInfo={false}
+                          task={task}
+                          onClone={openCloneTask}
+                          onCommit={confirmCommitTask}
+                          onDownload={handleDownloadTask}
+                          onEdit={openEditTask}
+                          onLog={setLogTask}
+                          onMonitor={openMonitorDashboard}
+                          onOpenChange={handleMoreMenuOpenChange}
+                          onRaw={setRawTask}
+                          onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
+                          onSshInfo={openSshInfo}
+                          onTogglePin={handleTogglePin}
+                        />
+                        </>
+                      );
+                    })()}
                   </div>
                 </article>
               );
             })}
           </div>
-          <TableRegion className="hidden sm:block" label={text("任务实例表格", "Task instances table")}>
+          ) : (
+          <TableRegion
+            ref={tableScrollRef}
+            label={text("任务实例表格", "Task instances table")}
+            aria-activedescendant={filteredTasks.length > 0 ? `task-row-${activeRowIndex}` : undefined}
+          >
             <table className="w-max min-w-full table-auto border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 {table.getHeaderGroups().map((headerGroup) => (
@@ -1233,9 +2119,9 @@ export function TasksPage() {
                         key={header.id}
                         scope="col"
                         className={[
-                          "whitespace-nowrap border-b border-app-border px-3 py-2 font-medium",
+                          "sticky top-0 z-10 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 font-medium",
                           isActionsColumn(header.column.id)
-                            ? "sticky right-0 z-20 bg-app-panel shadow-stickyColumn"
+                            ? "sticky right-0 z-20 shadow-stickyColumn"
                             : "",
                         ].join(" ")}
                       >
@@ -1246,26 +2132,60 @@ export function TasksPage() {
                 ))}
               </thead>
               <tbody>
-                {table.getRowModel().rows.map((row) => (
-                  <tr key={row.id} className="relative border-b border-app-border last:border-0 hover:z-20 hover:bg-app-panel/60">
-                    {row.getVisibleCells().map((cell) => (
-                      <td
-                        key={cell.id}
-                        className={[
-                          "whitespace-nowrap px-3 py-2 align-middle",
-                          isActionsColumn(cell.column.id)
-                            ? "sticky right-0 z-30 bg-app-surface shadow-stickyColumn"
-                            : "",
-                        ].join(" ")}
-                      >
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
+                {paddingTop > 0 ? (
+                  <tr aria-hidden="true">
+                    <td colSpan={table.getVisibleLeafColumns().length} style={{ height: paddingTop, padding: 0, border: 0 }} />
                   </tr>
-                ))}
+                ) : null}
+                {virtualRows.map((virtualRow) => {
+                  const row = tableRows[virtualRow.index];
+                  return (
+                    <tr
+                      key={row.id}
+                      id={`task-row-${virtualRow.index}`}
+                      data-task-row-index={virtualRow.index}
+                      ref={rowVirtualizer.measureElement}
+                      className={[
+                        "relative border-b border-app-border last:border-0 hover:z-20",
+                        activeRowIndex === virtualRow.index
+                          ? "bg-app-accentSoft/50 ring-1 ring-inset ring-app-accent/25"
+                          : isRunningTask(row.original)
+                            ? "bg-app-infoSoft/40 hover:bg-app-panel/60"
+                            : "hover:bg-app-panel/60",
+                      ].join(" ")}
+                    >
+                      {row.getVisibleCells().map((cell) => (
+                        <td
+                          key={cell.id}
+                          className={[
+                            "whitespace-nowrap px-3 py-2 align-middle",
+                            isActionsColumn(cell.column.id)
+                              ? [
+                                  "sticky right-0 z-30 shadow-stickyColumn",
+                                  activeRowIndex === virtualRow.index
+                                    ? "bg-app-accentSoft/50"
+                                    : isRunningTask(row.original)
+                                      ? "bg-app-infoSoft/40"
+                                      : "bg-app-surface",
+                                ].join(" ")
+                              : "",
+                          ].join(" ")}
+                        >
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+                {paddingBottom > 0 ? (
+                  <tr aria-hidden="true">
+                    <td colSpan={table.getVisibleLeafColumns().length} style={{ height: paddingBottom, padding: 0, border: 0 }} />
+                  </tr>
+                ) : null}
               </tbody>
             </table>
           </TableRegion>
+          )}
           </>
         )}
       </Panel>
@@ -1305,14 +2225,81 @@ export function TasksPage() {
           >
             {text("下一页", "Next")}
           </Button>
+          {hasKnownTotal && totalPages ? (
+            <>
+              <Input
+                aria-label={text("跳转到页码", "Jump to page")}
+                className="w-16 text-center"
+                inputMode="numeric"
+                min={1}
+                max={totalPages}
+                value={pageJumpInput}
+                onChange={(event) => setPageJumpInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  const page = Number(pageJumpInput);
+                  if (Number.isInteger(page) && page >= 1 && page <= totalPages) {
+                    updateTaskQuery({ page });
+                  }
+                }}
+              />
+              <Button
+                disabled={query.isFetching}
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  const page = Number(pageJumpInput);
+                  if (Number.isInteger(page) && page >= 1 && page <= totalPages) {
+                    updateTaskQuery({ page });
+                  }
+                }}
+              >
+                {text("跳转", "Jump")}
+              </Button>
+            </>
+          ) : null}
         </div>
       </div>
 
-      <CreateTaskDialog initialTask={cloneTask} open={createOpen} onClose={closeCreateTask} />
-      <TaskLogDialog task={logTask} onClose={() => setLogTask(null)} />
-      <Suspense fallback={null}>
-        <TerminalDialog task={terminalTask} onClose={() => setTerminalTask(null)} />
+      <Suspense fallback={<LoadingState />}>
+        <CreateTaskDialog initialTask={cloneTask} open={createOpen} onClose={closeCreateTask} />
+        <CreateTaskDialog mode="edit" editTaskId={editTask?.id} initialTask={editTask} open={Boolean(editTask)} onClose={closeEditTask} />
+        <TaskLogDialog task={logTask} onClose={() => setLogTask(null)} />
+        <TerminalDialog
+          task={sshInfoTask}
+          onClose={() => setSshInfoTask(null)}
+          onOpenAppSsh={(request) => {
+            setSshInfoTask(null);
+            setAppSshRequest(request);
+          }}
+        />
       </Suspense>
+      {moreMenu && moreMenuTask ? (
+        <MoreActionsMenuPanel
+          task={moreMenuTask}
+          position={{ left: moreMenu.left, top: moreMenu.top }}
+          menuId={moreActionsMenuId}
+          initialFocusIndex={0}
+          triggerRef={moreMenuTriggerRef}
+          promoteLog
+          promoteClone
+          showSshInfo={false}
+          isPinned={isTaskPinned(pinnedTaskIds, moreMenuTask)}
+          canEdit={getTaskEditableState() !== false}
+          onClose={closeMoreMenu}
+          onLog={setLogTask}
+          onClone={openCloneTask}
+          onSshInfo={openSshInfo}
+          onMonitor={openMonitorDashboard}
+          onRaw={setRawTask}
+          onDownload={handleDownloadTask}
+          onCommit={confirmCommitTask}
+          onEdit={openEditTask}
+          onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
+          onTogglePin={handleTogglePin}
+        />
+      ) : null}
+      <AppSshTerminalDialog request={appSshRequest} onClose={() => setAppSshRequest(null)} />
       <Dialog open={Boolean(rawTask)} title={text(`实例原始 JSON ${rawTask ? getTaskName(rawTask) : ""}`, `Instance Raw JSON ${rawTask ? getTaskName(rawTask) : ""}`)} onClose={() => setRawTask(null)} width="max-w-4xl">
         <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
           {asJson(rawTask)}

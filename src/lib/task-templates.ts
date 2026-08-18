@@ -1,10 +1,22 @@
 import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName } from "./format";
 import { i18nText } from "./i18n-text";
 import { normalizeStoragePath } from "./remote-storage";
-import type { CreateTaskPayload, RuntimeStorage, Task, TaskTemplate, UnknownRecord } from "./types";
+import {
+  applyEnvToScriptCommand,
+  envVarsFromLegacyExperimentId,
+  normalizeScriptEnvVars,
+  parseScriptCommandEnv,
+  type ScriptEnvVar,
+} from "./script-command-env";
+import { updateStorageValue } from "./storage-mutex";
+import type { CreateTaskPayload, RuntimeStorage, Task, TaskTemplate, TaskTemplateVariable, UnknownRecord } from "./types";
 
 export const TASK_TEMPLATES_STORAGE_KEY = "easy-console.taskTemplates";
 export const MAX_TEMPLATE_BATCH_COUNT = 50;
+
+/** Matches `${key}` placeholders inside template string fields. */
+const TEMPLATE_VARIABLE_PATTERN = /\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
+const VARIABLE_KEY_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 export type EditableTaskTemplate = Omit<TaskTemplate, "id" | "usageCount" | "lastUsedAt" | "createdAt" | "updatedAt">;
 
@@ -40,6 +52,120 @@ function stringValue(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }
 
+function normalizeTemplateVariable(raw: unknown): TaskTemplateVariable | null {
+  if (!isRecord(raw)) return null;
+  const key = stringValue(raw.key).trim();
+  if (!VARIABLE_KEY_PATTERN.test(key)) return null;
+  return {
+    key,
+    label: stringValue(raw.label).trim() || undefined,
+    defaultValue: typeof raw.defaultValue === "string" ? raw.defaultValue : undefined,
+    required: raw.required === true ? true : undefined,
+    description: stringValue(raw.description).trim() || undefined,
+  };
+}
+
+function normalizeScriptEnvList(raw: unknown): ScriptEnvVar[] {
+  if (!Array.isArray(raw)) return [];
+  return normalizeScriptEnvVars(
+    raw.flatMap((item) => {
+      if (!isRecord(item)) return [];
+      const key = stringValue(item.key).trim();
+      const value = stringValue(item.value).trim();
+      if (!key && !value) return [];
+      return [{ key, value }];
+    }),
+  );
+}
+
+function normalizeTemplateVariables(raw: unknown): TaskTemplateVariable[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const result: TaskTemplateVariable[] = [];
+  for (const item of raw) {
+    const normalized = normalizeTemplateVariable(item);
+    if (!normalized) continue;
+    if (seen.has(normalized.key)) continue;
+    seen.add(normalized.key);
+    result.push(normalized);
+  }
+  return result;
+}
+
+/** String fields of `CreateTaskPayload` that support `${key}` substitution. */
+const TEMPLATE_VARIABLE_FIELDS: Array<keyof CreateTaskPayload> = [
+  "name",
+  "storage_path",
+  "mount_path",
+  "work_directory",
+  "script_path",
+];
+
+/** Replaces `${key}` tokens in supported string fields of a payload. */
+export function applyTemplateVariables(
+  payload: CreateTaskPayload,
+  values: Record<string, string>,
+): CreateTaskPayload {
+  const next: CreateTaskPayload = { ...payload };
+  for (const field of TEMPLATE_VARIABLE_FIELDS) {
+    const value = next[field];
+    if (typeof value !== "string") continue;
+    next[field] = value.replace(TEMPLATE_VARIABLE_PATTERN, (match, key: string) => values[key] ?? match);
+  }
+  return next;
+}
+
+function substituteTemplateVariables(value: string, values: Record<string, string>) {
+  return value.replace(TEMPLATE_VARIABLE_PATTERN, (match, key: string) => values[key] ?? match);
+}
+
+/** Scans a template's string fields and returns the set of unique `${key}` placeholders. */
+export function extractTemplateVariables(
+  template: Pick<TaskTemplate, "taskNamePrefix" | "storagePath" | "mountPath" | "workDirectory" | "scriptPath" | "scriptEnv" | "experimentId">,
+): string[] {
+  const fields = [
+    template.taskNamePrefix,
+    template.storagePath,
+    template.mountPath,
+    template.workDirectory,
+    template.scriptPath,
+    template.experimentId,
+    ...(template.scriptEnv ?? []).flatMap((item) => [item.key, item.value]),
+  ];
+  const keys = new Set<string>();
+  for (const field of fields) {
+    if (typeof field !== "string") continue;
+    let match: RegExpExecArray | null;
+    TEMPLATE_VARIABLE_PATTERN.lastIndex = 0;
+    while ((match = TEMPLATE_VARIABLE_PATTERN.exec(field)) !== null) {
+      keys.add(match[1]);
+    }
+  }
+  return Array.from(keys);
+}
+
+/** Validates that every required variable has a non-empty value. Returns missing keys. */
+export function findMissingRequiredVariables(
+  template: Pick<TaskTemplate, "variables">,
+  values: Record<string, string>,
+): string[] {
+  const variables = template.variables ?? [];
+  return variables.filter((variable) => variable.required && !values[variable.key]?.trim()).map((variable) => variable.key);
+}
+
+/** Merges template variable definitions with user-provided values, applying defaults. */
+export function resolveTemplateVariables(
+  template: Pick<TaskTemplate, "variables">,
+  userInput: Record<string, string>,
+): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const variable of template.variables ?? []) {
+    const userValue = userInput[variable.key]?.trim() ?? "";
+    resolved[variable.key] = userValue || variable.defaultValue?.trim() || "";
+  }
+  return resolved;
+}
+
 function normalizeTemplate(raw: unknown): TaskTemplate | null {
   if (!isRecord(raw)) return null;
   const id = stringValue(raw.id);
@@ -48,6 +174,14 @@ function normalizeTemplate(raw: unknown): TaskTemplate | null {
   if (!id || !name || !imageId) return null;
 
   const condition = normalizeReleaseCondition(raw.releaseCondition);
+  const variables = normalizeTemplateVariables(raw.variables);
+  const rawScriptPath = condition === 3 ? stringValue(raw.scriptPath).trim() : "";
+  const parsedScript = condition === 3 ? parseScriptCommandEnv(rawScriptPath) : { env: [] as ScriptEnvVar[], command: "" };
+  const storedEnv = condition === 3 ? normalizeScriptEnvList(raw.scriptEnv) : [];
+  const scriptEnv =
+    condition === 3
+      ? envVarsFromLegacyExperimentId(stringValue(raw.experimentId), storedEnv.length > 0 ? storedEnv : parsedScript.env)
+      : undefined;
   return {
     id,
     name,
@@ -58,12 +192,15 @@ function normalizeTemplate(raw: unknown): TaskTemplate | null {
     cpu: positiveNumber(raw.cpu, 4),
     gpu: nonNegativeInteger(raw.gpu, 0),
     memory: positiveInteger(raw.memory, 16),
+    price: positiveNumber(raw.price, 1),
     storagePath: normalizeStoragePath(stringValue(raw.storagePath, "/")),
     mountPath: stringValue(raw.mountPath, "/home/ubuntu"),
     releaseCondition: condition,
     releaseAfterHours: condition === 2 ? positiveNumber(raw.releaseAfterHours, 24) : undefined,
     workDirectory: condition === 3 ? stringValue(raw.workDirectory).trim() : undefined,
-    scriptPath: condition === 3 ? stringValue(raw.scriptPath).trim() : undefined,
+    scriptPath: condition === 3 ? parsedScript.command || undefined : undefined,
+    scriptEnv: scriptEnv && scriptEnv.length > 0 ? scriptEnv : undefined,
+    variables: variables.length > 0 ? variables : undefined,
     usageCount: nonNegativeInteger(raw.usageCount, 0),
     lastUsedAt: stringValue(raw.lastUsedAt).trim() || undefined,
     createdAt: stringValue(raw.createdAt, new Date().toISOString()),
@@ -84,7 +221,7 @@ export async function loadTaskTemplates(storage: RuntimeStorage) {
 }
 
 export async function saveTaskTemplates(storage: RuntimeStorage, templates: TaskTemplate[]) {
-  await storage.set(TASK_TEMPLATES_STORAGE_KEY, JSON.stringify(templates));
+  await updateStorageValue(storage, TASK_TEMPLATES_STORAGE_KEY, () => JSON.stringify(templates));
 }
 
 export function createTaskTemplate(input: EditableTaskTemplate, date = new Date()): TaskTemplate {
@@ -138,6 +275,10 @@ function getTaskImageId(task: Task) {
 export function taskToEditableTaskTemplate(task: Task, username = ""): EditableTaskTemplate {
   const taskName = getTaskNameForTemplate(task);
   const releaseCondition = normalizeReleaseCondition(task.releace_conditions ?? task.release_condition);
+  const parsedScript =
+    releaseCondition === 3
+      ? parseScriptCommandEnv(stringValue(task.script_path).trim())
+      : { env: [] as ScriptEnvVar[], command: "" };
   return {
     name: i18nText(`${taskName} 模板`, `${taskName} template`),
     description: i18nText(`从实例 ${taskName} 保存`, `Saved from instance ${taskName}`),
@@ -147,12 +288,14 @@ export function taskToEditableTaskTemplate(task: Task, username = ""): EditableT
     cpu: positiveNumber(task.cpu, 4),
     gpu: nonNegativeInteger(task.gpu, 0),
     memory: positiveInteger(task.memory, 16),
+    price: positiveNumber(task.price, 1),
     storagePath: normalizeStoragePath(stringValue(task.storage_path, username ? `/${username}` : "/")),
     mountPath: stringValue(task.mount_path, username ? `/home/ubuntu/${username}` : "/home/ubuntu"),
     releaseCondition,
     releaseAfterHours: releaseCondition === 2 ? 24 : undefined,
     workDirectory: releaseCondition === 3 ? stringValue(task.work_directory).trim() : undefined,
-    scriptPath: releaseCondition === 3 ? stringValue(task.script_path).trim() : undefined,
+    scriptPath: releaseCondition === 3 ? parsedScript.command || undefined : undefined,
+    scriptEnv: releaseCondition === 3 && parsedScript.env.length > 0 ? parsedScript.env : undefined,
   };
 }
 
@@ -173,7 +316,7 @@ export function taskMatchesTemplate(task: Pick<Task, "name" | "task_name">, temp
   return [task.name, task.task_name].some((value) => typeof value === "string" && value.includes(`-${marker}-`));
 }
 
-const TEMPLATE_TASK_NAME_SUFFIX = /-tpl[a-zA-Z0-9]{1,10}-\d{12}(?:-\d+)?$/;
+const TEMPLATE_TASK_NAME_PATTERN = /^(.*)-tpl[a-zA-Z0-9]{1,10}-(\d{12})(?:-(\d+))?$/;
 
 export type ParsedTemplateTaskName = {
   full: string;
@@ -183,13 +326,16 @@ export type ParsedTemplateTaskName = {
 
 export function parseTemplateTaskName(name: string): ParsedTemplateTaskName | null {
   const trimmed = name.trim();
-  if (!trimmed || !TEMPLATE_TASK_NAME_SUFFIX.test(trimmed)) return null;
-  const prefix = trimmed.replace(TEMPLATE_TASK_NAME_SUFFIX, "");
-  if (!prefix) return null;
+  const match = trimmed.match(TEMPLATE_TASK_NAME_PATTERN);
+  if (!match) return null;
+  const prefix = match[1];
+  const timestamp = match[2];
+  const batch = match[3];
+  if (!prefix || !timestamp) return null;
   return {
     full: trimmed,
     prefix,
-    suffix: trimmed.slice(prefix.length + 1),
+    suffix: batch ? `${timestamp}-${batch}` : timestamp,
   };
 }
 
@@ -197,23 +343,42 @@ function normalizeId(value: string) {
   return /^\d+$/.test(value) ? Number(value) : value;
 }
 
-export function taskTemplateToPayloads(template: TaskTemplate, date = new Date()): CreateTaskPayload[] {
+export function taskTemplateToPayloads(
+  template: TaskTemplate,
+  date = new Date(),
+  variableValues?: Record<string, string>,
+): CreateTaskPayload[] {
   const releaseTime = template.releaseCondition === 2
     ? formatDateTimeForApi(formatDateTimeLocalInput(addHours(date, template.releaseAfterHours ?? 24)))
     : undefined;
 
-  return Array.from({ length: template.batchCount }, (_, index) => ({
-    name: formatTemplateTaskName(template, index, template.batchCount, date),
-    price: 1,
-    cpu: template.cpu,
-    gpu: template.gpu > 0 ? template.gpu : undefined,
-    memory: template.memory,
-    img: normalizeId(template.imageId),
-    storage_path: normalizeStoragePath(template.storagePath),
-    mount_path: template.mountPath,
-    releace_conditions: template.releaseCondition,
-    releace_time: releaseTime,
-    work_directory: template.releaseCondition === 3 ? template.workDirectory : undefined,
-    script_path: template.releaseCondition === 3 ? template.scriptPath : undefined,
-  }));
+  const hasVariables = Boolean(variableValues) && Object.keys(variableValues ?? {}).length > 0;
+
+  return Array.from({ length: template.batchCount }, (_, index) => {
+    const scriptPath = template.releaseCondition === 3 ? template.scriptPath ?? "" : "";
+    const scriptEnv = template.releaseCondition === 3
+      ? envVarsFromLegacyExperimentId(template.experimentId, template.scriptEnv ?? [])
+      : [];
+    const resolvedScriptPath = hasVariables ? substituteTemplateVariables(scriptPath, variableValues!) : scriptPath;
+    const resolvedEnv = scriptEnv.map((item) => ({
+      key: hasVariables ? substituteTemplateVariables(item.key, variableValues!) : item.key,
+      value: hasVariables ? substituteTemplateVariables(item.value, variableValues!) : item.value,
+    }));
+    const payload: CreateTaskPayload = {
+      name: formatTemplateTaskName(template, index, template.batchCount, date),
+      price: template.price ?? 1,
+      cpu: template.cpu,
+      gpu: template.gpu > 0 ? template.gpu : undefined,
+      memory: template.memory,
+      img: normalizeId(template.imageId),
+      storage_path: normalizeStoragePath(template.storagePath),
+      mount_path: template.mountPath,
+      releace_conditions: template.releaseCondition,
+      releace_time: releaseTime,
+      work_directory: template.releaseCondition === 3 ? template.workDirectory : undefined,
+      script_path:
+        template.releaseCondition === 3 ? applyEnvToScriptCommand(resolvedScriptPath, resolvedEnv) : undefined,
+    };
+    return hasVariables ? applyTemplateVariables(payload, variableValues!) : payload;
+  });
 }

@@ -5,9 +5,11 @@ import { getTaskName } from "../../lib/format";
 import { useI18n } from "../../lib/i18n";
 import { browserRuntime } from "../../lib/runtime";
 import { buildTaskSshInfo, toSshConnectionRequest } from "../../lib/ssh-info";
+import { canConnectTaskSsh } from "../../lib/task-terminal";
 import type { SshConnectionRequest, Task } from "../../lib/types";
+import { useAuth } from "../../lib/use-auth";
 import { useToast } from "../../lib/use-toast";
-import { Button, Dialog } from "../ui";
+import { Button, Drawer } from "../ui";
 import { AppSshTerminalDialog } from "./AppSshTerminalDialog";
 
 function InfoRow({
@@ -26,7 +28,7 @@ function InfoRow({
 
   return (
     <div className="grid gap-2 border-b border-app-border px-4 py-3 last:border-0 sm:grid-cols-[7rem_1fr_auto] sm:items-center">
-      <div className="text-xs font-medium uppercase tracking-wide text-app-muted">{label}</div>
+      <div className="text-xs font-medium text-app-muted">{label}</div>
       <code className="min-w-0 overflow-x-auto whitespace-nowrap rounded-md bg-app-panel px-2.5 py-2 font-mono text-xs text-app-text">
         {sensitive && hasValue ? "••••••••" : value}
       </code>
@@ -44,13 +46,27 @@ function InfoRow({
   );
 }
 
-export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: () => void }) {
+export function TerminalDialog({
+  task,
+  onClose,
+  onOpenAppSsh,
+}: {
+  task: Task | null;
+  onClose: () => void;
+  /** When provided, in-app SSH is opened via the parent instead of an internal dialog. */
+  onOpenAppSsh?: (request: SshConnectionRequest) => void;
+}) {
   const toast = useToast();
   const { text } = useI18n();
+  const auth = useAuth();
   const [appSshRequest, setAppSshRequest] = useState<SshConnectionRequest | null>(null);
   const [isOpeningVscode, setIsOpeningVscode] = useState(false);
-  const sshInfo = useMemo(() => (task ? buildTaskSshInfo(task) : null), [task]);
-  const canConnect = Boolean(sshInfo && sshInfo.host !== "-" && sshInfo.command !== "-");
+  const loginUsername = auth.user?.username ?? "";
+  const sshInfo = useMemo(
+    () => (task ? buildTaskSshInfo(task, { loginUsername }) : null),
+    [task, loginUsername],
+  );
+  const canConnect = Boolean(sshInfo && canConnectTaskSsh(sshInfo));
 
   const copyValue = (value: string, label: string) => {
     if (!value || value === "-") return;
@@ -62,7 +78,12 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
 
   const openAppSsh = () => {
     if (!sshInfo || !canConnect) return;
-    setAppSshRequest(toSshConnectionRequest(sshInfo));
+    const request = toSshConnectionRequest(sshInfo);
+    if (onOpenAppSsh) {
+      onOpenAppSsh(request);
+      return;
+    }
+    setAppSshRequest(request);
   };
 
   const openSystemSsh = () => {
@@ -93,7 +114,7 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
 
   return (
     <>
-      <Dialog
+      <Drawer
         open={Boolean(task)}
         title={text(`SSH 连接信息 ${task ? getTaskName(task) : ""}`, `SSH Connection ${task ? getTaskName(task) : ""}`)}
         onClose={onClose}
@@ -111,48 +132,54 @@ export function TerminalDialog({ task, onClose }: { task: Task | null; onClose: 
                   <div className="mt-1 font-mono text-xs text-app-muted">#{task.task_id ?? task.id}</div>
                 </div>
               </div>
-              {browserRuntime.isDesktop ? (
+              {browserRuntime.supportsInAppSsh || browserRuntime.supportsSystemTerminal ? (
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button disabled={!canConnect} type="button" variant="secondary" onClick={openAppSsh}>
-                    <Terminal className="h-4 w-4" />
-                    {text("应用内 SSH", "In-app SSH")}
-                  </Button>
-                  <Button disabled={!canConnect || isOpeningVscode} type="button" variant="secondary" onClick={openVscodeSsh}>
-                    <Code2 className="h-4 w-4" />
-                    {isOpeningVscode ? text("配置中", "Configuring") : "VS Code"}
-                  </Button>
-                  <Button disabled={!canConnect} type="button" onClick={openSystemSsh}>
-                    <Terminal className="h-4 w-4" />
-                    {text("系统终端", "System terminal")}
-                  </Button>
+                  {browserRuntime.supportsInAppSsh ? (
+                    <Button disabled={!canConnect} type="button" variant="secondary" onClick={openAppSsh}>
+                      <Terminal className="h-4 w-4" />
+                      {text("应用内 SSH", "In-app SSH")}
+                    </Button>
+                  ) : null}
+                  {browserRuntime.supportsSystemTerminal ? (
+                    <>
+                      <Button disabled={!canConnect || isOpeningVscode} type="button" variant="secondary" onClick={openVscodeSsh}>
+                        <Code2 className="h-4 w-4" />
+                        {isOpeningVscode ? text("配置中", "Configuring") : "VS Code"}
+                      </Button>
+                      <Button disabled={!canConnect} type="button" onClick={openSystemSsh}>
+                        <Terminal className="h-4 w-4" />
+                        {text("系统终端", "System terminal")}
+                      </Button>
+                    </>
+                  ) : null}
                 </div>
               ) : null}
             </div>
 
             <div className="overflow-hidden rounded-lg border border-app-border">
-              <InfoRow label="Host" value={sshInfo.host} onCopy={copyValue} />
-              <InfoRow label="Port" value={sshInfo.port} onCopy={copyValue} />
-              <InfoRow label="Username" value={sshInfo.username} onCopy={copyValue} />
-              <InfoRow label="Password" value={sshInfo.password} sensitive onCopy={copyValue} />
+              <InfoRow label={text("主机", "Host")} value={sshInfo.host} onCopy={copyValue} />
+              <InfoRow label={text("端口", "Port")} value={sshInfo.port} onCopy={copyValue} />
+              <InfoRow label={text("用户名", "Username")} value={sshInfo.username} onCopy={copyValue} />
+              <InfoRow label={text("密码", "Password")} value={sshInfo.password} sensitive onCopy={copyValue} />
               <InfoRow label={text("SSH 命令", "SSH Command")} value={sshInfo.command} onCopy={copyValue} />
             </div>
 
             <div className="grid gap-3 rounded-lg border border-app-border bg-app-panel p-3 text-sm text-app-muted sm:grid-cols-[auto_1fr]">
               <KeyRound className="h-4 w-4 text-app-warning" />
               <p className="leading-5">
-                {text("SSH 信息来自实例列表返回字段。若 Host、Port 或密码为空，请刷新实例列表或查看原始 JSON 确认后端是否返回该字段。", "SSH information comes from fields returned by the instance list. If Host, Port, or password is empty, refresh the instance list or inspect the raw JSON to confirm the backend returned the field.")}
+                {text("SSH 信息来自实例列表返回字段。未返回密码时优先使用当前账号设置中的默认密码，否则使用登录用户名。若主机或端口为空，请刷新实例列表或查看原始 JSON。", "SSH information comes from fields returned by the instance list. When no password is returned, the current account's default password setting is used, otherwise the login username. If host or port is empty, refresh the instance list or inspect the raw JSON.")}
               </p>
               <Terminal className="h-4 w-4 text-app-accent" />
               <p className="leading-5">
-                {browserRuntime.isDesktop
-                  ? text("桌面端可选择应用内 SSH 自动登录、通过 VS Code Remote-SSH 打开，或打开系统终端后手动输入密码；网页端请复制 SSH 命令后在本机终端中执行。", "On desktop, use in-app SSH auto sign-in, open through VS Code Remote-SSH, or open a system terminal and enter the password manually. On web, copy the SSH command and run it in your local terminal.")
-                  : text("网页端不能直接建立 SSH 连接，请复制 SSH 命令后在本机终端中执行。", "The web app cannot establish SSH directly. Copy the SSH command and run it in your local terminal.")}
+                {browserRuntime.supportsInAppSsh || browserRuntime.supportsSystemTerminal
+                  ? text("桌面端和平板可选择应用内 SSH 自动登录；桌面端还可通过 VS Code Remote-SSH 或系统终端连接。产品不提供浏览器 WebSSH 终端。", "Desktop and tablet can use in-app SSH auto sign-in. Desktop also supports VS Code Remote-SSH or system terminal. The product does not provide a browser WebSSH terminal.")
+                  : text("当前环境不能直接建立 SSH 连接，请复制 SSH 命令后在本机终端中执行。产品不提供浏览器 WebSSH 终端。", "This environment cannot establish SSH directly. Copy the SSH command and run it in your local terminal. The product does not provide a browser WebSSH terminal.")}
               </p>
             </div>
           </div>
         ) : null}
-      </Dialog>
-      <AppSshTerminalDialog request={appSshRequest} onClose={() => setAppSshRequest(null)} />
+      </Drawer>
+      {!onOpenAppSsh ? <AppSshTerminalDialog request={appSshRequest} onClose={() => setAppSshRequest(null)} /> : null}
     </>
   );
 }
