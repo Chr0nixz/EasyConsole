@@ -1,4 +1,5 @@
 import { mutateScheduledTasks, scheduleNextRun, STALE_LEASE_MS, resetStaleRunningTasks, updateScheduledTask } from "./scheduled-tasks";
+import { applyScheduledReleasePolicy } from "./scheduled-release";
 import { RecurrenceValidationError } from "./task-recurrence";
 import type { CreateTaskPayload, RuntimeStorage, ScheduledTask } from "./types";
 
@@ -166,7 +167,8 @@ export async function executeScheduledTask(
 
   const leased = claim.task;
   try {
-    const prepared = deps.preparePayload ? await deps.preparePayload(leased.payload) : leased.payload;
+    const releaseAdjustedPayload = applyScheduledReleasePolicy(leased.payload, leased.scheduleTime);
+    const prepared = deps.preparePayload ? await deps.preparePayload(releaseAdjustedPayload) : releaseAdjustedPayload;
     const result = await deps.createTask(prepared);
     const remoteTaskId = extractRemoteTaskId(result);
 
@@ -199,4 +201,3 @@ export async function executeScheduledTask(
     throw error;
   }
 }
-
