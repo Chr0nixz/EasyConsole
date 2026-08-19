@@ -11,12 +11,13 @@ import { Button, Input, Panel, Select, TableRegion, Textarea } from "../componen
 import { imageApi, instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
 import { queryKeys } from "../lib/query-keys";
-import { addHours, formatDateTimeForApi, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../lib/format";
+import { addHours, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { i18nText } from "../lib/i18n-text";
 import { parsePositivePrice } from "../lib/resource-price";
 import { normalizeStoragePath } from "../lib/remote-storage";
 import { browserRuntime } from "../lib/runtime";
+import { applyScheduledReleasePolicy, getScheduledReleaseTime } from "../lib/scheduled-release";
 import {
   applyEnvToScriptCommand,
   findScriptEnvVarErrors,
@@ -84,11 +85,6 @@ function parsePositiveInteger(value: string) {
   return Number.isInteger(number) && number > 0 ? number : null;
 }
 
-function getDefaultReleaseTime(gpuValue: string) {
-  const gpu = parseNonNegativeInteger(gpuValue);
-  return formatDateTimeLocalInput(addHours(new Date(), 24 / (gpu && gpu > 0 ? gpu : 1))).slice(0, 16);
-}
-
 function statusClass(status: ScheduledTaskStatus) {
   if (status === "done") return "bg-app-successSoft text-app-success ring-app-successRing";
   if (status === "failed") return "bg-app-dangerSoft text-app-danger ring-app-dangerRing";
@@ -132,7 +128,6 @@ export function ScheduledTasksPage() {
   const [gpu, setGpu] = useState(DEFAULT_GPU);
   const [memory, setMemory] = useState(DEFAULT_MEMORY);
   const [releaseCondition, setReleaseCondition] = useState("1");
-  const [releaseTime, setReleaseTime] = useState("");
   const [storagePath, setStoragePath] = useState("");
   const [mountPath, setMountPath] = useState("");
   const [workDirectory, setWorkDirectory] = useState("");
@@ -142,6 +137,7 @@ export function ScheduledTasksPage() {
   const [recurrenceIntervalSec, setRecurrenceIntervalSec] = useState("3600");
   const [recurrenceCron, setRecurrenceCron] = useState("");
   const [recurrenceWeekdays, setRecurrenceWeekdays] = useState<number[]>([1]);
+  const releaseTime = useMemo(() => getScheduledReleaseTime(scheduleTime), [scheduleTime]);
 
   const images = useQuery({
     queryKey: queryKeys.images.list(),
@@ -231,12 +227,10 @@ export function ScheduledTasksPage() {
 
   function handleReleaseConditionChange(value: string) {
     setReleaseCondition(value);
-    setReleaseTime(value === "2" ? getDefaultReleaseTime(gpu) : "");
   }
 
   function handleGpuChange(value: string) {
     setGpu(value);
-    if (releaseCondition === "2") setReleaseTime(getDefaultReleaseTime(value));
   }
 
   function resetForm() {
@@ -249,7 +243,6 @@ export function ScheduledTasksPage() {
     setGpu(DEFAULT_GPU);
     setMemory(DEFAULT_MEMORY);
     setReleaseCondition("1");
-    setReleaseTime("");
     setStoragePath(`/${username}`);
     setMountPath(`/home/ubuntu/${username}`);
     setWorkDirectory("");
@@ -277,7 +270,6 @@ export function ScheduledTasksPage() {
     setGpu(String(payload.gpu ?? DEFAULT_GPU));
     setMemory(String(payload.memory ?? DEFAULT_MEMORY));
     setReleaseCondition(String(payload.releace_conditions ?? "1"));
-    setReleaseTime(toDateTimeLocalInput(payload.releace_time));
     setStoragePath(String(payload.storage_path ?? `/${username}`));
     setMountPath(String(payload.mount_path ?? `/home/ubuntu/${username}`));
     const parsedScript = parseScriptCommandEnv(String(payload.script_path ?? ""));
@@ -351,7 +343,7 @@ export function ScheduledTasksPage() {
       }
     }
 
-    return {
+    return applyScheduledReleasePolicy({
       price: priceValue,
       name: taskName,
       cpu: cpuValue,
@@ -361,10 +353,9 @@ export function ScheduledTasksPage() {
       storage_path: normalizeStoragePath(storagePath.trim() || `/${username}`),
       mount_path: mountPath.trim() || `/home/ubuntu/${username}`,
       releace_conditions: releaceConditions,
-      releace_time: releaceConditions === 2 ? formatDateTimeForApi(releaseTime) : undefined,
       work_directory: releaceConditions === 3 ? workDirectory.trim() : undefined,
       script_path: releaceConditions === 3 ? applyEnvToScriptCommand(scriptPath.trim(), scriptEnv) : undefined,
-    };
+    }, scheduleTime);
   }
 
   const saveMutation = useMutation({
@@ -798,8 +789,8 @@ export function ScheduledTasksPage() {
             </label>
             {releaseCondition === "2" ? (
               <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("释放时间", "Release time")}</span>
-                <Input className={cn("w-full", fieldBorderClass(touchedFields.has("releaseTime") && Boolean(fieldErrors.releaseTime)))} type="datetime-local" value={releaseTime} onChange={(event) => setReleaseTime(event.target.value)} onBlur={() => markTouched("releaseTime")} required />
+                <span className="mb-1 block text-app-muted">{text("释放时间（执行后 24 小时）", "Release time (24 hours after execution)")}</span>
+                <Input className={cn("w-full bg-app-panel text-app-muted", fieldBorderClass(Boolean(fieldErrors.releaseTime)))} type="datetime-local" value={releaseTime} readOnly aria-readonly="true" required />
                 <FieldError message={touchedFields.has("releaseTime") ? fieldErrors.releaseTime : undefined} />
               </label>
             ) : null}

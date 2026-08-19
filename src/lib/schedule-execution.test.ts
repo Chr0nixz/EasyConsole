@@ -97,6 +97,32 @@ function createMemoryStorage(): RuntimeStorage {
 }
 
 describe("executeScheduledTask", () => {
+  it("recomputes timed release as 24 hours after the current scheduled run", async () => {
+    const storage = createMemoryStorage();
+    const task = makeTask({
+      scheduleTime: "2026-07-21T10:00:00.000Z",
+      payload: {
+        name: "train",
+        releace_conditions: 2,
+        releace_time: "2026-07-21 10:00:00",
+      },
+    });
+    await saveScheduledTasks(storage, [task]);
+    let submittedReleaseTime = "";
+
+    await executeScheduledTask(storage, task.id, {
+      createTask: async (payload) => {
+        submittedReleaseTime = String(payload.releace_time ?? "");
+        return { id: "remote-24h" };
+      },
+      force: true,
+      now: new Date("2026-07-21T10:00:05.000Z"),
+    });
+
+    const submittedAt = Date.parse(submittedReleaseTime.replace(" ", "T"));
+    expect(submittedAt - Date.parse(task.scheduleTime)).toBe(24 * 60 * 60 * 1000);
+  });
+
   it("advances a recurring task instead of marking it done", async () => {
     const storage = createMemoryStorage();
     const task = makeTask({
