@@ -39,6 +39,8 @@ describe("app settings", () => {
         "task.failure": "off",
         "task.abnormal": "system",
       },
+      taskAutoRefresh: false,
+      taskAutoRefreshIntervalMs: 10_000,
       autoCheckUpdates: true,
       autoNumberDuplicateTaskNames: true,
       desktopCloseToTray: false,
@@ -58,6 +60,8 @@ describe("app settings", () => {
         "task.failure": "system",
         "task.abnormal": "system",
       },
+      taskAutoRefresh: false,
+      taskAutoRefreshIntervalMs: 10_000,
       autoCheckUpdates: true,
       autoNumberDuplicateTaskNames: true,
       desktopCloseToTray: false,
@@ -71,6 +75,8 @@ describe("app settings", () => {
   it("fills notification preference defaults for older stored settings", () => {
     expect(parseAppSettings(JSON.stringify({ apiBaseUrl: "http://a/api", monitorDashboardUrl: "http://b/d" }))).toMatchObject({
       autoCheckUpdates: true,
+      taskAutoRefresh: false,
+      taskAutoRefreshIntervalMs: 10_000,
       autoNumberDuplicateTaskNames: true,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
@@ -89,6 +95,17 @@ describe("app settings", () => {
     expect(normalizeAppSettings({ runLogLimit: 500, runLogRetentionDays: 60 }).runLogLimit).toBe(500);
     expect(normalizeAppSettings({ runLogLimit: 500, runLogRetentionDays: 60 }).runLogRetentionDays).toBe(60);
     expect(normalizeAppSettings({ runLogLimit: 1.5 }).runLogLimit).toBe(DEFAULT_RUN_LOG_LIMIT);
+  });
+
+  it("normalizes instance list auto refresh settings", () => {
+    expect(normalizeAppSettings({ taskAutoRefresh: true, taskAutoRefreshIntervalMs: 30_000 })).toMatchObject({
+      taskAutoRefresh: true,
+      taskAutoRefreshIntervalMs: 30_000,
+    });
+    expect(normalizeAppSettings({ taskAutoRefresh: true, taskAutoRefreshIntervalMs: 1_000 })).toMatchObject({
+      taskAutoRefresh: true,
+      taskAutoRefreshIntervalMs: 10_000,
+    });
   });
 
   it("preserves empty default SSH password", () => {

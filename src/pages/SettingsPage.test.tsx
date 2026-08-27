@@ -81,6 +81,29 @@ function renderSettings() {
   return render(<RouterProvider router={router} />);
 }
 
+function renderStandaloneSettings() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const router = createMemoryRouter(
+    [
+      {
+        path: "/login/settings",
+        element: (
+          <RunLoggerContext.Provider value={{ log: async () => undefined }}>
+            <ToastProvider>
+              <QueryClientProvider client={client}>
+                <SettingsPage standalone />
+              </QueryClientProvider>
+            </ToastProvider>
+          </RunLoggerContext.Provider>
+        ),
+      },
+      { path: "/login", element: <div>Login</div> },
+    ],
+    { initialEntries: ["/login/settings"] },
+  );
+  return render(<RouterProvider router={router} />);
+}
+
 describe("SettingsPage", () => {
   beforeEach(() => {
     mocks.changePassword.mockReset();
@@ -124,5 +147,23 @@ describe("SettingsPage", () => {
     );
     await waitFor(() => expect(mocks.auth.clearSavedPassword).toHaveBeenCalled());
     expect(await screen.findByText(/密码已修改|Password changed/)).toBeInTheDocument();
+  });
+
+  it("keeps login API settings to connection fields only", () => {
+    renderStandaloneSettings();
+
+    expect(screen.getByRole("button", { name: /测试连接|^Test$/ })).toBeInTheDocument();
+    expect(screen.getByLabelText(/API Base URL/i)).toBeInTheDocument();
+    expect(screen.queryByText(/包含登录凭据|Include credentials/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^修改密码$|^Change password$/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/重要事件通知|Important Event Notifications/)).not.toBeInTheDocument();
+  });
+
+  it("exposes instance list auto refresh in settings", () => {
+    renderSettings();
+
+    fireEvent.click(screen.getByRole("button", { name: /^数据$|^Data$/ }));
+    expect(screen.getByText(/自动刷新实例列表|Automatically refresh instance list/)).toBeInTheDocument();
+    expect(screen.getByText(/刷新间隔|Refresh interval/)).toBeInTheDocument();
   });
 });

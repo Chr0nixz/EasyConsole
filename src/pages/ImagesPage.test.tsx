@@ -72,6 +72,7 @@ describe("ImagesPage", () => {
 
     await waitFor(() => expect(screen.getAllByText(/custom-cuda/).length).toBeGreaterThanOrEqual(1));
     expect(screen.getAllByText(/system-base/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/自定义 1 · 系统 1 · 默认 0|Custom 1 · system 1 · default 0/)).toBeInTheDocument();
     expect(mocks.list).toHaveBeenCalled();
     expect(mocks.system).toHaveBeenCalled();
   });

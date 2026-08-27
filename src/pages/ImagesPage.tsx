@@ -11,6 +11,7 @@ import { useDownloadQueue } from "../lib/use-download-queue";
 import { loadFavoriteImages, toggleFavoriteImage } from "../lib/image-favorites";
 import { useI18n } from "../lib/i18n";
 import type { ImageItem } from "../lib/types";
+import { useCompactLayout } from "../lib/use-compact-layout";
 import { browserRuntime } from "../lib/runtime";
 import { cn } from "../lib/utils";
 import { useConfirmAction } from "../lib/use-confirm-action";
@@ -55,6 +56,7 @@ export function ImagesPage() {
   const runLogger = useRunLogger();
   const downloadQueue = useDownloadQueue();
   const { confirm, confirmDialog } = useConfirmAction();
+  const compactLayout = useCompactLayout();
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [keyword, setKeyword] = useState("");
   const [favoritesOnly, setFavoritesOnly] = useState(false);
@@ -161,24 +163,13 @@ export function ImagesPage() {
   return (
     <div className="space-y-4">
       <Panel className="overflow-hidden">
-        <div className="border-b border-app-border bg-app-surface px-4 py-3">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div>
-              <div className="text-xs text-app-muted">{text("自定义镜像", "Custom images")}</div>
-              <div className="mt-1 text-xl font-semibold text-app-text">{customCount}</div>
-            </div>
-            <div>
-              <div className="text-xs text-app-muted">{text("系统镜像", "System images")}</div>
-              <div className="mt-1 text-xl font-semibold text-app-text">{systemCount}</div>
-            </div>
-            <div>
-              <div className="text-xs text-app-muted">{text("默认标记", "Default markers")}</div>
-              <div className="mt-1 text-xl font-semibold text-app-text">{defaultCount}</div>
-            </div>
-          </div>
-        </div>
-
         <div className="flex flex-col gap-3 border-b border-app-border bg-app-panel/50 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+          <p className="text-sm text-app-muted">
+            {text(
+              `自定义 ${customCount} · 系统 ${systemCount} · 默认 ${defaultCount}`,
+              `Custom ${customCount} · system ${systemCount} · default ${defaultCount}`,
+            )}
+          </p>
           <div className="grid gap-2 sm:grid-cols-[minmax(220px,360px)_160px_auto]">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
@@ -224,7 +215,7 @@ export function ImagesPage() {
           <EmptyState icon={SearchXIcon} title={text("没有匹配的镜像", "No matching images")} action={<Button variant="secondary" onClick={() => setKeyword("")}>{text("清空搜索", "Clear search")}</Button>} />
         ) : (
           <>
-          {browserRuntime.isMobile ? (
+          {compactLayout ? (
           <div className="divide-y divide-app-border">
             {filteredImages.map((image) => {
               const cardId = `image-card-${String(image.id)}`;

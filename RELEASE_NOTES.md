@@ -1,3 +1,15 @@
+# EasyConsole v0.4.20
+
+Improve task operations and desktop release polish.
+
+## Changes
+
+- **Notifications**: Bottom in-app notifications no longer cover create-instance and other modal dialogs.
+- **Task refresh**: Move instance-list auto-refresh controls into Settings and keep the task toolbar focused on list actions.
+- **Background status**: Anchor the background status panel to its header button so it opens in the expected position.
+
+---
+
 # EasyConsole v0.4.19
 
 Fix CI/release clippy: create sidecar path placeholders before compiling the Tauri crate.

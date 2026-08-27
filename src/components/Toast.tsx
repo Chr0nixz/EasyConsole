@@ -1,5 +1,5 @@
 import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent, type ReactNode } from "react";
 
 import { ToastContext, type ToastInput, type ToastItem, type ToastKind, type ToastContextValue } from "../lib/use-toast";
 import { useI18n } from "../lib/i18n";
@@ -21,23 +21,69 @@ function getToastClasses(kind: ToastKind) {
   return "border-app-infoRing bg-app-infoSoft";
 }
 
+type ToastTimer = {
+  remainingMs: number;
+  startedAt: number;
+  timeoutId: number | null;
+};
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const { t } = useI18n();
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const timersRef = useRef(new Map<string, ToastTimer>());
+
+  const clearTimer = useCallback((id: string) => {
+    const timer = timersRef.current.get(id);
+    if (timer?.timeoutId != null) window.clearTimeout(timer.timeoutId);
+    timersRef.current.delete(id);
+  }, []);
 
   const remove = useCallback((id: string) => {
+    clearTimer(id);
     setToasts((items) => items.filter((item) => item.id !== id));
+  }, [clearTimer]);
+
+  const armTimer = useCallback((id: string, remainingMs: number) => {
+    const existing = timersRef.current.get(id);
+    if (existing?.timeoutId != null) window.clearTimeout(existing.timeoutId);
+    const timeoutId = window.setTimeout(() => remove(id), remainingMs);
+    timersRef.current.set(id, { remainingMs, startedAt: Date.now(), timeoutId });
+  }, [remove]);
+
+  const pauseTimer = useCallback((id: string) => {
+    const timer = timersRef.current.get(id);
+    if (!timer || timer.timeoutId == null) return;
+    window.clearTimeout(timer.timeoutId);
+    const elapsed = Date.now() - timer.startedAt;
+    timersRef.current.set(id, {
+      remainingMs: Math.max(0, timer.remainingMs - elapsed),
+      startedAt: timer.startedAt,
+      timeoutId: null,
+    });
   }, []);
+
+  const resumeTimer = useCallback((id: string) => {
+    const timer = timersRef.current.get(id);
+    if (!timer || timer.timeoutId != null) return;
+    armTimer(id, timer.remainingMs);
+  }, [armTimer]);
 
   const notify = useCallback(
     ({ durationMs, ...input }: ToastInput) => {
       const id = createToastId();
       const resolvedDuration = durationMs ?? (input.kind === "error" ? 8000 : 3500);
       setToasts((items) => [...items, { id, ...input }].slice(-4));
-      window.setTimeout(() => remove(id), resolvedDuration);
+      armTimer(id, resolvedDuration);
     },
-    [remove],
+    [armTimer],
   );
+
+  useEffect(() => () => {
+    for (const timer of timersRef.current.values()) {
+      if (timer.timeoutId != null) window.clearTimeout(timer.timeoutId);
+    }
+    timersRef.current.clear();
+  }, []);
 
   const value = useMemo<ToastContextValue>(
     () => ({
@@ -52,7 +98,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="app-toast-container fixed bottom-4 right-4 z-[60] flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2" style={{ bottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }} role="status" aria-live="polite">
+      <div className="app-toast-container fixed bottom-4 right-4 z-40 flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2" style={{ bottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }}>
         {toasts.map((toast) => (
           <div
             key={toast.id}
@@ -60,6 +106,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               "app-toast-enter rounded-md border p-3 shadow-popover",
               getToastClasses(toast.kind),
             )}
+            role={toast.kind === "error" ? "alert" : "status"}
+            aria-live={toast.kind === "error" ? "assertive" : "polite"}
+            aria-atomic="true"
+            onPointerEnter={() => pauseTimer(toast.id)}
+            onPointerLeave={() => resumeTimer(toast.id)}
+            onFocus={() => pauseTimer(toast.id)}
+            onBlur={(event: FocusEvent<HTMLDivElement>) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) resumeTimer(toast.id);
+            }}
           >
             <div className="flex items-start gap-2">
               <div className="mt-0.5">{iconFor(toast.kind)}</div>

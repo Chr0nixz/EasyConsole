@@ -32,6 +32,45 @@ function getFocusableElements(container: HTMLElement | null) {
   );
 }
 
+function isDialogCloseControl(element: HTMLElement) {
+  return element.hasAttribute("data-dialog-close");
+}
+
+function isAutofocused(element: HTMLElement) {
+  return element.hasAttribute("autofocus") || element.getAttribute("data-autofocus") != null;
+}
+
+function isFormControl(element: HTMLElement) {
+  const tag = element.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return true;
+  const role = element.getAttribute("role");
+  return role === "combobox" || role === "textbox" || role === "searchbox";
+}
+
+function getInitialDialogFocus(container: HTMLElement | null): HTMLElement | null {
+  if (!container) return null;
+  const focusable = getFocusableElements(container);
+  if (focusable.length === 0) return container;
+
+  const content = focusable.filter((element) => !isDialogCloseControl(element));
+  const pool = content.length > 0 ? content : focusable;
+  return pool.find(isAutofocused) ?? pool.find(isFormControl) ?? pool[0] ?? container;
+}
+
+function focusDialogContents(container: HTMLElement | null) {
+  if (!container) return;
+  const active = document.activeElement;
+  if (
+    active instanceof HTMLElement
+    && container.contains(active)
+    && active !== container
+    && !isDialogCloseControl(active)
+  ) {
+    return;
+  }
+  getInitialDialogFocus(container)?.focus();
+}
+
 export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "ghost" | "danger" }>(function Button({
   className,
   variant = "primary",
@@ -146,7 +185,7 @@ export function Dialog({
       document.body.style.overflow = "hidden";
     }
 
-    window.setTimeout(() => getFocusableElements(dialogRef.current)[0]?.focus(), 0);
+    window.setTimeout(() => focusDialogContents(dialogRef.current), 0);
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -218,7 +257,12 @@ export function Dialog({
       >
         <div className="flex h-12 items-center justify-between border-b border-app-border px-4">
           <h2 id={titleId} className="text-sm font-semibold text-app-text">{title}</h2>
-          <button className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11" type="button" onClick={onClose}>
+          <button
+            className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+            data-dialog-close=""
+            type="button"
+            onClick={onClose}
+          >
             <X className="h-4 w-4" />
             <span className="sr-only">{t("common.close")}</span>
           </button>
@@ -263,7 +307,7 @@ export function Drawer({
       document.body.style.overflow = "hidden";
     }
 
-    window.setTimeout(() => getFocusableElements(drawerRef.current)[0]?.focus(), 0);
+    window.setTimeout(() => focusDialogContents(drawerRef.current), 0);
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -335,6 +379,7 @@ export function Drawer({
           <h2 id={titleId} className="truncate text-sm font-semibold text-app-text">{title}</h2>
           <button
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+            data-dialog-close=""
             type="button"
             onClick={onClose}
           >

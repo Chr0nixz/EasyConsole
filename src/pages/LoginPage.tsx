@@ -185,7 +185,7 @@ export function LoginPage() {
                   </div>
                 ))}
               </div>
-              {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
+              {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger" role="alert">{error}</div> : null}
               <Button
                 className="w-full"
                 onClick={() => {
@@ -245,7 +245,7 @@ export function LoginPage() {
                 />
                 {t("login.rememberPassword")}
               </label>
-              {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
+              {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger" role="alert">{error}</div> : null}
               <div className="flex flex-col gap-2">
                 <Button className="w-full" disabled={loading}>
                   {loading ? t("login.signingIn") : t("login.signIn")}

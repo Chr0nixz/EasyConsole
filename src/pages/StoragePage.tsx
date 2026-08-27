@@ -22,6 +22,7 @@ import { createUploadQueueItems, finalizeUploadQueueResult, summarizeUploadQueue
 import { clearUploadResume, loadUploadResume, makeFileKey, saveUploadResume } from "../lib/upload-resume";
 import type { StorageEntry, UploadQueueItem } from "../lib/types";
 import { browserRuntime } from "../lib/runtime";
+import { useCompactLayout } from "../lib/use-compact-layout";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
@@ -58,6 +59,7 @@ export function StoragePage() {
   const runLogger = useRunLogger();
   const downloadQueue = useDownloadQueueActions();
   const { confirm, confirmDialog } = useConfirmAction();
+  const compactLayout = useCompactLayout();
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const uploadCancelledRef = useRef(false);
   const uploadAbortRef = useRef<AbortController | null>(null);
@@ -404,16 +406,22 @@ export function StoragePage() {
             {text("复制路径", "Copy path")}
           </Button>
           <div className="relative w-full sm:w-auto">
-            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" />
-            <Input className="w-full pl-9 sm:w-52" placeholder={text("搜索文件或文件夹", "Search files or folders")} value={searchKeyword} onChange={(event) => setSearchKeyword(event.target.value)} />
+            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" aria-hidden="true" />
+            <Input
+              aria-label={text("搜索文件或文件夹", "Search files or folders")}
+              className="w-full pl-9 sm:w-52"
+              placeholder={text("搜索文件或文件夹", "Search files or folders")}
+              value={searchKeyword}
+              onChange={(event) => setSearchKeyword(event.target.value)}
+            />
           </div>
-          <Select className="w-32" value={sortField} onChange={(event) => setSortField(event.target.value as StorageSortField)}>
+          <Select aria-label={text("排序字段", "Sort by")} className="w-32" value={sortField} onChange={(event) => setSortField(event.target.value as StorageSortField)}>
             <option value="name">{text("按名称", "By name")}</option>
             <option value="size">{text("按大小", "By size")}</option>
             <option value="modified">{text("按时间", "By time")}</option>
             <option value="type">{text("按类型", "By type")}</option>
           </Select>
-          <Select className="w-28" value={sortDirection} onChange={(event) => setSortDirection(event.target.value as StorageSortDirection)}>
+          <Select aria-label={text("排序方向", "Sort direction")} className="w-28" value={sortDirection} onChange={(event) => setSortDirection(event.target.value as StorageSortDirection)}>
             <option value="asc">{text("升序", "Ascending")}</option>
             <option value="desc">{text("降序", "Descending")}</option>
           </Select>
@@ -493,7 +501,7 @@ export function StoragePage() {
           <EmptyState icon={FolderOpenIcon} title={text("当前目录为空", "Current directory is empty")} />
         ) : (
           <>
-          {browserRuntime.isMobile ? (
+          {compactLayout ? (
           <div className="divide-y divide-app-border">
             {visibleEntries.map((entry, index) => {
               const directory = isStorageDirectory(entry, path);

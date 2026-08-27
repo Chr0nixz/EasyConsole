@@ -77,7 +77,7 @@ describe("LoginPage", () => {
     fireEvent.change(screen.getByLabelText(/^密码$|^Password$/i), { target: { value: "wrong" } });
     fireEvent.click(screen.getByRole("button", { name: /^登录$|^Sign in$/ }));
 
-    await waitFor(() => expect(screen.getByText("Invalid credentials")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Invalid credentials"));
   });
 
   it("calls login with username and password on submit", async () => {

@@ -62,9 +62,10 @@ describe("Dialog", () => {
     );
 
     const close = screen.getByRole("button", { name: "关闭" });
+    const first = screen.getByRole("button", { name: "第一个" });
     const last = screen.getByRole("button", { name: "最后一个" });
 
-    await waitFor(() => expect(close).toHaveFocus());
+    await waitFor(() => expect(first).toHaveFocus());
 
     last.focus();
     fireEvent.keyDown(document, { key: "Tab" });
@@ -118,12 +119,22 @@ describe("Dialog", () => {
     render(<NumberFieldDialog />);
     const input = screen.getByLabelText("CPU");
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "关闭" })).toHaveFocus());
-    input.focus();
+    await waitFor(() => expect(input).toHaveFocus());
     expect(input).toHaveFocus();
 
     fireEvent.change(input, { target: { value: "8" } });
     expect(input).toHaveFocus();
     expect(input).toHaveValue(8);
+  });
+
+  it("honors autofocus over the first content button", async () => {
+    render(
+      <Dialog open title="自动聚焦" onClose={vi.fn()}>
+        <button type="button">次要</button>
+        <input aria-label="搜索" autoFocus />
+      </Dialog>,
+    );
+
+    await waitFor(() => expect(screen.getByLabelText("搜索")).toHaveFocus());
   });
 });

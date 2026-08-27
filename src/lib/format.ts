@@ -90,6 +90,17 @@ export function getReleaseConditionText(condition?: number, locale: Locale = "zh
   return map[Number(condition)] ?? (locale === "en-US" ? `Release condition ${condition}` : `释放条件 ${condition}`);
 }
 
+/** Backend spelling is `releace_conditions`; keep `release_condition` as a fallback. */
+export function getTaskReleaseCondition(task: {
+  releace_conditions?: number | string;
+  release_condition?: number | string;
+}) {
+  const raw = task.releace_conditions ?? task.release_condition;
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
 export function formatBytes(value?: number) {
   if (!value || value <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];

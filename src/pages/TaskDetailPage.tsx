@@ -1,19 +1,23 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, FileJson, FileText, Monitor, TerminalSquare } from "lucide-react";
+import { ArrowLeft, FileJson, FileText, Maximize2, Monitor, TerminalSquare } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
+import { TaskLogPanel } from "../components/tasks/TaskLogPanel";
+import { TaskSshPanel } from "../components/tasks/TaskSshPanel";
 import { Button, Panel, Select } from "../components/ui";
 import { instanceApi } from "../lib/api";
-import { getTaskName } from "../lib/format";
+import { getTaskName, getTaskNodeName, getTaskReleaseCondition } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { buildMonitorDashboardUrl } from "../lib/monitor-dashboard";
 import { browserRuntime } from "../lib/runtime";
+import { buildTaskSshInfo } from "../lib/ssh-info";
 import { taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
 import type { MonitorMetricSeries, Task } from "../lib/types";
+import { useAuth } from "../lib/use-auth";
 
 const TaskLogDialog = lazy(() => import("../components/tasks/TaskLogDialog").then((module) => ({ default: module.TaskLogDialog })));
 const TerminalDialog = lazy(() => import("../components/tasks/TerminalDialog").then((module) => ({ default: module.TerminalDialog })));
@@ -62,11 +66,21 @@ function renderSparkline(points: number[]): string {
     .join(" ");
 }
 
+function SummaryField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs text-app-muted">{label}</dt>
+      <dd className="mt-0.5 truncate font-mono text-xs text-app-text">{value}</dd>
+    </div>
+  );
+}
+
 export function TaskDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { text } = useI18n();
+  const auth = useAuth();
   const [tab, setTab] = useState<Tab>(() => parseDetailTab(searchParams.get("tab")));
   const [logOpen, setLogOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -108,6 +122,11 @@ export function TaskDetailPage() {
     () => (task ? buildMonitorDashboardUrl(task, { from: monitorRange, to: "now" }) : null),
     [task, monitorRange],
   );
+  const releaseCondition = task ? getTaskReleaseCondition(task) : undefined;
+  const sshSummary = useMemo(
+    () => (task ? buildTaskSshInfo(task, { loginUsername: auth.user?.username ?? "" }) : null),
+    [auth.user?.username, task],
+  );
 
   const monitorIndexQuery = useQuery({
     queryKey: ["task-monitor-index", id],
@@ -132,11 +151,6 @@ export function TaskDetailPage() {
     return series;
   }, [monitorIndexQuery.data, text]);
 
-  useEffect(() => {
-    if (tab === "log" && task) setLogOpen(true);
-    if (tab === "ssh" && task) setTerminalOpen(true);
-  }, [tab, task]);
-
   if (isLoading) return <LoadingState />;
   if (isError) return <ErrorState error={queryError} action={<Button onClick={() => navigate("/tasks")}>{text("返回任务列表", "Back to tasks")}</Button>} />;
   if (!task) return <EmptyState title={text("任务不存在", "Task not found")} action={<Button onClick={() => navigate("/tasks")}>{text("返回任务列表", "Back to tasks")}</Button>} />;
@@ -147,6 +161,10 @@ export function TaskDetailPage() {
     { key: "ssh", label: text("终端", "Terminal"), icon: TerminalSquare },
     { key: "raw", label: text("原始 JSON", "Raw JSON"), icon: FileJson },
   ];
+  const storagePath = typeof task.storage_path === "string" && task.storage_path.trim() ? task.storage_path : "-";
+  const endpoint = sshSummary && sshSummary.host !== "-"
+    ? `${sshSummary.host}${sshSummary.port !== "-" ? `:${sshSummary.port}` : ""}`
+    : "-";
 
   return (
     <div className="space-y-4">
@@ -155,15 +173,25 @@ export function TaskDetailPage() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-base font-semibold text-app-text">{getTaskName(task)}</h1>
+          <h2 className="truncate text-base font-semibold text-app-text">{getTaskName(task)}</h2>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
             <span>ID: {String(task.id)}</span>
             {task.task_id ? <span>Task ID: {String(task.task_id)}</span> : null}
             <StatusBadge status={task.status} />
-            {task.release_conditions != null ? <ReleaseConditionBadge condition={Number(task.release_conditions)} /> : null}
+            {releaseCondition != null ? <ReleaseConditionBadge condition={releaseCondition} /> : null}
           </div>
         </div>
       </div>
+
+      <dl className="grid gap-3 rounded-md border border-app-border bg-app-surface px-4 py-3 sm:grid-cols-2 xl:grid-cols-4">
+        <SummaryField
+          label={text("资源", "Resources")}
+          value={`${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`}
+        />
+        <SummaryField label={text("节点", "Node")} value={getTaskNodeName(task) || "-"} />
+        <SummaryField label={text("存储路径", "Storage path")} value={storagePath} />
+        <SummaryField label={text("入口", "Endpoint")} value={endpoint} />
+      </dl>
 
       <div
         className="flex flex-wrap gap-1 border-b border-app-border"
@@ -303,21 +331,30 @@ export function TaskDetailPage() {
         </div>
       ) : null}
 
-      {tab === "log" || tab === "ssh" ? (
-        <div
-          role="tabpanel"
-          id={`task-detail-panel-${tab}`}
-          aria-labelledby={`task-detail-tab-${tab}`}
-        >
-          <Panel className="p-4">
-            <EmptyState
-              title={tab === "log" ? text("点击下方按钮查看日志", "Click the button below to view logs") : text("点击下方按钮打开终端", "Click the button below to open terminal")}
-              action={
-                <Button onClick={() => (tab === "log" ? setLogOpen(true) : setTerminalOpen(true))}>
-                  {tab === "log" ? text("查看日志", "View logs") : text("打开终端", "Open terminal")}
-                </Button>
-              }
-            />
+      {tab === "log" ? (
+        <div role="tabpanel" id="task-detail-panel-log" aria-labelledby="task-detail-tab-log" className="space-y-2">
+          <div className="flex justify-end">
+            <Button className="h-8" type="button" variant="secondary" onClick={() => setLogOpen(true)}>
+              <Maximize2 className="h-4 w-4" />
+              {text("放大", "Expand")}
+            </Button>
+          </div>
+          <Panel className="h-[min(60vh,36rem)] overflow-hidden p-0">
+            <TaskLogPanel task={task} />
+          </Panel>
+        </div>
+      ) : null}
+
+      {tab === "ssh" ? (
+        <div role="tabpanel" id="task-detail-panel-ssh" aria-labelledby="task-detail-tab-ssh" className="space-y-2">
+          <div className="flex justify-end">
+            <Button className="h-8" type="button" variant="secondary" onClick={() => setTerminalOpen(true)}>
+              <Maximize2 className="h-4 w-4" />
+              {text("放大", "Expand")}
+            </Button>
+          </div>
+          <Panel className="overflow-hidden p-0">
+            <TaskSshPanel task={task} />
           </Panel>
         </div>
       ) : null}

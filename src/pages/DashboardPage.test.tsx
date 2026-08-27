@@ -41,7 +41,10 @@ describe("DashboardPage", () => {
 
     await waitFor(() => expect(screen.getAllByText("demo").length).toBeGreaterThanOrEqual(1));
 
-    expect(screen.getByRole("link", { name: /查看实例 demo 详情|View details for demo/ })).toHaveAttribute("href", "/tasks/1");
+    const detailLinks = screen.getAllByRole("link", { name: /查看实例 demo 详情|View details for demo/ });
+    expect(detailLinks.length).toBeGreaterThanOrEqual(1);
+    expect(detailLinks[0]).toHaveAttribute("href", "/tasks/1");
+    expect(screen.getByRole("link", { name: /^运行中$|^Running$/ })).toHaveAttribute("href", "/tasks?status=2");
     expect(screen.queryByText("/instance/console")).not.toBeInTheDocument();
     expect(screen.queryByText("/instance/statics")).not.toBeInTheDocument();
     expect(screen.queryByText(/run_task_count/)).not.toBeInTheDocument();
@@ -53,5 +56,14 @@ describe("DashboardPage", () => {
 
     await waitFor(() => expect(screen.getByText("statics failed")).toBeInTheDocument());
     expect(screen.queryByText("暂无最近任务")).not.toBeInTheDocument();
+  });
+
+  it("shows empty recent-task actions", async () => {
+    mocks.statics.mockResolvedValue({ items: [] });
+    renderDashboard();
+
+    expect(await screen.findByText(/暂无最近任务|No recent tasks/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /去任务实例|Go to tasks/ })).toHaveAttribute("href", "/tasks");
+    expect(screen.getByRole("link", { name: /新建任务|New task/ })).toHaveAttribute("href", "/tasks");
   });
 });

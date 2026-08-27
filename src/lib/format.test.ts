@@ -8,6 +8,7 @@ import {
   formatSecondsDuration,
   formatTaskDefaultName,
   getTaskNodeName,
+  getTaskReleaseCondition,
 } from "./format";
 
 describe("format helpers", () => {
@@ -53,5 +54,13 @@ describe("format helpers", () => {
       },
     })).toBe("gpu229-worker5");
     expect(getTaskNodeName({})).toBe("");
+  });
+
+  it("reads release condition from the backend releace_conditions spelling first", () => {
+    expect(getTaskReleaseCondition({ releace_conditions: 2 })).toBe(2);
+    expect(getTaskReleaseCondition({ release_condition: 1 })).toBe(1);
+    expect(getTaskReleaseCondition({ releace_conditions: 3, release_condition: 1 })).toBe(3);
+    expect(getTaskReleaseCondition({ releace_conditions: "2" })).toBe(2);
+    expect(getTaskReleaseCondition({})).toBeUndefined();
   });
 });

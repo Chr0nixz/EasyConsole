@@ -7,7 +7,6 @@ import {
   DatabaseBackup,
   Download,
   ExternalLink,
-  Globe,
   History,
   KeyRound,
   ListOrdered,
@@ -43,6 +42,7 @@ import {
   saveAccountSettings,
   setRuntimeSettings,
   SSH_FONT_PRESETS,
+  TASK_AUTO_REFRESH_OPTIONS,
   type AppSettings,
   type SshAuthMode,
   type SshCustomColors,
@@ -189,7 +189,7 @@ function SectionHeader({
 function SubSectionHeading({ icon: Icon, label, trailing }: { icon: LucideIcon; label: string; trailing?: ReactNode }) {
   return (
     <div className="mb-3 flex items-center justify-between gap-2">
-      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-app-muted">
+      <div className="flex items-center gap-2 text-sm font-medium text-app-text">
         <Icon className="h-3.5 w-3.5 text-app-accent" />
         <span>{label}</span>
       </div>
@@ -228,7 +228,7 @@ function CollapsibleSubSection({
       <div className="flex items-center justify-between gap-2">
         <button
           type="button"
-          className="flex min-w-0 items-center gap-2 text-xs font-medium uppercase tracking-wide text-app-muted transition-colors hover:text-app-text"
+          className="flex min-w-0 items-center gap-2 text-sm font-medium text-app-text transition-colors hover:text-app-text"
           aria-expanded={open}
           onClick={() => setOpen(!open)}
         >
@@ -241,6 +241,35 @@ function CollapsibleSubSection({
       </div>
       {open ? <div className="mt-3">{children}</div> : null}
     </div>
+  );
+}
+
+function SettingsGroup({
+  label,
+  defaultOpen = false,
+  hideHeader = false,
+  children,
+}: {
+  label: string;
+  defaultOpen?: boolean;
+  hideHeader?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  if (hideHeader) return <div className="space-y-5">{children}</div>;
+  return (
+    <section className="space-y-3">
+      <button
+        type="button"
+        className="flex min-w-0 items-center gap-2 text-sm font-medium text-app-text"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? "" : "-rotate-90"}`} />
+        <span>{label}</span>
+      </button>
+      {open ? <div className="space-y-5">{children}</div> : null}
+    </section>
   );
 }
 
@@ -831,6 +860,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const content = (
     <>
     <form className="space-y-5" onSubmit={onSubmit}>
+      <SettingsGroup hideHeader={standalone} label={text("连接", "Connection")} defaultOpen>
       <Panel>
         <SectionHeader
           icon={Settings2}
@@ -890,36 +920,28 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
           </div>
 
-          <aside className="min-w-0 rounded-lg border border-app-border bg-app-panel/60 p-3">
-            <div className="flex items-center gap-2 text-xs font-medium text-app-muted">
-              <Globe className="h-3.5 w-3.5 shrink-0 text-app-accent" />
-              {t("settings.derivedTitle")}
-            </div>
-            <div className="mt-3 min-w-0 space-y-3 text-xs">
+          <aside className="min-w-0">
+            <dl className="min-w-0 space-y-3 text-xs">
               <div className="min-w-0">
-                <div className="mb-1 flex items-center gap-1.5 text-app-muted">
-                  <span className="h-1.5 w-1.5 rounded-full bg-app-accent" />
-                  WebSSH
-                </div>
-                <code className="block max-w-full break-all rounded-md bg-app-surface px-2.5 py-2 font-mono text-app-text ring-1 ring-inset ring-app-border">
-                  {derivedWebsshUrl}
-                </code>
-                <p className="mt-1.5 leading-5 text-app-muted">{t("settings.websshHint")}</p>
+                <dt className="mb-1 font-medium text-app-muted">{t("settings.derivedTitle")} · WebSSH</dt>
+                <dd>
+                  <code className="block max-w-full break-all font-mono text-app-text">
+                    {derivedWebsshUrl}
+                  </code>
+                  <p className="mt-1.5 leading-5 text-app-muted">{t("settings.websshHint")}</p>
+                </dd>
               </div>
               <div>
-                <div className="mb-1 flex items-center gap-1.5 text-app-muted">
-                  <span className="h-1.5 w-1.5 rounded-full bg-app-muted" />
-                  {t("settings.scope")}
-                </div>
-                <p className="leading-5 text-app-muted">
-                  {t("settings.scopeDescription")}
-                </p>
+                <dt className="mb-1 font-medium text-app-muted">{t("settings.scope")}</dt>
+                <dd className="leading-5 text-app-muted">{t("settings.scopeDescription")}</dd>
               </div>
-            </div>
+            </dl>
           </aside>
         </div>
       </Panel>
 
+      {standalone ? null : (
+      <>
       {auth.user ? (
         <Panel>
           <SectionHeader
@@ -971,30 +993,6 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         </Panel>
       ) : null}
 
-      <Panel>
-        <SectionHeader
-          icon={ListOrdered}
-          title={text("实例创建", "Instance Creation")}
-          description={text("控制新建、克隆、模板和定时创建时的实例命名行为。", "Controls instance naming for create, clone, template, and scheduled creation.")}
-        />
-        <div className="grid gap-3 p-4 sm:grid-cols-2">
-          <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface">
-            <input
-              className="mt-1"
-              type="checkbox"
-              checked={form.autoNumberDuplicateTaskNames}
-              onChange={(event) => setForm((value) => ({ ...value, autoNumberDuplicateTaskNames: event.target.checked }))}
-            />
-            <span>
-              <span className="block font-medium text-app-text">{text("有同名实例自动增加编号", "Auto-number when name already exists")}</span>
-              <span className="mt-1 block text-xs leading-5 text-app-muted">
-                {text("例如已有 XXX 时创建为 XXX_1。默认开启；作用于新建、克隆、模板和定时创建。", "For example, create XXX_1 when XXX already exists. Enabled by default; applies to create, clone, template, and scheduled creation.")}
-              </span>
-            </span>
-          </label>
-        </div>
-      </Panel>
-
       {browserRuntime.supportsTray ? (
         <Panel>
           <SectionHeader
@@ -1035,6 +1033,123 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         </Panel>
       ) : null}
 
+      {browserRuntime.supportsUpdater ? (
+      <Panel>
+        <SectionHeader
+          icon={Activity}
+          title={text("应用更新", "App Updates")}
+          description={
+            browserRuntime.isMobile
+              ? text("从 GitHub Release 检查 APK 更新。", "Checks for APK updates from GitHub Release.")
+              : text("桌面端从 GitHub Release 检查稳定版更新。", "The desktop app checks stable updates from GitHub Release.")
+          }
+          actions={
+            <>
+              <Button
+                disabled={!browserRuntime.supportsUpdater || appUpdate.state.status === "checking" || appUpdate.state.status === "downloading"}
+                type="button"
+                variant="secondary"
+                onClick={() => void appUpdate.checkForUpdates(true)}
+              >
+                <RefreshCw className="h-4 w-4" />
+                {appUpdate.state.status === "checking" ? text("检查中", "Checking") : text("检查更新", "Check")}
+              </Button>
+              {(appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading") ? (
+                <Button type="button" onClick={appUpdate.openUpdateDialog}>
+                  {appUpdate.state.status === "readyToRestart"
+                    ? browserRuntime.isMobile
+                      ? text("安装更新", "Install update")
+                      : text("查看更新", "View update")
+                    : text("查看更新", "View update")}
+                </Button>
+              ) : null}
+              <Button type="button" variant="secondary" onClick={appUpdate.openReleasePage}>
+                <ExternalLink className="h-4 w-4" />
+                GitHub
+              </Button>
+            </>
+          }
+        />
+        <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+          <div className="space-y-3">
+            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface">
+              <input
+                className="mt-1"
+                type="checkbox"
+                checked={form.autoCheckUpdates}
+                onChange={(event) => setForm((value) => ({ ...value, autoCheckUpdates: event.target.checked }))}
+              />
+              <span>
+                <span className="block font-medium text-app-text">{text("启动后自动检查更新", "Check for updates after startup")}</span>
+                <span className="mt-1 block text-xs leading-5 text-app-muted">
+                  {text(
+                    "最多每 12 小时自动检查一次；发现更新时以通知与状态栏提醒，不会强制弹窗。手动检查不受限制。",
+                    "Automatic checks run at most once every 12 hours. When an update is found, you get a notification and status badge instead of a forced dialog. Manual checks are not limited.",
+                  )}
+                </span>
+              </span>
+            </label>
+            <div className="rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+              <div className="text-xs text-app-muted">{text("更新状态", "Update status")}</div>
+              <div className="mt-1 text-app-text">
+                {appUpdate.state.status === "checking"
+                  ? text("正在检查…", "Checking…")
+                  : appUpdate.state.status === "downloading"
+                    ? text(`正在下载（${appUpdate.state.progress?.percent ?? 0}%）`, `Downloading (${appUpdate.state.progress?.percent ?? 0}%)`)
+                    : appUpdate.state.status === "readyToRestart"
+                      ? browserRuntime.isMobile
+                        ? text("APK 已就绪，可安装", "APK ready to install")
+                        : text("更新已就绪，重启后生效", "Update ready — restart to apply")
+                      : appUpdate.state.status === "available" && appUpdate.state.info
+                        ? text(`发现 ${appUpdate.state.info.version}`, `Update ${appUpdate.state.info.version} available`)
+                        : appUpdate.state.status === "upToDate"
+                          ? text("已是最新版本", "Up to date")
+                          : appUpdate.state.status === "error"
+                            ? text("检查失败", "Check failed")
+                            : appUpdate.state.status === "unsupported"
+                              ? text("当前环境不支持更新", "Updates unsupported in this runtime")
+                              : text("尚未检查", "Not checked yet")}
+              </div>
+            </div>
+            {!browserRuntime.supportsUpdater ? (
+              <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">
+                {text("当前运行时不支持安装桌面更新。", "This runtime cannot install desktop updates.")}
+              </div>
+            ) : null}
+            {appUpdate.state.error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{appUpdate.state.error}</div> : null}
+          </div>
+          <aside className="min-w-0 rounded-lg border border-app-border bg-app-panel/60 p-3 text-xs">
+            <div className="grid gap-3">
+              <div>
+                <div className="mb-1 flex items-center gap-1.5 text-app-muted">
+                  <span className="h-1.5 w-1.5 rounded-full bg-app-accent" />
+                  {text("当前版本", "Current version")}
+                </div>
+                <code className="font-mono text-app-text">{appUpdate.state.currentVersion ?? appUpdate.state.info?.currentVersion ?? "-"}</code>
+              </div>
+              {appUpdate.state.lastCheckedAt ? (
+                <div className="text-app-muted">
+                  {text("上次检查", "Last checked")} {new Date(appUpdate.state.lastCheckedAt).toLocaleString()}
+                </div>
+              ) : null}
+              <div className="text-app-muted">
+                <div className="mb-1">{text("更新源", "Update source")}</div>
+                <code className="block max-w-full break-all font-mono text-[11px] leading-4 text-app-muted">
+                  {browserRuntime.isMobile ? GITHUB_API_RELEASE_URL : APP_UPDATE_ENDPOINT_URL}
+                </code>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </Panel>
+      ) : null}
+      </>
+      )}
+      </SettingsGroup>
+
+      {standalone ? null : (
+      <>
+      <SettingsGroup label={text("终端", "Terminal")}>
       {browserRuntime.supportsInAppSsh ? (
         <Panel>
           <SectionHeader
@@ -1399,117 +1514,74 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           </div>
         </Panel>
       ) : null}
+      </SettingsGroup>
 
-      {browserRuntime.supportsUpdater ? (
+      <SettingsGroup label={text("数据", "Data")}>
       <Panel>
         <SectionHeader
-          icon={Activity}
-          title={text("应用更新", "App Updates")}
-          description={
-            browserRuntime.isMobile
-              ? text("从 GitHub Release 检查 APK 更新。", "Checks for APK updates from GitHub Release.")
-              : text("桌面端从 GitHub Release 检查稳定版更新。", "The desktop app checks stable updates from GitHub Release.")
-          }
-          actions={
-            <>
-              <Button
-                disabled={!browserRuntime.supportsUpdater || appUpdate.state.status === "checking" || appUpdate.state.status === "downloading"}
-                type="button"
-                variant="secondary"
-                onClick={() => void appUpdate.checkForUpdates(true)}
-              >
-                <RefreshCw className="h-4 w-4" />
-                {appUpdate.state.status === "checking" ? text("检查中", "Checking") : text("检查更新", "Check")}
-              </Button>
-              {(appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading") ? (
-                <Button type="button" onClick={appUpdate.openUpdateDialog}>
-                  {appUpdate.state.status === "readyToRestart"
-                    ? browserRuntime.isMobile
-                      ? text("安装更新", "Install update")
-                      : text("查看更新", "View update")
-                    : text("查看更新", "View update")}
-                </Button>
-              ) : null}
-              <Button type="button" variant="secondary" onClick={appUpdate.openReleasePage}>
-                <ExternalLink className="h-4 w-4" />
-                GitHub
-              </Button>
-            </>
-          }
+          icon={RefreshCw}
+          title={text("实例列表刷新", "Instance List Refresh")}
+          description={text("统一控制实例列表的自动刷新频率；打开弹窗或执行批量操作时会自动暂停。", "Controls automatic refresh for the instance list. Refresh pauses while dialogs or batch actions are active.")}
         />
-        <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-          <div className="space-y-3">
-            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface">
-              <input
-                className="mt-1"
-                type="checkbox"
-                checked={form.autoCheckUpdates}
-                onChange={(event) => setForm((value) => ({ ...value, autoCheckUpdates: event.target.checked }))}
-              />
-              <span>
-                <span className="block font-medium text-app-text">{text("启动后自动检查更新", "Check for updates after startup")}</span>
-                <span className="mt-1 block text-xs leading-5 text-app-muted">
-                  {text(
-                    "最多每 12 小时自动检查一次；发现更新时以通知与状态栏提醒，不会强制弹窗。手动检查不受限制。",
-                    "Automatic checks run at most once every 12 hours. When an update is found, you get a notification and status badge instead of a forced dialog. Manual checks are not limited.",
-                  )}
-                </span>
+        <div className="grid gap-3 p-4 sm:grid-cols-2">
+          <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface">
+            <input
+              className="mt-1"
+              type="checkbox"
+              checked={form.taskAutoRefresh}
+              onChange={(event) => setForm((value) => ({ ...value, taskAutoRefresh: event.target.checked }))}
+            />
+            <span>
+              <span className="block font-medium text-app-text">{text("自动刷新实例列表", "Automatically refresh instance list")}</span>
+              <span className="mt-1 block text-xs leading-5 text-app-muted">
+                {text("仅在实例列表页面处于可操作状态时刷新。", "Refreshes only while the instance list is ready for interaction.")}
               </span>
-            </label>
-            <div className="rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
-              <div className="text-xs text-app-muted">{text("更新状态", "Update status")}</div>
-              <div className="mt-1 text-app-text">
-                {appUpdate.state.status === "checking"
-                  ? text("正在检查…", "Checking…")
-                  : appUpdate.state.status === "downloading"
-                    ? text(`正在下载（${appUpdate.state.progress?.percent ?? 0}%）`, `Downloading (${appUpdate.state.progress?.percent ?? 0}%)`)
-                    : appUpdate.state.status === "readyToRestart"
-                      ? browserRuntime.isMobile
-                        ? text("APK 已就绪，可安装", "APK ready to install")
-                        : text("更新已就绪，重启后生效", "Update ready — restart to apply")
-                      : appUpdate.state.status === "available" && appUpdate.state.info
-                        ? text(`发现 ${appUpdate.state.info.version}`, `Update ${appUpdate.state.info.version} available`)
-                        : appUpdate.state.status === "upToDate"
-                          ? text("已是最新版本", "Up to date")
-                          : appUpdate.state.status === "error"
-                            ? text("检查失败", "Check failed")
-                            : appUpdate.state.status === "unsupported"
-                              ? text("当前环境不支持更新", "Updates unsupported in this runtime")
-                              : text("尚未检查", "Not checked yet")}
-              </div>
-            </div>
-            {!browserRuntime.supportsUpdater ? (
-              <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">
-                {text("当前运行时不支持安装桌面更新。", "This runtime cannot install desktop updates.")}
-              </div>
-            ) : null}
-            {appUpdate.state.error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{appUpdate.state.error}</div> : null}
-          </div>
-          <aside className="min-w-0 rounded-lg border border-app-border bg-app-panel/60 p-3 text-xs">
-            <div className="grid gap-3">
-              <div>
-                <div className="mb-1 flex items-center gap-1.5 text-app-muted">
-                  <span className="h-1.5 w-1.5 rounded-full bg-app-accent" />
-                  {text("当前版本", "Current version")}
-                </div>
-                <code className="font-mono text-app-text">{appUpdate.state.currentVersion ?? appUpdate.state.info?.currentVersion ?? "-"}</code>
-              </div>
-              {appUpdate.state.lastCheckedAt ? (
-                <div className="text-app-muted">
-                  {text("上次检查", "Last checked")} {new Date(appUpdate.state.lastCheckedAt).toLocaleString()}
-                </div>
-              ) : null}
-              <div className="text-app-muted">
-                <div className="mb-1">{text("更新源", "Update source")}</div>
-                <code className="block max-w-full break-all font-mono text-[11px] leading-4 text-app-muted">
-                  {browserRuntime.isMobile ? GITHUB_API_RELEASE_URL : APP_UPDATE_ENDPOINT_URL}
-                </code>
-              </div>
-            </div>
-          </aside>
+            </span>
+          </label>
+          <label className="block rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+            <span className="mb-1 block font-medium text-app-text">{text("刷新间隔", "Refresh interval")}</span>
+            <Select
+              className="w-full"
+              disabled={!form.taskAutoRefresh}
+              value={String(form.taskAutoRefreshIntervalMs)}
+              onChange={(event) => setForm((value) => ({ ...value, taskAutoRefreshIntervalMs: Number(event.target.value) }))}
+            >
+              {TASK_AUTO_REFRESH_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {text(option.zh, option.en)}
+                </option>
+              ))}
+            </Select>
+            <span className="mt-1 block text-xs leading-5 text-app-muted">
+              {text("设置保存后进入实例列表即生效。", "Takes effect when you open the instance list after saving.")}
+            </span>
+          </label>
         </div>
       </Panel>
-      ) : null}
+
+      <Panel>
+        <SectionHeader
+          icon={ListOrdered}
+          title={text("实例创建", "Instance Creation")}
+          description={text("控制新建、克隆、模板和定时创建时的实例命名行为。", "Controls instance naming for create, clone, template, and scheduled creation.")}
+        />
+        <div className="grid gap-3 p-4 sm:grid-cols-2">
+          <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface">
+            <input
+              className="mt-1"
+              type="checkbox"
+              checked={form.autoNumberDuplicateTaskNames}
+              onChange={(event) => setForm((value) => ({ ...value, autoNumberDuplicateTaskNames: event.target.checked }))}
+            />
+            <span>
+              <span className="block font-medium text-app-text">{text("有同名实例自动增加编号", "Auto-number when name already exists")}</span>
+              <span className="mt-1 block text-xs leading-5 text-app-muted">
+                {text("例如已有 XXX 时创建为 XXX_1。默认开启；作用于新建、克隆、模板和定时创建。", "For example, create XXX_1 when XXX already exists. Enabled by default; applies to create, clone, template, and scheduled creation.")}
+              </span>
+            </span>
+          </label>
+        </div>
+      </Panel>
 
       <Panel>
         <SectionHeader
@@ -1581,7 +1653,9 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           </p>
         </div>
       </Panel>
+      </SettingsGroup>
 
+      <SettingsGroup label={text("通知", "Notifications")}>
       <Panel>
         <SectionHeader
           icon={BellRing}
@@ -1628,6 +1702,9 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           })}
         </div>
       </Panel>
+      </SettingsGroup>
+      </>
+      )}
 
       <Dialog
         open={Boolean(importEncrypted)}

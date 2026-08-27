@@ -3,13 +3,14 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const navigateMock = vi.fn();
+const locationState = vi.hoisted(() => ({ pathname: "/dashboard" }));
 
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
   return {
     ...actual,
     useNavigate: () => navigateMock,
-    useLocation: () => ({ pathname: "/dashboard", search: "", hash: "", state: null, key: "test" }),
+    useLocation: () => ({ pathname: locationState.pathname, search: "", hash: "", state: null, key: "test" }),
     Outlet: () => <div data-testid="outlet">Page Content</div>,
   };
 });
@@ -109,6 +110,7 @@ function renderShell() {
 describe("AppShell", () => {
   beforeEach(() => {
     navigateMock.mockReset();
+    locationState.pathname = "/dashboard";
   });
 
   it("renders a skip-to-content link", () => {
@@ -116,6 +118,11 @@ describe("AppShell", () => {
     const skipLink = screen.getByText(/跳到主内容|Skip to main content/);
     expect(skipLink).toBeInTheDocument();
     expect(skipLink.closest("a")).toHaveAttribute("href", "#main-content");
+  });
+
+  it("shows a route-specific header description on dashboard", () => {
+    renderShell();
+    expect(screen.getByText(/查看需要处理的实例、时长和费用|See instances that need attention, runtime, and cost/)).toBeInTheDocument();
   });
 
   it("renders main content with id main-content", () => {
@@ -141,5 +148,12 @@ describe("AppShell", () => {
     renderShell();
     fireEvent.keyDown(document, { key: "k", ctrlKey: true });
     expect(screen.getByTestId("command-palette")).toBeInTheDocument();
+  });
+
+  it("uses the task list title on task detail routes", () => {
+    locationState.pathname = "/tasks/42";
+    renderShell();
+    expect(screen.getByRole("heading", { level: 1, name: /任务实例|Task Instances/ })).toBeInTheDocument();
+    expect(screen.getByText(/对照状态、路径、日志和终端|Compare status, paths, logs, and terminal access/)).toBeInTheDocument();
   });
 });

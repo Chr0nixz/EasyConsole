@@ -78,6 +78,9 @@ describe("StoragePage", () => {
     await waitFor(() => expect(screen.getByText("notes.txt")).toBeInTheDocument());
     expect(screen.getByText("datasets")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /新建|New/ })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /搜索文件或文件夹|Search files or folders/ })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /排序字段|Sort by/ })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /排序方向|Sort direction/ })).toBeInTheDocument();
     expect(mocks.list).toHaveBeenCalledWith({ path: "/" });
   });
 

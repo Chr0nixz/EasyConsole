@@ -201,10 +201,16 @@ export function RunLogsPage() {
       <Panel className="p-3">
         <div className="grid gap-2 md:grid-cols-[minmax(12rem,1fr)_9rem_9rem_9rem_9rem_9rem]">
           <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" />
-            <Input className="w-full pl-9" placeholder={text("搜索，支持 action: level: source: user: 等", "Search, supports action: level: source: user: etc.")} value={keyword} onChange={(event) => setKeyword(event.target.value)} />
+            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" aria-hidden="true" />
+            <Input
+              aria-label={text("搜索运行日志", "Search run logs")}
+              className="w-full pl-9"
+              placeholder={text("搜索，支持 action: level: source: user: 等", "Search, supports action: level: source: user: etc.")}
+              value={keyword}
+              onChange={(event) => setKeyword(event.target.value)}
+            />
           </div>
-          <Select value={source} onChange={(event) => setSource(event.target.value as RunLogSource | "")}>
+          <Select aria-label={text("按模块筛选", "Filter by module")} value={source} onChange={(event) => setSource(event.target.value as RunLogSource | "")}>
             <option value="">{text("全部模块", "All modules")}</option>
             {Object.entries(sourceLabels).map(([value]) => (
               <option key={value} value={value}>
@@ -212,7 +218,7 @@ export function RunLogsPage() {
               </option>
             ))}
           </Select>
-          <Select value={channel} onChange={(event) => setChannel(event.target.value as RunLogChannel | "")}>
+          <Select aria-label={text("按来源筛选", "Filter by channel")} value={channel} onChange={(event) => setChannel(event.target.value as RunLogChannel | "")}>
             <option value="">{text("全部来源", "All channels")}</option>
             {Object.entries(channelLabels).map(([value]) => (
               <option key={value} value={value}>
@@ -220,18 +226,18 @@ export function RunLogsPage() {
               </option>
             ))}
           </Select>
-          <Select value={level} onChange={(event) => setLevel(event.target.value as RunLogLevel | "")}>
+          <Select aria-label={text("按级别筛选", "Filter by level")} value={level} onChange={(event) => setLevel(event.target.value as RunLogLevel | "")}>
             <option value="">{text("全部级别", "All levels")}</option>
             <option value="info">{text("信息", "Info")}</option>
             <option value="warning">{text("警告", "Warning")}</option>
             <option value="error">{text("错误", "Error")}</option>
           </Select>
-          <Select value={result} onChange={(event) => setResult(event.target.value as RunLogResult | "")}>
+          <Select aria-label={text("按结果筛选", "Filter by result")} value={result} onChange={(event) => setResult(event.target.value as RunLogResult | "")}>
             <option value="">{text("全部结果", "All results")}</option>
             <option value="success">{text("成功", "Success")}</option>
             <option value="failure">{text("失败", "Failure")}</option>
           </Select>
-          <Select value={rangeDays} onChange={(event) => setRangeDays(event.target.value)}>
+          <Select aria-label={text("按时间筛选", "Filter by time")} value={rangeDays} onChange={(event) => setRangeDays(event.target.value)}>
             <option value="">{text("全部时间", "All time")}</option>
             <option value="1">{text("最近 1 天", "Last 1 day")}</option>
             <option value="7">{text("最近 7 天", "Last 7 days")}</option>

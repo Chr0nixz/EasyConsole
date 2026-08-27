@@ -262,10 +262,12 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
             <Input
               id={inputId}
               autoFocus
+              data-autofocus=""
               className="w-full pl-9"
               value={query}
               placeholder={text("搜索页面、任务或操作", "Search pages, tasks, or actions")}
               role="combobox"
+              aria-label={text("搜索页面、任务或操作", "Search pages, tasks, or actions")}
               aria-autocomplete="list"
               aria-controls={listboxId}
               aria-expanded={open}

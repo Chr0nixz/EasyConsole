@@ -51,6 +51,7 @@ import { useI18n } from "../lib/i18n";
 import { i18nText } from "../lib/i18n-text";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
 import { browserRuntime } from "../lib/runtime";
+import { getRuntimeSettings } from "../lib/app-settings";
 import {
   isTaskPinned,
   loadTaskPins,
@@ -64,6 +65,7 @@ import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import { queryKeys } from "../lib/query-keys";
 import type { SshConnectionRequest, Task } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
+import { useCompactLayout } from "../lib/use-compact-layout";
 import { useAuth } from "../lib/use-auth";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
@@ -74,14 +76,6 @@ const CreateTaskDialog = lazy(() => import("../components/tasks/CreateTaskDialog
 const TaskLogDialog = lazy(() => import("../components/tasks/TaskLogDialog").then((module) => ({ default: module.TaskLogDialog })));
 const TerminalDialog = lazy(() => import("../components/tasks/TerminalDialog").then((module) => ({ default: module.TerminalDialog })));
 const COLUMN_VISIBILITY_KEY = "easy-console.tasks.columnVisibility";
-const AUTO_REFRESH_KEY = "easy-console.tasks.autoRefresh";
-const AUTO_REFRESH_INTERVAL_KEY = "easy-console.tasks.autoRefreshInterval";
-const DEFAULT_AUTO_REFRESH_INTERVAL = 10_000;
-const autoRefreshOptions = [
-  { zh: "5 秒", en: "5 sec", value: 5_000 },
-  { zh: "10 秒", en: "10 sec", value: 10_000 },
-  { zh: "30 秒", en: "30 sec", value: 30_000 },
-];
 const ALWAYS_VISIBLE_COLUMNS = new Set(["select", "actions"]);
 const defaultColumnVisibility: VisibilityState = {
   node: false,
@@ -186,20 +180,29 @@ function isActionsColumn(id: string) {
 function ActionHeader() {
   const { text } = useI18n();
   return (
-    <div className={`${ACTION_GRID_CLASS} text-center text-xs text-app-muted`}>
-      <span>{text("终端/连接", "SSH")}</span>
-      <span>{text("日志", "Logs")}</span>
-      <span>{text("复制", "Clone")}</span>
-      <span>{text("释放/删除", "Release/Delete")}</span>
-      <span>{text("更多", "More")}</span>
+    <div className={`${ACTION_GRID_CLASS} text-app-muted`}>
+      <span className="flex justify-center" title={text("终端/连接", "SSH")}>
+        <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+        <span className="sr-only">{text("终端/连接", "SSH")}</span>
+      </span>
+      <span className="flex justify-center" title={text("日志", "Logs")}>
+        <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+        <span className="sr-only">{text("日志", "Logs")}</span>
+      </span>
+      <span className="flex justify-center" title={text("复制", "Clone")}>
+        <CopyPlus className="h-3.5 w-3.5" aria-hidden="true" />
+        <span className="sr-only">{text("复制", "Clone")}</span>
+      </span>
+      <span className="flex justify-center" title={text("释放/删除", "Release/Delete")}>
+        <Power className="h-3.5 w-3.5" aria-hidden="true" />
+        <span className="sr-only">{text("释放/删除", "Release/Delete")}</span>
+      </span>
+      <span className="flex justify-center" title={text("更多", "More")}>
+        <MoreHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
+        <span className="sr-only">{text("更多", "More")}</span>
+      </span>
     </div>
   );
-}
-
-function autoRefreshIntervalLabel(intervalMs: number, locale: string) {
-  const option = autoRefreshOptions.find((item) => item.value === intervalMs);
-  if (!option) return `${Math.round(intervalMs / 1000)}s`;
-  return locale === "en-US" ? option.en : option.zh;
 }
 
 function formatRelativeUpdatedAt(
@@ -245,25 +248,6 @@ async function loadColumnVisibility(): Promise<VisibilityState> {
     return parsed;
   } catch {
     return defaultColumnVisibility;
-  }
-}
-
-async function loadBooleanSetting(key: string, fallback = false) {
-  try {
-    const raw = await browserRuntime.storage.get(key);
-    return raw === "true" || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-async function loadNumberSetting(key: string, fallback: number) {
-  try {
-    const raw = await browserRuntime.storage.get(key);
-    const value = Number(raw);
-    return Number.isFinite(value) && value > 0 ? value : fallback;
-  } catch {
-    return fallback;
   }
 }
 
@@ -865,6 +849,7 @@ export function TasksPage() {
   const commitQueue = useCommitQueue();
   const auth = useAuth();
   const { confirm, confirmDialog } = useConfirmAction();
+  const compactLayout = useCompactLayout();
   const [createOpen, setCreateOpen] = useState(false);
   const [cloneTask, setCloneTask] = useState<Task | null>(null);
   const [editTask, setEditTask] = useState<Task | null>(null);
@@ -874,10 +859,8 @@ export function TasksPage() {
   const [rawTask, setRawTask] = useState<Task | null>(null);
   const [columnSettingsOpen, setColumnSettingsOpen] = useState(false);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(defaultColumnVisibility);
-  const [autoRefresh, setAutoRefresh] = useState(false);
-  const [autoRefreshInterval, setAutoRefreshInterval] = useState(DEFAULT_AUTO_REFRESH_INTERVAL);
   const [pinnedTaskIds, setPinnedTaskIds] = useState<string[]>([]);
-  const [autoRefreshMenuOpen, setAutoRefreshMenuOpen] = useState(false);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [moreMenu, setMoreMenu] = useState<null | {
     taskId: string;
     left: number;
@@ -885,13 +868,10 @@ export function TasksPage() {
   }>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [pageJumpInput, setPageJumpInput] = useState("");
-  const autoRefreshMenuId = useId();
+  const viewMenuId = useId();
   const moreActionsMenuId = useId();
-  const autoRefreshMenuRef = useRef<HTMLDivElement>(null);
-  const autoRefreshTriggerRef = useRef<HTMLButtonElement>(null);
-  const autoRefreshMenuListRef = useRef<HTMLDivElement>(null);
-  const autoRefreshItemRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const autoRefreshInitialFocusRef = useRef(0);
+  const viewMenuRef = useRef<HTMLDivElement>(null);
+  const viewTriggerRef = useRef<HTMLButtonElement>(null);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const mobileCardsRef = useRef<HTMLDivElement>(null);
   const moreMenuTriggerRef = useRef<HTMLElement | null>(null);
@@ -1080,6 +1060,8 @@ export function TasksPage() {
   });
 
   const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending;
+  const taskAutoRefresh = getRuntimeSettings().taskAutoRefresh;
+  const taskAutoRefreshIntervalMs = getRuntimeSettings().taskAutoRefreshIntervalMs;
   const autoRefreshPaused =
     batchPending ||
     createOpen ||
@@ -1107,8 +1089,8 @@ export function TasksPage() {
     hasNextPage,
   } = useTaskListController({
     pinnedTaskIds,
-    autoRefresh,
-    autoRefreshInterval,
+    autoRefresh: taskAutoRefresh,
+    autoRefreshInterval: taskAutoRefreshIntervalMs,
     autoRefreshPaused,
   });
 
@@ -1491,15 +1473,9 @@ export function TasksPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [savedVisibility, savedAutoRefresh, savedInterval] = await Promise.all([
-        loadColumnVisibility(),
-        loadBooleanSetting(AUTO_REFRESH_KEY),
-        loadNumberSetting(AUTO_REFRESH_INTERVAL_KEY, DEFAULT_AUTO_REFRESH_INTERVAL),
-      ]);
+      const savedVisibility = await loadColumnVisibility();
       if (cancelled) return;
       setColumnVisibility(savedVisibility);
-      setAutoRefresh(savedAutoRefresh);
-      setAutoRefreshInterval(savedInterval);
       settingsHydratedRef.current = true;
     })();
     return () => {
@@ -1511,16 +1487,6 @@ export function TasksPage() {
     if (!settingsHydratedRef.current) return;
     void browserRuntime.storage.set(COLUMN_VISIBILITY_KEY, JSON.stringify(columnVisibility));
   }, [columnVisibility]);
-
-  useEffect(() => {
-    if (!settingsHydratedRef.current) return;
-    void browserRuntime.storage.set(AUTO_REFRESH_KEY, String(autoRefresh));
-  }, [autoRefresh]);
-
-  useEffect(() => {
-    if (!settingsHydratedRef.current) return;
-    void browserRuntime.storage.set(AUTO_REFRESH_INTERVAL_KEY, String(autoRefreshInterval));
-  }, [autoRefreshInterval]);
 
   const configurableColumns = table.getAllLeafColumns().filter((column) => !ALWAYS_VISIBLE_COLUMNS.has(column.id));
   const selectedTasks = table.getSelectedRowModel().flatRows.map((row) => row.original);
@@ -1542,10 +1508,10 @@ export function TasksPage() {
   }, []);
 
   useEffect(() => {
-    const container = browserRuntime.isMobile ? mobileCardsRef.current : tableScrollRef.current;
+    const container = compactLayout ? mobileCardsRef.current : tableScrollRef.current;
     if (!container) return;
     container.querySelector(`[data-task-row-index="${activeRowIndex}"]`)?.scrollIntoView({ block: "nearest" });
-  }, [activeRowIndex]);
+  }, [activeRowIndex, compactLayout]);
 
   useEffect(() => {
     // Do not toggle overflow on the virtualized table — that remounts rows and kills the menu.
@@ -1591,7 +1557,7 @@ export function TasksPage() {
         Boolean(appSshRequest) ||
         Boolean(rawTask) ||
         columnSettingsOpen ||
-        autoRefreshMenuOpen ||
+        viewMenuOpen ||
         moreMenuOpen
       ) {
         return;
@@ -1639,7 +1605,6 @@ export function TasksPage() {
   }, [
     activeRowIndex,
     appSshRequest,
-    autoRefreshMenuOpen,
     columnSettingsOpen,
     confirmReleaseTask,
     createOpen,
@@ -1652,34 +1617,23 @@ export function TasksPage() {
     openTerminal,
     rawTask,
     sshInfoTask,
+    viewMenuOpen,
   ]);
 
-  const closeAutoRefreshMenu = useCallback((restoreFocus = false) => {
-    setAutoRefreshMenuOpen(false);
-    if (restoreFocus) {
-      window.setTimeout(() => autoRefreshTriggerRef.current?.focus(), 0);
-    }
-  }, []);
-
-  const focusAutoRefreshMenuItem = useCallback((index: number) => {
-    const items = autoRefreshItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
-    if (items.length === 0) return;
-    const nextIndex = ((index % items.length) + items.length) % items.length;
-    items[nextIndex]?.focus();
+  const closeViewMenu = useCallback((restoreFocus = false) => {
+    setViewMenuOpen(false);
+    if (restoreFocus) window.setTimeout(() => viewTriggerRef.current?.focus(), 0);
   }, []);
 
   useEffect(() => {
-    if (!autoRefreshMenuOpen) return undefined;
+    if (!viewMenuOpen) return undefined;
     const handlePointerDown = (event: PointerEvent) => {
-      if (!autoRefreshMenuRef.current?.contains(event.target as Node)) {
-        closeAutoRefreshMenu();
-      }
+      if (!viewMenuRef.current?.contains(event.target as Node)) closeViewMenu();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        closeAutoRefreshMenu(true);
-      }
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      closeViewMenu(true);
     };
     document.addEventListener("pointerdown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
@@ -1687,58 +1641,7 @@ export function TasksPage() {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [autoRefreshMenuOpen, closeAutoRefreshMenu]);
-
-  useEffect(() => {
-    if (!autoRefreshMenuOpen) return;
-    window.setTimeout(() => focusAutoRefreshMenuItem(autoRefreshInitialFocusRef.current), 0);
-  }, [autoRefreshMenuOpen, focusAutoRefreshMenuItem]);
-
-  const handleAutoRefreshTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    event.preventDefault();
-    autoRefreshInitialFocusRef.current = event.key === "ArrowUp" ? -1 : 0;
-    setAutoRefreshMenuOpen(true);
-  };
-
-  const handleAutoRefreshMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    const items = autoRefreshItemRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
-    const currentIndex = items.findIndex((item) => item === document.activeElement);
-
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeAutoRefreshMenu(true);
-      return;
-    }
-
-    if (event.key === "Tab") {
-      closeAutoRefreshMenu();
-      return;
-    }
-
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      focusAutoRefreshMenuItem(currentIndex + 1);
-      return;
-    }
-
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      focusAutoRefreshMenuItem(currentIndex - 1);
-      return;
-    }
-
-    if (event.key === "Home") {
-      event.preventDefault();
-      focusAutoRefreshMenuItem(0);
-      return;
-    }
-
-    if (event.key === "End") {
-      event.preventDefault();
-      focusAutoRefreshMenuItem(items.length - 1);
-    }
-  };
+  }, [closeViewMenu, viewMenuOpen]);
 
   const listUpdatedLabel = query.isFetching
     ? text("刷新中", "Refreshing")
@@ -1773,129 +1676,86 @@ export function TasksPage() {
               </option>
             ))}
           </Select>
-          <Select
-            aria-label={text("排序字段", "Sort by")}
-            className="w-32"
-            value={queryState.sortBy}
-            onChange={(event) => updateTaskQuery({ sortBy: event.target.value as TaskListSortBy })}
-          >
-            <option value="">{text("默认排序", "Default")}</option>
-            <option value="name">{text("名称", "Name")}</option>
-            <option value="status">{text("状态", "Status")}</option>
-            <option value="created">{text("创建时间", "Created")}</option>
-            <option value="updated">{text("更新时间", "Updated")}</option>
-          </Select>
-          <Button
-            aria-label={text("切换排序方向", "Toggle sort direction")}
-            disabled={!queryState.sortBy}
-            title={queryState.sortDir === "asc" ? text("升序", "Ascending") : text("降序", "Descending")}
-            type="button"
-            variant="secondary"
-            onClick={() => updateTaskQuery({ sortDir: queryState.sortDir === "asc" ? "desc" : "asc" })}
-          >
-            {queryState.sortDir === "asc" ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
-          </Button>
-          <Button disabled={query.isFetching} variant="secondary" onClick={() => void query.refetch()}>
-            <RefreshCw className={["h-4 w-4", query.isFetching ? "animate-spin" : ""].join(" ")} aria-hidden="true" />
-            {text("刷新", "Refresh")}
-          </Button>
-          <div ref={autoRefreshMenuRef} className="relative flex items-center gap-2">
+          <div ref={viewMenuRef} className="relative flex items-center gap-2">
             <Button
-              ref={autoRefreshTriggerRef}
-              aria-controls={autoRefreshMenuOpen ? autoRefreshMenuId : undefined}
-              aria-expanded={autoRefreshMenuOpen}
+              ref={viewTriggerRef}
+              aria-controls={viewMenuOpen ? viewMenuId : undefined}
+              aria-expanded={viewMenuOpen}
               aria-haspopup="menu"
-              aria-pressed={autoRefresh}
-              className={
-                autoRefresh
-                  ? autoRefreshPaused
-                    ? "border-app-warning/40 text-app-warning hover:bg-app-warningSoft"
-                    : "border-app-accent/40 text-app-accent hover:bg-app-accentSoft"
-                  : undefined
-              }
-              title={
-                autoRefresh
-                  ? autoRefreshPaused
-                    ? text("自动刷新已暂停（面板打开时）", "Auto refresh paused (panel open)")
-                    : text(`每 ${autoRefreshIntervalLabel(autoRefreshInterval, locale)} 自动刷新`, `Auto refresh every ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`)
-                  : text("自动刷新间隔", "Auto refresh interval")
-              }
+              aria-label={text("视图", "View")}
+              title={text("视图", "View")}
               type="button"
               variant="secondary"
-              onClick={() => {
-                autoRefreshInitialFocusRef.current = 0;
-                setAutoRefreshMenuOpen((open) => !open);
-              }}
-              onKeyDown={handleAutoRefreshTriggerKeyDown}
+              onClick={() => setViewMenuOpen((open) => !open)}
             >
-              <RefreshCw className="h-4 w-4" aria-hidden="true" />
-              {autoRefresh
-                ? autoRefreshPaused
-                  ? text(`已暂停 · ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`, `Paused · ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`)
-                  : text(`自动 · ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`, `Auto · ${autoRefreshIntervalLabel(autoRefreshInterval, locale)}`)
-                : text("自动刷新", "Auto refresh")}
+              <Settings2 className="h-4 w-4" aria-hidden="true" />
+              {text("视图", "View")}
             </Button>
             {listUpdatedLabel ? (
               <span className="hidden text-xs text-app-muted sm:inline" aria-live="polite">
                 {listUpdatedLabel}
               </span>
             ) : null}
-            {autoRefreshMenuOpen ? (
+            {viewMenuOpen ? (
               <div
-                id={autoRefreshMenuId}
-                ref={autoRefreshMenuListRef}
-                role="menu"
-                aria-label={text("自动刷新间隔", "Auto refresh interval")}
-                className="absolute left-0 top-full z-30 mt-1 w-40 rounded-lg border border-app-border bg-app-surface p-1 shadow-popover"
-                onKeyDown={handleAutoRefreshMenuKeyDown}
+                id={viewMenuId}
+                className="absolute left-0 top-full z-30 mt-1 w-64 rounded-lg border border-app-border bg-app-surface p-2 shadow-popover"
               >
-                <button
-                  ref={(element) => {
-                    autoRefreshItemRefs.current[0] = element;
-                  }}
-                  className={MENU_ITEM_CLASS}
-                  role="menuitemradio"
-                  aria-checked={!autoRefresh}
-                  tabIndex={-1}
-                  type="button"
-                  onClick={() => {
-                    setAutoRefresh(false);
-                    closeAutoRefreshMenu();
-                  }}
-                >
-                  {text("关闭", "Off")}
-                </button>
-                {autoRefreshOptions.map((option, optionIndex) => {
-                  const selected = autoRefresh && autoRefreshInterval === option.value;
-                  const itemIndex = optionIndex + 1;
-                  return (
-                    <button
-                      key={option.value}
-                      ref={(element) => {
-                        autoRefreshItemRefs.current[itemIndex] = element;
-                      }}
-                      className={MENU_ITEM_CLASS}
-                      role="menuitemradio"
-                      aria-checked={selected}
-                      tabIndex={-1}
-                      type="button"
-                      onClick={() => {
-                        setAutoRefresh(true);
-                        setAutoRefreshInterval(option.value);
-                        closeAutoRefreshMenu();
-                      }}
+                <div className="space-y-2 p-1">
+                  <label className="block text-xs text-app-muted">
+                    {text("排序", "Sort")}
+                    <Select
+                      aria-label={text("排序字段", "Sort by")}
+                      className="mt-1 w-full"
+                      value={queryState.sortBy}
+                      onChange={(event) => updateTaskQuery({ sortBy: event.target.value as TaskListSortBy })}
                     >
-                      {locale === "en-US" ? option.en : option.zh}
-                    </button>
-                  );
-                })}
+                      <option value="">{text("默认排序", "Default")}</option>
+                      <option value="name">{text("名称", "Name")}</option>
+                      <option value="status">{text("状态", "Status")}</option>
+                      <option value="created">{text("创建时间", "Created")}</option>
+                      <option value="updated">{text("更新时间", "Updated")}</option>
+                    </Select>
+                  </label>
+                  <Button
+                    aria-label={text("切换排序方向", "Toggle sort direction")}
+                    className="w-full justify-start"
+                    disabled={!queryState.sortBy}
+                    title={queryState.sortDir === "asc" ? text("升序", "Ascending") : text("降序", "Descending")}
+                    type="button"
+                    variant="secondary"
+                    onClick={() => updateTaskQuery({ sortDir: queryState.sortDir === "asc" ? "desc" : "asc" })}
+                  >
+                    {queryState.sortDir === "asc" ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
+                    {queryState.sortDir === "asc" ? text("升序", "Ascending") : text("降序", "Descending")}
+                  </Button>
+                  <Button
+                    className="w-full justify-start"
+                    disabled={query.isFetching}
+                    type="button"
+                    variant="secondary"
+                    onClick={() => void query.refetch()}
+                  >
+                    <RefreshCw className={["h-4 w-4", query.isFetching ? "animate-spin" : ""].join(" ")} aria-hidden="true" />
+                    {text("刷新", "Refresh")}
+                  </Button>
+                </div>
+                <div className="border-t border-app-border p-1">
+                  <button
+                    className={MENU_ITEM_CLASS}
+                    type="button"
+                    onClick={() => {
+                      setColumnSettingsOpen(true);
+                      closeViewMenu();
+                    }}
+                  >
+                    <Settings2 className="h-4 w-4" />
+                    {text("列设置", "Columns")}
+                  </button>
+                </div>
               </div>
             ) : null}
           </div>
-          <Button variant="secondary" onClick={() => setColumnSettingsOpen(true)}>
-            <Settings2 className="h-4 w-4" />
-            {text("列设置", "Columns")}
-          </Button>
         </div>
         <Button className="w-full sm:w-auto" onClick={openCreateTask}>
           <Plus className="h-4 w-4" />
@@ -1958,7 +1818,7 @@ export function TasksPage() {
           <EmptyState title={text("暂无任务实例", "No task instances")} action={<Button onClick={openCreateTask}>{text("新建任务", "New task")}</Button>} />
         ) : (
           <>
-          {browserRuntime.isMobile ? (
+          {compactLayout ? (
           <div ref={mobileCardsRef} className="divide-y divide-app-border" tabIndex={0}>
             {table.getRowModel().rows.map((row, rowIndex) => {
               const task = row.original;

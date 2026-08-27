@@ -47,6 +47,8 @@ export type AppSettings = {
   apiBaseUrl: string;
   monitorDashboardUrl: string;
   notificationPreferences: NotificationPreferences;
+  taskAutoRefresh: boolean;
+  taskAutoRefreshIntervalMs: number;
   autoCheckUpdates: boolean;
   /** When creating instances, append `_1`, `_2`, … if the name already exists. Default on. */
   autoNumberDuplicateTaskNames: boolean;
@@ -80,6 +82,14 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
   "task.failure": "system",
   "task.abnormal": "system",
 };
+
+export const TASK_AUTO_REFRESH_OPTIONS = [
+  { zh: "5 秒", en: "5 sec", value: 5_000 },
+  { zh: "10 秒", en: "10 sec", value: 10_000 },
+  { zh: "30 秒", en: "30 sec", value: 30_000 },
+] as const;
+
+export const DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS = 10_000;
 
 export const DEFAULT_CUSTOM_COLORS: SshCustomColors = {
   background: "#1e1e2e",
@@ -147,6 +157,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   monitorDashboardUrl:
     (import.meta as ImportMetaWithEnv).env?.VITE_MONITOR_DASHBOARD_URL || DEFAULT_MONITOR_DASHBOARD_URL,
   notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+  taskAutoRefresh: false,
+  taskAutoRefreshIntervalMs: DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS,
   autoCheckUpdates: true,
   autoNumberDuplicateTaskNames: true,
   desktopCloseToTray: false,
@@ -190,6 +202,11 @@ function normalizePositiveInteger(value: unknown, fallback: number) {
 function normalizeNonNegativeInteger(value: unknown, fallback: number) {
   const num = Number(value);
   return Number.isInteger(num) && num >= 0 ? num : fallback;
+}
+
+function normalizeTaskAutoRefreshInterval(value: unknown) {
+  const interval = normalizePositiveInteger(value, DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS);
+  return TASK_AUTO_REFRESH_OPTIONS.some((option) => option.value === interval) ? interval : DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS;
 }
 
 function normalizeString(value: unknown, fallback: string) {
@@ -305,6 +322,8 @@ export function normalizeAppSettings(settings: Partial<AppSettings>): AppSetting
     apiBaseUrl: normalizeUrl(settings.apiBaseUrl, DEFAULT_APP_SETTINGS.apiBaseUrl),
     monitorDashboardUrl: normalizeUrl(settings.monitorDashboardUrl, DEFAULT_APP_SETTINGS.monitorDashboardUrl),
     notificationPreferences: normalizeNotificationPreferences(settings.notificationPreferences),
+    taskAutoRefresh: settings.taskAutoRefresh === true,
+    taskAutoRefreshIntervalMs: normalizeTaskAutoRefreshInterval(settings.taskAutoRefreshIntervalMs),
     autoCheckUpdates: settings.autoCheckUpdates !== false,
     autoNumberDuplicateTaskNames: settings.autoNumberDuplicateTaskNames !== false,
     desktopCloseToTray: settings.desktopCloseToTray === true,

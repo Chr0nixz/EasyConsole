@@ -47,7 +47,7 @@ export function FormSection({
       >
         {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
         <span>{title}</span>
-        {!expanded && hint ? <span className="min-w-0 truncate font-normal text-app-muted/80">{hint}</span> : null}
+        {!expanded && hint ? <span className="min-w-0 truncate font-normal text-app-muted">{hint}</span> : null}
       </button>
       {expanded ? <div className="space-y-3">{children}</div> : null}
     </section>

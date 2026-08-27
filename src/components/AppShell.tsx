@@ -53,6 +53,27 @@ const titles: Record<string, TranslationKey> = {
   "/settings": "title.settings",
 };
 
+const headerDescriptions: Record<string, TranslationKey> = {
+  "/dashboard": "shell.desc.dashboard",
+  "/tasks": "shell.desc.tasks",
+  "/scheduled-tasks": "shell.desc.scheduledTasks",
+  "/task-templates": "shell.desc.taskTemplates",
+  "/storage": "shell.desc.storage",
+  "/images": "shell.desc.images",
+  "/run-logs": "shell.desc.runLogs",
+  "/settings": "shell.desc.settings",
+};
+
+function headerTitleKey(pathname: string): TranslationKey {
+  if (/^\/tasks\/[^/]+$/.test(pathname)) return "title.tasks";
+  return titles[pathname] ?? "common.console";
+}
+
+function headerDescriptionKey(pathname: string): TranslationKey {
+  if (/^\/tasks\/[^/]+$/.test(pathname)) return "shell.desc.taskDetail";
+  return headerDescriptions[pathname] ?? "shell.headerDescription";
+}
+
 export function AppShell() {
   const auth = useAuth();
   const location = useLocation();
@@ -68,6 +89,7 @@ export function AppShell() {
   const [downloadQueueOpen, setDownloadQueueOpen] = useState(false);
   const [commitQueueOpen, setCommitQueueOpen] = useState(false);
   const [statusPopoverOpen, setStatusPopoverOpen] = useState(false);
+  const [statusPopoverPosition, setStatusPopoverPosition] = useState({ left: 12, top: 64 });
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [rememberCloseChoice, setRememberCloseChoice] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -263,12 +285,21 @@ export function AppShell() {
       return;
     }
     statusPopoverPreviousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const updatePosition = () => {
+      const anchor = statusButtonRef.current?.getBoundingClientRect();
+      if (!anchor) return;
+      const margin = 12;
+      const width = Math.min(256, Math.max(0, window.innerWidth - margin * 2));
+      const left = Math.min(Math.max(margin, anchor.right - width), Math.max(margin, window.innerWidth - width - margin));
+      setStatusPopoverPosition({ left, top: anchor.bottom + 8 });
+    };
+    updatePosition();
     const container = statusPopoverRef.current;
     const focusable = container ? Array.from(container.querySelectorAll<HTMLElement>('button:not([disabled]), [tabindex]:not([tabindex="-1"])')) : [];
     window.setTimeout(() => focusable[0]?.focus(), 0);
 
     const onClickOutside = (event: MouseEvent) => {
-      if (statusPopoverRef.current && !statusPopoverRef.current.contains(event.target as Node) && event.target !== statusButtonRef.current) {
+      if (statusPopoverRef.current && !statusPopoverRef.current.contains(event.target as Node) && !statusButtonRef.current?.contains(event.target as Node)) {
         setStatusPopoverOpen(false);
       }
     };
@@ -298,9 +329,13 @@ export function AppShell() {
     };
     document.addEventListener("pointerdown", onClickOutside);
     document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
     return () => {
       document.removeEventListener("pointerdown", onClickOutside);
       document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
     };
   }, [statusPopoverOpen]);
 
@@ -442,28 +477,28 @@ export function AppShell() {
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
                           {item.status === "failed" || item.status === "cancelled" ? (
-                            <Button className="h-8 w-8 px-0" type="button" title={t("common.retry")} variant="ghost" onClick={() => downloadQueue.retry(item.id)}>
+                            <Button aria-label={t("common.retry")} className="h-8 w-8 px-0" type="button" title={t("common.retry")} variant="ghost" onClick={() => downloadQueue.retry(item.id)}>
                               <RotateCcw className="h-4 w-4" />
                             </Button>
                           ) : null}
                           {browserRuntime.supportsFileReveal && item.status === "done" && item.destinationPath ? (
                             <>
-                              <Button className="h-8 w-8 px-0" type="button" title={text("打开所在文件夹", "Open containing folder")} variant="ghost" onClick={() => revealDownloadedPath(item.destinationPath!)}>
+                              <Button aria-label={text("打开所在文件夹", "Open containing folder")} className="h-8 w-8 px-0" type="button" title={text("打开所在文件夹", "Open containing folder")} variant="ghost" onClick={() => revealDownloadedPath(item.destinationPath!)}>
                                 <FolderOpen className="h-4 w-4" />
                               </Button>
-                              <Button className="h-8 w-8 px-0" type="button" title={text("打开文件", "Open file")} variant="ghost" onClick={() => openDownloadedPath(item.destinationPath!)}>
+                              <Button aria-label={text("打开文件", "Open file")} className="h-8 w-8 px-0" type="button" title={text("打开文件", "Open file")} variant="ghost" onClick={() => openDownloadedPath(item.destinationPath!)}>
                                 <ExternalLink className="h-4 w-4" />
                               </Button>
                             </>
                           ) : null}
                           {active ? (
-                            <Button className="h-8 w-8 px-0" type="button" title={text("取消下载", "Cancel download")} variant="ghost" onClick={() => downloadQueue.cancel(item.id)}>
+                            <Button aria-label={text("取消下载", "Cancel download")} className="h-8 w-8 px-0" type="button" title={text("取消下载", "Cancel download")} variant="ghost" onClick={() => downloadQueue.cancel(item.id)}>
                               <X className="h-4 w-4" />
                             </Button>
                           ) : null}
                         </div>
                       </div>
-                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-app-panel" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={item.progress}>
+                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-app-panel" role="progressbar" aria-label={item.filename} aria-valuemin={0} aria-valuemax={100} aria-valuenow={item.progress}>
                         <div className="h-full bg-app-accent transition-all" style={{ width: `${item.status === "done" ? 100 : item.progress}%` }} />
                       </div>
                       {item.error ? <div className="mt-2 text-xs text-app-danger">{item.error}</div> : null}
@@ -617,8 +652,8 @@ export function AppShell() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className="z-40 flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-app-border bg-app-surface px-4 md:px-5" style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}>
           <div className="min-w-0">
-            <h1 className="truncate text-base font-semibold">{t(titles[location.pathname] ?? "common.console")}</h1>
-            <p className="hidden truncate text-xs text-app-muted sm:block">{t("shell.headerDescription")}</p>
+            <h1 className="truncate text-base font-semibold">{t(headerTitleKey(location.pathname))}</h1>
+            <p className="hidden truncate text-xs text-app-muted sm:block">{t(headerDescriptionKey(location.pathname))}</p>
           </div>
           <div className="flex shrink-0 items-center gap-3">
             <div className="relative">
@@ -630,7 +665,18 @@ export function AppShell() {
                 className="shrink-0"
                 title={t("shell.statusLabel")}
                 variant="secondary"
-                onClick={() => setStatusPopoverOpen((value) => !value)}
+                onClick={() => {
+                  if (!statusPopoverOpen) {
+                    const anchor = statusButtonRef.current?.getBoundingClientRect();
+                    if (anchor) {
+                      const margin = 12;
+                      const width = Math.min(256, Math.max(0, window.innerWidth - margin * 2));
+                      const left = Math.min(Math.max(margin, anchor.right - width), Math.max(margin, window.innerWidth - width - margin));
+                      setStatusPopoverPosition({ left, top: anchor.bottom + 8 });
+                    }
+                  }
+                  setStatusPopoverOpen((value) => !value);
+                }}
               >
                 <DownloadCloud className="h-4 w-4" />
                 <span className="hidden sm:inline">{t("shell.status")}</span>
@@ -649,11 +695,10 @@ export function AppShell() {
               {statusPopoverOpen ? (
                 <div
                   ref={statusPopoverRef}
-                  className="fixed right-3 top-16 z-50 w-64 rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5"
+                  className="fixed z-50 w-[min(16rem,calc(100vw-1.5rem))] rounded-lg border border-app-border bg-app-surface shadow-popover"
                   role="dialog"
-                  aria-modal="true"
                   aria-label={t("shell.statusLabel")}
-                  style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }}
+                  style={statusPopoverPosition}
                 >
                   <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
                     <div className="text-sm font-semibold text-app-text">{t("shell.statusLabel")}</div>
