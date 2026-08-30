@@ -472,24 +472,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     })();
   }
 
-  function sendTestNotification() {
-    void browserRuntime
-      .notifySystem({
-        title: text("EasyConsole 测试通知", "EasyConsole test notification"),
-        body: text("系统通知通道已连接。", "The system notification channel is connected."),
-      })
-      .then((result) => {
-        if (result === "shown") {
-          toast.success(text("测试通知已发送", "Test notification sent"));
-        } else if (result === "permission-denied") {
-          toast.error(text("系统通知未开启", "System notifications are off"), text("请在系统或浏览器权限中允许 EasyConsole 发送通知。", "Allow EasyConsole to send notifications in system or browser permissions."));
-        } else {
-          toast.error(text("系统通知不可用", "System notifications are unavailable"), text("当前运行环境没有可用的系统通知能力。", "The current runtime does not expose system notifications."));
-        }
-      });
-  }
-
-  function updateNotificationPreference(event: ImportantNotificationEvent, mode: NotificationMode) {
+  function setNotificationPreference(event: ImportantNotificationEvent, mode: NotificationMode) {
     setForm((value) => ({
       ...value,
       notificationPreferences: {
@@ -497,6 +480,56 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         [event]: mode,
       },
     }));
+  }
+
+  function showNotificationPermissionFallback(permission: "denied" | "default" | "unsupported") {
+    const title =
+      permission === "unsupported"
+        ? text("系统通知不可用", "System notifications are unavailable")
+        : text("系统通知未开启", "System notifications are off");
+    const description =
+      permission === "default"
+        ? text("尚未授予通知权限，已改为应用内通知。", "Notification permission was not granted, so this event now uses in-app notifications.")
+        : permission === "unsupported"
+          ? text("当前运行环境不支持系统通知，已改为应用内通知。", "This runtime does not support system notifications, so this event now uses in-app notifications.")
+          : text("请在系统或浏览器权限中允许 EasyConsole 发送通知，已改为应用内通知。", "Allow EasyConsole in system or browser permissions; this event now uses in-app notifications.");
+    toast.info(title, description);
+  }
+
+  function sendTestNotification() {
+    void (async () => {
+      const permission = await browserRuntime.requestSystemNotificationPermission();
+      if (permission !== "granted") {
+        showNotificationPermissionFallback(permission);
+        return;
+      }
+
+      const result = await browserRuntime.notifySystem({
+        title: text("EasyConsole 测试通知", "EasyConsole test notification"),
+        body: text("系统通知通道已连接。", "The system notification channel is connected."),
+      });
+      if (result === "shown") {
+        toast.success(text("测试通知已发送", "Test notification sent"));
+      } else {
+        showNotificationPermissionFallback(result === "unsupported" ? "unsupported" : "denied");
+      }
+    })();
+  }
+
+  function updateNotificationPreference(event: ImportantNotificationEvent, mode: NotificationMode) {
+    if (mode !== "system") {
+      setNotificationPreference(event, mode);
+      return;
+    }
+
+    void browserRuntime.requestSystemNotificationPermission().then((permission) => {
+      if (permission === "granted") {
+        setNotificationPreference(event, "system");
+        return;
+      }
+      setNotificationPreference(event, "app");
+      showNotificationPermissionFallback(permission);
+    });
   }
 
   async function testConnection() {

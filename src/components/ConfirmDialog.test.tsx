@@ -1,9 +1,9 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ConfirmDialog } from "./ConfirmDialog";
-import { Button, Dialog } from "./ui";
+import { Button, Dialog, Drawer } from "./ui";
 
 describe("ConfirmDialog", () => {
   it("runs confirm action and exposes cancel", () => {
@@ -136,5 +136,75 @@ describe("Dialog", () => {
     );
 
     await waitFor(() => expect(screen.getByLabelText("搜索")).toHaveFocus());
+  });
+
+  it("uses the visible viewport height for a compact fullscreen dialog", () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalVisualViewport = Object.getOwnPropertyDescriptor(window, "visualViewport");
+    const resizeListeners = new Set<EventListener>();
+    const viewport = {
+      height: 512,
+      offsetTop: 18,
+      addEventListener: vi.fn((type: string, listener: EventListener) => {
+        if (type === "resize") resizeListeners.add(listener);
+      }),
+      removeEventListener: vi.fn((type: string, listener: EventListener) => {
+        if (type === "resize") resizeListeners.delete(listener);
+      }),
+    };
+
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: () => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
+    });
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: viewport as unknown as VisualViewport,
+    });
+
+    try {
+      const view = render(
+        <Dialog open title="移动表单" mobileMode="fullscreen" onClose={vi.fn()}>
+          <form className="flex h-full flex-col">
+            <div className="flex-1">字段</div>
+            <button type="button">创建</button>
+          </form>
+        </Dialog>,
+      );
+      const overlay = screen.getByRole("dialog");
+      const panel = overlay.firstElementChild as HTMLElement;
+      const content = panel.lastElementChild as HTMLElement;
+
+      expect(overlay).toHaveStyle({ top: "18px", height: "512px" });
+      expect(panel).toHaveStyle({ height: "512px", maxHeight: "512px" });
+      expect(content).toHaveClass("flex-1");
+      expect(content).toHaveClass("!h-auto");
+
+      viewport.height = 368;
+      act(() => {
+        for (const listener of resizeListeners) listener(new Event("resize"));
+      });
+      expect(overlay).toHaveStyle({ height: "368px" });
+      expect(panel).toHaveStyle({ height: "368px" });
+      view.unmount();
+
+      const drawerView = render(
+        <Drawer open title="移动抽屉" onClose={vi.fn()}>
+          <div>内容</div>
+        </Drawer>,
+      );
+      const drawerOverlay = screen.getByRole("dialog");
+      const drawerPanel = drawerOverlay.firstElementChild as HTMLElement;
+      expect(drawerOverlay).toHaveStyle({ top: "18px", height: "368px" });
+      expect(drawerPanel).toHaveStyle({ maxHeight: "331px" });
+      drawerView.unmount();
+    } finally {
+      Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia });
+      if (originalVisualViewport) {
+        Object.defineProperty(window, "visualViewport", originalVisualViewport);
+      } else {
+        Reflect.deleteProperty(window, "visualViewport");
+      }
+    }
   });
 });

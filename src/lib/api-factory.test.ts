@@ -45,6 +45,9 @@ function createRuntime(responseData: unknown) {
     },
     async copyText() {},
     async readClipboardText() { return ""; },
+    async getSystemNotificationPermission() {
+      return "unsupported";
+    },
     async requestSystemNotificationPermission() {
       return "unsupported";
     },

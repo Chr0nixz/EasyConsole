@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, FileJson, FileText, Maximize2, Monitor, TerminalSquare } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { ArrowLeft, ChevronDown, FileJson, FileText, Maximize2, Monitor, TerminalSquare } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
@@ -15,9 +15,13 @@ import { useI18n } from "../lib/i18n";
 import { buildMonitorDashboardUrl } from "../lib/monitor-dashboard";
 import { browserRuntime } from "../lib/runtime";
 import { buildTaskSshInfo } from "../lib/ssh-info";
-import { taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
+import { invalidateTaskQueries, taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
 import type { MonitorMetricSeries, Task } from "../lib/types";
+import { cn } from "../lib/utils";
 import { useAuth } from "../lib/use-auth";
+import { useConfirmAction } from "../lib/use-confirm-action";
+import { useCompactLayout } from "../lib/use-compact-layout";
+import { useToast } from "../lib/use-toast";
 
 const TaskLogDialog = lazy(() => import("../components/tasks/TaskLogDialog").then((module) => ({ default: module.TaskLogDialog })));
 const TerminalDialog = lazy(() => import("../components/tasks/TerminalDialog").then((module) => ({ default: module.TerminalDialog })));
@@ -81,6 +85,10 @@ export function TaskDetailPage() {
   const navigate = useNavigate();
   const { text } = useI18n();
   const auth = useAuth();
+  const compactLayout = useCompactLayout();
+  const queryClient = useQueryClient();
+  const { confirm, confirmDialog } = useConfirmAction();
+  const toast = useToast();
   const [tab, setTab] = useState<Tab>(() => parseDetailTab(searchParams.get("tab")));
   const [logOpen, setLogOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -127,6 +135,19 @@ export function TaskDetailPage() {
     () => (task ? buildTaskSshInfo(task, { loginUsername: auth.user?.username ?? "" }) : null),
     [auth.user?.username, task],
   );
+  const releaseMutation = useMutation({
+    mutationFn: (task: Task) => instanceApi.operateTask(task.id),
+    onSuccess: (_data, releasedTask) => {
+      toast.success(text("实例释放已提交", "Instance release submitted"), getTaskName(releasedTask));
+      invalidateTaskQueries(queryClient);
+    },
+    onError: (error, releasedTask) => {
+      toast.error(
+        text("实例释放失败", "Instance release failed"),
+        `${getTaskName(releasedTask)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`,
+      );
+    },
+  });
 
   const monitorIndexQuery = useQuery({
     queryKey: ["task-monitor-index", id],
@@ -165,6 +186,19 @@ export function TaskDetailPage() {
   const endpoint = sshSummary && sshSummary.host !== "-"
     ? `${sshSummary.host}${sshSummary.port !== "-" ? `:${sshSummary.port}` : ""}`
     : "-";
+  const canRelease = [0, 1, 2].includes(Number(task.status));
+  const requestRelease = () => {
+    confirm({
+      title: text("释放实例", "Release instance"),
+      description: text(
+        `将停止并回收 ${getTaskName(task)} 的资源，此操作不可撤销。确定继续吗？`,
+        `This will stop ${getTaskName(task)} and reclaim its resources. This cannot be undone. Continue?`,
+      ),
+      confirmLabel: text("释放", "Release"),
+      tone: "danger",
+      run: () => releaseMutation.mutateAsync(task),
+    });
+  };
 
   return (
     <div className="space-y-4">
@@ -181,6 +215,17 @@ export function TaskDetailPage() {
             {releaseCondition != null ? <ReleaseConditionBadge condition={releaseCondition} /> : null}
           </div>
         </div>
+        {canRelease ? (
+          <Button
+            className="shrink-0"
+            disabled={releaseMutation.isPending}
+            type="button"
+            variant="danger"
+            onClick={requestRelease}
+          >
+            {text("释放", "Release")}
+          </Button>
+        ) : null}
       </div>
 
       <dl className="grid gap-3 rounded-md border border-app-border bg-app-surface px-4 py-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -189,12 +234,22 @@ export function TaskDetailPage() {
           value={`${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`}
         />
         <SummaryField label={text("节点", "Node")} value={getTaskNodeName(task) || "-"} />
-        <SummaryField label={text("存储路径", "Storage path")} value={storagePath} />
-        <SummaryField label={text("入口", "Endpoint")} value={endpoint} />
+        <div className="col-span-full grid gap-3 sm:grid-cols-2 xl:col-span-2">
+          <details className="group" open={!compactLayout}>
+            <summary className={cn("flex min-h-11 cursor-pointer list-none items-center justify-between text-sm font-medium text-app-text", !compactLayout && "sm:hidden")}>
+              {text("路径与连接", "Paths and connection")}
+              <ChevronDown className="h-4 w-4 text-app-muted transition-transform group-open:rotate-180" aria-hidden="true" />
+            </summary>
+            <div className={cn("grid gap-3 border-t border-app-border pt-3", !compactLayout && "sm:border-t-0 sm:pt-0 sm:grid-cols-2")}>
+              <SummaryField label={text("存储路径", "Storage path")} value={storagePath} />
+              <SummaryField label={text("入口", "Endpoint")} value={endpoint} />
+            </div>
+          </details>
+        </div>
       </dl>
 
       <div
-        className="flex flex-wrap gap-1 border-b border-app-border"
+        className="app-task-detail-tabs hidden flex-nowrap gap-1 overflow-x-auto border-b border-app-border sm:flex"
         role="tablist"
         aria-label={text("任务详情页签", "Task detail tabs")}
         onKeyDown={(event) => {
@@ -232,7 +287,7 @@ export function TaskDetailPage() {
               aria-selected={selected}
               aria-controls={`task-detail-panel-${tabItem.key}`}
               tabIndex={selected ? 0 : -1}
-              className={`app-interactive flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+              className={`app-interactive flex min-h-11 shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
                 selected
                   ? "border-app-accent text-app-accent"
                   : "border-transparent text-app-muted hover:text-app-text"
@@ -245,6 +300,17 @@ export function TaskDetailPage() {
           );
         })}
       </div>
+
+      <Select
+        aria-label={text("任务详情视图", "Task detail view")}
+        className="w-full sm:hidden"
+        value={tab}
+        onChange={(event) => setTab(event.target.value as Tab)}
+      >
+        {tabs.map((tabItem) => (
+          <option key={tabItem.key} value={tabItem.key}>{tabItem.label}</option>
+        ))}
+      </Select>
 
       {tab === "monitor" && monitorUrl ? (
         <div role="tabpanel" id="task-detail-panel-monitor" aria-labelledby="task-detail-tab-monitor">
@@ -365,6 +431,7 @@ export function TaskDetailPage() {
       <Suspense fallback={null}>
         <TerminalDialog task={terminalOpen ? task : null} onClose={() => setTerminalOpen(false)} />
       </Suspense>
+      {confirmDialog}
     </div>
   );
 }

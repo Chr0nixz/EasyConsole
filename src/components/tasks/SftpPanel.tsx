@@ -292,39 +292,45 @@ export function SftpPanel({ sessionId }: SftpPanelProps) {
         ) : (
           <ul className="divide-y divide-app-border">
             {entries.map((entry) => (
-              <li
-                key={entry.name}
-                role="button"
-                tabIndex={0}
-                className={cn(
-                  "flex cursor-pointer items-center gap-2 px-2 py-1.5 text-sm hover:bg-app-panel",
-                  selected === entry.name && "bg-app-panel",
-                )}
-                onClick={() => handleEntryClick(entry)}
-                onDoubleClick={() => handleEntryDoubleClick(entry)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    if (entry.isDir) handleEntryDoubleClick(entry);
-                    else handleEntryClick(entry);
-                  }
-                }}
-              >
-                {entry.isDir ? (
-                  <Folder className="h-4 w-4 shrink-0 text-app-accent" />
-                ) : entry.isSymlink ? (
-                  <FolderCog className="h-4 w-4 shrink-0 text-app-muted" />
-                ) : (
-                  <FileIcon className="h-4 w-4 shrink-0 text-app-muted" />
-                )}
-                <span className="min-w-0 flex-1 truncate" title={entry.name}>
-                  {entry.name}
-                </span>
-                {entry.isFile && (
-                  <span className="shrink-0 text-xs text-app-muted">{formatSize(entry.size)}</span>
-                )}
-                <span className="hidden shrink-0 text-xs text-app-muted sm:inline">
-                  {formatTime(entry.modifiedAt)}
-                </span>
+              <li key={entry.name}>
+                <button
+                  className={cn(
+                    "flex min-h-11 w-full items-center gap-2 px-2 py-1.5 text-left text-sm hover:bg-app-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-app-accent",
+                    selected === entry.name && "bg-app-panel",
+                  )}
+                  type="button"
+                  aria-pressed={selected === entry.name}
+                  onClick={() => handleEntryClick(entry)}
+                  onDoubleClick={() => handleEntryDoubleClick(entry)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      if (entry.isDir) handleEntryDoubleClick(entry);
+                      else handleEntryClick(entry);
+                    }
+                    if (event.key === " ") {
+                      event.preventDefault();
+                      handleEntryClick(entry);
+                    }
+                  }}
+                >
+                  {entry.isDir ? (
+                    <Folder className="h-4 w-4 shrink-0 text-app-accent" />
+                  ) : entry.isSymlink ? (
+                    <FolderCog className="h-4 w-4 shrink-0 text-app-muted" />
+                  ) : (
+                    <FileIcon className="h-4 w-4 shrink-0 text-app-muted" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate" title={entry.name}>
+                    {entry.name}
+                  </span>
+                  {entry.isFile && (
+                    <span className="shrink-0 text-xs text-app-muted">{formatSize(entry.size)}</span>
+                  )}
+                  <span className="hidden shrink-0 text-xs text-app-muted sm:inline">
+                    {formatTime(entry.modifiedAt)}
+                  </span>
+                </button>
               </li>
             ))}
           </ul>

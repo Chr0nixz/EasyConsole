@@ -45,6 +45,7 @@ describe("resolveUploadResumeOffset", () => {
       async createWebSocket() { throw new Error("not implemented"); },
       async copyText() {},
       async readClipboardText() { return ""; },
+      async getSystemNotificationPermission() { return "unsupported"; },
       async requestSystemNotificationPermission() { return "unsupported"; },
       async notifySystem() { return "unsupported"; },
       openExternal() {},

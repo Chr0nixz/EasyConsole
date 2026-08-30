@@ -80,15 +80,15 @@ export function ScriptEnvFields({
           ) : (
             <div className="space-y-2">
               {envVars.map((item, index) => (
-                <div key={index} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                <div key={index} className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                   <Input
-                    className="font-mono text-xs"
+                    className="min-w-0 w-full font-mono text-xs"
                     placeholder={text("名称，如 EXPERIMENT_ID", "Name, e.g. EXPERIMENT_ID")}
                     value={item.key}
                     onChange={(event) => updateRow(index, { key: event.target.value })}
                   />
                   <Input
-                    className="font-mono text-xs"
+                    className="min-w-0 w-full font-mono text-xs"
                     placeholder={text("值", "Value")}
                     value={item.value}
                     onChange={(event) => updateRow(index, { value: event.target.value })}
@@ -96,7 +96,7 @@ export function ScriptEnvFields({
                   <Button
                     type="button"
                     variant="ghost"
-                    className="h-9 w-9 shrink-0 px-0 text-app-danger hover:text-app-danger"
+                    className="h-9 w-9 shrink-0 justify-self-end px-0 text-app-danger hover:text-app-danger"
                     title={text("删除", "Remove")}
                     onClick={() => removeRow(index)}
                   >

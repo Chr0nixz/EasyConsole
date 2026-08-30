@@ -3,6 +3,7 @@ import { Copy, Download, Eye, FileText, Folder, FolderOpen, FolderPlus, RefreshC
 import { useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import { EmptyState, ErrorState, FolderOpenIcon, SearchXIcon, TableSkeleton } from "../components/DataState";
+import { MobileLongText } from "../components/MobileLongText";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
 import { useDownloadQueueActions } from "../lib/use-download-queue";
 import { formatBytes } from "../lib/format";
@@ -434,7 +435,7 @@ export function StoragePage() {
             {text("上传到远程", "Upload to remote")}
             <input className="sr-only" type="file" onChange={(event) => void upload(event)} />
           </label>
-          {browserRuntime.isMobile ? null : (
+          {compactLayout ? null : (
             <Button type="button" variant="secondary" onClick={openFolderUploadDialog}>
               <FolderOpen className="h-4 w-4" />
               {text("上传文件夹", "Upload folder")}
@@ -531,7 +532,7 @@ export function StoragePage() {
                       >
                         {entry.name}
                       </button>
-                      <div className="mt-1 truncate font-mono text-xs text-app-muted">{entryPath}</div>
+                      <MobileLongText className="mt-1" tone="muted" value={entryPath} copyable mono />
                     </div>
                     <Button
                       aria-label={text(`复制远程路径 ${entryPath}`, `Copy remote path ${entryPath}`)}

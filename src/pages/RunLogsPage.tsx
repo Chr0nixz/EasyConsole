@@ -2,6 +2,7 @@ import { ChevronDown, Download, Eye, RefreshCw, Search, Trash2 } from "lucide-re
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { EmptyState, ErrorState, LoadingState, SearchXIcon } from "../components/DataState";
+import { MobileLongText } from "../components/MobileLongText";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
 import { saveBlob } from "../lib/download";
 import {
@@ -274,7 +275,7 @@ export function RunLogsPage() {
                   </div>
                   <div>
                     <dt className="text-app-muted">{text("对象", "Target")}</dt>
-                    <dd className="mt-0.5 truncate text-app-text">{item.targetName ?? item.targetId ?? "-"}</dd>
+                    <dd className="mt-0.5"><MobileLongText value={String(item.targetName ?? item.targetId ?? "-")} /></dd>
                   </div>
                   <div>
                     <dt className="text-app-muted">{text("耗时", "Duration")}</dt>
@@ -282,10 +283,8 @@ export function RunLogsPage() {
                   </div>
                   <div className="col-span-2">
                     <dt className="text-app-muted">{text("摘要", "Summary")}</dt>
-                    <dd className="mt-0.5 text-app-text">
-                      {item.title}
-                      {item.error ? <span className="ml-2 text-app-danger">{item.error}</span> : null}
-                    </dd>
+                    <dd className="mt-0.5 text-app-text"><MobileLongText value={item.title} /></dd>
+                    {item.error ? <dd className="mt-1"><MobileLongText tone="danger" value={item.error} /></dd> : null}
                   </div>
                 </dl>
                 <div className="flex flex-wrap gap-1.5">

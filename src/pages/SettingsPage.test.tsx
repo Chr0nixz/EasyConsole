@@ -4,6 +4,7 @@ import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ToastProvider } from "../components/Toast";
+import { browserRuntime } from "../lib/runtime";
 import { RunLoggerContext } from "../lib/use-run-logger";
 
 const mocks = vi.hoisted(() => ({
@@ -106,6 +107,7 @@ function renderStandaloneSettings() {
 
 describe("SettingsPage", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     mocks.changePassword.mockReset();
     mocks.changePassword.mockResolvedValue(undefined);
     mocks.auth.clearSavedPassword.mockReset();
@@ -165,5 +167,31 @@ describe("SettingsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /^数据$|^Data$/ }));
     expect(screen.getByText(/自动刷新实例列表|Automatically refresh instance list/)).toBeInTheDocument();
     expect(screen.getByText(/刷新间隔|Refresh interval/)).toBeInTheDocument();
+  });
+
+  it("requests permission before retaining system notifications and falls back to in-app when denied", async () => {
+    const requestPermission = vi.spyOn(browserRuntime, "requestSystemNotificationPermission").mockResolvedValue("denied");
+    renderSettings();
+
+    fireEvent.click(screen.getByRole("button", { name: /^通知$|^Notifications$/ }));
+    const successNotificationMode = screen.getByRole("combobox", { name: /实例运行成功|Instance succeeded/ });
+    fireEvent.change(successNotificationMode, { target: { value: "system" } });
+
+    await waitFor(() => expect(requestPermission).toHaveBeenCalledOnce());
+    await waitFor(() => expect(successNotificationMode).toHaveValue("app"));
+    expect(await screen.findByText(/系统通知未开启|System notifications are off/)).toBeInTheDocument();
+  });
+
+  it("uses an explicit permission request before sending a test system notification", async () => {
+    const requestPermission = vi.spyOn(browserRuntime, "requestSystemNotificationPermission").mockResolvedValue("granted");
+    const notifySystem = vi.spyOn(browserRuntime, "notifySystem").mockResolvedValue("shown");
+    renderSettings();
+
+    fireEvent.click(screen.getByRole("button", { name: /^通知$|^Notifications$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /测试通知|Test notification/ }));
+
+    await waitFor(() => expect(requestPermission).toHaveBeenCalledOnce());
+    await waitFor(() => expect(notifySystem).toHaveBeenCalledOnce());
+    expect(await screen.findByText(/测试通知已发送|Test notification sent/)).toBeInTheDocument();
   });
 });

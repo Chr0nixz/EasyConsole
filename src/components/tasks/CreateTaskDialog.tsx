@@ -55,6 +55,7 @@ const DEFAULT_CPU = "4";
 const DEFAULT_GPU = "0";
 const DEFAULT_MEMORY = "16";
 const MAX_BATCH_COUNT = 50;
+const MOBILE_DEFAULTS_APPLIED_KEY = "easy-console.createTaskUiPrefs.mobileDefaultsApplied";
 
 type StoragePickerTarget = "storage" | "workDirectory" | "scriptPath";
 
@@ -363,11 +364,21 @@ export function CreateTaskDialog({
       setResolvingNames(false);
       resetTouched();
       void loadCreateTaskUiPrefs(browserRuntime.storage).then((prefs) => {
-        setUiPrefs(prefs);
-        if (!isEditMode && prefs.syncNameWithExperimentId && snapshot.releaseCondition === "3") {
-          const id = getScriptEnvValue(JSON.parse(snapshot.scriptEnvJson) as ScriptEnvVar[], EXPERIMENT_ID_ENV_KEY);
-          if (id) setName(id);
-        }
+        void browserRuntime.storage.get(MOBILE_DEFAULTS_APPLIED_KEY).then((applied) => {
+          const shouldApplyMobileDefaults = browserRuntime.isMobile && !isEditMode && applied !== "1";
+          const nextPrefs = shouldApplyMobileDefaults
+            ? {
+                ...prefs,
+                sections: { ...prefs.sections, basic: true, resources: true, storage: false, release: false },
+              }
+            : prefs;
+          setUiPrefs(nextPrefs);
+          if (shouldApplyMobileDefaults) void browserRuntime.storage.set(MOBILE_DEFAULTS_APPLIED_KEY, "1");
+          if (!isEditMode && nextPrefs.syncNameWithExperimentId && snapshot.releaseCondition === "3") {
+            const id = getScriptEnvValue(JSON.parse(snapshot.scriptEnvJson) as ScriptEnvVar[], EXPERIMENT_ID_ENV_KEY);
+            if (id) setName(id);
+          }
+        });
       });
     } else {
       setInitialSnapshot(null);
@@ -506,52 +517,61 @@ export function CreateTaskDialog({
     if (syncActive && !experimentId) {
       openSectionsForErrors({ name: "required", scriptEnv: "required" });
       setFormError(text("请填写 EXPERIMENT_ID（名称将与其一致）", "Enter EXPERIMENT_ID (the name follows it)"));
+      window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
     const taskName = syncActive ? experimentId : name.trim();
     if (!taskName) {
       openSectionsForErrors({ name: "required" });
       setFormError(text("任务名称不能为空", "Task name is required"));
+      window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
     if (!imageId) {
       openSectionsForErrors({ image: "required" });
       setFormError(text("请选择镜像", "Select an image"));
+      window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
     const priceValue = parsePositivePrice(price);
     if (priceValue === null) {
       openSectionsForErrors({ price: "required" });
       setFormError(text("价格必须大于 0", "Price must be greater than 0"));
+      window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
     const cpuValue = parsePositiveNumber(cpu);
     if (cpuValue === null) {
       openSectionsForErrors({ cpu: "required" });
       setFormError(text("CPU 必须大于 0", "CPU must be greater than 0"));
+      window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
     const gpuValue = parseNonNegativeInteger(gpu);
     if (gpuValue === null) {
       openSectionsForErrors({ gpu: "required" });
       setFormError(text("GPU 必须是非负整数", "GPU must be a non-negative integer"));
+      window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
     const memoryValue = parsePositiveInteger(memory);
     if (memoryValue === null) {
       openSectionsForErrors({ memory: "required" });
       setFormError(text("内存必须是正整数", "Memory must be a positive integer"));
+      window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
     const releaceConditions = Number(releaseCondition);
     if (releaceConditions === 2 && !releaseTime) {
       openSectionsForErrors({ releaseTime: "required" });
       setFormError(text("请选择释放时间", "Select a release time"));
+      window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
     if (releaceConditions === 3 && (!workDirectory.trim() || !scriptPath.trim())) {
       openSectionsForErrors({ workDirectory: "required", scriptPath: "required" });
       setFormError(text("请填写工作目录和脚本路径", "Enter the working directory and script path"));
+      window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
     if (releaceConditions === 3) {
@@ -559,6 +579,7 @@ export function CreateTaskDialog({
       if (envError) {
         openSectionsForErrors({ scriptEnv: "invalid" });
         setFormError(text(envError.messageZh, envError.messageEn));
+        window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
         return;
       }
     }
@@ -644,9 +665,10 @@ export function CreateTaskDialog({
       closeOnOverlayClick={false}
       onOverlayClick={requestClose}
       width="max-w-4xl"
+      mobileMode="fullscreen"
     >
-      <form className="p-4" noValidate onSubmit={submit}>
-        <div className="space-y-5">
+      <form className="flex h-full min-h-0 flex-col overflow-hidden" noValidate onSubmit={submit}>
+        <div className="app-mobile-form-body flex-1 space-y-5 overflow-y-auto px-4 py-4">
           <FormSection
             title={text("基础", "Basic")}
             collapsible
@@ -659,6 +681,7 @@ export function CreateTaskDialog({
                 <span className="mb-1 block text-app-muted">{text("任务名称", "Task name")}</span>
                 <Input
                   className={cn("w-full", touchedFields.has("name") && fieldErrors.name && "border-app-danger")}
+                  aria-invalid={Boolean(touchedFields.has("name") && fieldErrors.name)}
                   value={syncNameWithExperimentId && releaseCondition === "3" ? experimentIdValue : name}
                   onChange={(event) => setName(event.target.value)}
                   onBlur={() => markTouched("name")}
@@ -679,6 +702,7 @@ export function CreateTaskDialog({
                   <span className="mb-1 block text-app-muted">{text("创建数量", "Quantity")}</span>
                   <Input
                     className={cn("w-full", touchedFields.has("batchCount") && fieldErrors.batchCount && "border-app-danger")}
+                    aria-invalid={Boolean(touchedFields.has("batchCount") && fieldErrors.batchCount)}
                     type="number"
                     min="1"
                     max={MAX_BATCH_COUNT}
@@ -694,7 +718,7 @@ export function CreateTaskDialog({
             </div>
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("镜像", "Image")}</span>
-              <Select className={cn("w-full", touchedFields.has("image") && fieldErrors.image && "border-app-danger")} value={imageId} onChange={(event) => setImageId(event.target.value)} onBlur={() => markTouched("image")}>
+              <Select aria-invalid={Boolean(touchedFields.has("image") && fieldErrors.image)} className={cn("w-full", touchedFields.has("image") && fieldErrors.image && "border-app-danger")} value={imageId} onChange={(event) => setImageId(event.target.value)} onBlur={() => markTouched("image")}>
                 <option value="">{text("请选择镜像", "Select an image")}</option>
                 {imageId && !hasSelectedImageOption ? <option value={imageId}>{text(`原实例镜像 #${imageId}`, `Original instance image #${imageId}`)}</option> : null}
                 {imageOptions.map((image) => (
@@ -718,17 +742,17 @@ export function CreateTaskDialog({
             <div className="grid gap-4 md:grid-cols-3">
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">CPU</span>
-                <Input className={cn("w-full", touchedFields.has("cpu") && fieldErrors.cpu && "border-app-danger")} type="number" min="0.1" step="0.1" value={cpu} onChange={(event) => setCpu(event.target.value)} onBlur={() => markTouched("cpu")} required />
+                <Input aria-invalid={Boolean(touchedFields.has("cpu") && fieldErrors.cpu)} className={cn("w-full", touchedFields.has("cpu") && fieldErrors.cpu && "border-app-danger")} type="number" min="0.1" step="0.1" value={cpu} onChange={(event) => setCpu(event.target.value)} onBlur={() => markTouched("cpu")} required />
                 <FieldError message={touchedFields.has("cpu") ? fieldErrors.cpu : undefined} />
               </label>
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">GPU</span>
-                <Input className={cn("w-full", touchedFields.has("gpu") && fieldErrors.gpu && "border-app-danger")} type="number" min="0" step="1" value={gpu} onChange={(event) => handleGpuChange(event.target.value)} onBlur={() => markTouched("gpu")} required />
+                <Input aria-invalid={Boolean(touchedFields.has("gpu") && fieldErrors.gpu)} className={cn("w-full", touchedFields.has("gpu") && fieldErrors.gpu && "border-app-danger")} type="number" min="0" step="1" value={gpu} onChange={(event) => handleGpuChange(event.target.value)} onBlur={() => markTouched("gpu")} required />
                 <FieldError message={touchedFields.has("gpu") ? fieldErrors.gpu : undefined} />
               </label>
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("内存 (GiB)", "Memory (GiB)")}</span>
-                <Input className={cn("w-full", touchedFields.has("memory") && fieldErrors.memory && "border-app-danger")} type="number" min="1" step="1" value={memory} onChange={(event) => setMemory(event.target.value)} onBlur={() => markTouched("memory")} required />
+                <Input aria-invalid={Boolean(touchedFields.has("memory") && fieldErrors.memory)} className={cn("w-full", touchedFields.has("memory") && fieldErrors.memory && "border-app-danger")} type="number" min="1" step="1" value={memory} onChange={(event) => setMemory(event.target.value)} onBlur={() => markTouched("memory")} required />
                 <FieldError message={touchedFields.has("memory") ? fieldErrors.memory : undefined} />
               </label>
             </div>
@@ -783,7 +807,7 @@ export function CreateTaskDialog({
             {releaseCondition === "2" ? (
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("释放时间", "Release time")}</span>
-                <Input className={cn("w-full", touchedFields.has("releaseTime") && fieldErrors.releaseTime && "border-app-danger")} type="datetime-local" value={releaseTime} onChange={(event) => setReleaseTime(event.target.value)} onBlur={() => markTouched("releaseTime")} required />
+                <Input aria-invalid={Boolean(touchedFields.has("releaseTime") && fieldErrors.releaseTime)} className={cn("w-full", touchedFields.has("releaseTime") && fieldErrors.releaseTime && "border-app-danger")} type="datetime-local" value={releaseTime} onChange={(event) => setReleaseTime(event.target.value)} onBlur={() => markTouched("releaseTime")} required />
                 <FieldError message={touchedFields.has("releaseTime") ? fieldErrors.releaseTime : undefined} />
               </label>
             ) : null}
@@ -792,7 +816,7 @@ export function CreateTaskDialog({
                 <div className="block text-sm">
                   <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
                   <div className="flex gap-2">
-                    <Input className={cn("w-full font-mono text-xs", touchedFields.has("workDirectory") && fieldErrors.workDirectory && "border-app-danger")} value={workDirectory} onChange={(event) => setWorkDirectory(event.target.value)} onBlur={() => markTouched("workDirectory")} required />
+                    <Input aria-invalid={Boolean(touchedFields.has("workDirectory") && fieldErrors.workDirectory)} className={cn("w-full font-mono text-xs", touchedFields.has("workDirectory") && fieldErrors.workDirectory && "border-app-danger")} value={workDirectory} onChange={(event) => setWorkDirectory(event.target.value)} onBlur={() => markTouched("workDirectory")} required />
                     <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("workDirectory")}>
                       <FolderOpen className="h-4 w-4" />
                       {text("选择", "Select")}
@@ -803,7 +827,7 @@ export function CreateTaskDialog({
                 <div className="block text-sm">
                   <span className="mb-1 block text-app-muted">{text("脚本路径", "Script path")}</span>
                   <div className="flex gap-2">
-                    <Input className={cn("w-full font-mono text-xs", touchedFields.has("scriptPath") && fieldErrors.scriptPath && "border-app-danger")} value={scriptPath} onChange={(event) => setScriptPath(event.target.value)} onBlur={() => markTouched("scriptPath")} required />
+                    <Input aria-invalid={Boolean(touchedFields.has("scriptPath") && fieldErrors.scriptPath)} className={cn("w-full font-mono text-xs", touchedFields.has("scriptPath") && fieldErrors.scriptPath && "border-app-danger")} value={scriptPath} onChange={(event) => setScriptPath(event.target.value)} onBlur={() => markTouched("scriptPath")} required />
                     <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("scriptPath")}>
                       <FolderOpen className="h-4 w-4" />
                       {text("选择", "Select")}
@@ -844,22 +868,22 @@ export function CreateTaskDialog({
 
           {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
           {mutation.isError ? <ErrorState error={mutation.error} /> : null}
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={requestClose}>
-              {text("取消", "Cancel")}
-            </Button>
-            <Button disabled={mutation.isPending || resolvingNames}>
-              {mutation.isPending || resolvingNames
-                ? isEditMode
-                  ? text("保存中", "Saving")
-                  : resolvingNames
-                    ? text("检查名称中", "Checking names")
-                    : text("正在创建", "Creating")
-                : isEditMode
-                  ? text("保存", "Save")
-                  : text("创建", "Create")}
-            </Button>
-          </div>
+        </div>
+        <div className="app-mobile-form-actions flex shrink-0 justify-end gap-2">
+          <Button type="button" variant="secondary" onClick={requestClose}>
+            {text("取消", "Cancel")}
+          </Button>
+          <Button disabled={mutation.isPending || resolvingNames}>
+            {mutation.isPending || resolvingNames
+              ? isEditMode
+                ? text("保存中", "Saving")
+                : resolvingNames
+                  ? text("检查名称中", "Checking names")
+                  : text("正在创建", "Creating")
+              : isEditMode
+                ? text("保存", "Save")
+                : text("创建", "Create")}
+          </Button>
         </div>
       </form>
       <RemoteStoragePicker

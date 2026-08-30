@@ -27,6 +27,7 @@ import {
   writeStoredShellNavWidth,
 } from "../lib/shell-nav-width";
 import { cn } from "../lib/utils";
+import { useMobileBackLayer } from "../lib/use-mobile-back-stack";
 
 const navItems = [
   { to: "/dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard, shortcut: "g d" },
@@ -39,8 +40,8 @@ const navItems = [
   { to: "/settings", labelKey: "nav.settings", icon: Settings, shortcut: "g e" },
 ] as const;
 
-const primaryMobileNav = navItems.slice(0, 4);
-const secondaryMobileNav = navItems.slice(4);
+const primaryMobileNav = navItems.slice(0, 3);
+const secondaryMobileNav = navItems.slice(3);
 
 const titles: Record<string, TranslationKey> = {
   "/dashboard": "title.dashboard",
@@ -101,6 +102,10 @@ export function AppShell() {
   const statusButtonRef = useRef<HTMLButtonElement>(null);
   const statusPopoverPreviousFocusRef = useRef<HTMLElement | null>(null);
   const userName = auth.user?.username || auth.user?.name || t("shell.loggedIn");
+  useMobileBackLayer(moreMenuOpen, () => setMoreMenuOpen(false));
+  useMobileBackLayer(statusPopoverOpen, () => setStatusPopoverOpen(false));
+  useMobileBackLayer(downloadQueueOpen, () => setDownloadQueueOpen(false));
+  useMobileBackLayer(commitQueueOpen, () => setCommitQueueOpen(false));
   const [navWidth, setNavWidth] = useState(() => readStoredShellNavWidth());
   const navResizeSessionRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
   function finishNavResize() {
@@ -434,7 +439,7 @@ export function AppShell() {
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       {downloadQueueOpen ? (
-        <div className="fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="region" aria-label={text("下载队列", "Download queue")}>
+        <div className="app-mobile-queue-panel fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="region" aria-label={text("下载队列", "Download queue")}>
           <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
             <div className="min-w-0">
               <div className="text-sm font-semibold text-app-text">{text("下载队列", "Download queue")}</div>
@@ -512,7 +517,7 @@ export function AppShell() {
         </div>
       ) : null}
       {commitQueueOpen ? (
-        <div className="fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="region" aria-label={text("Commit 队列", "Commit queue")}>
+        <div className="app-mobile-queue-panel fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="region" aria-label={text("Commit 队列", "Commit queue")}>
           <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
             <div className="min-w-0">
               <div className="text-sm font-semibold text-app-text">{text("Commit 队列", "Commit queue")}</div>
@@ -826,9 +831,11 @@ export function AppShell() {
             >
               <Search className="h-4 w-4" />
             </Button>
-            <LanguageSwitch />
-            <span className="hidden max-w-32 truncate text-sm text-app-muted sm:inline md:max-w-48">{userName}</span>
-            <Button className="shrink-0" variant="secondary" onClick={onLogoutClick}>
+            <div className="hidden items-center gap-3 sm:flex">
+              <LanguageSwitch />
+              <span className="hidden max-w-32 truncate text-sm text-app-muted sm:inline md:max-w-48">{userName}</span>
+            </div>
+            <Button className="hidden shrink-0 sm:inline-flex" variant="secondary" onClick={onLogoutClick}>
               <LogOut className="h-4 w-4" />
               {t("shell.logout")}
             </Button>
@@ -858,13 +865,13 @@ export function AppShell() {
       {moreMenuOpen ? (
         <div
           ref={moreMenuRef}
-          className="fixed inset-x-0 z-50 border-t border-app-border bg-app-surface shadow-popover md:hidden"
+          className="app-mobile-action-sheet fixed inset-x-0 z-50 border-t border-app-border bg-app-surface shadow-popover md:hidden"
           role="dialog"
           aria-modal="true"
           aria-label={text("更多页面", "More pages")}
           style={{ bottom: "calc(3.5rem + env(safe-area-inset-bottom, 0px))" }}
         >
-          <div className="grid grid-cols-4 gap-0">
+          <div className="grid grid-cols-3 gap-0">
             {secondaryMobileNav.map((item) => (
               <NavLink
                 key={item.to}
@@ -881,6 +888,13 @@ export function AppShell() {
                 <span>{t(item.labelKey)}</span>
               </NavLink>
             ))}
+          </div>
+          <div className="flex items-center justify-between gap-3 border-t border-app-border px-3 py-2" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+            <LanguageSwitch compact />
+            <Button className="h-9" type="button" variant="secondary" onClick={onLogoutClick}>
+              <LogOut className="h-4 w-4" />
+              {t("shell.logout")}
+            </Button>
           </div>
         </div>
       ) : null}

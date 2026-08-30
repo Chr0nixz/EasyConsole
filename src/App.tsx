@@ -21,6 +21,7 @@ import { AppUpdateProvider } from "./lib/app-update-context";
 import { CommitQueueProvider } from "./lib/commit-queue-context";
 import { DownloadQueueProvider } from "./lib/download-queue-context";
 import { browserRuntime } from "./lib/runtime";
+import { MobileBackStackProvider } from "./lib/MobileBackStackProvider";
 
 // Maps an `easyconsole://` deep-link URL to an in-app route. Returns null when
 // the URL does not look like a navigable deep link so callers can ignore it.
@@ -105,19 +106,21 @@ function AppRoot() {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <ToastProvider>
-        <DownloadQueueProvider>
-          <CommitQueueProvider>
-            <AppUpdateProvider>
-              <ErrorBoundary showHomeInFallback={false}>
-                <Suspense fallback={<LoadingState />}>
-                  <DeepLinkHandler />
-                  <Outlet />
-                  <AppUpdateDialog />
-                </Suspense>
-              </ErrorBoundary>
-            </AppUpdateProvider>
-          </CommitQueueProvider>
-        </DownloadQueueProvider>
+        <MobileBackStackProvider>
+          <DownloadQueueProvider>
+            <CommitQueueProvider>
+              <AppUpdateProvider>
+                <ErrorBoundary showHomeInFallback={false}>
+                  <Suspense fallback={<LoadingState />}>
+                    <DeepLinkHandler />
+                    <Outlet />
+                    <AppUpdateDialog />
+                  </Suspense>
+                </ErrorBoundary>
+              </AppUpdateProvider>
+            </CommitQueueProvider>
+          </DownloadQueueProvider>
+        </MobileBackStackProvider>
       </ToastProvider>
     </div>
   );

@@ -31,7 +31,7 @@ function truncateLogForDisplay(value: string, maxChars: number) {
 export function TaskLogPanel({ task }: { task: Task }) {
   const { text } = useI18n();
   const toast = useToast();
-  const [wrapLines, setWrapLines] = useState(false);
+  const [wrapLines, setWrapLines] = useState(() => browserRuntime.isMobile);
   const [followBottom, setFollowBottom] = useState(true);
   const [filter, setFilter] = useState("");
   const [debouncedFilter, setDebouncedFilter] = useState("");

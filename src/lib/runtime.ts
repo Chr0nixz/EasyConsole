@@ -361,7 +361,17 @@ async function invokeTauriCommand<T = void>(command: string, args: Record<string
   return invoke<T>(command, args);
 }
 
-function getSystemNotificationPermission(): RuntimeSystemNotificationPermission {
+async function getSystemNotificationPermission(): Promise<RuntimeSystemNotificationPermission> {
+  if (isTauri()) {
+    try {
+      const { isPermissionGranted } = await import("@tauri-apps/plugin-notification");
+      return (await isPermissionGranted()) ? "granted" : "default";
+    } catch (error) {
+      console.warn("Tauri notification permission lookup failed.", error);
+      return "unsupported";
+    }
+  }
+
   if (!("Notification" in window)) return "unsupported";
   return Notification.permission;
 }
@@ -379,7 +389,7 @@ async function requestSystemNotificationPermission(): Promise<RuntimeSystemNotif
     }
   }
 
-  const permission = getSystemNotificationPermission();
+  const permission = await getSystemNotificationPermission();
   if (permission !== "default") return permission;
 
   try {
@@ -390,7 +400,10 @@ async function requestSystemNotificationPermission(): Promise<RuntimeSystemNotif
 }
 
 async function notifySystem(notification: RuntimeSystemNotification): Promise<RuntimeSystemNotificationResult> {
-  const permission = await requestSystemNotificationPermission();
+  // System notification permission must only be requested from an explicit
+  // Settings action. Background task polling is allowed to inspect it, never
+  // to surface a browser or operating-system prompt.
+  const permission = await getSystemNotificationPermission();
   if (permission === "unsupported") return "unsupported";
   if (permission !== "granted") return "permission-denied";
 
@@ -521,6 +534,7 @@ export const browserRuntime: RuntimeTransport = {
   async readClipboardText() {
     return window.navigator.clipboard.readText();
   },
+  getSystemNotificationPermission,
   requestSystemNotificationPermission,
   notifySystem,
   openExternal(url) {

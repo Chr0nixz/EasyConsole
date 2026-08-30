@@ -1,3 +1,15 @@
+# EasyConsole v0.4.21
+
+Mobile portrait usability and in-app SSH workflow reliability.
+
+## Changes
+
+- **Mobile forms and overlays**: Fullscreen dialogs, drawers, and toasts now follow the visual viewport, so software keyboards and safe areas do not hide actions. Task creation, remote storage selection, and task-detail views reflow for 320–414px portrait screens.
+- **Mobile navigation and accessibility**: Browser back closes compact layers before leaving a route. Long values can expand and paths can be copied; SFTP file rows, SSH tabs, and terminal tools have touch-sized, keyboard-accessible controls.
+- **SSH and notifications**: SSH sessions keep the active tab through parent re-renders; SFTP and port forwarding open as full-width mobile overlays. System-notification permission is requested only from Settings, with in-app fallback when unavailable.
+
+---
+
 # EasyConsole v0.4.20
 
 Improve task operations and desktop release polish.

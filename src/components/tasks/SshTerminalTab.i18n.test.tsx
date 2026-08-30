@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { I18nProvider, useI18n } from "../../lib/i18n";
@@ -109,6 +109,7 @@ function Harness() {
 describe("SshTerminalTab language switching", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    Object.defineProperty(browserRuntime, "supportsInAppSsh", { get: () => false, configurable: true });
   });
 
   it("keeps the live session open when the UI language changes", async () => {
@@ -139,5 +140,44 @@ describe("SshTerminalTab language switching", () => {
 
     expect(closeSshSession).not.toHaveBeenCalled();
     expect(openSshSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders SFTP and port forwarding as mobile content overlays", async () => {
+    Object.defineProperty(browserRuntime, "supportsInAppSsh", { value: true, configurable: true });
+    vi.spyOn(browserRuntime, "openSshSession").mockResolvedValue("session-1");
+    vi.spyOn(browserRuntime, "closeSshSession").mockResolvedValue(undefined);
+    vi.spyOn(browserRuntime, "onSshSessionEvent").mockResolvedValue(() => {});
+    vi.spyOn(browserRuntime, "onPortForwardStatus").mockResolvedValue(() => {});
+    vi.spyOn(browserRuntime, "resizeSshSession").mockResolvedValue(undefined);
+    vi.spyOn(browserRuntime, "onSftpProgress").mockResolvedValue(() => {});
+    vi.spyOn(browserRuntime, "sftpList").mockResolvedValue([]);
+
+    render(
+      <ToastContext.Provider value={toast}>
+        <I18nProvider>
+          <SshTerminalTab request={request} tabId="tab-overlay" active onStatusChange={() => {}} />
+        </I18nProvider>
+      </ToastContext.Provider>,
+    );
+
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /文件管理器|File manager/ }).some((button) => button.classList.contains("md:hidden"))).toBe(true));
+    const sftpButton = screen.getAllByRole("button", { name: /文件管理器|File manager/ }).find((button) => button.classList.contains("md:hidden"));
+    expect(sftpButton).toBeDefined();
+    if (!sftpButton) throw new Error("Missing mobile SFTP trigger");
+    fireEvent.click(sftpButton);
+    const sftpPanel = await screen.findByRole("region", { name: /文件管理器|File manager/ });
+    expect(sftpButton).toHaveAttribute("aria-expanded", "true");
+    expect(sftpButton).toHaveAttribute("aria-controls", "ssh-sftp-panel-tab-overlay");
+    expect(sftpPanel).toHaveClass("absolute", "inset-0", "w-full", "md:static", "md:w-80");
+
+    fireEvent.click(within(sftpPanel).getByRole("button", { name: /关闭|Close/ }));
+    expect(sftpButton).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: /更多终端工具|More terminal tools/ }));
+    const portButton = await screen.findByRole("menuitem", { name: /端口转发|Port forwards/ });
+    expect(portButton).toHaveAttribute("aria-controls", "ssh-port-forward-panel-tab-overlay");
+    fireEvent.click(portButton);
+    const portPanel = await screen.findByRole("region", { name: /端口转发|Port forwards/ });
+    expect(portPanel).toHaveClass("absolute", "inset-0", "w-full", "md:static", "md:w-80");
   });
 });

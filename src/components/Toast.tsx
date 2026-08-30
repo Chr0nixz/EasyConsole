@@ -1,8 +1,9 @@
 import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type ReactNode } from "react";
 
 import { ToastContext, type ToastInput, type ToastItem, type ToastKind, type ToastContextValue } from "../lib/use-toast";
 import { useI18n } from "../lib/i18n";
+import { useVisualViewport } from "../lib/use-visual-viewport";
 import { cn } from "../lib/utils";
 
 function createToastId() {
@@ -29,6 +30,7 @@ type ToastTimer = {
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const { t } = useI18n();
+  const viewport = useVisualViewport();
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const timersRef = useRef(new Map<string, ToastTimer>());
 
@@ -98,7 +100,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="app-toast-container fixed bottom-4 right-4 z-40 flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2" style={{ bottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }}>
+      <div
+        className="app-toast-container fixed bottom-4 right-4 z-40 flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2"
+        style={{ "--app-visual-viewport-bottom-inset": `${viewport.bottomInset}px` } as CSSProperties}
+      >
         {toasts.map((toast) => (
           <div
             key={toast.id}

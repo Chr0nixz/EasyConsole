@@ -14,6 +14,9 @@ import {
 import { createPortal } from "react-dom";
 
 import { useI18n } from "../lib/i18n";
+import { useCompactLayout } from "../lib/use-compact-layout";
+import { useMobileBackLayer } from "../lib/use-mobile-back-stack";
+import { useVisualViewport } from "../lib/use-visual-viewport";
 import { cn } from "../lib/utils";
 
 const FOCUSABLE_SELECTOR = [
@@ -156,6 +159,7 @@ export function Dialog({
   width = "max-w-3xl",
   closeOnOverlayClick = true,
   onOverlayClick,
+  mobileMode = "default",
 }: {
   open: boolean;
   title: string;
@@ -165,9 +169,12 @@ export function Dialog({
   closeOnOverlayClick?: boolean;
   /** When set, overlay clicks call this instead of `onClose` (e.g. confirm discard). */
   onOverlayClick?: () => void;
+  mobileMode?: "default" | "bottom-sheet" | "fullscreen";
 }) {
   const titleId = useId();
   const { t } = useI18n();
+  const compactLayout = useCompactLayout();
+  const viewport = useVisualViewport(open && compactLayout);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   // Keep latest onClose without re-running focus/lock setup (unstable callbacks stole input focus).
@@ -230,6 +237,8 @@ export function Dialog({
     };
   }, [open]);
 
+  useMobileBackLayer(open, onClose);
+
   if (!open) return null;
 
   const handleOverlayClick = (event: MouseEvent<HTMLDivElement>) => {
@@ -244,16 +253,32 @@ export function Dialog({
 
   return createPortal(
     <div
-      className="app-modal-overlay fixed inset-0 z-50 flex items-start justify-center px-3 py-4 sm:px-4 sm:py-10"
+      className={cn(
+        "app-modal-overlay fixed inset-0 z-50 flex items-start justify-center px-3 py-4 sm:px-4 sm:py-10",
+        mobileMode === "bottom-sheet" && "items-end px-0 py-0 sm:items-start sm:px-4 sm:py-10",
+      )}
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
       onMouseDown={handleOverlayClick}
+      style={compactLayout ? { top: viewport.offsetTop, bottom: "auto", height: viewport.height } : undefined}
     >
       <div
         ref={dialogRef}
         tabIndex={-1}
-        className={cn("app-modal-panel max-h-[calc(100vh-2rem)] w-full overflow-hidden rounded-lg bg-app-surface sm:max-h-[calc(100vh-5rem)]", width)}
+        className={cn(
+          "app-modal-panel max-h-[calc(100vh-2rem)] w-full overflow-hidden rounded-lg bg-app-surface sm:max-h-[calc(100vh-5rem)]",
+          mobileMode === "bottom-sheet" && "max-h-[90dvh] rounded-b-none rounded-t-lg sm:max-h-[calc(100vh-5rem)] sm:rounded-lg",
+          mobileMode === "fullscreen" && "flex h-[100dvh] max-h-[100dvh] flex-col rounded-none sm:block sm:h-auto sm:max-h-[calc(100vh-5rem)] sm:rounded-lg",
+          width,
+        )}
+        style={
+          compactLayout && mobileMode === "fullscreen"
+            ? { height: viewport.height, maxHeight: viewport.height }
+            : compactLayout && mobileMode === "bottom-sheet"
+              ? { maxHeight: Math.floor(viewport.height * 0.9) }
+              : undefined
+        }
       >
         <div className="flex h-12 items-center justify-between border-b border-app-border px-4">
           <h2 id={titleId} className="text-sm font-semibold text-app-text">{title}</h2>
@@ -267,7 +292,14 @@ export function Dialog({
             <span className="sr-only">{t("common.close")}</span>
           </button>
         </div>
-        <div className="max-h-[calc(100vh-5rem)] overflow-auto sm:max-h-[calc(100vh-8rem)]">{children}</div>
+        <div
+          className={cn(
+            "max-h-[calc(100vh-5rem)] overflow-auto sm:max-h-[calc(100vh-8rem)]",
+            mobileMode === "fullscreen" && "min-h-0 flex flex-1 flex-col !h-auto max-h-none sm:block sm:flex-none sm:!h-auto sm:max-h-[calc(100vh-8rem)]",
+          )}
+        >
+          {children}
+        </div>
       </div>
     </div>,
     document.body,
@@ -281,6 +313,7 @@ export function Drawer({
   onClose,
   width = "max-w-xl",
   closeOnOverlayClick = true,
+  mobileMode = "bottom-sheet",
 }: {
   open: boolean;
   title: string;
@@ -288,9 +321,12 @@ export function Drawer({
   onClose: () => void;
   width?: string;
   closeOnOverlayClick?: boolean;
+  mobileMode?: "bottom-sheet" | "fullscreen" | "default";
 }) {
   const titleId = useId();
   const { t } = useI18n();
+  const compactLayout = useCompactLayout();
+  const viewport = useVisualViewport(open && compactLayout);
   const drawerRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
@@ -352,6 +388,8 @@ export function Drawer({
     };
   }, [open]);
 
+  useMobileBackLayer(open, onClose);
+
   if (!open) return null;
 
   const handleOverlayClick = (event: MouseEvent<HTMLDivElement>) => {
@@ -361,19 +399,29 @@ export function Drawer({
 
   return createPortal(
     <div
-      className="app-drawer-overlay fixed inset-0 z-50 flex justify-end"
+      className={cn("app-drawer-overlay fixed inset-0 z-50 flex justify-end", mobileMode === "bottom-sheet" && "items-end")}
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
       onMouseDown={handleOverlayClick}
+      style={compactLayout ? { top: viewport.offsetTop, bottom: "auto", height: viewport.height } : undefined}
     >
       <div
         ref={drawerRef}
         tabIndex={-1}
         className={cn(
           "app-drawer-panel flex h-full w-full flex-col overflow-hidden border-l border-app-border bg-app-surface shadow-shell",
+          mobileMode === "bottom-sheet" && "h-auto max-h-[90dvh] rounded-t-lg border-l-0 border-t sm:h-full sm:max-h-none sm:rounded-none sm:border-l sm:border-t-0",
+          mobileMode === "fullscreen" && "h-[100dvh] rounded-none border-0",
           width,
         )}
+        style={
+          compactLayout && mobileMode === "fullscreen"
+            ? { height: viewport.height }
+            : compactLayout && mobileMode === "bottom-sheet"
+              ? { maxHeight: Math.floor(viewport.height * 0.9) }
+              : undefined
+        }
       >
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-app-border px-4">
           <h2 id={titleId} className="truncate text-sm font-semibold text-app-text">{title}</h2>
@@ -387,7 +435,7 @@ export function Drawer({
             <span className="sr-only">{t("common.close")}</span>
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto">{children}</div>
+        <div className={cn("min-h-0 flex-1 overflow-auto", mobileMode === "fullscreen" && "pb-[env(safe-area-inset-bottom)]")}>{children}</div>
       </div>
     </div>,
     document.body,

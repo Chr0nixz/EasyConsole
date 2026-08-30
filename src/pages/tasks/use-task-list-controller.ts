@@ -32,7 +32,9 @@ export function useTaskListController({
   const [searchParams, setSearchParams] = useSearchParams();
   const queryState = useMemo(() => parseTaskListQuery(searchParams), [searchParams]);
   const [keywordInput, setKeywordInput] = useState(queryState.keyword);
-  const [activeRowIndex, setActiveRowIndex] = useState(0);
+  // Keep the list visually neutral until the user starts keyboard navigation.
+  // A zero-based default makes the first row look active even when it is not running.
+  const [activeRowIndex, setActiveRowIndex] = useState(-1);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
 
   const updateTaskQuery = useCallback(
@@ -90,7 +92,7 @@ export function useTaskListController({
 
   useEffect(() => {
     setActiveRowIndex((index) => {
-      if (filteredTasks.length === 0) return 0;
+      if (filteredTasks.length === 0) return -1;
       return Math.min(index, filteredTasks.length - 1);
     });
   }, [filteredTasks.length]);

@@ -69,6 +69,8 @@ import { useCompactLayout } from "../lib/use-compact-layout";
 import { useAuth } from "../lib/use-auth";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
+import { useMobileBackLayer } from "../lib/use-mobile-back-stack";
+import { cn } from "../lib/utils";
 import { useTaskListController } from "./tasks/use-task-list-controller";
 
 const columnHelper = createColumnHelper<Task>();
@@ -450,10 +452,12 @@ function MoreActionsMenuPanel({
   onTogglePin: (task: Task) => void;
 }) {
   const { text } = useI18n();
+  const compactLayout = useCompactLayout();
   const menuRef = useRef<HTMLDivElement>(null);
   const menuItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [menuPosition, setMenuPosition] = useState(position);
   const taskId = taskRowId(task);
+  useMobileBackLayer(compactLayout, () => onClose());
 
   const menuSections = useMemo(
     () =>
@@ -610,14 +614,24 @@ function MoreActionsMenuPanel({
 
   return createPortal(
     <div
-      id={menuId}
-      ref={menuRef}
-      className="fixed z-[100] max-h-[min(20rem,calc(100vh-1rem))] w-44 overflow-y-auto overscroll-contain rounded-md border border-app-border bg-app-surface p-1 shadow-popover"
-      role="menu"
-      aria-label={text(`实例操作 ${getTaskName(task)}`, `Instance actions for ${getTaskName(task)}`)}
-      style={{ left: menuPosition.left, top: menuPosition.top }}
-      onKeyDown={handleMenuKeyDown}
+      className={cn(compactLayout ? "fixed inset-0 z-[100] flex items-end bg-black/40" : "contents")}
+      onMouseDown={(event) => {
+        if (compactLayout && event.target === event.currentTarget) onClose();
+      }}
     >
+      <div
+        id={menuId}
+        ref={menuRef}
+        className={cn(
+          compactLayout
+            ? "app-mobile-action-sheet max-h-[80dvh] w-full overflow-y-auto overscroll-contain rounded-t-lg border border-b-0 border-app-border bg-app-surface p-2 shadow-popover"
+            : "fixed z-[100] max-h-[min(20rem,calc(100vh-1rem))] w-44 overflow-y-auto overscroll-contain rounded-md border border-app-border bg-app-surface p-1 shadow-popover",
+        )}
+        role="menu"
+        aria-label={text(`实例操作 ${getTaskName(task)}`, `Instance actions for ${getTaskName(task)}`)}
+        style={compactLayout ? { paddingBottom: "env(safe-area-inset-bottom, 0px)" } : { left: menuPosition.left, top: menuPosition.top }}
+        onKeyDown={handleMenuKeyDown}
+      >
       {menuSections.map((section, sectionIndex) => (
         <div key={section.id}>
           {sectionIndex > 0 ? <div className="my-1 border-t border-app-border" role="separator" /> : null}
@@ -648,6 +662,7 @@ function MoreActionsMenuPanel({
           })}
         </div>
       ))}
+      </div>
     </div>,
     document.body,
   );
@@ -1625,6 +1640,8 @@ export function TasksPage() {
     if (restoreFocus) window.setTimeout(() => viewTriggerRef.current?.focus(), 0);
   }, []);
 
+  useMobileBackLayer(viewMenuOpen, () => closeViewMenu());
+
   useEffect(() => {
     if (!viewMenuOpen) return undefined;
     const handlePointerDown = (event: PointerEvent) => {
@@ -1699,7 +1716,11 @@ export function TasksPage() {
             {viewMenuOpen ? (
               <div
                 id={viewMenuId}
-                className="absolute left-0 top-full z-30 mt-1 w-64 rounded-lg border border-app-border bg-app-surface p-2 shadow-popover"
+                className={cn(
+                  compactLayout
+                    ? "app-mobile-action-sheet fixed inset-x-0 bottom-0 z-50 w-full rounded-t-lg border border-b-0 border-app-border bg-app-surface p-3 shadow-popover"
+                    : "absolute left-0 top-full z-30 mt-1 w-64 rounded-lg border border-app-border bg-app-surface p-2 shadow-popover",
+                )}
               >
                 <div className="space-y-2 p-1">
                   <label className="block text-xs text-app-muted">
@@ -1764,7 +1785,7 @@ export function TasksPage() {
       </div>
 
       {selectedTasks.length > 0 ? (
-        <Panel className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
+        <Panel className="app-mobile-batch-bar flex flex-wrap items-center justify-between gap-3 px-3 py-2">
           <div className="min-w-0 space-y-0.5 text-sm text-app-muted">
             <div>
               {text("已选", "Selected")} <span className="font-medium text-app-text">{selectedTasks.length}</span> {text("个实例", "instances")}
@@ -1866,11 +1887,11 @@ export function TasksPage() {
                       <dt className="text-app-muted">{text("入口", "Endpoint")}</dt>
                       <dd className="mt-0.5 truncate font-mono text-app-text">{endpointText(task)}</dd>
                     </div>
-                    <div>
+                    <div className="hidden sm:block">
                       <dt className="text-app-muted">{text("用户", "User")}</dt>
                       <dd className="mt-0.5 truncate text-app-text">{ownerText(task)}</dd>
                     </div>
-                    <div>
+                    <div className="hidden sm:block">
                       <dt className="text-app-muted">{text("时长", "Duration")}</dt>
                       <dd className="mt-0.5 text-app-text">{formatSecondsDuration(task.use_time, locale)}</dd>
                     </div>
@@ -1887,7 +1908,7 @@ export function TasksPage() {
                         <>
                         <Button
                           aria-label={text(`查看 ${taskName} 的连接信息`, `View connection info for ${taskName}`)}
-                          className="h-9 px-2"
+                          className={cn("h-9 px-2", logAttention && "hidden sm:inline-flex")}
                           variant="ghost"
                           title={terminalLabel}
                           onClick={() => openTerminal(task)}
@@ -1896,7 +1917,7 @@ export function TasksPage() {
                           {terminalLabel}
                         </Button>
                         <Button
-                          className={["h-9 px-2", logAttention ? "text-app-danger" : ""].join(" ")}
+                          className={cn("h-9 px-2", logAttention ? "text-app-danger" : "hidden sm:inline-flex")}
                           title={text("日志", "Logs")}
                           variant="ghost"
                           onClick={() => setLogTask(task)}
@@ -1905,7 +1926,7 @@ export function TasksPage() {
                           {text("日志", "Logs")}
                         </Button>
                         <Button
-                          className="h-9 px-2"
+                          className="hidden h-9 px-2 sm:inline-flex"
                           title={text("复制实例", "Clone instance")}
                           variant="ghost"
                           onClick={() => openCloneTask(task)}
@@ -1940,9 +1961,8 @@ export function TasksPage() {
                           canEdit={getTaskEditableState() !== false}
                           isPinned={isTaskPinned(pinnedTaskIds, task)}
                           open={moreMenu?.taskId === taskRowId(task)}
-                          promoteClone
-                          promoteLog
-                          showSshInfo={false}
+                          promoteLog={logAttention}
+                          showSshInfo={logAttention}
                           task={task}
                           onClone={openCloneTask}
                           onCommit={confirmCommitTask}
@@ -1968,7 +1988,7 @@ export function TasksPage() {
           <TableRegion
             ref={tableScrollRef}
             label={text("任务实例表格", "Task instances table")}
-            aria-activedescendant={filteredTasks.length > 0 ? `task-row-${activeRowIndex}` : undefined}
+            aria-activedescendant={activeRowIndex >= 0 ? `task-row-${activeRowIndex}` : undefined}
           >
             <table className="w-max min-w-full table-auto border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">
@@ -2050,7 +2070,7 @@ export function TasksPage() {
         )}
       </Panel>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-app-muted">
+      <div className="app-task-pagination flex flex-wrap items-center justify-between gap-3 text-sm text-app-muted">
         <div>
           {hasKnownTotal
             ? text(`共 ${total} 个实例，第 ${queryState.page} / ${totalPages} 页`, `${total} instances, page ${queryState.page} / ${totalPages}`)

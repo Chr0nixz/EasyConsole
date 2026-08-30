@@ -4,7 +4,6 @@ import { useMatch } from "react-router-dom";
 
 import { instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
-import { i18nText } from "../lib/i18n-text";
 import { browserRuntime } from "../lib/runtime";
 import { getImportantTaskStatusNotification, getTaskNotificationId, type ImportantTaskStatusNotification } from "../lib/task-status-notifications";
 import {
@@ -21,7 +20,6 @@ export function TaskNotificationWatcher() {
   const toast = useToast();
   const initializedRef = useRef(false);
   const statusSnapshotRef = useRef<Map<string, TaskStatus | undefined>>(new Map());
-  const permissionWarningRef = useRef<"permission-denied" | "unsupported" | null>(null);
   const [hidden, setHidden] = useState(() => typeof document !== "undefined" && document.visibilityState === "hidden");
   const [pollInterval, setPollInterval] = useState(TASK_SNAPSHOT_POLL_INTERVAL);
 
@@ -60,27 +58,9 @@ export function TaskNotificationWatcher() {
     if (!auth.token) {
       initializedRef.current = false;
       statusSnapshotRef.current = new Map();
-      permissionWarningRef.current = null;
       return;
     }
-
-    if (!Object.values(getRuntimeSettings().notificationPreferences).includes("system")) return;
-
-    void browserRuntime.requestSystemNotificationPermission().then((permission) => {
-      if (permission !== "denied" && permission !== "unsupported") return;
-      if (permissionWarningRef.current === permission) return;
-
-      permissionWarningRef.current = permission === "denied" ? "permission-denied" : permission;
-      toast.info(
-        permission === "denied"
-          ? i18nText("系统通知未开启", "System notifications are disabled")
-          : i18nText("当前环境不支持系统通知", "System notifications are not supported in this environment"),
-        permission === "denied"
-          ? i18nText("实例成功或失败时将只显示应用内提示。", "In-app toasts will be shown for instance success or failure.")
-          : undefined,
-      );
-    });
-  }, [auth.token, toast]);
+  }, [auth.token]);
 
   useEffect(() => {
     const tasks = query.data?.items;
@@ -107,16 +87,7 @@ export function TaskNotificationWatcher() {
               tag: notification.tag,
             })
             .then((result) => {
-              if (result === "shown") return;
-              if (result === "permission-denied" || result === "unsupported") {
-                permissionWarningRef.current = result;
-              }
-              toast.info(
-                result === "permission-denied"
-                  ? i18nText("系统通知未开启", "System notifications are disabled")
-                  : i18nText("系统通知不可用", "System notifications are unavailable"),
-                i18nText("可在设置中改为应用内通知或关闭该事件通知。", "Switch to in-app notifications or disable this event in Settings."),
-              );
+              if (result !== "shown") showInAppNotification(notification);
             });
         }
       }
@@ -126,7 +97,7 @@ export function TaskNotificationWatcher() {
 
     initializedRef.current = true;
     statusSnapshotRef.current = nextSnapshot;
-  }, [query.data?.items, query.dataUpdatedAt, showInAppNotification, toast]);
+  }, [query.data?.items, query.dataUpdatedAt, showInAppNotification]);
 
   return null;
 }

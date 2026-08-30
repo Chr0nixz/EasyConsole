@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { FieldError, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
+import { MobileLongText } from "../components/MobileLongText";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
 import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
 import { ScriptEnvFields } from "../components/tasks/ScriptEnvFields";
@@ -847,9 +848,11 @@ export function TaskTemplatesPage() {
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
                     <div className="font-medium">{template.name}</div>
-                    <div className="mt-0.5 truncate text-xs text-app-muted">
-                      {template.description || text(`${template.taskNamePrefix}，每次 ${template.batchCount} 个`, `${template.taskNamePrefix}, ${template.batchCount} each time`)}
-                    </div>
+                    <MobileLongText
+                      className="mt-0.5 text-xs"
+                      tone="muted"
+                      value={template.description || text(`${template.taskNamePrefix}，每次 ${template.batchCount} 个`, `${template.taskNamePrefix}, ${template.batchCount} each time`)}
+                    />
                   </div>
                   <span className="inline-flex shrink-0 items-center rounded-md border border-app-border bg-app-panel px-2 py-0.5 text-xs font-medium text-app-text">
                     {text("运行中", "Running")}: {runningTasksQuery.isLoading ? "-" : (runningCountByTemplateId[template.id] ?? 0)}
@@ -880,8 +883,8 @@ export function TaskTemplatesPage() {
                   </div>
                   <div className="col-span-2">
                     <dt className="text-app-muted">{text("路径", "Paths")}</dt>
-                    <dd className="mt-0.5 truncate font-mono text-app-text">{template.storagePath}</dd>
-                    <dd className="mt-0.5 truncate font-mono text-app-muted">{template.mountPath}</dd>
+                    <dd className="mt-0.5"><MobileLongText value={template.storagePath} copyable mono /></dd>
+                    <dd className="mt-0.5"><MobileLongText tone="muted" value={template.mountPath} copyable mono /></dd>
                   </div>
                 </dl>
                 <div className="flex flex-wrap gap-1.5">

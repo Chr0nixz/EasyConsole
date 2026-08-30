@@ -3,13 +3,14 @@ import "@xterm/xterm/css/xterm.css";
 import type { FitAddon as FitAddonInstance } from "@xterm/addon-fit";
 import type { SearchAddon as SearchAddonInstance } from "@xterm/addon-search";
 import type { IDisposable, Terminal as XTermInstance } from "@xterm/xterm";
-import { ChevronDown, ChevronUp, Circle, FolderOpen, Network, RefreshCw, Search, Square, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Circle, FolderOpen, MoreHorizontal, Network, RefreshCw, Search, Square, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getRuntimeSettings, type SshTerminalTheme } from "../../lib/app-settings";
 import { browserRuntime } from "../../lib/runtime";
 import { saveBlob } from "../../lib/download";
 import { useI18n } from "../../lib/i18n";
+import { useMobileBackLayer } from "../../lib/use-mobile-back-stack";
 import {
   appendRecordingChunk,
   createRecordingBuffer,
@@ -96,6 +97,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
   const [showSftp, setShowSftp] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [showPortForward, setShowPortForward] = useState(false);
+  const [showToolMenu, setShowToolMenu] = useState(false);
   const [portForwardStatuses, setPortForwardStatuses] = useState<Record<string, PortForwardStatus>>({});
   const [hostKeyPrompt, setHostKeyPrompt] = useState<SshHostKeyPrompt | null>(null);
   const [hostKeyPending, setHostKeyPending] = useState(false);
@@ -110,6 +112,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
   const termRef = useRef<XTermInstance | null>(null);
   const searchAddonRef = useRef<SearchAddonInstance | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const toolMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   // Port forwarding rules come from runtime settings. Re-read on each render
   // so newly added rules in SettingsPage are reflected when the panel reopens.
@@ -532,11 +535,26 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
   const statusColorClass =
     statusKind === "connected" ? "text-app-success" : statusKind === "failed" ? "text-app-danger" : "text-app-terminalMuted";
 
+  const closeToolMenu = useCallback(() => {
+    setShowToolMenu(false);
+    window.setTimeout(() => toolMenuTriggerRef.current?.focus(), 0);
+  }, []);
+
+  useMobileBackLayer(showToolMenu, closeToolMenu);
+
   return (
-    <div className={cn("relative flex h-full flex-col", !active && "hidden")} data-tab-id={tabId}>
-      <div className="flex h-10 items-center justify-between border-b border-app-terminalBorder bg-app-terminalPanel px-3 text-xs text-app-terminalText">
-        <span className="truncate font-mono">{request.command}</span>
-        <div className="flex items-center gap-2">
+    <div
+      id={`ssh-terminal-panel-${tabId}`}
+      className={cn("relative flex h-full flex-col", !active && "hidden")}
+      data-tab-id={tabId}
+      role="tabpanel"
+      aria-labelledby={`ssh-tab-${tabId}`}
+      hidden={!active}
+    >
+      <div className="flex h-12 items-center justify-between gap-2 border-b border-app-terminalBorder bg-app-terminalPanel px-3 text-xs text-app-terminalText md:h-10">
+        <span className="min-w-0 flex-1 truncate font-mono">{request.command}</span>
+        <div className="flex shrink-0 items-center gap-1 md:gap-2">
+          <div className="hidden items-center gap-2 md:flex">
           <button
             className={cn(
               "flex h-6 w-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent",
@@ -570,6 +588,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
               type="button"
               title={t("sftp.title")}
               aria-label={t("sftp.title")}
+              aria-expanded={showSftp}
+              aria-controls={`ssh-sftp-panel-${tabId}`}
               onClick={() => setShowSftp((prev) => !prev)}
               disabled={!sessionId}
             >
@@ -585,21 +605,114 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
               type="button"
               title={t("terminal.portForwards")}
               aria-label={t("terminal.portForwards")}
+              aria-expanded={showPortForward}
+              aria-controls={`ssh-port-forward-panel-${tabId}`}
               onClick={() => setShowPortForward((prev) => !prev)}
               disabled={!sessionId}
             >
               <Network className="h-3.5 w-3.5" />
             </button>
           ) : null}
+          </div>
+          {browserRuntime.supportsInAppSsh ? (
+            <button
+              className={cn(
+                "flex h-11 w-11 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent md:hidden",
+                showSftp ? "bg-app-terminalBg text-app-terminalAccent" : "text-app-terminalText hover:bg-app-terminalBg",
+              )}
+              type="button"
+              title={t("sftp.title")}
+              aria-label={t("sftp.title")}
+              aria-expanded={showSftp}
+              aria-controls={`ssh-sftp-panel-${tabId}`}
+              onClick={() => setShowSftp((prev) => !prev)}
+              disabled={!sessionId}
+            >
+              <FolderOpen className="h-4 w-4" />
+            </button>
+          ) : null}
+          <button
+            ref={toolMenuTriggerRef}
+            className="flex h-11 w-11 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent md:hidden"
+            type="button"
+            title={text("更多终端工具", "More terminal tools")}
+            aria-label={text("更多终端工具", "More terminal tools")}
+            aria-haspopup="menu"
+            aria-expanded={showToolMenu}
+            aria-controls={`ssh-terminal-tools-${tabId}`}
+            onClick={() => setShowToolMenu((open) => !open)}
+          >
+            <MoreHorizontal className="h-5 w-5" />
+          </button>
           {isRecording ? (
-            <span className="flex items-center gap-1 text-xs text-red-500">
+            <span className="hidden items-center gap-1 text-xs text-red-500 md:flex">
               <Circle className="h-2 w-2 animate-pulse fill-current" />
               {t("terminal.recording")}
             </span>
           ) : null}
-          <span className={cn("shrink-0", statusColorClass)}>{status}</span>
+          <span className={cn("hidden shrink-0 md:inline", statusColorClass)}>{status}</span>
+          <span className={cn("h-2 w-2 shrink-0 rounded-full md:hidden", statusKind === "connected" ? "bg-app-success" : statusKind === "failed" ? "bg-app-danger" : "bg-app-terminalMuted")} aria-label={status} />
         </div>
       </div>
+      {showToolMenu ? (
+        <div
+          className="absolute inset-0 z-30 flex items-end bg-black/40 md:hidden"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeToolMenu();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              closeToolMenu();
+            }
+          }}
+        >
+          <div id={`ssh-terminal-tools-${tabId}`} className="w-full rounded-t-lg border border-b-0 border-app-terminalBorder bg-app-terminalPanel p-2 shadow-popover" role="menu" aria-label={text("终端工具", "Terminal tools")}>
+            <button
+              className="flex min-h-11 w-full items-center gap-3 rounded px-3 text-left text-sm text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                toggleSearch();
+                closeToolMenu();
+              }}
+            >
+              <Search className="h-4 w-4" />
+              {text("搜索终端输出", "Search terminal output")}
+            </button>
+            <button
+              className="flex min-h-11 w-full items-center gap-3 rounded px-3 text-left text-sm text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                toggleRecording();
+                closeToolMenu();
+              }}
+            >
+              {isRecording ? <Square className="h-4 w-4 text-app-danger" /> : <Circle className="h-4 w-4" />}
+              {isRecording ? t("terminal.stopRecording") : t("terminal.record")}
+            </button>
+            {browserRuntime.supportsInAppSsh ? (
+              <button
+                className="flex min-h-11 w-full items-center gap-3 rounded px-3 text-left text-sm text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent disabled:opacity-40"
+                type="button"
+                role="menuitem"
+                aria-expanded={showPortForward}
+                aria-controls={`ssh-port-forward-panel-${tabId}`}
+                disabled={!sessionId}
+                onClick={() => {
+                  setShowPortForward((open) => !open);
+                  closeToolMenu();
+                }}
+              >
+                <Network className="h-4 w-4" />
+                {t("terminal.portForwards")}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       {showSearch ? (
         <div className="flex h-9 items-center gap-1.5 border-b border-app-terminalBorder bg-app-terminalPanel px-3">
           <input
@@ -648,7 +761,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           </button>
         </div>
       ) : null}
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         <div className="relative min-h-0 min-w-0 flex-1">
           <div ref={containerRef} className="h-full min-h-0" />
           {!followBottom && hasNewOutput ? (
@@ -662,16 +775,40 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           ) : null}
         </div>
         {showSftp && sessionId ? (
-          <div className="w-80 shrink-0 border-l border-app-terminalBorder">
-            <SftpPanel sessionId={sessionId} />
+          <div
+            id={`ssh-sftp-panel-${tabId}`}
+            className="absolute inset-0 z-20 flex min-h-0 w-full flex-col border-l border-app-terminalBorder bg-app-surface md:static md:z-auto md:w-80 md:shrink-0"
+            role="region"
+            aria-label={t("sftp.title")}
+          >
+            <div className="flex h-10 shrink-0 items-center justify-between border-b border-app-terminalBorder px-3 text-xs text-app-terminalText md:hidden">
+              <span className="font-medium">{t("sftp.title")}</span>
+              <button
+                className="flex h-8 w-8 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+                type="button"
+                title={text("关闭", "Close")}
+                aria-label={text("关闭", "Close")}
+                onClick={() => setShowSftp(false)}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1">
+              <SftpPanel sessionId={sessionId} />
+            </div>
           </div>
         ) : null}
         {showPortForward && sessionId ? (
-          <div className="w-80 shrink-0 border-l border-app-terminalBorder bg-app-terminalPanel p-3 text-xs text-app-terminalText">
+          <div
+            id={`ssh-port-forward-panel-${tabId}`}
+            className="absolute inset-0 z-20 flex min-h-0 w-full flex-col overflow-auto border-l border-app-terminalBorder bg-app-terminalPanel p-3 text-xs text-app-terminalText md:static md:z-auto md:w-80 md:shrink-0"
+            role="region"
+            aria-label={t("terminal.portForwards")}
+          >
             <div className="mb-3 flex items-center justify-between">
               <span className="font-medium">{t("terminal.portForwards")}</span>
               <button
-                className="flex h-5 w-5 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+                className="flex h-11 w-11 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent md:h-5 md:w-5"
                 type="button"
                 title={text("关闭", "Close")}
                 aria-label={text("关闭", "Close")}

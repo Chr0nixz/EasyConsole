@@ -7,6 +7,7 @@ import { Button, Dialog, Select, TableRegion } from "../ui";
 import { formatBytes } from "../../lib/format";
 import { useI18n } from "../../lib/i18n";
 import type { Locale } from "../../lib/i18n-text";
+import { useCompactLayout } from "../../lib/use-compact-layout";
 import {
   getStorageBreadcrumbs,
   getStorageEntryModifiedTime,
@@ -50,6 +51,7 @@ export function RemoteStoragePicker({
   onSelect,
 }: RemoteStoragePickerProps) {
   const { locale, text } = useI18n();
+  const compactLayout = useCompactLayout();
   const [path, setPath] = useState(() => normalizeStoragePath(initialPath));
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [sortField, setSortField] = useState<StoragePickerSortField>("name");
@@ -102,7 +104,7 @@ export function RemoteStoragePicker({
   }
 
   return (
-    <Dialog open={open} title={title ?? defaultTitle(mode, text)} onClose={onClose} width="max-w-3xl">
+    <Dialog open={open} title={title ?? defaultTitle(mode, text)} onClose={onClose} width="max-w-3xl" mobileMode="fullscreen">
       <div className="space-y-3 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
@@ -152,13 +154,43 @@ export function RemoteStoragePicker({
           </div>
         </div>
 
-        <TableRegion className="max-h-[50vh] rounded-md border border-app-border" label={text("远程存储选择表格", "Remote storage picker table")}>
+        <TableRegion className="max-h-[50vh] rounded-md border border-app-border" label={text("远程存储选择", "Remote storage picker") }>
           {query.isLoading ? (
             <LoadingState />
           ) : query.isError ? (
             <ErrorState error={query.error} />
           ) : visibleEntries.length === 0 ? (
             <EmptyState icon={FolderOpenIcon} title={text("当前目录为空", "Current directory is empty")} />
+          ) : compactLayout ? (
+            <ul className="divide-y divide-app-border" aria-label={text("远程存储条目", "Remote storage entries")}>
+              {visibleEntries.map((entry) => {
+                const entryPath = getStorageEntryPath(entry, path);
+                const directory = isStorageDirectory(entry, path);
+                const selected = selectedFile === entryPath;
+                return (
+                  <li key={entryPath}>
+                    <button
+                      className={cn(
+                        "flex min-h-11 w-full items-start gap-3 px-3 py-3 text-left text-sm hover:bg-app-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-app-accent",
+                        selected && "bg-app-infoSoft",
+                      )}
+                      type="button"
+                      aria-pressed={mode === "file" && !directory ? selected : undefined}
+                      onClick={() => selectEntry(entry)}
+                    >
+                      {directory ? <Folder className="mt-0.5 h-4 w-4 shrink-0 text-app-accent" /> : <FileText className="mt-0.5 h-4 w-4 shrink-0 text-app-muted" />}
+                      <span className="min-w-0 flex-1">
+                        <span className="block break-words font-medium text-app-text">{entry.name}</span>
+                        <span className="mt-1 block text-xs text-app-muted">
+                          {directory ? text("目录", "Directory") : text("文件", "File")}
+                          {!directory ? ` · ${formatBytes(getStorageEntrySize(entry) ?? undefined)}` : ""}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           ) : (
             <table className="w-full min-w-[560px] border-collapse text-sm">
               <thead className="bg-app-panel text-left text-xs text-app-muted">

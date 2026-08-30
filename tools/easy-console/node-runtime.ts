@@ -109,6 +109,9 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     async readClipboardText() {
       return unsupported("Clipboard");
     },
+    async getSystemNotificationPermission() {
+      return "unsupported";
+    },
     async requestSystemNotificationPermission() {
       return "unsupported";
     },

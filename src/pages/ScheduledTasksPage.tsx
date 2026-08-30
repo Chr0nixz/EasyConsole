@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { FieldError, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
+import { MobileLongText } from "../components/MobileLongText";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
 import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
 import { ScriptEnvFields } from "../components/tasks/ScriptEnvFields";
@@ -854,7 +855,7 @@ export function ScheduledTasksPage() {
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0 flex-1">
                         <div className="truncate font-medium">{item.name}</div>
-                        <div className="mt-0.5 truncate text-xs text-app-muted">{item.description || item.payload.storage_path || "-"}</div>
+                        <MobileLongText className="mt-0.5 text-xs" tone="muted" value={item.description || "-"} />
                       </div>
                       <span className={`inline-flex h-6 shrink-0 items-center rounded-md px-2 text-xs font-medium ring-1 ${statusClass(item.status)}`}>
                         {locale === "en-US" ? statusText[item.status].en : statusText[item.status].zh}
@@ -876,9 +877,15 @@ export function ScheduledTasksPage() {
                       <div className="col-span-2">
                         <dt className="text-app-muted">{text("最近结果", "Latest result")}</dt>
                         <dd>
-                          {item.lastError ? <span className="text-app-danger">{item.lastError}</span> : item.lastRunAt ? formatScheduleTime(item.lastRunAt) : "-"}
+                          {item.lastError ? <MobileLongText tone="danger" value={item.lastError} /> : item.lastRunAt ? formatScheduleTime(item.lastRunAt) : "-"}
                         </dd>
                       </div>
+                      {item.payload.storage_path ? (
+                        <div className="col-span-2">
+                          <dt className="text-app-muted">{text("存储路径", "Storage path")}</dt>
+                          <dd className="mt-0.5"><MobileLongText value={item.payload.storage_path} copyable mono /></dd>
+                        </div>
+                      ) : null}
                     </dl>
                     <div className="flex flex-wrap gap-1.5">
                       {renderItemActions(item)}

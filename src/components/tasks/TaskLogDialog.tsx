@@ -12,6 +12,7 @@ export function TaskLogDialog({ task, onClose }: { task: Task | null; onClose: (
       title={text(`任务日志 ${task ? getTaskName(task) : ""}`, `Task Log ${task ? getTaskName(task) : ""}`)}
       onClose={onClose}
       width="max-w-5xl"
+      mobileMode="fullscreen"
     >
       {task ? <TaskLogPanel task={task} /> : null}
     </Drawer>

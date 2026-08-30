@@ -6,6 +6,7 @@ import { browserRuntime } from "../../lib/runtime";
 import { useI18n } from "../../lib/i18n";
 import { useConfirmAction } from "../../lib/use-confirm-action";
 import { useToast } from "../../lib/use-toast";
+import { useMobileBackLayer } from "../../lib/use-mobile-back-stack";
 import type { SshConnectionRequest } from "../../lib/types";
 import { cn } from "../../lib/utils";
 import { Button, Input } from "../ui";
@@ -41,6 +42,10 @@ function sameTarget(a: SshConnectionRequest, b: SshConnectionRequest) {
   return a.host === b.host && a.port === b.port && a.username === b.username && a.taskId === b.taskId;
 }
 
+function targetKey(request: SshConnectionRequest) {
+  return JSON.stringify([request.host, request.port, request.username ?? "", request.taskId ?? ""]);
+}
+
 // Derive a stable status kind from the status string for icon/color/aria.
 // Check "closed" before "connected" since "Disconnected" contains "connected".
 function deriveStatusKind(status: string): TabStatusKind {
@@ -60,17 +65,22 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const newTabFormRef = useRef<HTMLFormElement | null>(null);
-  const tabRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const confirmAction = useConfirmAction();
   const toast = useToast();
   const [tabs, setTabs] = useState<TabState[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const activeTabIdRef = useRef<string | null>(null);
+  const lastSyncedRequestKeyRef = useRef<string | null>(null);
   const [isMinimized, setIsMinimized] = useState(false);
   const [showNewTabForm, setShowNewTabForm] = useState(false);
   const [newHost, setNewHost] = useState("");
   const [newPort, setNewPort] = useState("22");
   const [newUsername, setNewUsername] = useState("");
   const [dialogSize, setDialogSize] = useState<{ width: number; height: number } | null>(null);
+  const [mobileViewportHeight, setMobileViewportHeight] = useState<number | null>(() =>
+    browserRuntime.isMobile ? window.visualViewport?.height ?? window.innerHeight : null,
+  );
   const resizeStateRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
 
   const startResize = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
@@ -120,33 +130,44 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
   const openTab = useCallback((tabRequest: SshConnectionRequest) => {
     const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `tab-${Date.now()}`;
     setTabs((prev) => [...prev, { id, request: tabRequest, status: text("准备连接", "Ready to connect") }]);
+    activeTabIdRef.current = id;
     setActiveTabId(id);
     setShowNewTabForm(false);
   }, [text]);
 
-  // Initialize / sync the first tab from the incoming request prop.
+  // Initialize or sync incoming requests only when the target changes. The
+  // active tab is deliberately excluded so manually opened sessions cannot be
+  // overwritten by this effect on a subsequent render.
   useEffect(() => {
-    if (!request) return;
+    if (!request) {
+      lastSyncedRequestKeyRef.current = null;
+      return;
+    }
+    const nextRequestKey = targetKey(request);
+    if (lastSyncedRequestKeyRef.current === nextRequestKey) return;
+    lastSyncedRequestKeyRef.current = nextRequestKey;
     setTabs((prev) => {
       if (prev.length === 0) {
         const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `tab-${Date.now()}`;
+        activeTabIdRef.current = id;
         setActiveTabId(id);
         return [{ id, request, status: text("准备连接", "Ready to connect") }];
       }
-      // If the incoming request targets a different host than the active tab, open a new tab.
-      const active = prev.find((tab) => tab.id === activeTabId);
+      const active = prev.find((tab) => tab.id === activeTabIdRef.current);
       if (active && sameTarget(active.request, request)) return prev;
       const exists = prev.find((tab) => sameTarget(tab.request, request));
       if (exists) {
+        activeTabIdRef.current = exists.id;
         setActiveTabId(exists.id);
         return prev;
       }
       const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `tab-${Date.now()}`;
+      activeTabIdRef.current = id;
       setActiveTabId(id);
       return [...prev, { id, request, status: text("准备连接", "Ready to connect") }];
     });
     setIsMinimized(false);
-  }, [request, text, activeTabId]);
+  }, [request, text]);
 
   const closeTab = useCallback((id: string) => {
     setTabs((prev) => {
@@ -154,17 +175,18 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       if (idx === -1) return prev;
       const next = prev.filter((tab) => tab.id !== id);
       if (next.length === 0) {
+        activeTabIdRef.current = null;
         setActiveTabId(null);
         onClose();
         return next;
       }
-      if (id === activeTabId) {
-        const fallback = next[Math.min(idx, next.length - 1)];
-        setActiveTabId(fallback.id);
-      }
+      const fallback = id === activeTabIdRef.current ? next[Math.min(idx, next.length - 1)] : next.find((tab) => tab.id === activeTabIdRef.current) ?? next[0];
+      activeTabIdRef.current = fallback.id;
+      setActiveTabId(fallback.id);
+      window.setTimeout(() => tabRefs.current.get(fallback.id)?.focus(), 0);
       return next;
     });
-  }, [activeTabId, onClose]);
+  }, [onClose]);
 
   // Wrap closeTab with a confirmation guard for live (connected) sessions.
   const requestCloseTab = useCallback((id: string) => {
@@ -217,16 +239,41 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
         tone: "danger",
         run: () => {
           setTabs([]);
+          activeTabIdRef.current = null;
           setActiveTabId(null);
           onClose();
         },
       });
     } else {
       setTabs([]);
+      activeTabIdRef.current = null;
       setActiveTabId(null);
       onClose();
     }
   }, [tabs, text, confirmAction, onClose]);
+
+  useMobileBackLayer(Boolean(request) && !isMinimized, requestCloseDialog);
+
+  useEffect(() => {
+    if (!browserRuntime.isMobile || !request) return undefined;
+    const viewport = window.visualViewport;
+    const updateHeight = () => {
+      setMobileViewportHeight(viewport?.height ?? window.innerHeight);
+    };
+    const updateTerminal = () => {
+      updateHeight();
+      window.dispatchEvent(new Event("resize"));
+    };
+    updateHeight();
+    viewport?.addEventListener("resize", updateTerminal);
+    viewport?.addEventListener("scroll", updateTerminal);
+    window.addEventListener("resize", updateHeight);
+    return () => {
+      viewport?.removeEventListener("resize", updateTerminal);
+      viewport?.removeEventListener("scroll", updateTerminal);
+      window.removeEventListener("resize", updateHeight);
+    };
+  }, [request]);
 
   const updateTabStatus = useCallback((id: string, status: string) => {
     setTabs((prev) => {
@@ -272,9 +319,10 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
     };
   }, []);
 
-  const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>, currentIdx: number) => {
+  const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, currentIdx: number) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
+      activeTabIdRef.current = tabs[currentIdx].id;
       setActiveTabId(tabs[currentIdx].id);
       return;
     }
@@ -367,7 +415,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       <div
         ref={dialogRef}
         className={cn(
-          "app-modal-overlay fixed inset-0 z-50 items-start justify-center px-3 py-4 sm:px-4 sm:py-10",
+          "app-modal-overlay app-ssh-terminal-overlay fixed inset-0 z-50 items-start justify-center px-3 py-4 sm:px-4 sm:py-10",
           isMinimized ? "hidden" : "flex",
         )}
         role="dialog"
@@ -377,10 +425,10 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       >
         <div
           className={cn(
-            "app-terminal-modal-panel relative flex flex-col overflow-hidden rounded-lg bg-app-terminalBg",
+            "app-terminal-modal-panel app-ssh-terminal-panel relative flex flex-col overflow-hidden rounded-lg bg-app-terminalBg",
             dialogSize ? "shadow-popover" : "max-h-[calc(100vh-5rem)] w-full max-w-5xl",
           )}
-          style={dialogSize ?? undefined}
+          style={browserRuntime.isMobile ? { height: mobileViewportHeight ? `${mobileViewportHeight}px` : "100dvh", width: "100%" } : dialogSize ?? undefined}
         >
           <div className="flex h-12 shrink-0 items-center justify-between border-b border-app-terminalBorder bg-app-terminalPanel px-4">
             <div className="flex min-w-0 items-center gap-2 text-app-terminalText">
@@ -393,7 +441,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
             <div className="flex items-center gap-1">
               {browserRuntime.supportsSshPopOut ? (
                 <button
-                  className="flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1 disabled:opacity-40"
+                  className="app-ssh-desktop-control flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1 disabled:opacity-40"
                   type="button"
                   title={text("弹出为独立窗口", "Pop out to standalone window")}
                   aria-label={text("弹出为独立窗口", "Pop out to standalone window")}
@@ -405,7 +453,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
                 </button>
               ) : null}
               <button
-                className="flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1"
+                className="app-ssh-desktop-control flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1"
                 type="button"
                 title={text("最小化", "Minimize")}
                 aria-label={text("最小化", "Minimize")}
@@ -428,24 +476,19 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
           </div>
 
           <div
-            className="flex h-9 shrink-0 items-center border-b border-app-terminalBorder bg-app-terminalPanel"
+            className="flex h-12 shrink-0 items-center border-b border-app-terminalBorder bg-app-terminalPanel md:h-9"
             role="tablist"
             aria-label={text("SSH 会话标签", "SSH session tabs")}
           >
-            <div className="flex h-9 flex-1 items-center gap-1 overflow-x-auto px-2">
+            <div className="flex h-12 flex-1 items-center gap-1 overflow-x-auto px-2 md:h-9">
               {tabs.map((tab, idx) => {
                 const kind = deriveStatusKind(tab.status);
                 const isActive = tab.id === activeTabId;
                 return (
                   <div
                     key={tab.id}
-                    id={`ssh-tab-${tab.id}`}
-                    ref={(el) => {
-                      if (el) tabRefs.current.set(tab.id, el);
-                      else tabRefs.current.delete(tab.id);
-                    }}
                     className={cn(
-                      "group flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1",
+                      "group flex h-11 shrink-0 items-center rounded-md text-xs md:h-7",
                       isActive
                         ? "bg-app-terminalBg text-app-terminalText"
                         : kind === "failed"
@@ -454,28 +497,40 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
                             ? "text-app-warning hover:bg-app-terminalBg/60 hover:text-app-terminalText"
                             : "text-app-terminalMuted hover:bg-app-terminalBg/60 hover:text-app-terminalText",
                     )}
-                    role="tab"
-                    tabIndex={isActive ? 0 : -1}
-                    aria-selected={isActive}
-                    aria-label={`${tabTitle(tab.request)}，${tab.status}`}
-                    onClick={() => setActiveTabId(tab.id)}
-                    onKeyDown={(event) => handleTabKeyDown(event, idx)}
-                    title={tab.request.command}
                   >
-                    {kind === "connected" ? (
-                      <Check className="h-3 w-3 shrink-0 text-app-success" aria-hidden="true" />
-                    ) : kind === "failed" ? (
-                      <AlertCircle className="h-3 w-3 shrink-0 text-app-danger" aria-hidden="true" />
-                    ) : (
-                      <Circle className="h-3 w-3 shrink-0 text-app-terminalMuted" aria-hidden="true" />
-                    )}
-                    <span className="max-w-[10rem] truncate">{tabTitle(tab.request)}</span>
                     <button
-                      className="flex h-4 w-4 items-center justify-center rounded text-app-terminalMuted hover:bg-app-terminalPanel hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent opacity-60 group-hover:opacity-100 group-focus-within:opacity-100"
+                      id={`ssh-tab-${tab.id}`}
+                      ref={(element) => {
+                        if (element) tabRefs.current.set(tab.id, element);
+                        else tabRefs.current.delete(tab.id);
+                      }}
+                      className="flex h-full min-w-0 items-center gap-1.5 rounded-l-md px-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1"
                       type="button"
-                      tabIndex={-1}
-                      onClick={(event) => {
-                        event.stopPropagation();
+                      role="tab"
+                      tabIndex={isActive ? 0 : -1}
+                      aria-selected={isActive}
+                      aria-controls={`ssh-terminal-panel-${tab.id}`}
+                      aria-label={`${tabTitle(tab.request)}，${tab.status}`}
+                      onClick={() => {
+                        activeTabIdRef.current = tab.id;
+                        setActiveTabId(tab.id);
+                      }}
+                      onKeyDown={(event) => handleTabKeyDown(event, idx)}
+                      title={tab.request.command}
+                    >
+                      {kind === "connected" ? (
+                        <Check className="h-3 w-3 shrink-0 text-app-success" aria-hidden="true" />
+                      ) : kind === "failed" ? (
+                        <AlertCircle className="h-3 w-3 shrink-0 text-app-danger" aria-hidden="true" />
+                      ) : (
+                        <Circle className="h-3 w-3 shrink-0 text-app-terminalMuted" aria-hidden="true" />
+                      )}
+                      <span className="max-w-[8rem] truncate md:max-w-[10rem]">{tabTitle(tab.request)}</span>
+                    </button>
+                    <button
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-r-md text-app-terminalMuted hover:bg-app-terminalPanel hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent md:h-6 md:w-6"
+                      type="button"
+                      onClick={() => {
                         requestCloseTab(tab.id);
                       }}
                       aria-label={text(`关闭 ${tabTitle(tab.request)} 标签`, `Close ${tabTitle(tab.request)} tab`)}
@@ -486,9 +541,9 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
                 );
               })}
             </div>
-            <div className="flex h-9 shrink-0 items-center px-2">
+            <div className="flex h-12 shrink-0 items-center px-2 md:h-9">
               <button
-                className="flex h-7 w-7 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1"
+                className="flex h-11 w-11 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1 md:h-7 md:w-7"
                 type="button"
                 title={t("terminal.newTab")}
                 aria-label={t("terminal.newTab")}
@@ -538,8 +593,6 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
               "flex min-h-0 flex-1 flex-col",
               dialogSize ? "" : "h-[min(80vh,780px)]",
             )}
-            role="tabpanel"
-            aria-labelledby={activeTabId ? `ssh-tab-${activeTabId}` : undefined}
           >
             {tabs.map((tab) => (
               <SshTerminalTab
@@ -557,7 +610,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
               mousedown), and is sized larger than its visible grip so the
               hit target is comfortable while keeping the visual subtle. */}
           <div
-            className="absolute bottom-0 right-0 z-50 flex h-5 w-5 cursor-nwse-resize items-end justify-end"
+            className="app-ssh-terminal-resize-handle absolute bottom-0 right-0 z-50 flex h-5 w-5 cursor-nwse-resize items-end justify-end"
             onMouseDown={startResize}
             role="separator"
             aria-orientation="vertical"

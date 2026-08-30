@@ -295,12 +295,110 @@ tbody tr {
    env() returns 0 on platforms that don't support it (desktop browsers). */
 
 @media (max-width: 767px) {
+  .app-mobile-long-text-summary {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
   .app-main-content {
     padding-bottom: calc(8rem + env(safe-area-inset-bottom, 0px));
+    min-height: 0;
   }
 
   .app-toast-container {
-    bottom: calc(8rem + env(safe-area-inset-bottom, 0px)) !important;
+    bottom: calc(8rem + env(safe-area-inset-bottom, 0px) + var(--app-visual-viewport-bottom-inset, 0px)) !important;
+  }
+
+  .app-mobile-action-sheet [role="menuitem"] {
+    min-height: 44px;
+  }
+
+  .app-mobile-queue-panel {
+    right: 0.75rem;
+    left: 0.75rem;
+    top: auto !important;
+    bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+    width: auto;
+    max-height: min(70dvh, 34rem);
+    overflow: auto;
+  }
+
+  .app-mobile-batch-bar {
+    position: fixed;
+    left: 0.75rem;
+    right: 0.75rem;
+    bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+    z-index: 35;
+    border: 1px solid var(--color-app-border);
+    box-shadow: 0 10px 24px oklch(0.23 0.018 255 / 0.14);
+  }
+
+  .app-task-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .app-task-pagination > div:last-child {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .app-task-pagination > div:last-child > span {
+    grid-column: 1 / -1;
+  }
+
+  .app-task-pagination > div:last-child > select,
+  .app-task-pagination > div:last-child > input {
+    width: 100%;
+  }
+
+  .app-task-pagination > div:last-child > button {
+    width: 100%;
+  }
+
+  .app-task-detail-tabs {
+    scrollbar-width: thin;
+  }
+
+  .app-mobile-form-body {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .app-mobile-form-actions {
+    padding: 0.75rem 1rem;
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
+    background: var(--color-app-surface);
+    border-top: 1px solid var(--color-app-border);
+  }
+
+  .app-ssh-terminal-overlay {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .app-ssh-terminal-panel {
+    width: 100%;
+    max-width: none;
+    max-height: none;
+    height: 100dvh;
+    border-radius: 0;
+    margin: 0;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .app-ssh-terminal-panel > [role="tabpanel"] {
+    height: auto;
+    min-height: 0;
+  }
+
+  .app-ssh-desktop-control,
+  .app-ssh-terminal-resize-handle {
+    display: none;
   }
 }
 

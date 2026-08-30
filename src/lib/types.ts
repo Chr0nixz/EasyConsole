@@ -393,6 +393,7 @@ export type RuntimeTransport = {
   createWebSocket(url: string): Promise<RuntimeWebSocket>;
   copyText(text: string): Promise<void>;
   readClipboardText(): Promise<string>;
+  getSystemNotificationPermission(): Promise<RuntimeSystemNotificationPermission>;
   requestSystemNotificationPermission(): Promise<RuntimeSystemNotificationPermission>;
   notifySystem(notification: RuntimeSystemNotification): Promise<RuntimeSystemNotificationResult>;
   openExternal(url: string): void;
