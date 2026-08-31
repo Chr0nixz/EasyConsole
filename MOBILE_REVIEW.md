@@ -1,12 +1,12 @@
 ---
-timestamp: 2026-08-30
-version: v0.4.20
-scope: EasyConsole Web renderer 移动端体验，重点为 320–414px 竖屏
+timestamp: 2026-08-31
+version: v0.4.22
+scope: EasyConsole Web renderer 移动端体验与 Android 应用内更新链路，重点为 320–414px 竖屏
 method: 运行态窄屏复现 + 源码静态核对 + 自动化验证 + Impeccable audit
 viewports: 320x844, 375x844, 390x844, 414x896
 overall_score: 18/20
-finding_count: P0 0 / P1 4（代码已修复） / P2 10（代码已修复） / P3 0
-status: P1/P2 修复已合入当前工作树，待真实移动设备、软键盘、safe-area 与 SSH 回归后发布
+finding_count: P0 0 / P1 5（代码已修复） / P2 10（代码已修复） / P3 0
+status: P1/P2 与 Android 更新链路已修复，待真实移动设备安装、软键盘、safe-area 与 SSH 回归
 ---
 
 # EasyConsole 移动端竖屏体验审阅报告
@@ -15,12 +15,13 @@ status: P1/P2 修复已合入当前工作树，待真实移动设备、软键盘
 
 当前移动端具备可用的基础壳层：登录、仪表盘、任务列表、详情、定时任务、模板、镜像、存储和运行日志在常见竖屏宽度下基本可浏览，底部导航、移动菜单和浏览器端 SSH 降级路径也能工作。
 
-上一轮审阅的风险集中在窄屏核心操作，而不是页面级基础布局；本轮已完成 4 个 P1 和 10 个 P2 的代码修复，仍需真实设备回归确认：
+上一轮审阅的风险集中在窄屏核心操作，而不是页面级基础布局；本轮已完成 5 个 P1 和 10 个 P2 的代码修复，仍需真实设备回归确认：
 
 - 320px 下新建任务环境变量 Value 输入框曾实际可见宽约 22px，现已改为窄屏单列。
 - 普通手机浏览器系统返回曾可能离开当前路由，现已由 compact layout 返回栈按层消费。
 - SSH 多会话曾可能被旧 request 切回初始会话，现已使用稳定 target key 同步。
 - SSH SFTP/端口转发曾固定占用 320px，现已在窄屏改为全宽覆盖层。
+- Android 更新曾可能下载错误 ABI，且安装 Intent 无法可靠授予系统安装器读取 APK 的权限，现已改为原生 ABI 精确匹配与受限 FileProvider 安装。
 
 没有发现 P0。代码层面的 P1/P2 已完成；竖屏发布前应完成真实设备、系统返回、软键盘和 SSH/SFTP 回归。
 
@@ -40,7 +41,7 @@ status: P1/P2 修复已合入当前工作树，待真实移动设备、软键盘
 - 动态检查使用本地 renderer `http://127.0.0.1:4173/`，视口为 320、375、390、414px 竖屏。
 - 覆盖登录、仪表盘、任务、任务详情、定时任务、实例模板、镜像、存储和运行日志等页面，以及新建任务、移动菜单、远程存储选择器和 SSH 相关界面。
 - 未输入真实账号、密码、token，未操作真实后端任务、存储或 SSH 主机。
-- 尚未覆盖真实 Tauri Android/iOS、刘海屏 safe-area、系统返回手势、真实软键盘、真实粗指针和真实 SSH/SFTP 设备行为。
+- 已完成 Android aarch64/x86_64 Rust 交叉检查、Kotlin 编译和 aarch64 Debug APK 打包；尚未在真实 Android/iOS 设备覆盖安装升级、刘海屏 safe-area、系统返回手势、真实软键盘、真实粗指针和真实 SSH/SFTP 行为。
 - 工作区已有用户未提交改动；本轮在保留 P1 相关实现的基础上完成 P2、回归测试和本报告，没有回滚无关改动。
 
 ## 3. 健康评分
@@ -95,6 +96,16 @@ status: P1/P2 修复已合入当前工作树，待真实移动设备、软键盘
 - **原始证据**：SFTP 与端口转发面板均使用固定 `w-80 shrink-0`。
 - **影响**：320–375px 竖屏中终端区域被压缩到几乎不可用，尤其在同时查看输出和文件操作时。
 - **处理**：`<768px` 在终端内容区内使用 `absolute inset-0 z-20 w-full` 全宽覆盖层，桌面 `md` 以上继续使用 `w-80 shrink-0` 侧栏；SFTP 和端口转发触发按钮增加 `aria-expanded/aria-controls`，移动面板提供关闭按钮，不销毁 SSH session。新增 i18n/布局回归测试。
+
+### MOB-15 Android 自动更新可能下载错误 APK 或无法启动安装器
+
+**状态：已修复（待真实设备升级回归）**
+
+- **位置**：[app-update.ts](src/lib/app-update.ts)、[MainActivity.kt](src-tauri/gen/android/app/src/main/java/com/easyconsole/desktop/MainActivity.kt)、[release.yml](.github/workflows/release.yml)
+- **类别**：功能正确性 / 发布完整性 / Android 平台集成
+- **原始证据**：WebView User-Agent 无法可靠提供 ABI，失败时默认 ARM64 且会回退到任意 APK；`tauri-plugin-opener` 的 Android `ACTION_VIEW` 未提供 APK MIME、FileProvider content URI 或临时读取授权；发布 workflow 在缺少 signing secrets 时仍允许上传 unsigned APK。
+- **影响**：x86_64 模拟器可能收到 ARM64 APK 并触发 ABI 不匹配；系统安装器可能无法读取应用下载的文件；未签名或签名变化的 APK 无法覆盖已安装版本。
+- **处理**：由 Android Rust target 返回真实 ABI 并只接受精确命名资源；下载改到 `$APPCACHE/updates` 并在前端/原生两层校验 APK ZIP 头；JNI 调用 `MainActivity.installApk`，使用仅覆盖 `cache/updates/` 的 FileProvider、APK MIME 与临时读取授权，并处理 Android 8+ 未知来源权限；发布 workflow 强制四项签名 secret 齐全并通过 `apksigner` 后才上传。
 
 ## 5. P2：代码修复完成，待设备回归
 
@@ -176,12 +187,15 @@ status: P1/P2 修复已合入当前工作树，待真实移动设备、软键盘
 |---|---|
 | `npm.cmd run typecheck` | 通过 |
 | `npm.cmd run typecheck:tools` | 通过 |
-| `npm.cmd run test -- --run` | 75 个测试文件、407 个测试通过 |
+| `npm.cmd run test -- --run` | 75 个测试文件、409 个测试通过 |
 | `npm.cmd run lint` | 退出码 0，46 个既有 warning，无 error |
 | `npm.cmd run build:desktop` | 通过，Vite production build 完成 |
 | `cargo check --manifest-path src-tauri/Cargo.toml` | 通过 |
 | `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | 通过 |
 | `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` | 通过 |
+| Android Rust `aarch64-linux-android` / `x86_64-linux-android` check | 通过 |
+| Android Kotlin `compileUniversalDebugKotlin` | 通过 |
+| Android aarch64 Debug APK | 打包通过；`versionName=0.4.22`、`versionCode=4022`、APK v2 签名结构与 `REQUEST_INSTALL_PACKAGES` 已验证 |
 | Impeccable detector | 仅 `styles.css:28` 的 `Inter` 字体 advisory，无结构性 UI 反模式 |
 | 定向 P1/P2 测试 | 返回栈、环境变量、SSH 多会话/覆盖层、长文本复制、通知授权回退全部通过 |
 

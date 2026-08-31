@@ -216,13 +216,16 @@ jobs:
       - name: Setup Android signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > $RUNNER_TEMP/release.keystore
-            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> $GITHUB_ENV
-          else
-            echo "::warning::ANDROID_KEYSTORE_BASE64 not set, building unsigned release APK"
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error::Android release signing secrets are required; refusing to publish an APK that cannot update an installed app."
+            exit 1
           fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
 
       - name: Build Android APK
         env:
@@ -236,18 +239,24 @@ jobs:
           export ${{ matrix.linker-env }}="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc-suffix }}-clang"
           npx tauri android build --target ${{ matrix.target }} --apk --verbose
 
+      - name: Verify signed Android APK
+        run: |
+          APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*.apk" ! -name "*-unsigned.apk" | head -1)
+          if [ -z "$APK_PATH" ]; then
+            echo "::error::No signed APK found for ${{ matrix.target }}"
+            exit 1
+          fi
+          BUILD_TOOLS_VERSION=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner" verify --verbose --print-certs "$APK_PATH"
+          echo "ANDROID_RELEASE_APK=$APK_PATH" >> "$GITHUB_ENV"
+
       - name: Upload APK to GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}"
-          APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -1)
-          if [ -n "$APK_PATH" ]; then
-            cp "$APK_PATH" "EasyConsole-${TAG}-android-${{ matrix.target }}.apk"
-            gh release upload "$TAG" "EasyConsole-${TAG}-android-${{ matrix.target }}.apk" --clobber
-          else
-            echo "::warning::No APK found for ${{ matrix.target }}"
-          fi
+          cp "$ANDROID_RELEASE_APK" "EasyConsole-${TAG}-android-${{ matrix.target }}.apk"
+          gh release upload "$TAG" "EasyConsole-${TAG}-android-${{ matrix.target }}.apk" --clobber
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

@@ -2676,22 +2676,105 @@ fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
         .map_err(|error| format!("无法打开外部链接：{error}"))
 }
 
-#[cfg(mobile)]
+#[cfg(target_os = "android")]
 #[tauri::command]
-fn install_apk(app: AppHandle, path: String) -> Result<(), String> {
-    use std::path::Path;
+fn mobile_app_arch() -> Result<&'static str, String> {
+    match std::env::consts::ARCH {
+        "aarch64" => Ok("aarch64"),
+        "x86_64" => Ok("x86_64"),
+        architecture => Err(format!("不支持的 Android 架构：{architecture}")),
+    }
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn install_apk(app: AppHandle, path: String) -> Result<String, String> {
+    use jni::objects::{JObject, JString, JValue};
+    use std::io::Read;
 
     let file_path = Path::new(&path);
     if !file_path.exists() {
         return Err(format!("APK 文件不存在：{path}"));
     }
+    if !file_path.is_file()
+        || file_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map_or(true, |extension| !extension.eq_ignore_ascii_case("apk"))
+    {
+        return Err("更新文件不是有效的 APK".to_string());
+    }
 
-    // Use tauri-plugin-opener to open the APK file with the system package
-    // installer. On Android, open_path fires an ACTION_VIEW intent. The MIME
-    // type hint helps the system resolve to the package installer activity.
-    app.opener()
-        .open_path(path, Some("application/vnd.android.package-archive"))
-        .map_err(|error| format!("无法触发 APK 安装：{error}"))
+    let updates_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("无法定位应用缓存目录：{error}"))?
+        .join("updates")
+        .canonicalize()
+        .map_err(|error| format!("无法访问更新缓存目录：{error}"))?;
+    let canonical_file_path = file_path
+        .canonicalize()
+        .map_err(|error| format!("无法访问 APK 文件：{error}"))?;
+    if !canonical_file_path.starts_with(&updates_dir) {
+        return Err("只允许安装应用更新缓存目录中的 APK".to_string());
+    }
+
+    let mut apk_file = fs::File::open(&canonical_file_path)
+        .map_err(|error| format!("无法读取 APK 文件：{error}"))?;
+    let mut signature = [0_u8; 4];
+    apk_file
+        .read_exact(&mut signature)
+        .map_err(|error| format!("无法验证 APK 文件：{error}"))?;
+    if signature != [0x50, 0x4b, 0x03, 0x04] {
+        return Err("更新文件不是有效的 APK".to_string());
+    }
+    let path = canonical_file_path.to_string_lossy().into_owned();
+
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "无法获取 Android 主窗口".to_string())?;
+    let (sender, receiver) = oneshot::channel();
+    window
+        .with_webview(move |webview| {
+            webview.jni_handle().exec(move |env, activity, _webview| {
+                let result = (|| -> Result<String, String> {
+                    let java_path = env
+                        .new_string(path)
+                        .map_err(|error| format!("无法编码 APK 路径：{error}"))?;
+                    let java_path_object = JObject::from(java_path);
+                    let value = env
+                        .call_method(
+                            activity,
+                            "installApk",
+                            "(Ljava/lang/String;)Ljava/lang/String;",
+                            &[JValue::Object(&java_path_object)],
+                        )
+                        .map_err(|error| format!("无法调用 Android 安装器：{error}"))?;
+                    let response_object = value
+                        .l()
+                        .map_err(|error| format!("Android 安装器返回值无效：{error}"))?;
+                    if response_object.is_null() {
+                        return Err("Android 安装器未返回状态".to_string());
+                    }
+                    let response = String::from(
+                        env.get_string(&JString::from(response_object))
+                            .map_err(|error| format!("无法读取 Android 安装状态：{error}"))?,
+                    );
+                    if let Some(error) = response.strip_prefix("error:") {
+                        Err(format!("无法触发 APK 安装：{error}"))
+                    } else {
+                        Ok(response)
+                    }
+                })();
+                let _ = sender.send(result);
+            });
+        })
+        .map_err(|error| format!("无法调度 Android 安装器：{error}"))?;
+
+    tokio::time::timeout(Duration::from_secs(10), receiver)
+        .await
+        .map_err(|_| "Android 安装器调用超时".to_string())?
+        .map_err(|_| "Android 安装器调用被中断".to_string())?
 }
 
 #[cfg(desktop)]
@@ -2993,7 +3076,9 @@ pub fn run() {
         list_ssh_history,
         add_ssh_history,
         clear_ssh_history,
-        #[cfg(mobile)]
+        #[cfg(target_os = "android")]
+        mobile_app_arch,
+        #[cfg(target_os = "android")]
         install_apk,
         #[cfg(desktop)]
         open_system_ssh_terminal,

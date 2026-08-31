@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   AUTO_UPDATE_CHECK_INTERVAL_MS,
   DISMISSED_UPDATE_INTERVAL_MS,
+  hasApkZipSignature,
   parseAppUpdateState,
+  selectMobileApkAsset,
   shouldAutoCheckForUpdates,
   shouldShowDismissedUpdate,
   stringifyAppUpdateState,
@@ -78,5 +80,25 @@ describe("app update state", () => {
       dismissedAt: new Date(now).toISOString(),
       dismissedUntilNextVersion: true,
     }, now)).toBe(true);
+  });
+
+  it("selects only the APK matching the native Android architecture", () => {
+    const release = {
+      tag_name: "v0.4.22",
+      assets: [
+        { name: "EasyConsole-v0.4.22-android-aarch64.apk", browser_download_url: "https://example/arm.apk", size: 10 },
+        { name: "EasyConsole-v0.4.22-android-x86_64.apk", browser_download_url: "https://example/x64.apk", size: 11 },
+      ],
+    };
+
+    expect(selectMobileApkAsset(release, "x86_64")?.browser_download_url).toBe("https://example/x64.apk");
+    expect(selectMobileApkAsset(release, "aarch64")?.browser_download_url).toBe("https://example/arm.apk");
+    expect(selectMobileApkAsset({ ...release, assets: release.assets.slice(0, 1) }, "x86_64")).toBeUndefined();
+  });
+
+  it("rejects non-APK download responses before writing them to disk", () => {
+    expect(hasApkZipSignature(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]))).toBe(true);
+    expect(hasApkZipSignature(new TextEncoder().encode("<html>Not found</html>"))).toBe(false);
+    expect(hasApkZipSignature(new Uint8Array([0x50, 0x4b, 0x03]))).toBe(false);
   });
 });

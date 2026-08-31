@@ -353,7 +353,18 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
         return;
       }
       try {
-        await installMobileApk(state.apkPath);
+        const result = await installMobileApk(state.apkPath);
+        if (result === "permission-required") {
+          toast.notify({
+            kind: "info",
+            title: text("需要安装权限", "Install permission required"),
+            description: text(
+              "请允许 EasyConsole 安装未知应用，返回后再次点击安装 APK。",
+              "Allow EasyConsole to install unknown apps, then return and tap Install APK again.",
+            ),
+            durationMs: 10_000,
+          });
+        }
       } catch (error) {
         const message = errorMessage(error, text("无法启动安装器", "Failed to launch installer"));
         toast.error(text("安装失败", "Installation failed"), message);

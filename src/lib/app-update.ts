@@ -177,14 +177,39 @@ type GitHubRelease = {
   assets: GitHubReleaseAsset[];
 };
 
+export type MobileAppArchitecture = "aarch64" | "x86_64";
+export type MobileApkInstallResult = "launched" | "permission-required";
+
+export function selectMobileApkAsset(release: GitHubRelease, architecture: MobileAppArchitecture) {
+  const expectedName = `EasyConsole-${release.tag_name}-android-${architecture}.apk`;
+  return release.assets.find((asset) => asset.name === expectedName);
+}
+
+export function hasApkZipSignature(bytes: Uint8Array) {
+  return bytes.byteLength >= 4
+    && bytes[0] === 0x50
+    && bytes[1] === 0x4b
+    && bytes[2] === 0x03
+    && bytes[3] === 0x04;
+}
+
+async function getMobileAppArchitecture(): Promise<MobileAppArchitecture> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const architecture = await invoke<string>("mobile_app_arch");
+  if (architecture === "aarch64" || architecture === "x86_64") return architecture;
+  throw new Error(i18nText(`当前 Android 架构不受支持：${architecture}`, `Unsupported Android architecture: ${architecture}`));
+}
+
 export async function checkForMobileAppUpdate(): Promise<AppUpdateCheckResult> {
   const currentVersion = await getCurrentAppVersion();
   if (!currentVersion) {
     return { kind: "unsupported" };
   }
 
-  const response = await fetch(GITHUB_API_RELEASE_URL, {
+  const { fetch: tauriFetch } = await import("@tauri-apps/plugin-http");
+  const response = await tauriFetch(GITHUB_API_RELEASE_URL, {
     headers: { Accept: "application/vnd.github+json" },
+    connectTimeout: 15_000,
   });
   if (!response.ok) {
     throw new Error(`GitHub API 请求失败：${response.status} ${response.statusText}`);
@@ -196,18 +221,13 @@ export async function checkForMobileAppUpdate(): Promise<AppUpdateCheckResult> {
     return { kind: "upToDate", currentVersion };
   }
 
-  // Detect device architecture: default to aarch64 (most Android devices)
-  const userAgent = navigator.userAgent.toLowerCase();
-  const arch = userAgent.includes("x86_64") || userAgent.includes("x86-64") ? "x86_64" : "aarch64";
-
-  const apkAsset = release.assets.find(
-    (asset) => asset.name === `EasyConsole-${release.tag_name}-android-${arch}.apk`,
-  );
-  // Fall back to any APK asset if arch-specific one is not found
-  const fallbackAsset = apkAsset ?? release.assets.find((asset) => asset.name.endsWith(".apk"));
-
-  if (!fallbackAsset) {
-    throw new Error(i18nText("未找到可用的 APK 下载资源", "No APK download asset found in release"));
+  const architecture = await getMobileAppArchitecture();
+  const apkAsset = selectMobileApkAsset(release, architecture);
+  if (!apkAsset) {
+    throw new Error(i18nText(
+      `未找到适用于 ${architecture} 的 APK 下载资源`,
+      `No APK download asset is available for ${architecture}`,
+    ));
   }
 
   return {
@@ -217,7 +237,7 @@ export async function checkForMobileAppUpdate(): Promise<AppUpdateCheckResult> {
       currentVersion,
       date: release.published_at,
       body: release.body,
-      apkUrl: fallbackAsset.browser_download_url,
+      apkUrl: apkAsset.browser_download_url,
     },
   };
 }
@@ -227,13 +247,14 @@ export async function downloadMobileApk(
   onProgress: (progress: AppUpdateProgress) => void,
 ): Promise<string> {
   const { fetch: tauriFetch } = await import("@tauri-apps/plugin-http");
-  const { writeFile } = await import("@tauri-apps/plugin-fs");
-  const { downloadDir, join } = await import("@tauri-apps/api/path");
+  const { mkdir, writeFile } = await import("@tauri-apps/plugin-fs");
+  const { appCacheDir, join } = await import("@tauri-apps/api/path");
 
-  // Extract filename from URL
-  const urlFilename = apkUrl.split("/").pop() ?? "EasyConsole-update.apk";
-  const downloads = await downloadDir();
-  const targetPath = await join(downloads, urlFilename);
+  const rawFilename = decodeURIComponent(new URL(apkUrl).pathname.split("/").pop() ?? "");
+  const filename = /^[A-Za-z0-9._-]+\.apk$/i.test(rawFilename) ? rawFilename : "EasyConsole-update.apk";
+  const updatesDir = await join(await appCacheDir(), "updates");
+  await mkdir(updatesDir, { recursive: true });
+  const targetPath = await join(updatesDir, filename);
 
   const response = await tauriFetch(apkUrl, { connectTimeout: 15_000 });
   if (!response.ok) {
@@ -247,7 +268,9 @@ export async function downloadMobileApk(
   if (!reader) {
     // Fallback: no stream support, download as blob
     const buffer = await response.arrayBuffer();
-    await writeFile(targetPath, new Uint8Array(buffer));
+    const bytes = new Uint8Array(buffer);
+    assertApkBytes(bytes);
+    await writeFile(targetPath, bytes);
     onProgress({ loaded: buffer.byteLength, total: buffer.byteLength, percent: 100 });
     return targetPath;
   }
@@ -273,12 +296,19 @@ export async function downloadMobileApk(
     result.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  assertApkBytes(result);
   await writeFile(targetPath, result);
   onProgress({ loaded, total: loaded, percent: 100 });
   return targetPath;
 }
 
-export async function installMobileApk(apkPath: string): Promise<void> {
+function assertApkBytes(bytes: Uint8Array) {
+  if (!hasApkZipSignature(bytes)) {
+    throw new Error(i18nText("下载内容不是有效的 APK 文件", "The downloaded content is not a valid APK file"));
+  }
+}
+
+export async function installMobileApk(apkPath: string): Promise<MobileApkInstallResult> {
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("install_apk", { path: apkPath });
+  return invoke<MobileApkInstallResult>("install_apk", { path: apkPath });
 }

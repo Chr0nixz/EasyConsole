@@ -1,3 +1,17 @@
+# EasyConsole v0.4.22
+
+Restore reliable Android in-app updates.
+
+## Changes
+
+- **Correct APK architecture**: Android now reports its native ABI to the renderer, so ARM64 devices and x86_64 emulators download only their matching APK. Missing assets fail clearly instead of falling back to an incompatible package.
+- **Reliable system installer**: Updates download into the app cache, validate as APK/ZIP content, and open through a scoped FileProvider URI with temporary read permission. Android 8+ users are guided to the per-app unknown-source permission when needed.
+- **Release safety**: Android release jobs now require all signing secrets and verify the selected APK with `apksigner` before uploading it. Unsigned APKs can no longer become update assets.
+
+> Existing Android installations whose installer handoff is already broken may need one manual installation of v0.4.22. In-app updates should work normally after that.
+
+---
+
 # EasyConsole v0.4.21
 
 Mobile portrait usability and in-app SSH workflow reliability.
