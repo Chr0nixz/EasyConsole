@@ -86,6 +86,16 @@ export function ScriptEnvFields({
                     placeholder={text("名称，如 EXPERIMENT_ID", "Name, e.g. EXPERIMENT_ID")}
                     value={item.key}
                     onChange={(event) => updateRow(index, { key: event.target.value })}
+                    onPaste={(event) => {
+                      const pasted = event.clipboardData.getData("text/plain").trim();
+                      const separatorIndex = pasted.indexOf("=");
+                      if (separatorIndex <= 0) return;
+                      event.preventDefault();
+                      updateRow(index, {
+                        key: pasted.slice(0, separatorIndex).trim(),
+                        value: pasted.slice(separatorIndex + 1).trim(),
+                      });
+                    }}
                   />
                   <Input
                     className="min-w-0 w-full font-mono text-xs"

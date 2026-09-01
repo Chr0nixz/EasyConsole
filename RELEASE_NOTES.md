@@ -1,3 +1,15 @@
+# EasyConsole v0.4.23
+
+Streamline settings changes and restore normal update delivery for tagged releases.
+
+## Changes
+
+- **Automatic settings saves**: Runtime settings now persist after a brief pause, with clear waiting, saving, saved, and validation-error states instead of a separate save action.
+- **Environment-variable paste support**: Pasting `NAME=value` into an environment-variable name field now fills both fields, while preserving any additional `=` characters in the value.
+- **Update publishing**: Tag-triggered builds now publish their GitHub Release instead of leaving it as a draft, so desktop update metadata can identify the latest release.
+
+---
+
 # EasyConsole v0.4.22
 
 Restore reliable Android in-app updates.

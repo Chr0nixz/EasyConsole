@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ToastProvider } from "../components/Toast";
+import { APP_SETTINGS_STORAGE_KEY, DEFAULT_APP_SETTINGS, setRuntimeSettings } from "../lib/app-settings";
 import { browserRuntime } from "../lib/runtime";
 import { RunLoggerContext } from "../lib/use-run-logger";
 
@@ -108,6 +109,8 @@ function renderStandaloneSettings() {
 describe("SettingsPage", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    window.localStorage.clear();
+    setRuntimeSettings(DEFAULT_APP_SETTINGS);
     mocks.changePassword.mockReset();
     mocks.changePassword.mockResolvedValue(undefined);
     mocks.auth.clearSavedPassword.mockReset();
@@ -159,6 +162,32 @@ describe("SettingsPage", () => {
     expect(screen.queryByText(/包含登录凭据|Include credentials/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^修改密码$|^Change password$/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/重要事件通知|Important Event Notifications/)).not.toBeInTheDocument();
+  });
+
+  it("automatically saves changed runtime settings", async () => {
+    vi.useFakeTimers();
+    try {
+      renderStandaloneSettings();
+
+      const apiBaseInput = screen.getByDisplayValue(DEFAULT_APP_SETTINGS.apiBaseUrl);
+      fireEvent.change(apiBaseInput, { target: { value: "https://console.example.test/api" } });
+
+      expect(screen.queryByRole("button", { name: /保存设置|Save settings/ })).not.toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+
+      expect(window.localStorage.getItem(APP_SETTINGS_STORAGE_KEY) ?? "").toContain("https://console.example.test/api");
+      expect(screen.getByText(/已自动保存|Saved automatically/)).toBeInTheDocument();
+
+      fireEvent.change(apiBaseInput, { target: { value: "" } });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      expect(apiBaseInput).toHaveValue(DEFAULT_APP_SETTINGS.apiBaseUrl);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("exposes instance list auto refresh in settings", () => {

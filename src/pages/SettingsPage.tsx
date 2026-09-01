@@ -24,7 +24,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
@@ -159,6 +159,8 @@ const sshThemeOptions: Array<{ theme: SshTerminalTheme; zh: string; en: string }
 
 type LucideIcon = typeof Settings2;
 
+const AUTO_SAVE_DELAY_MS = 500;
+
 function SectionHeader({
   icon: Icon,
   title,
@@ -285,6 +287,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const [savedBaseline, setSavedBaseline] = useState(() => normalizeAppSettings(getRuntimeSettings()));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  const saveGenerationRef = useRef(0);
   const [includeSecrets, setIncludeSecrets] = useState(false);
   const [exportPassword, setExportPassword] = useState("");
   const [importBackup, setImportBackup] = useState<LocalDataBackup | null>(null);
@@ -336,11 +340,26 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     !shouldEnforceSecureRemoteTransport() &&
     (isInsecureRemoteTransportUrl(normalized.apiBaseUrl) || isInsecureRemoteTransportUrl(normalized.monitorDashboardUrl));
   const transportBlockedReason = getTransportBlockReason();
+  const validationError = settingsDirty ? validate(normalized, t) : null;
+  const visibleError = validationError ?? error;
+  const autoSaveStatus = saving
+    ? text("正在保存", "Saving")
+    : visibleError
+      ? text("保存失败", "Save failed")
+      : settingsDirty
+        ? text("等待保存", "Waiting to save")
+        : lastSavedAt
+          ? text("已自动保存", "Saved automatically")
+          : text("自动保存已启用", "Autosave enabled");
 
   useEffect(() => {
+    saveGenerationRef.current += 1;
     const next = normalizeAppSettings(getRuntimeSettings());
-    setForm(getRuntimeSettings());
+    setForm(next);
     setSavedBaseline(next);
+    setError(null);
+    setSaving(false);
+    setLastSavedAt(null);
   }, [settingsAccountId]);
 
   async function onChangePassword() {
@@ -389,52 +408,64 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     }
   }
 
-  async function saveSettings(nextSettings: AppSettings, successTitle: string) {
+  const persistSettings = useCallback(async (nextSettings: AppSettings) => {
     const nextError = validate(nextSettings, t);
     setError(nextError);
-    if (nextError) return;
+    if (nextError) return false;
 
+    const saveGeneration = ++saveGenerationRef.current;
+    const previousApiBaseUrl = getRuntimeSettings().apiBaseUrl;
     setSaving(true);
     try {
       applySettings(nextSettings);
-      await saveAccountSettings(browserRuntime.storage, settingsAccountId, nextSettings);
-      await queryClient.cancelQueries({ queryKey: queryKeys.images.all });
-      await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.images.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all });
-      setForm(nextSettings);
-      setSavedBaseline(normalizeAppSettings(nextSettings));
-      toast.success(successTitle, t("settings.saveDescription"));
-      void runLogger.log({
-        source: "settings",
-        level: "info",
-        action: "settings.save",
-        result: "success",
-        title: successTitle,
-        metadata: { ...nextSettings, settingsAccountId },
-      });
+      const savedSettings = await saveAccountSettings(browserRuntime.storage, settingsAccountId, nextSettings);
+      if (previousApiBaseUrl !== savedSettings.apiBaseUrl) {
+        await queryClient.cancelQueries({ queryKey: queryKeys.images.all });
+        await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.images.all });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all });
+      }
+      if (saveGeneration === saveGenerationRef.current) {
+        setForm((current) => (
+          JSON.stringify(normalizeAppSettings(current)) === JSON.stringify(nextSettings) ? savedSettings : current
+        ));
+        setSavedBaseline(savedSettings);
+        setError(null);
+        setLastSavedAt(new Date().toISOString());
+      }
+      return true;
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : t("settings.saveFailed"));
+      if (saveGeneration === saveGenerationRef.current) {
+        setError(saveError instanceof Error ? saveError.message : t("settings.saveFailed"));
+      }
       void runLogger.log({
         source: "settings",
         level: "error",
-        action: "settings.save",
+        action: "settings.autoSave",
         result: "failure",
         title: t("settings.saveFailed"),
         error: errorMessage(saveError, t("settings.saveFailed")),
       });
+      return false;
     } finally {
-      setSaving(false);
+      if (saveGeneration === saveGenerationRef.current) setSaving(false);
     }
-  }
+  }, [queryClient, runLogger, settingsAccountId, t]);
 
-  function onSubmit(event: FormEvent) {
-    event.preventDefault();
-    void saveSettings(normalized, t("settings.saved"));
-  }
+  useEffect(() => {
+    if (!settingsDirty) return undefined;
+    if (validationError) return undefined;
+
+    const timer = window.setTimeout(() => {
+      setError(null);
+      void persistSettings(normalized);
+    }, AUTO_SAVE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [normalized, persistSettings, settingsDirty, validationError]);
 
   function resetToDefault() {
     void (async () => {
+      saveGenerationRef.current += 1;
       setSaving(true);
       try {
         applySettings(DEFAULT_APP_SETTINGS);
@@ -447,6 +478,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         setForm(DEFAULT_APP_SETTINGS);
         setSavedBaseline(normalizeAppSettings(DEFAULT_APP_SETTINGS));
         setError(null);
+        setLastSavedAt(new Date().toISOString());
         toast.success(t("settings.resetDone"), t("settings.resetDescription"));
         void runLogger.log({
           source: "settings",
@@ -892,7 +924,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
 
   const content = (
     <>
-    <form className="space-y-5" onSubmit={onSubmit}>
+    <div className="space-y-5">
       <SettingsGroup hideHeader={standalone} label={text("连接", "Connection")} defaultOpen>
       <Panel>
         <SectionHeader
@@ -908,10 +940,13 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               <Button disabled={saving} type="button" variant="secondary" onClick={() => void testConnection()}>
                 {text("测试连接", "Test")}
               </Button>
-              <Button disabled={saving} type="submit">
+              <div
+                aria-live="polite"
+                className="flex h-9 items-center gap-2 rounded-md border border-app-border bg-app-panel px-3 text-xs text-app-muted"
+              >
                 <Save className="h-4 w-4" />
-                {saving ? t("settings.saving") : t("settings.saveSettings")}
-              </Button>
+                <span>{autoSaveStatus}</span>
+              </div>
             </>
           }
         />
@@ -950,7 +985,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             {transportBlockedReason ? (
               <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{t("settings.transportBlocked")}</div>
             ) : null}
-            {error ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{error}</div> : null}
+            {visibleError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{visibleError}</div> : null}
           </div>
 
           <aside className="min-w-0">
@@ -1823,7 +1858,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           ) : null}
         </div>
       </Dialog>
-    </form>
+    </div>
     {confirmDialog}
   </>
   );

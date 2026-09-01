@@ -52,4 +52,20 @@ describe("ScriptEnvFields", () => {
 
     expect(onChange).toHaveBeenCalledWith([{ key: "FIRST", value: "one" }]);
   });
+
+  it("splits a pasted assignment into the name and value fields", () => {
+    const onChange = renderFields([{ key: "", value: "" }]);
+    const keyInput = screen.getByPlaceholderText("名称，如 EXPERIMENT_ID");
+    const valueInput = screen.getByPlaceholderText("值");
+
+    fireEvent.paste(keyInput, {
+      clipboardData: {
+        getData: () => "ACCESS_TOKEN=abc=123",
+      },
+    });
+
+    expect(keyInput).toHaveValue("ACCESS_TOKEN");
+    expect(valueInput).toHaveValue("abc=123");
+    expect(onChange).toHaveBeenLastCalledWith([{ key: "ACCESS_TOKEN", value: "abc=123" }]);
+  });
 });
