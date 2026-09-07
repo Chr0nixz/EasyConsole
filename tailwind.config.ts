@@ -14,6 +14,9 @@ export default {
           surface: "oklch(0.995 0.004 95)",
           panel: "oklch(0.955 0.008 95)",
           border: "oklch(0.86 0.012 95)",
+          // WCAG 1.4.11 needs 3:1 where a boundary is the only cue identifying a control.
+          // 3.52:1 on surface, 3.39:1 on bg, 3.13:1 on panel.
+          borderStrong: "oklch(0.62 0.014 95)",
           text: "oklch(0.23 0.018 255)",
           muted: "oklch(0.48 0.018 255)",
           onAccent: "oklch(0.995 0.004 95)",

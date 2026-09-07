@@ -198,6 +198,25 @@ describe("SettingsPage", () => {
     expect(screen.getByText(/刷新间隔|Refresh interval/)).toBeInTheDocument();
   });
 
+  it("opens a collapsed group from the section index", () => {
+    renderSettings();
+
+    const indexEntry = screen.getByRole("button", { name: /跳转到 数据|Go to Data/ });
+    expect(indexEntry).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/自动刷新实例列表|Automatically refresh instance list/)).not.toBeInTheDocument();
+
+    fireEvent.click(indexEntry);
+
+    expect(indexEntry).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/自动刷新实例列表|Automatically refresh instance list/)).toBeInTheDocument();
+  });
+
+  it("omits the section index when only the connection group renders", () => {
+    renderStandaloneSettings();
+
+    expect(screen.queryByRole("navigation", { name: /设置分区|Settings sections/ })).not.toBeInTheDocument();
+  });
+
   it("requests permission before retaining system notifications and falls back to in-app when denied", async () => {
     const requestPermission = vi.spyOn(browserRuntime, "requestSystemNotificationPermission").mockResolvedValue("denied");
     renderSettings();

@@ -120,4 +120,40 @@ describe("LoginPage", () => {
     fireEvent.click(toggle);
     expect(screen.getByRole("button", { name: /隐藏密码|Hide password/i })).toHaveAttribute("aria-pressed", "true");
   });
+
+  async function signInFrom(from: { pathname: string; search?: string; hash?: string }) {
+    authMock.login.mockResolvedValue(undefined);
+    const router = createMemoryRouter(
+      [
+        { path: "/login", element: <LoginPage /> },
+        { path: "/dashboard", element: <div>Dashboard</div> },
+        { path: "/tasks", element: <div>Tasks</div> },
+      ],
+      { initialEntries: [{ pathname: "/login", state: { from } }] },
+    );
+    render(<RouterProvider router={router} />);
+
+    fireEvent.change(screen.getByLabelText(/用户名|Username/i), { target: { value: "bob" } });
+    fireEvent.change(screen.getByLabelText(/^密码$|^Password$/i), { target: { value: "secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /^登录$|^Sign in$/ }));
+
+    await waitFor(() => expect(authMock.login).toHaveBeenCalled());
+    return router;
+  }
+
+  it("restores the full pre-expiry location including query and hash", async () => {
+    const router = await signInFrom({ pathname: "/tasks", search: "?status=failed&page=2", hash: "#row-7" });
+
+    await waitFor(() => expect(router.state.location.pathname).toBe("/tasks"));
+    expect(router.state.location.search).toBe("?status=failed&page=2");
+    expect(router.state.location.hash).toBe("#row-7");
+    expect(screen.getByText("Tasks")).toBeInTheDocument();
+  });
+
+  it("falls back to the dashboard for a protocol-relative redirect target", async () => {
+    const router = await signInFrom({ pathname: "//evil.example.com/phish" });
+
+    await waitFor(() => expect(router.state.location.pathname).toBe("/dashboard"));
+    expect(screen.getByText("Dashboard")).toBeInTheDocument();
+  });
 });

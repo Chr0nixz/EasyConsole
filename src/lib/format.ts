@@ -152,3 +152,23 @@ export function formatSecondsDuration(value: unknown, locale: Locale = "zh-CN") 
   if (hours > 0) return `${hours} 小时 ${minutes} 分钟`;
   return `${minutes} 分钟`;
 }
+
+export function formatRelativeUpdatedAt(updatedAt: number, now: number, locale: Locale = "zh-CN") {
+  const deltaMs = Math.max(0, now - updatedAt);
+  const en = locale === "en-US";
+  if (deltaMs < 5_000) return en ? "Just now" : "刚刚";
+  if (deltaMs < 60_000) {
+    const seconds = Math.max(1, Math.floor(deltaMs / 1_000));
+    return en ? `${seconds}s ago` : `${seconds} 秒前`;
+  }
+  if (deltaMs < 3_600_000) {
+    const minutes = Math.max(1, Math.floor(deltaMs / 60_000));
+    return en ? `${minutes}m ago` : `${minutes} 分钟前`;
+  }
+  if (deltaMs < 86_400_000) {
+    const hours = Math.max(1, Math.floor(deltaMs / 3_600_000));
+    return en ? `${hours}h ago` : `${hours} 小时前`;
+  }
+  const days = Math.max(1, Math.floor(deltaMs / 86_400_000));
+  return en ? `${days}d ago` : `${days} 天前`;
+}

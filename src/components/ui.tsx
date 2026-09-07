@@ -85,7 +85,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLBut
       className={cn(
         "app-interactive inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11",
         variant === "primary" && "bg-app-accent text-app-onAccent hover:brightness-95 active:brightness-90",
-        variant === "secondary" && "border border-app-border bg-app-surface text-app-text hover:bg-app-panel",
+        variant === "secondary" && "border border-app-borderStrong bg-app-surface text-app-text hover:bg-app-panel",
         variant === "ghost" && "text-app-muted hover:bg-app-panel hover:text-app-text",
         variant === "danger" && "bg-app-danger text-app-onAccent hover:brightness-95",
         className,
@@ -100,7 +100,7 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
     <input
       {...props}
       className={cn(
-        "h-9 rounded-md border border-app-border bg-app-surface px-3 text-sm text-app-text placeholder:text-app-muted [@media(pointer:coarse)]:min-h-11",
+        "h-9 rounded-md border border-app-borderStrong bg-app-surface px-3 text-sm text-app-text placeholder:text-app-muted [@media(pointer:coarse)]:min-h-11",
         props.className,
       )}
     />
@@ -111,7 +111,7 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
       {...props}
-      className={cn("h-9 rounded-md border border-app-border bg-app-surface px-3 text-sm text-app-text [@media(pointer:coarse)]:min-h-11", props.className)}
+      className={cn("h-9 rounded-md border border-app-borderStrong bg-app-surface px-3 text-sm text-app-text [@media(pointer:coarse)]:min-h-11", props.className)}
     />
   );
 }
@@ -121,7 +121,7 @@ export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
     <textarea
       {...props}
       className={cn(
-        "min-h-24 rounded-md border border-app-border bg-app-surface px-3 py-2 text-sm text-app-text placeholder:text-app-muted [@media(pointer:coarse)]:min-h-32",
+        "min-h-24 rounded-md border border-app-borderStrong bg-app-surface px-3 py-2 text-sm text-app-text placeholder:text-app-muted [@media(pointer:coarse)]:min-h-32",
         props.className,
       )}
     />

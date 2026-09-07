@@ -82,6 +82,7 @@ export type Task = UnknownRecord & {
   update_time?: string;
   releace_conditions?: number;
   release_condition?: number;
+  /** Unit follows the endpoint: seconds from `/instance/task`, hours from `/instance/statics`. */
   use_time?: number;
   cost?: number;
   is_delete?: boolean;
@@ -94,6 +95,7 @@ export type Task = UnknownRecord & {
 export type ConsoleSummary = UnknownRecord & {
   run_task_count?: number;
   pending_task_count?: number;
+  /** Aggregate seconds — use `formatSecondsDuration`. */
   run_time?: {
     month?: number;
     week?: number;

@@ -8,10 +8,11 @@ import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
 import { Button, Panel, Select, TableRegion } from "../components/ui";
 import { instanceApi } from "../lib/api";
-import { formatCost, formatNumber, formatSecondsDuration, getTaskName, getTaskNodeName } from "../lib/format";
+import { formatCost, formatHours, formatNumber, formatRelativeUpdatedAt, formatSecondsDuration, getTaskName, getTaskNodeName } from "../lib/format";
 import { useI18n } from "../lib/i18n";
+import type { Locale } from "../lib/i18n-text";
 import { useCompactLayout } from "../lib/use-compact-layout";
-import { DEFAULT_TASK_PAGE, DEFAULT_TASK_PAGE_SIZE, serializeTaskListQuery } from "../lib/task-list-query";
+import { DEFAULT_TASK_PAGE, DEFAULT_TASK_PAGE_SIZE, serializeTaskListQuery, taskTimestamp } from "../lib/task-list-query";
 import type { ConsoleSummary, Task } from "../lib/types";
 
 type TimeRange = "day" | "week" | "month";
@@ -56,18 +57,49 @@ function tasksHref(status: string) {
   return query ? `/tasks?${query}` : "/tasks";
 }
 
+// Segments are omitted rather than placeholdered: "-" or "0 分钟" in a triage line reads as a measurement.
+function taskMetaLine(task: Task, now: number, locale: Locale, text: (zh: string, en: string) => string) {
+  const segments: string[] = [];
+  const hours = Number(task.use_time);
+  if (Number.isFinite(hours) && hours >= 1 / 60) {
+    segments.push(
+      text(`时长 ${formatHours(hours, locale)}`, `Duration ${formatHours(hours, locale)}`),
+    );
+  }
+  const updatedAt = taskTimestamp(task, "updated");
+  if (updatedAt > 0 && now > 0) {
+    segments.push(
+      text(
+        `更新于 ${formatRelativeUpdatedAt(updatedAt, now, locale)}`,
+        `updated ${formatRelativeUpdatedAt(updatedAt, now, locale)}`,
+      ),
+    );
+  }
+  const cost = Number(task.cost);
+  if (Number.isFinite(cost) && cost > 0) {
+    segments.push(text(`费用 ${formatCost(cost, locale)}`, `cost ${formatCost(cost, locale)}`));
+  }
+  return segments.length > 0 ? segments.join(" · ") : "";
+}
+
+function byRecency(tasks: Task[]) {
+  return [...tasks].sort((left, right) => taskTimestamp(right, "updated") - taskTimestamp(left, "updated"));
+}
+
 function AttentionGroup({
   title,
   href,
   tasks,
   emptyLabel,
+  now,
 }: {
   title: string;
   href: string;
   tasks: Task[];
   emptyLabel: string;
+  now: number;
 }) {
-  const { text } = useI18n();
+  const { locale, text } = useI18n();
   return (
     <section className="min-w-0">
       <div className="flex items-baseline justify-between gap-3">
@@ -91,18 +123,24 @@ function AttentionGroup({
         <p className="mt-2 text-sm text-app-muted">{emptyLabel}</p>
       ) : (
         <ul className="mt-2 divide-y divide-app-border rounded-md border border-app-border">
-          {tasks.slice(0, 8).map((task) => (
-            <li key={String(task.id)} className="flex items-center justify-between gap-3 px-3 py-2">
-              <Link
-                to={`/tasks/${task.id}`}
-                className="min-w-0 truncate text-sm font-medium text-app-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/40"
-                aria-label={text(`查看实例 ${getTaskName(task)} 详情`, `View details for ${getTaskName(task)}`)}
-              >
-                {getTaskName(task)}
-              </Link>
-              <StatusBadge status={task.status} />
-            </li>
-          ))}
+          {tasks.slice(0, 8).map((task) => {
+            const meta = taskMetaLine(task, now, locale, text);
+            return (
+              <li key={String(task.id)} className="px-3 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  <Link
+                    to={`/tasks/${task.id}`}
+                    className="min-w-0 truncate text-sm font-medium text-app-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/40"
+                    aria-label={text(`查看实例 ${getTaskName(task)} 详情`, `View details for ${getTaskName(task)}`)}
+                  >
+                    {getTaskName(task)}
+                  </Link>
+                  <StatusBadge status={task.status} />
+                </div>
+                {meta ? <p className="mt-0.5 truncate text-xs text-app-muted">{meta}</p> : null}
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>
@@ -122,10 +160,11 @@ export function DashboardPage() {
 
   const summary = toSummary(consoleQuery.data);
   const allTasks = toTasks(staticsQuery.data);
+  const tasksFetchedAt = staticsQuery.dataUpdatedAt;
   const recentTasks = allTasks.slice(0, 8);
-  const failedTasks = allTasks.filter((task) => Number(task.status) === 7 || Number(task.status) === 8);
-  const runningTasks = allTasks.filter((task) => Number(task.status) === 2);
-  const queuedTasks = allTasks.filter((task) => Number(task.status) === 1);
+  const failedTasks = byRecency(allTasks.filter((task) => Number(task.status) === 7 || Number(task.status) === 8));
+  const runningTasks = byRecency(allTasks.filter((task) => Number(task.status) === 2));
+  const queuedTasks = byRecency(allTasks.filter((task) => Number(task.status) === 1));
 
   const runtimeValue = Number(summary.run_time?.[timeRange] ?? 0);
   const costValue = Number(summary.cost_map?.[timeRange] ?? 0);
@@ -214,18 +253,21 @@ export function DashboardPage() {
           href="/tasks"
           tasks={failedTasks}
           emptyLabel={text("没有失败或异常实例", "No failed or exception instances")}
+          now={tasksFetchedAt}
         />
         <AttentionGroup
           title={text("运行中", "Running")}
           href={tasksHref("2")}
           tasks={runningTasks}
           emptyLabel={text("没有运行中的实例", "No running instances")}
+          now={tasksFetchedAt}
         />
         <AttentionGroup
           title={text("排队中", "Queued")}
           href={tasksHref("1")}
           tasks={queuedTasks}
           emptyLabel={text("没有排队中的实例", "No queued instances")}
+          now={tasksFetchedAt}
         />
       </div>
 
@@ -325,7 +367,7 @@ export function DashboardPage() {
                     </div>
                     <div className="col-span-2">
                       <dt className="text-app-muted">{text("费用", "Cost")}</dt>
-                      <dd>{formatCost(task.cost, locale)} ({formatSecondsDuration(task.use_time, locale)})</dd>
+                      <dd>{formatCost(task.cost, locale)} ({formatHours(task.use_time, locale)})</dd>
                     </div>
                   </dl>
                 </article>
@@ -363,7 +405,7 @@ export function DashboardPage() {
                       </td>
                       <td className="px-3 py-2 text-app-muted">{getTaskNodeName(task) || "-"}</td>
                       <td className="px-3 py-2 text-app-muted">
-                        {formatCost(task.cost, locale)} ({formatSecondsDuration(task.use_time, locale)})
+                        {formatCost(task.cost, locale)} ({formatHours(task.use_time, locale)})
                       </td>
                     </tr>
                   ))}

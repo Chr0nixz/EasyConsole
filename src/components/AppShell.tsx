@@ -517,17 +517,17 @@ export function AppShell() {
         </div>
       ) : null}
       {commitQueueOpen ? (
-        <div className="app-mobile-queue-panel fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="region" aria-label={text("Commit 队列", "Commit queue")}>
+        <div className="app-mobile-queue-panel fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="region" aria-label={text("提交队列", "Commit queue")}>
           <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
             <div className="min-w-0">
-              <div className="text-sm font-semibold text-app-text">{text("Commit 队列", "Commit queue")}</div>
+              <div className="text-sm font-semibold text-app-text">{text("提交队列", "Commit queue")}</div>
               <div className="text-xs text-app-muted">
                 {commitQueue.summary.total
                   ? text(
                       `${commitQueue.summary.completed}/${commitQueue.summary.total} 完成，${commitQueue.summary.failed} 失败`,
                       `${commitQueue.summary.completed}/${commitQueue.summary.total} done, ${commitQueue.summary.failed} failed`,
                     )
-                  : text("暂无 Commit 任务", "No commits")}
+                  : text("暂无提交任务", "No commits")}
               </div>
             </div>
             <div className="flex items-center gap-1">
@@ -542,7 +542,7 @@ export function AppShell() {
           </div>
           <div className="max-h-[min(28rem,calc(100vh-8rem))] overflow-auto p-2">
             {commitQueue.items.length === 0 ? (
-              <div className="px-3 py-8 text-center text-sm text-app-muted">{text("Commit 任务会显示在这里", "Commits will appear here")}</div>
+              <div className="px-3 py-8 text-center text-sm text-app-muted">{text("提交任务会显示在这里", "Commits will appear here")}</div>
             ) : (
               <div className="space-y-2">
                 {commitQueue.items.map((item) => {
@@ -754,14 +754,14 @@ export function AppShell() {
                     >
                       <Save className="h-4 w-4 shrink-0 text-app-muted" />
                       <span className="min-w-0 flex-1">
-                        <span className="block font-medium text-app-text">{text("Commit 队列", "Commit queue")}</span>
+                        <span className="block font-medium text-app-text">{text("提交队列", "Commit queue")}</span>
                         <span className="block truncate text-xs text-app-muted">
                           {commitQueue.summary.total
                             ? text(
                                 `${commitQueue.summary.completed}/${commitQueue.summary.total} 完成，${commitQueue.summary.failed} 失败`,
                                 `${commitQueue.summary.completed}/${commitQueue.summary.total} done, ${commitQueue.summary.failed} failed`,
                               )
-                            : text("暂无 Commit 任务", "No commits")}
+                            : text("暂无提交任务", "No commits")}
                         </span>
                       </span>
                       {commitQueue.summary.active || commitQueue.summary.failed ? (

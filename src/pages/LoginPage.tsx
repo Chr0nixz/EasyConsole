@@ -11,6 +11,18 @@ import { useI18n } from "../lib/i18n";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useAuth } from "../lib/use-auth";
 
+type RouteLocationState = { from?: { pathname?: string; search?: string; hash?: string } } | null;
+
+// Task list filters, search text, sort, and page number all live in the URL query, so restoring
+// only the pathname would silently discard the view the user was actually working in.
+function resolvePostLoginTarget(state: unknown): string {
+  const from = (state as RouteLocationState)?.from;
+  const pathname = from?.pathname ?? "";
+  if (!pathname.startsWith("/") || pathname.startsWith("//")) return "/dashboard";
+  if (pathname === "/login") return "/dashboard";
+  return `${pathname}${from?.search ?? ""}${from?.hash ?? ""}`;
+}
+
 function friendlyLoginError(message: string, fallbackZh: string, fallbackEn: string, locale: "zh-CN" | "en-US") {
   const lower = message.toLowerCase();
   const zh = locale === "zh-CN";
@@ -49,11 +61,10 @@ export function LoginPage() {
   const transportBlocked = Boolean(getTransportBlockReason());
 
   if (!auth.ready || auth.restoringSession) return <LoadingState label={t("login.restoreSession")} />;
-  if (auth.token) return <Navigate to="/dashboard" replace />;
+  if (auth.token) return <Navigate to={resolvePostLoginTarget(location.state)} replace />;
 
   function navigateAfterLogin() {
-    const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? "/dashboard";
-    navigate(from, { replace: true });
+    navigate(resolvePostLoginTarget(location.state), { replace: true });
   }
 
   async function onSubmit(event: FormEvent) {

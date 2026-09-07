@@ -12,6 +12,7 @@ Use restrained, slightly warm neutrals with one blue accent for primary actions 
 - Surface: `oklch(0.995 0.004 95)`
 - Panel: `oklch(0.955 0.008 95)`
 - Border: `oklch(0.86 0.012 95)`
+- Border (strong): `oklch(0.62 0.014 95)`
 - Text: `oklch(0.23 0.018 255)`
 - Muted text: `oklch(0.48 0.018 255)`
 - On accent: `oklch(0.995 0.004 95)`
@@ -20,7 +21,7 @@ Use restrained, slightly warm neutrals with one blue accent for primary actions 
 - Warning: `oklch(0.46 0.12 78)`
 - Danger: `oklch(0.50 0.18 25)`
 
-Semantic surfaces use paired soft backgrounds and ring colors, exposed as `app.*Soft` and `app.*Ring` tokens for badges, toasts, validation, selected rows, and API failure states. Use `app.onAccent` for text and icons on saturated accent or danger fills. Sticky table action columns use named `shadow-stickyColumn*` shadows rather than arbitrary shadow values. Code and terminal surfaces use `app.code*` and `app.terminal*` tokens so dark inspection panels remain intentional without leaking generic slate/sky palette classes into product UI.
+Semantic surfaces use paired soft backgrounds and ring colors, exposed as `app.*Soft` and `app.*Ring` tokens for badges, toasts, validation, selected rows, and API failure states. Use `app.onAccent` for text and icons on saturated accent or danger fills. Borders are two-tier: `app.border` is the soft decorative boundary for panels, dividers, and table rules, while `app.borderStrong` is required wherever the boundary is the only cue identifying an interactive control (inputs, selects, textareas, secondary buttons), because `app.surface` and `app.bg` are near-identical and the soft border measures 1.51:1 there, below the 3:1 WCAG 1.4.11 non-text minimum. Sticky table action columns use named `shadow-stickyColumn*` shadows rather than arbitrary shadow values. Code and terminal surfaces use `app.code*` and `app.terminal*` tokens so dark inspection panels remain intentional without leaking generic slate/sky palette classes into product UI.
 
 ## Typography
 

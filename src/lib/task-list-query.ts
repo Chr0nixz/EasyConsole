@@ -76,7 +76,7 @@ export function taskMatchesQuery(task: Task, state: TaskListQueryState) {
   return true;
 }
 
-function taskTimestamp(task: Task, field: "created" | "updated") {
+export function taskTimestamp(task: Task, field: "created" | "updated") {
   const raw =
     field === "created"
       ? (task.create_time ?? task.created_at)

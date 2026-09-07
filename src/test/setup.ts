@@ -7,3 +7,7 @@ class ResizeObserverStub {
   disconnect() {}
 }
 (globalThis as unknown as { ResizeObserver: typeof ResizeObserverStub }).ResizeObserver = ResizeObserverStub;
+
+// jsdom omits scrollIntoView, which TasksPage row navigation and the Settings section index both call.
+// The tools/ suites share this setup but run in Node, where Element does not exist.
+if (typeof Element !== "undefined") Element.prototype.scrollIntoView = () => {};

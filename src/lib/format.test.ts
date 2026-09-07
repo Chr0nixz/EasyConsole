@@ -5,6 +5,8 @@ import {
   formatDateTimeForApi,
   formatDateTimeLocalInput,
   formatExperimentTimedTaskName,
+  formatHours,
+  formatRelativeUpdatedAt,
   formatSecondsDuration,
   formatTaskDefaultName,
   getTaskNodeName,
@@ -37,6 +39,32 @@ describe("format helpers", () => {
   it("formats task use_time values as seconds-based durations", () => {
     expect(formatSecondsDuration(90)).toBe("1 分钟");
     expect(formatSecondsDuration(3660)).toBe("1 小时 1 分钟");
+  });
+
+  // use_time is hours from /instance/statics, seconds from /instance/task; the wrong formatter reads as "0 分钟".
+  it("formats task use_time values as fractional hours", () => {
+    expect(formatHours(11.6021)).toBe("11.6 小时");
+    expect(formatHours(11.6021, "en-US")).toBe("11.6 hr");
+    expect(formatHours(0.2938)).toBe("18 分钟");
+    expect(formatHours(0.2938, "en-US")).toBe("18 min");
+    expect(formatHours(23.9978)).toBe("24.0 小时");
+    expect(formatHours(undefined)).toBe("-");
+  });
+
+  it("formats relative update times across every tier in both locales", () => {
+    const now = 1_800_000_000_000;
+    expect(formatRelativeUpdatedAt(now - 2_000, now)).toBe("刚刚");
+    expect(formatRelativeUpdatedAt(now - 2_000, now, "en-US")).toBe("Just now");
+    expect(formatRelativeUpdatedAt(now - 30_000, now)).toBe("30 秒前");
+    expect(formatRelativeUpdatedAt(now - 30_000, now, "en-US")).toBe("30s ago");
+    expect(formatRelativeUpdatedAt(now - 300_000, now)).toBe("5 分钟前");
+    expect(formatRelativeUpdatedAt(now - 300_000, now, "en-US")).toBe("5m ago");
+    expect(formatRelativeUpdatedAt(now - 7_200_000, now)).toBe("2 小时前");
+    expect(formatRelativeUpdatedAt(now - 7_200_000, now, "en-US")).toBe("2h ago");
+    expect(formatRelativeUpdatedAt(now - 5 * 86_400_000, now)).toBe("5 天前");
+    expect(formatRelativeUpdatedAt(now - 5 * 86_400_000, now, "en-US")).toBe("5d ago");
+    // A server clock ahead of the client must not render as a negative age.
+    expect(formatRelativeUpdatedAt(now + 60_000, now)).toBe("刚刚");
   });
 
   it("reads task node names from node.name with node_name fallback", () => {

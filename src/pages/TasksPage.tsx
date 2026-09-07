@@ -46,7 +46,7 @@ import { getTaskEditableState } from "../lib/api-factory";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { useCommitQueue } from "../lib/commit-queue-context";
 import { useDownloadQueueActions } from "../lib/use-download-queue";
-import { asJson, formatSecondsDuration, getTaskName, getTaskNodeName, taskStatusText, taskStatusTextEn } from "../lib/format";
+import { asJson, formatRelativeUpdatedAt, formatSecondsDuration, getTaskName, getTaskNodeName, taskStatusText, taskStatusTextEn } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { i18nText } from "../lib/i18n-text";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
@@ -205,25 +205,6 @@ function ActionHeader() {
       </span>
     </div>
   );
-}
-
-function formatRelativeUpdatedAt(
-  updatedAt: number,
-  now: number,
-  text: (zh: string, en: string) => string,
-) {
-  const deltaMs = Math.max(0, now - updatedAt);
-  if (deltaMs < 5_000) return text("刚刚", "Just now");
-  if (deltaMs < 60_000) {
-    const seconds = Math.max(1, Math.floor(deltaMs / 1_000));
-    return text(`${seconds} 秒前`, `${seconds}s ago`);
-  }
-  if (deltaMs < 3_600_000) {
-    const minutes = Math.max(1, Math.floor(deltaMs / 60_000));
-    return text(`${minutes} 分钟前`, `${minutes}m ago`);
-  }
-  const hours = Math.max(1, Math.floor(deltaMs / 3_600_000));
-  return text(`${hours} 小时前`, `${hours}h ago`);
 }
 
 async function loadColumnVisibility(): Promise<VisibilityState> {
@@ -1663,7 +1644,7 @@ export function TasksPage() {
   const listUpdatedLabel = query.isFetching
     ? text("刷新中", "Refreshing")
     : query.dataUpdatedAt
-      ? formatRelativeUpdatedAt(query.dataUpdatedAt, nowMs, text)
+      ? formatRelativeUpdatedAt(query.dataUpdatedAt, nowMs, locale)
       : null;
 
   return (
@@ -1839,8 +1820,17 @@ export function TasksPage() {
           <EmptyState title={text("暂无任务实例", "No task instances")} action={<Button onClick={openCreateTask}>{text("新建任务", "New task")}</Button>} />
         ) : (
           <>
+          <h2 id="task-list-heading" className="sr-only">
+            {text("任务实例列表", "Task instance list")}
+          </h2>
           {compactLayout ? (
-          <div ref={mobileCardsRef} className="divide-y divide-app-border" tabIndex={0}>
+          <div
+            ref={mobileCardsRef}
+            aria-labelledby="task-list-heading"
+            className="divide-y divide-app-border"
+            role="region"
+            tabIndex={0}
+          >
             {table.getRowModel().rows.map((row, rowIndex) => {
               const task = row.original;
               const release = isReleasableTask(task);

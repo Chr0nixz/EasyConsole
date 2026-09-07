@@ -1,3 +1,19 @@
+# EasyConsole v0.4.24
+
+Accessibility, session continuity, and dashboard detail fixes across the shell.
+
+## Changes
+
+- **Session continuity**: Signing back in after a session expires now restores the full route, including its query string and hash. Task list filters, search text, sort, and page number all live in the URL query and were previously discarded, dropping users onto an unfiltered first page.
+- **Control contrast**: Inputs, selects, textareas, and secondary buttons now use a stronger border color that meets the WCAG 1.4.11 3:1 non-text contrast minimum. The previous border measured 1.51:1 against the near-identical surface and background colors, leaving a boundary too faint to identify a control by.
+- **Task list landmark**: The compact card list now carries an accessible heading and is exposed as a labelled region, so it is no longer skipped when navigating by heading or landmark.
+- **Dashboard triage detail**: Failed, running, and queued task rows now show duration, relative last-updated time, and cost on one metadata line. Absent values are omitted rather than rendered as a placeholder, and relative times are anchored to when the data was fetched rather than to the local clock.
+- **Correct dashboard durations**: Statistics report elapsed hours, but dashboard durations were formatted as seconds, rendering short runs as "0 分钟" next to a real cost. Dashboard durations now display correctly while the task list keeps its seconds-based formatting.
+- **Settings section index**: A sticky index at the top of Settings jumps to any section and expands it when collapsed.
+- **Localization**: Commit queue labels, empty states, and toast messages were hardcoded Chinese and now follow the selected language.
+
+---
+
 # EasyConsole v0.4.23
 
 Streamline settings changes and restore normal update delivery for tagged releases.

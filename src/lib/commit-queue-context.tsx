@@ -74,33 +74,33 @@ export function CommitQueueProvider({ children }: { children: ReactNode }) {
             item.id === next.id ? { ...item, status: "done", updatedAt } : item,
           ),
         );
-        toast.success(text("Commit 完成", "Commit complete"), job.taskName);
+        toast.success(text("提交完成", "Commit complete"), job.taskName);
         void runLogger.log({
           source: "task",
           level: "info",
           action: "image.commit",
           result: "success",
-          title: text("Commit 完成", "Commit complete"),
+          title: text("提交完成", "Commit complete"),
           targetName: job.taskName,
           targetId: job.taskId,
           metadata: { podName: job.podName },
         });
       })
       .catch((error) => {
-        const message = errorMessage(error, text("Commit 失败", "Commit failed"));
+        const message = errorMessage(error, text("提交失败", "Commit failed"));
         const updatedAt = new Date().toISOString();
         setItems((current) =>
           current.map((item) =>
             item.id === next.id ? { ...item, status: "failed", error: message, updatedAt } : item,
           ),
         );
-        toast.error(text("Commit 失败", "Commit failed"), `${job.taskName}: ${message}`);
+        toast.error(text("提交失败", "Commit failed"), `${job.taskName}: ${message}`);
         void runLogger.log({
           source: "task",
           level: "error",
           action: "image.commit",
           result: "failure",
-          title: text("Commit 失败", "Commit failed"),
+          title: text("提交失败", "Commit failed"),
           targetName: job.taskName,
           targetId: job.taskId,
           error: message,
@@ -131,7 +131,7 @@ export function CommitQueueProvider({ children }: { children: ReactNode }) {
         updatedAt: now,
       },
     ]);
-    toast.info(text("已加入 Commit 队列", "Added to commit queue"), input.taskName);
+    toast.info(text("已加入提交队列", "Added to commit queue"), input.taskName);
     return id;
   }, [text, toast]);
 

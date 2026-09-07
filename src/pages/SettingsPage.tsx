@@ -161,6 +161,19 @@ type LucideIcon = typeof Settings2;
 
 const AUTO_SAVE_DELAY_MS = 500;
 
+type SettingsGroupKey = "connection" | "terminal" | "data" | "notifications";
+
+const SETTINGS_GROUPS: { key: SettingsGroupKey; zh: string; en: string }[] = [
+  { key: "connection", zh: "连接", en: "Connection" },
+  { key: "terminal", zh: "终端", en: "Terminal" },
+  { key: "data", zh: "数据", en: "Data" },
+  { key: "notifications", zh: "通知", en: "Notifications" },
+];
+
+function settingsGroupId(key: SettingsGroupKey) {
+  return `settings-group-${key}`;
+}
+
 function SectionHeader({
   icon: Icon,
   title,
@@ -247,25 +260,36 @@ function CollapsibleSubSection({
 }
 
 function SettingsGroup({
+  id,
   label,
   defaultOpen = false,
   hideHeader = false,
+  open: openProp,
+  onOpenChange,
   children,
 }: {
+  id?: string;
   label: string;
   defaultOpen?: boolean;
   hideHeader?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
-  if (hideHeader) return <div className="space-y-5">{children}</div>;
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  const open = openProp ?? uncontrolledOpen;
+  function setOpen(next: boolean) {
+    onOpenChange?.(next);
+    if (openProp === undefined) setUncontrolledOpen(next);
+  }
+  if (hideHeader) return <div id={id} className="space-y-5 scroll-mt-12">{children}</div>;
   return (
-    <section className="space-y-3">
+    <section id={id} className="space-y-3 scroll-mt-12">
       <button
         type="button"
         className="flex min-w-0 items-center gap-2 text-sm font-medium text-app-text"
         aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen(!open)}
       >
         <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? "" : "-rotate-90"}`} />
         <span>{label}</span>
@@ -314,6 +338,32 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [changingPassword, setChangingPassword] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [openGroups, setOpenGroups] = useState<Record<SettingsGroupKey, boolean>>({
+    connection: true,
+    terminal: false,
+    data: false,
+    notifications: false,
+  });
+  const [scrollRequest, setScrollRequest] = useState<{ key: SettingsGroupKey; seq: number } | null>(null);
+  const scrollSeqRef = useRef(0);
+
+  const groupLabels = useMemo(() => {
+    const labels = {} as Record<SettingsGroupKey, string>;
+    for (const group of SETTINGS_GROUPS) labels[group.key] = text(group.zh, group.en);
+    return labels;
+  }, [text]);
+
+  function goToGroup(key: SettingsGroupKey) {
+    setOpenGroups((current) => (current[key] ? current : { ...current, [key]: true }));
+    scrollSeqRef.current += 1;
+    setScrollRequest({ key, seq: scrollSeqRef.current });
+  }
+
+  // A collapsed group has no body in the DOM, so scroll only after the expanded layout commits.
+  useEffect(() => {
+    if (!scrollRequest) return;
+    document.getElementById(settingsGroupId(scrollRequest.key))?.scrollIntoView({ block: "start" });
+  }, [scrollRequest]);
 
   const settingsAccountId = useMemo(() => {
     if (!auth.user) return GLOBAL_SETTINGS_ACCOUNT_ID;
@@ -925,7 +975,38 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const content = (
     <>
     <div className="space-y-5">
-      <SettingsGroup hideHeader={standalone} label={text("连接", "Connection")} defaultOpen>
+      {/* Buttons, not anchors: the Tauri build uses HashRouter, where a #fragment href reads as a route change. */}
+      {standalone ? null : (
+        <nav
+          aria-label={text("设置分区", "Settings sections")}
+          // Sticky resolves against the content box, so this cancels AppShell main's py-4/sm:p-5 top padding.
+          className="sticky -top-4 z-10 rounded-md border border-app-border bg-app-bg p-1 sm:-top-5"
+        >
+          <ul className="flex flex-wrap items-center gap-1">
+            {SETTINGS_GROUPS.map((group) => (
+              <li key={group.key}>
+                <button
+                  type="button"
+                  className="app-interactive rounded px-2.5 py-1 text-xs font-medium text-app-muted hover:bg-app-panel hover:text-app-text"
+                  aria-label={text(`跳转到 ${groupLabels[group.key]}`, `Go to ${groupLabels[group.key]}`)}
+                  aria-expanded={openGroups[group.key]}
+                  aria-controls={settingsGroupId(group.key)}
+                  onClick={() => goToGroup(group.key)}
+                >
+                  {groupLabels[group.key]}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      )}
+      <SettingsGroup
+        id={settingsGroupId("connection")}
+        hideHeader={standalone}
+        label={groupLabels.connection}
+        open={openGroups.connection}
+        onOpenChange={(open) => setOpenGroups((current) => ({ ...current, connection: open }))}
+      >
       <Panel>
         <SectionHeader
           icon={Settings2}
@@ -1217,7 +1298,12 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
 
       {standalone ? null : (
       <>
-      <SettingsGroup label={text("终端", "Terminal")}>
+      <SettingsGroup
+        id={settingsGroupId("terminal")}
+        label={groupLabels.terminal}
+        open={openGroups.terminal}
+        onOpenChange={(open) => setOpenGroups((current) => ({ ...current, terminal: open }))}
+      >
       {browserRuntime.supportsInAppSsh ? (
         <Panel>
           <SectionHeader
@@ -1584,7 +1670,12 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       ) : null}
       </SettingsGroup>
 
-      <SettingsGroup label={text("数据", "Data")}>
+      <SettingsGroup
+        id={settingsGroupId("data")}
+        label={groupLabels.data}
+        open={openGroups.data}
+        onOpenChange={(open) => setOpenGroups((current) => ({ ...current, data: open }))}
+      >
       <Panel>
         <SectionHeader
           icon={RefreshCw}
@@ -1723,7 +1814,12 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       </Panel>
       </SettingsGroup>
 
-      <SettingsGroup label={text("通知", "Notifications")}>
+      <SettingsGroup
+        id={settingsGroupId("notifications")}
+        label={groupLabels.notifications}
+        open={openGroups.notifications}
+        onOpenChange={(open) => setOpenGroups((current) => ({ ...current, notifications: open }))}
+      >
       <Panel>
         <SectionHeader
           icon={BellRing}
