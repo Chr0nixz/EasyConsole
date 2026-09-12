@@ -1,3 +1,20 @@
+# EasyConsole v0.4.25
+
+Bilingual coverage for the messages the desktop shell, the shared library layer, and the CLI produce themselves.
+
+## Changes
+
+- **English in the desktop shell**: SSH and SFTP failures, SSH session events, host-key prompts, port-forwarding errors, and the Android installer messages are produced by the native layer, which had no way to learn the selected language and always answered in Chinese. The app now tells it which language is active, so those messages follow the language switch.
+- **Notification text**: Task notifications built their body from the status text without a language, so the body stayed Chinese while the title was translated. Titles, status words, and the separator now all follow the selected language.
+- **Shared-layer strings**: Recurrence descriptions, the SSH font preset list, update failures, scheduled-task errors, and backup import and decryption errors were each written in only one language. They now follow the selected language in both directions.
+- **Dates follow the language**: Storage modification times, the update dialog's "last checked", and SSH connection history used a hardcoded Chinese locale or the operating system's, regardless of the interface language.
+- **Storage sizes in English**: The size-unit table was keyed by a translated string, so Chinese-formatted sizes returned by the backend failed to parse in the English interface and displayed no size.
+- **Language switching no longer interrupts background work**: Switching language tore down and rebuilt the scheduled-task runner, releasing and re-acquiring its desktop background lock. Translation now flows through a ref so the runner keeps running.
+- **Correct text on the switching render**: Shared helpers read the language one render behind the rest of the interface, so the strings they produced briefly kept the previous language.
+- **CLI and MCP**: Run log titles written by the command line and MCP servers are now localized. `--lang` or `EASY_CONSOLE_LANG` selects the language, falling back to the system locale and then English.
+
+---
+
 # EasyConsole v0.4.24
 
 Accessibility, session continuity, and dashboard detail fixes across the shell.
