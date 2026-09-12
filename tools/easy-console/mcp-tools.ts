@@ -4,6 +4,7 @@ import * as z from "zod/v4";
 import type { UnknownRecord } from "../../src/lib/types";
 import { appendRunLog, clearRunLogs, filterRunLogs, formatRunLogExport, loadRunLogs, type RunLogChannel, type RunLogResult, type RunLogSource } from "../../src/lib/run-logs";
 import { nonSecretBackupSections, secretBackupSections } from "../../src/lib/local-data-backup";
+import { i18nText } from "../../src/lib/i18n-text";
 import { saveEasyConsoleConfig } from "./config";
 import { createEasyConsoleContext, type EasyConsoleContext, type EasyConsoleContextOptions } from "./context";
 import {
@@ -804,7 +805,7 @@ export function registerEasyConsoleTools(server: McpServer, deps: EasyConsoleMcp
               level: "info",
               action: definition.name,
               result: "success",
-              title: `MCP ${definition.name} 成功`,
+              title: i18nText(`MCP ${definition.name} 成功`, `MCP ${definition.name} succeeded`),
               durationMs: Date.now() - startedAt,
               metadata: { input },
             });
@@ -818,7 +819,7 @@ export function registerEasyConsoleTools(server: McpServer, deps: EasyConsoleMcp
               level: "error",
               action: definition.name,
               result: "failure",
-              title: `MCP ${definition.name} 失败`,
+              title: i18nText(`MCP ${definition.name} 失败`, `MCP ${definition.name} failed`),
               durationMs: Date.now() - startedAt,
               error: error instanceof Error ? error.message : String(error),
               metadata: { input },

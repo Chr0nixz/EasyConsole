@@ -4,6 +4,7 @@ import { useMatch } from "react-router-dom";
 
 import { instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
+import { useI18n } from "../lib/i18n";
 import { browserRuntime } from "../lib/runtime";
 import { getImportantTaskStatusNotification, getTaskNotificationId, type ImportantTaskStatusNotification } from "../lib/task-status-notifications";
 import {
@@ -18,6 +19,7 @@ import { useToast } from "../lib/use-toast";
 export function TaskNotificationWatcher() {
   const auth = useAuth();
   const toast = useToast();
+  const { locale } = useI18n();
   const initializedRef = useRef(false);
   const statusSnapshotRef = useRef<Map<string, TaskStatus | undefined>>(new Map());
   const [hidden, setHidden] = useState(() => typeof document !== "undefined" && document.visibilityState === "hidden");
@@ -73,7 +75,7 @@ export function TaskNotificationWatcher() {
     for (const task of tasks) {
       const taskId = getTaskNotificationId(task);
       const previousStatus = shouldNotify ? previousSnapshot.get(taskId) : undefined;
-      const notification = getImportantTaskStatusNotification(task, previousStatus);
+      const notification = getImportantTaskStatusNotification(task, previousStatus, locale);
 
       if (notification) {
         const mode = getRuntimeSettings().notificationPreferences[notification.event];
@@ -97,7 +99,7 @@ export function TaskNotificationWatcher() {
 
     initializedRef.current = true;
     statusSnapshotRef.current = nextSnapshot;
-  }, [query.data?.items, query.dataUpdatedAt, showInAppNotification]);
+  }, [query.data?.items, query.dataUpdatedAt, showInAppNotification, locale]);
 
   return null;
 }

@@ -1,4 +1,5 @@
 import { TOKEN_STORAGE_KEY } from "./api-client";
+import { i18nText } from "./i18n-text";
 import {
   APP_SETTINGS_STORAGE_KEY,
   getAccountAppSettings,
@@ -105,7 +106,7 @@ export async function exportLocalDataBackup(
 export function parseLocalDataBackup(text: string): LocalDataBackup {
   const parsed = JSON.parse(text) as Partial<LocalDataBackup>;
   if (parsed.app !== "EasyConsole" || parsed.version !== LOCAL_DATA_BACKUP_VERSION || !parsed.items || typeof parsed.items !== "object") {
-    throw new Error("Unsupported EasyConsole backup file");
+    throw new Error(i18nText("不是有效的 EasyConsole 备份文件", "Unsupported EasyConsole backup file"));
   }
   return parsed as LocalDataBackup;
 }

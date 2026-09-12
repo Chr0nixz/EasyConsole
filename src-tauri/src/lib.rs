@@ -24,6 +24,42 @@ use {
     tauri::{PhysicalPosition, Position, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent},
 };
 
+mod i18n;
+
+/// The webview pushes its active interface language here so the native side can
+/// localize the strings it produces itself: SSH/SFTP errors, session events and
+/// the Android installer messages.
+#[tauri::command]
+fn set_locale(locale: String) {
+    i18n::set_locale(&locale);
+}
+
+/// Localized `format!`. Use this instead of `format!` for every user-facing
+/// string so the native side follows the interface language.
+///
+/// ```text
+/// trf!("无法打开浏览器：{error}", "Failed to open browser: {error}")
+/// ```
+///
+/// Both candidates share the argument list, so named captures interleave with
+/// positional arguments exactly as they do in `format!`.
+macro_rules! trf {
+    ($zh:literal, $en:literal) => {
+        if $crate::i18n::is_english() {
+            format!($en)
+        } else {
+            format!($zh)
+        }
+    };
+    ($zh:literal, $en:literal, $($arg:tt)*) => {
+        if $crate::i18n::is_english() {
+            format!($en, $($arg)*)
+        } else {
+            format!($zh, $($arg)*)
+        }
+    };
+}
+
 const SSH_SESSION_EVENT: &str = "ssh-session-event";
 const HOST_KEY_PROMPT_TIMEOUT_SECS: u64 = 120;
 #[cfg(desktop)]
@@ -253,8 +289,9 @@ impl client::Handler for EasyConsoleSshClient {
             Ok(HostKeyDecision::Match) => Ok(true),
             Ok(HostKeyDecision::Mismatch { .. }) => {
                 if let Ok(mut guard) = self.host_key_error.lock() {
-                    *guard = Some(format!(
+                    *guard = Some(trf!(
                         "SSH 主机密钥与已知记录不符（{}:{}）。如确认主机已更换密钥，请在设置中删除该 known host 后重试。",
+                        "The SSH host key does not match the known record ({}:{}). If the host really changed its key, delete that known host in Settings and retry.",
                         self.host, self.port
                     ));
                 }
@@ -263,8 +300,9 @@ impl client::Handler for EasyConsoleSshClient {
             Ok(HostKeyDecision::Unknown { fingerprint }) => {
                 if !self.allow_host_key_prompt {
                     if let Ok(mut guard) = self.host_key_error.lock() {
-                        *guard = Some(format!(
+                        *guard = Some(trf!(
                             "尚未信任 SSH 主机 {}:{}。请先通过应用内 SSH 确认指纹后再重试。",
+                            "The SSH host {}:{} is not trusted yet. Confirm its fingerprint through in-app SSH first, then retry.",
                             self.host, self.port
                         ));
                     }
@@ -285,7 +323,7 @@ impl client::Handler for EasyConsoleSshClient {
                     );
                 } else {
                     if let Ok(mut guard) = self.host_key_error.lock() {
-                        *guard = Some("无法等待主机密钥确认：内部状态已损坏".to_string());
+                        *guard = Some(trf!("无法等待主机密钥确认：内部状态已损坏", "Cannot await host key confirmation: internal state is corrupted"));
                     }
                     return Ok(false);
                 }
@@ -302,8 +340,9 @@ impl client::Handler for EasyConsoleSshClient {
                     &self.session_id,
                     "host-key-prompt",
                     data,
-                    Some(format!(
+                    Some(trf!(
                         "首次连接 {}:{}，请确认主机指纹后继续。",
+                        "First connection to {}:{}. Confirm the host fingerprint to continue.",
                         self.host, self.port
                     )),
                 );
@@ -321,8 +360,9 @@ impl client::Handler for EasyConsoleSshClient {
 
                 if !accepted {
                     if let Ok(mut guard) = self.host_key_error.lock() {
-                        *guard = Some(format!(
+                        *guard = Some(trf!(
                             "已拒绝或超时未确认 SSH 主机密钥（{}:{}）。",
+                            "The SSH host key was rejected or not confirmed in time ({}:{}).",
                             self.host, self.port
                         ));
                     }
@@ -333,7 +373,7 @@ impl client::Handler for EasyConsoleSshClient {
                     persist_known_host(&self.app, &self.host, self.port, &fingerprint)
                 {
                     if let Ok(mut guard) = self.host_key_error.lock() {
-                        *guard = Some(format!("无法保存 SSH 主机密钥：{message}"));
+                        *guard = Some(trf!("无法保存 SSH 主机密钥：{message}", "Failed to save the SSH host key: {message}"));
                     }
                     return Ok(false);
                 }
@@ -341,7 +381,7 @@ impl client::Handler for EasyConsoleSshClient {
             }
             Err(message) => {
                 if let Ok(mut guard) = self.host_key_error.lock() {
-                    *guard = Some(format!("无法校验 SSH 主机密钥：{message}"));
+                    *guard = Some(trf!("无法校验 SSH 主机密钥：{message}", "Failed to verify the SSH host key: {message}"));
                 }
                 Ok(false)
             }
@@ -353,8 +393,8 @@ fn app_data_file(app: &AppHandle, filename: &str) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
-    fs::create_dir_all(&dir).map_err(|error| format!("无法创建应用数据目录：{error}"))?;
+        .map_err(|error| trf!("无法定位应用数据目录：{error}", "Failed to locate the app data directory: {error}"))?;
+    fs::create_dir_all(&dir).map_err(|error| trf!("无法创建应用数据目录：{error}", "Failed to create the app data directory: {error}"))?;
     Ok(dir.join(filename))
 }
 
@@ -362,31 +402,31 @@ fn load_string_map(path: &Path) -> Result<HashMap<String, String>, String> {
     if !path.exists() {
         return Ok(HashMap::new());
     }
-    let text = fs::read_to_string(path).map_err(|error| format!("无法读取本地数据：{error}"))?;
+    let text = fs::read_to_string(path).map_err(|error| trf!("无法读取本地数据：{error}", "Failed to read local data: {error}"))?;
     if text.trim().is_empty() {
         return Ok(HashMap::new());
     }
-    serde_json::from_str(&text).map_err(|error| format!("本地数据格式无法识别：{error}"))
+    serde_json::from_str(&text).map_err(|error| trf!("本地数据格式无法识别：{error}", "Unrecognized local data format: {error}"))
 }
 
 fn write_string_map(path: &Path, data: &HashMap<String, String>) -> Result<(), String> {
     let text = serde_json::to_string_pretty(data)
-        .map_err(|error| format!("本地数据序列化失败：{error}"))?;
+        .map_err(|error| trf!("本地数据序列化失败：{error}", "Failed to serialize local data: {error}"))?;
     let parent = path
         .parent()
-        .ok_or_else(|| "无法定位本地数据目录".to_string())?;
+        .ok_or_else(|| trf!("无法定位本地数据目录", "Failed to locate the local data directory"))?;
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| "无法定位本地数据文件名".to_string())?;
+        .ok_or_else(|| trf!("无法定位本地数据文件名", "Failed to locate the local data file name"))?;
     let tmp_path = parent.join(format!("{file_name}.tmp"));
     let bak_path = parent.join(format!("{file_name}.bak"));
 
-    fs::write(&tmp_path, &text).map_err(|error| format!("无法写入本地数据临时文件：{error}"))?;
+    fs::write(&tmp_path, &text).map_err(|error| trf!("无法写入本地数据临时文件：{error}", "Failed to write the local data temp file: {error}"))?;
 
     if path.exists() {
         let _ = fs::remove_file(&bak_path);
-        fs::rename(path, &bak_path).map_err(|error| format!("无法备份本地数据：{error}"))?;
+        fs::rename(path, &bak_path).map_err(|error| trf!("无法备份本地数据：{error}", "Failed to back up local data: {error}"))?;
     }
 
     match fs::rename(&tmp_path, path) {
@@ -396,7 +436,7 @@ fn write_string_map(path: &Path, data: &HashMap<String, String>) -> Result<(), S
                 let _ = fs::rename(&bak_path, path);
             }
             let _ = fs::remove_file(&tmp_path);
-            Err(format!("无法提交本地数据写入：{error}"))
+            Err(trf!("无法提交本地数据写入：{error}", "Failed to commit the local data write: {error}"))
         }
     }
 }
@@ -460,7 +500,7 @@ fn persist_known_host(
 ) -> Result<(), String> {
     let _guard = known_hosts_lock()
         .lock()
-        .map_err(|e| format!("已知主机锁获取失败：{e}"))?;
+        .map_err(|e| trf!("已知主机锁获取失败：{e}", "Failed to acquire the known-hosts lock: {e}"))?;
     let path = app_data_file(app, "known-ssh-hosts.json")?;
     let mut known_hosts = load_string_map(&path)?;
     known_hosts.insert(known_host_key(host, port), fingerprint.to_string());
@@ -518,19 +558,19 @@ fn normalize_port_forward_bind_host(host: &str) -> Result<String, String> {
     if trimmed == "::1" || trimmed.eq_ignore_ascii_case("[::1]") {
         return Ok("::1".to_string());
     }
-    Err("端口转发仅允许绑定本机回环地址（127.0.0.1 或 ::1）".to_string())
+    Err(trf!("端口转发仅允许绑定本机回环地址（127.0.0.1 或 ::1）", "Port forwarding may only bind to the local loopback address (127.0.0.1 or ::1)"))
 }
 
 fn validate_host(host: &str) -> Result<String, String> {
     let host = host.trim();
     if host.is_empty() {
-        return Err("SSH Host 为空，无法建立连接".to_string());
+        return Err(trf!("SSH Host 为空，无法建立连接", "SSH Host is empty; cannot establish a connection"));
     }
     if !host
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | ':' | '[' | ']'))
     {
-        return Err("SSH Host 包含不支持的字符".to_string());
+        return Err(trf!("SSH Host 包含不支持的字符", "SSH Host contains unsupported characters"));
     }
     Ok(host.to_string())
 }
@@ -540,7 +580,7 @@ fn parse_port(port: Option<&str>) -> Result<u16, String> {
         return Ok(22);
     };
     port.parse::<u16>()
-        .map_err(|_| "SSH Port 不是有效数字".to_string())
+        .map_err(|_| trf!("SSH Port 不是有效数字", "SSH Port is not a valid number"))
 }
 
 fn validate_username(username: Option<&str>) -> Result<Option<String>, String> {
@@ -550,7 +590,7 @@ fn validate_username(username: Option<&str>) -> Result<Option<String>, String> {
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
         {
-            return Err("SSH Username 包含不支持的字符".to_string());
+            return Err(trf!("SSH Username 包含不支持的字符", "SSH Username contains unsupported characters"));
         }
         return Ok(Some(username.to_string()));
     }
@@ -559,7 +599,7 @@ fn validate_username(username: Option<&str>) -> Result<Option<String>, String> {
 
 #[cfg(desktop)]
 fn require_username(username: Option<&str>) -> Result<String, String> {
-    validate_username(username)?.ok_or_else(|| "SSH Username 为空，无法建立连接".to_string())
+    validate_username(username)?.ok_or_else(|| trf!("SSH Username 为空，无法建立连接", "SSH Username is empty; cannot establish a connection"))
 }
 
 #[cfg(desktop)]
@@ -568,7 +608,7 @@ fn require_password(password: Option<&str>) -> Result<String, String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| "SSH Password 为空，无法为 VS Code 配置免密登录".to_string())
+        .ok_or_else(|| trf!("SSH Password 为空，无法为 VS Code 配置免密登录", "SSH Password is empty; cannot configure passwordless login for VS Code"))
 }
 
 #[cfg(desktop)]
@@ -602,7 +642,7 @@ fn vscode_ssh_alias(request: &SshConnectionRequest) -> Result<String, String> {
         .unwrap_or_else(|| format!("{username}-{host}-{port}"));
     let suffix = sanitize_alias_part(&source);
     if suffix.is_empty() {
-        return Err("无法生成 VS Code SSH Host 别名".to_string());
+        return Err(trf!("无法生成 VS Code SSH Host 别名", "Failed to generate the VS Code SSH host alias"));
     }
     Ok(format!("easyconsole-{suffix}"))
 }
@@ -610,13 +650,13 @@ fn vscode_ssh_alias(request: &SshConnectionRequest) -> Result<String, String> {
 fn validate_external_url(url: &str) -> Result<String, String> {
     let url = url.trim();
     if url.is_empty() {
-        return Err("外部链接为空，无法打开".to_string());
+        return Err(trf!("外部链接为空，无法打开", "The external link is empty; cannot open it"));
     }
     if url.chars().any(char::is_control) {
-        return Err("外部链接包含不支持的字符".to_string());
+        return Err(trf!("外部链接包含不支持的字符", "The external link contains unsupported characters"));
     }
     if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("仅支持打开 http 或 https 链接".to_string());
+        return Err(trf!("仅支持打开 http 或 https 链接", "Only http or https links can be opened"));
     }
     Ok(url.to_string())
 }
@@ -651,17 +691,17 @@ const OPENABLE_EXTENSIONS: &[&str] = &[
 fn validate_existing_path(path: &str) -> Result<PathBuf, String> {
     let path = path.trim();
     if path.is_empty() {
-        return Err("本地路径为空，无法打开".to_string());
+        return Err(trf!("本地路径为空，无法打开", "The local path is empty; cannot open it"));
     }
     if path.chars().any(char::is_control) {
-        return Err("本地路径包含不支持的字符".to_string());
+        return Err(trf!("本地路径包含不支持的字符", "The local path contains unsupported characters"));
     }
     if is_unc_path(path) {
-        return Err("出于安全考虑，不支持访问网络共享路径".to_string());
+        return Err(trf!("出于安全考虑，不支持访问网络共享路径", "Network share paths are not supported for security reasons"));
     }
     let path = PathBuf::from(path);
     if !path.exists() {
-        return Err("本地路径不存在".to_string());
+        return Err(trf!("本地路径不存在", "The local path does not exist"));
     }
     Ok(path)
 }
@@ -685,8 +725,9 @@ fn validate_open_target(path: &str) -> Result<PathBuf, String> {
         .unwrap_or_default()
         .to_ascii_lowercase();
     if !OPENABLE_EXTENSIONS.contains(&extension.as_str()) {
-        return Err(format!(
-            "出于安全考虑，不支持直接打开该类型文件（.{extension}）。请改用「在文件夹中显示」。"
+        return Err(trf!(
+            "出于安全考虑，不支持直接打开该类型文件（.{extension}）。请改用「在文件夹中显示」。",
+            "Opening this file type directly (.{extension}) is not supported for security reasons. Use \"Show in folder\" instead."
         ));
     }
     Ok(path)
@@ -702,34 +743,34 @@ fn validate_open_target(path: &str) -> Result<PathBuf, String> {
 fn validate_download_target(path: &str, allowed_roots: &[PathBuf]) -> Result<PathBuf, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
-        return Err("下载目标路径为空".to_string());
+        return Err(trf!("下载目标路径为空", "The download target path is empty"));
     }
     if trimmed.chars().any(char::is_control) {
-        return Err("下载目标路径包含不支持的字符".to_string());
+        return Err(trf!("下载目标路径包含不支持的字符", "The download target path contains unsupported characters"));
     }
     if is_unc_path(trimmed) {
-        return Err("出于安全考虑，不支持下载到网络共享路径".to_string());
+        return Err(trf!("出于安全考虑，不支持下载到网络共享路径", "Downloading to network share paths is not supported for security reasons"));
     }
 
     let target = PathBuf::from(trimmed);
     let parent = target
         .parent()
-        .ok_or_else(|| "无法定位下载目标目录".to_string())?;
+        .ok_or_else(|| trf!("无法定位下载目标目录", "Failed to locate the download target directory"))?;
     // Canonicalize the parent (it must exist) so `..` segments and symlinks
     // cannot escape the allowed roots.
     let parent = parent
         .canonicalize()
-        .map_err(|error| format!("下载目标目录不存在：{error}"))?;
+        .map_err(|error| trf!("下载目标目录不存在：{error}", "The download target directory does not exist: {error}"))?;
     let file_name = target
         .file_name()
-        .ok_or_else(|| "下载目标缺少文件名".to_string())?;
+        .ok_or_else(|| trf!("下载目标缺少文件名", "The download target is missing a file name"))?;
 
     let allowed = allowed_roots.iter().any(|root| match root.canonicalize() {
         Ok(root) => parent.starts_with(&root),
         Err(_) => false,
     });
     if !allowed {
-        return Err("出于安全考虑，只能下载到下载目录或应用数据目录".to_string());
+        return Err(trf!("出于安全考虑，只能下载到下载目录或应用数据目录", "For security reasons downloads may only target the download directory or the app data directory"));
     }
 
     Ok(parent.join(file_name))
@@ -742,7 +783,7 @@ fn open_path_with_system(path: &Path) -> Result<(), String> {
         .arg(path)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开本地路径：{error}"))
+        .map_err(|error| trf!("无法打开本地路径：{error}", "Failed to open the local path: {error}"))
 }
 
 #[cfg(all(desktop, target_os = "macos"))]
@@ -751,7 +792,7 @@ fn open_path_with_system(path: &Path) -> Result<(), String> {
         .arg(path)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开本地路径：{error}"))
+        .map_err(|error| trf!("无法打开本地路径：{error}", "Failed to open the local path: {error}"))
 }
 
 #[cfg(all(desktop, target_os = "linux"))]
@@ -760,7 +801,7 @@ fn open_path_with_system(path: &Path) -> Result<(), String> {
         .arg(path)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开本地路径：{error}"))
+        .map_err(|error| trf!("无法打开本地路径：{error}", "Failed to open the local path: {error}"))
 }
 
 #[cfg(all(desktop, target_os = "windows"))]
@@ -769,7 +810,7 @@ fn reveal_path_with_system(path: &Path) -> Result<(), String> {
         .arg(format!("/select,{}", path.to_string_lossy()))
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开所在文件夹：{error}"))
+        .map_err(|error| trf!("无法打开所在文件夹：{error}", "Failed to open the containing folder: {error}"))
 }
 
 #[cfg(all(desktop, target_os = "macos"))]
@@ -779,7 +820,7 @@ fn reveal_path_with_system(path: &Path) -> Result<(), String> {
         .arg(path)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开所在文件夹：{error}"))
+        .map_err(|error| trf!("无法打开所在文件夹：{error}", "Failed to open the containing folder: {error}"))
 }
 
 #[cfg(all(desktop, target_os = "linux"))]
@@ -793,7 +834,7 @@ fn reveal_path_with_system(path: &Path) -> Result<(), String> {
         .arg(directory)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开所在文件夹：{error}"))
+        .map_err(|error| trf!("无法打开所在文件夹：{error}", "Failed to open the containing folder: {error}"))
 }
 
 #[cfg(desktop)]
@@ -801,7 +842,7 @@ fn user_ssh_dir() -> Result<PathBuf, String> {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
-        .ok_or_else(|| "无法定位当前用户主目录，不能写入 SSH 配置".to_string())?;
+        .ok_or_else(|| trf!("无法定位当前用户主目录，不能写入 SSH 配置", "Failed to locate the current user's home directory; cannot write the SSH config"))?;
     Ok(home.join(".ssh"))
 }
 
@@ -810,9 +851,9 @@ fn ensure_vscode_key(app: &AppHandle) -> Result<(PathBuf, String), String> {
     let key_dir = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("无法定位应用数据目录：{error}"))?
+        .map_err(|error| trf!("无法定位应用数据目录：{error}", "Failed to locate the app data directory: {error}"))?
         .join("ssh");
-    fs::create_dir_all(&key_dir).map_err(|error| format!("无法创建 SSH key 目录：{error}"))?;
+    fs::create_dir_all(&key_dir).map_err(|error| trf!("无法创建 SSH key 目录：{error}", "Failed to create the SSH key directory: {error}"))?;
 
     let private_key = key_dir.join(VSCODE_KEY_NAME);
     let public_key = key_dir.join(format!("{VSCODE_KEY_NAME}.pub"));
@@ -824,28 +865,28 @@ fn ensure_vscode_key(app: &AppHandle) -> Result<(PathBuf, String), String> {
             .args(["-t", "ed25519", "-N", "", "-C", "easyconsole-vscode", "-f"])
             .arg(&private_key)
             .status()
-            .map_err(|error| format!("无法运行 ssh-keygen：{error}"))?;
+            .map_err(|error| trf!("无法运行 ssh-keygen：{error}", "Failed to run ssh-keygen: {error}"))?;
         if !status.success() {
-            return Err("ssh-keygen 生成 VS Code 专用 SSH key 失败".to_string());
+            return Err(trf!("ssh-keygen 生成 VS Code 专用 SSH key 失败", "ssh-keygen failed to generate the dedicated VS Code SSH key"));
         }
     } else if !public_key.exists() {
         let output = Command::new("ssh-keygen")
             .args(["-y", "-f"])
             .arg(&private_key)
             .output()
-            .map_err(|error| format!("无法从私钥恢复 SSH 公钥：{error}"))?;
+            .map_err(|error| trf!("无法从私钥恢复 SSH 公钥：{error}", "Failed to recover the SSH public key from the private key: {error}"))?;
         if !output.status.success() {
-            return Err("ssh-keygen 恢复 VS Code 专用 SSH 公钥失败".to_string());
+            return Err(trf!("ssh-keygen 恢复 VS Code 专用 SSH 公钥失败", "ssh-keygen failed to recover the dedicated VS Code SSH public key"));
         }
         fs::write(&public_key, output.stdout)
-            .map_err(|error| format!("无法写入 SSH 公钥：{error}"))?;
+            .map_err(|error| trf!("无法写入 SSH 公钥：{error}", "Failed to write the SSH public key: {error}"))?;
     }
 
     let public_key_text =
-        fs::read_to_string(&public_key).map_err(|error| format!("无法读取 SSH 公钥：{error}"))?;
+        fs::read_to_string(&public_key).map_err(|error| trf!("无法读取 SSH 公钥：{error}", "Failed to read the SSH public key: {error}"))?;
     let public_key_text = public_key_text.trim().to_string();
     if public_key_text.is_empty() {
-        return Err("SSH 公钥为空，无法配置免密登录".to_string());
+        return Err(trf!("SSH 公钥为空，无法配置免密登录", "The SSH public key is empty; cannot configure passwordless login"));
     }
 
     Ok((private_key, public_key_text))
@@ -902,7 +943,7 @@ fn strip_easy_console_block(current: &str, start_marker: &str, end_marker: &str)
 fn write_user_ssh_config(config_path: &Path, contents: &str) -> Result<(), String> {
     let parent = config_path
         .parent()
-        .ok_or_else(|| "无法定位本机 SSH 配置目录".to_string())?;
+        .ok_or_else(|| trf!("无法定位本机 SSH 配置目录", "Failed to locate the local SSH config directory"))?;
     let file_name = config_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -913,11 +954,11 @@ fn write_user_ssh_config(config_path: &Path, contents: &str) -> Result<(), Strin
     if config_path.exists() {
         let bak_path = parent.join(format!("{file_name}.easy-console.bak"));
         fs::copy(config_path, &bak_path)
-            .map_err(|error| format!("无法备份本机 SSH 配置：{error}"))?;
+            .map_err(|error| trf!("无法备份本机 SSH 配置：{error}", "Failed to back up the local SSH config: {error}"))?;
     }
 
     fs::write(&tmp_path, contents)
-        .map_err(|error| format!("无法写入本机 SSH 配置临时文件：{error}"))?;
+        .map_err(|error| trf!("无法写入本机 SSH 配置临时文件：{error}", "Failed to write the local SSH config temp file: {error}"))?;
 
     // Preserve the existing mode so we never loosen a config the user tightened.
     #[cfg(unix)]
@@ -932,7 +973,7 @@ fn write_user_ssh_config(config_path: &Path, contents: &str) -> Result<(), Strin
 
     fs::rename(&tmp_path, config_path).map_err(|error| {
         let _ = fs::remove_file(&tmp_path);
-        format!("无法提交本机 SSH 配置写入：{error}")
+        trf!("无法提交本机 SSH 配置写入：{error}", "Failed to commit the local SSH config write: {error}")
     })
 }
 
@@ -946,16 +987,17 @@ fn write_vscode_ssh_config(
     let username = require_username(request.username.as_deref())?;
     let port = parse_port(request.port.as_deref())?;
     let ssh_dir = user_ssh_dir()?;
-    fs::create_dir_all(&ssh_dir).map_err(|error| format!("无法创建本机 SSH 配置目录：{error}"))?;
+    fs::create_dir_all(&ssh_dir).map_err(|error| trf!("无法创建本机 SSH 配置目录：{error}", "Failed to create the local SSH config directory: {error}"))?;
     let config_path = ssh_dir.join("config");
     let current = fs::read_to_string(&config_path).unwrap_or_default();
     let start_marker = format!("# >>> EasyConsole {alias}");
     let end_marker = format!("# <<< EasyConsole {alias}");
 
     let mut next = strip_easy_console_block(&current, &start_marker, &end_marker).ok_or_else(|| {
-        format!(
+        trf!(
             "本机 SSH 配置中的 EasyConsole 标记不完整：找到「{start_marker}」但缺少对应的「{end_marker}」。\
              为避免误删配置，本次未做任何修改。请手动修复 {} 后重试。",
+            "Incomplete EasyConsole markers in the local SSH config: found \"{start_marker}\" but the matching \"{end_marker}\" is missing. To avoid deleting config by mistake, nothing was changed. Fix {} manually and retry.",
             config_path.display()
         )
     })?;
@@ -983,7 +1025,7 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
         .arg(url)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开浏览器：{error}"))
+        .map_err(|error| trf!("无法打开浏览器：{error}", "Failed to open the browser: {error}"))
 }
 
 #[cfg(all(desktop, target_os = "macos"))]
@@ -992,7 +1034,7 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
         .arg(url)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开浏览器：{error}"))
+        .map_err(|error| trf!("无法打开浏览器：{error}", "Failed to open the browser: {error}"))
 }
 
 #[cfg(all(desktop, target_os = "linux"))]
@@ -1001,7 +1043,7 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
         .arg(url)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开浏览器：{error}"))
+        .map_err(|error| trf!("无法打开浏览器：{error}", "Failed to open the browser: {error}"))
 }
 
 #[cfg(desktop)]
@@ -1015,7 +1057,7 @@ fn ssh_args(request: &SshConnectionRequest) -> Result<Vec<String>, String> {
         .filter(|value| !value.is_empty())
     {
         if !port.chars().all(|ch| ch.is_ascii_digit()) {
-            return Err("SSH Port 不是有效数字".to_string());
+            return Err(trf!("SSH Port 不是有效数字", "SSH Port is not a valid number"));
         }
         args.push("-p".to_string());
         args.push(port.to_string());
@@ -1056,7 +1098,7 @@ fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
                 .args(&powershell_args)
                 .spawn()
                 .map(|_| ())
-                .map_err(|error| format!("无法打开系统终端：{error}"))
+                .map_err(|error| trf!("无法打开系统终端：{error}", "Failed to open the system terminal: {error}"))
         }
     }
 }
@@ -1076,7 +1118,7 @@ fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
         ])
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开系统终端：{error}"))
+        .map_err(|error| trf!("无法打开系统终端：{error}", "Failed to open the system terminal: {error}"))
 }
 
 #[cfg(all(desktop, target_os = "linux"))]
@@ -1106,7 +1148,7 @@ fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
             return Ok(());
         }
     }
-    Err("无法打开系统终端，请确认本机已安装终端和 ssh 客户端".to_string())
+    Err(trf!("无法打开系统终端，请确认本机已安装终端和 ssh 客户端", "Failed to open the system terminal. Make sure a terminal and an ssh client are installed."))
 }
 
 #[cfg(desktop)]
@@ -1129,7 +1171,7 @@ fn spawn_vscode_ssh(alias: &str) -> Result<(), String> {
     }
 
     let uri = format!("vscode://vscode-remote/{authority}/");
-    open_url_in_browser(&uri).map_err(|error| format!("无法打开 VS Code：{error}"))
+    open_url_in_browser(&uri).map_err(|error| trf!("无法打开 VS Code：{error}", "Failed to open VS Code: {error}"))
 }
 
 #[cfg(desktop)]
@@ -1168,32 +1210,32 @@ async fn install_vscode_public_key(
         client::connect(config, (host.as_str(), port), handler),
     )
     .await
-    .map_err(|_| "SSH 连接超时，无法配置 VS Code 免密，请检查网络和主机是否可达".to_string())?
+    .map_err(|_| trf!("SSH 连接超时，无法配置 VS Code 免密，请检查网络和主机是否可达", "SSH connection timed out; cannot configure passwordless VS Code access. Check the network and whether the host is reachable."))?
     .map_err(|error| {
         if let Ok(guard) = host_key_error.lock() {
             if let Some(message) = guard.as_ref() {
                 return message.clone();
             }
         }
-        format!("SSH 连接失败，无法配置 VS Code 免密：{error}")
+        trf!("SSH 连接失败，无法配置 VS Code 免密：{error}", "SSH connection failed; cannot configure passwordless VS Code access: {error}")
     })?;
 
     let auth = session
         .authenticate_password(username, password)
         .await
-        .map_err(|error| format!("SSH 认证失败，无法配置 VS Code 免密：{error}"))?;
+        .map_err(|error| trf!("SSH 认证失败，无法配置 VS Code 免密：{error}", "SSH authentication failed; cannot configure passwordless VS Code access: {error}"))?;
     if !auth.success() {
-        return Err("SSH 认证失败，无法配置 VS Code 免密：用户名或密码不正确".to_string());
+        return Err(trf!("SSH 认证失败，无法配置 VS Code 免密：用户名或密码不正确", "SSH authentication failed; cannot configure passwordless VS Code access: incorrect username or password"));
     }
 
     let mut channel = session
         .channel_open_session()
         .await
-        .map_err(|error| format!("SSH 会话打开失败，无法配置 VS Code 免密：{error}"))?;
+        .map_err(|error| trf!("SSH 会话打开失败，无法配置 VS Code 免密：{error}", "Failed to open the SSH session; cannot configure passwordless VS Code access: {error}"))?;
     channel
         .exec(true, command)
         .await
-        .map_err(|error| format!("远端免密配置命令执行失败：{error}"))?;
+        .map_err(|error| trf!("远端免密配置命令执行失败：{error}", "The remote passwordless-login command failed: {error}"))?;
 
     let mut output = String::new();
     let mut exit_status = None;
@@ -1220,9 +1262,9 @@ async fn install_vscode_public_key(
     if exit_status.unwrap_or(1) != 0 {
         let output = output.trim();
         if output.is_empty() {
-            return Err("远端 authorized_keys 更新失败".to_string());
+            return Err(trf!("远端 authorized_keys 更新失败", "Failed to update the remote authorized_keys"));
         }
-        return Err(format!("远端 authorized_keys 更新失败：{output}"));
+        return Err(trf!("远端 authorized_keys 更新失败：{output}", "Failed to update the remote authorized_keys: {output}"));
     }
 
     Ok(())
@@ -1251,34 +1293,34 @@ async fn socks5_handshake(stream: &mut tokio::net::TcpStream) -> Result<(String,
     stream
         .read_exact(&mut greeting)
         .await
-        .map_err(|e| format!("SOCKS5 读取问候失败：{e}"))?;
+        .map_err(|e| trf!("SOCKS5 读取问候失败：{e}", "SOCKS5: failed to read the greeting: {e}"))?;
     if greeting[0] != 5 {
-        return Err("SOCKS5 版本不匹配".to_string());
+        return Err(trf!("SOCKS5 版本不匹配", "SOCKS5 version mismatch"));
     }
     let mut methods = vec![0u8; greeting[1] as usize];
     stream
         .read_exact(&mut methods)
         .await
-        .map_err(|e| format!("SOCKS5 读取方法失败：{e}"))?;
+        .map_err(|e| trf!("SOCKS5 读取方法失败：{e}", "SOCKS5: failed to read methods: {e}"))?;
     // Reply: no auth
     stream
         .write_all(&[5, 0])
         .await
-        .map_err(|e| format!("SOCKS5 写入方法回复失败：{e}"))?;
+        .map_err(|e| trf!("SOCKS5 写入方法回复失败：{e}", "SOCKS5: failed to write the method reply: {e}"))?;
 
     // Request: version(1) + cmd(1) + rsv(1) + atyp(1) + addr + port(2)
     let mut header = [0u8; 4];
     stream
         .read_exact(&mut header)
         .await
-        .map_err(|e| format!("SOCKS5 读取请求失败：{e}"))?;
+        .map_err(|e| trf!("SOCKS5 读取请求失败：{e}", "SOCKS5: failed to read the request: {e}"))?;
     if header[0] != 5 {
-        return Err("SOCKS5 请求版本不匹配".to_string());
+        return Err(trf!("SOCKS5 请求版本不匹配", "SOCKS5 request version mismatch"));
     }
     if header[1] != 1 {
         // Only CONNECT supported
         let _ = stream.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]).await;
-        return Err("SOCKS5 仅支持 CONNECT 命令".to_string());
+        return Err(trf!("SOCKS5 仅支持 CONNECT 命令", "SOCKS5 supports the CONNECT command only"));
     }
     let dest_host = match header[3] {
         1 => {
@@ -1287,7 +1329,7 @@ async fn socks5_handshake(stream: &mut tokio::net::TcpStream) -> Result<(String,
             stream
                 .read_exact(&mut addr)
                 .await
-                .map_err(|e| format!("SOCKS5 读取 IPv4 地址失败：{e}"))?;
+                .map_err(|e| trf!("SOCKS5 读取 IPv4 地址失败：{e}", "SOCKS5: failed to read the IPv4 address: {e}"))?;
             format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3])
         }
         3 => {
@@ -1296,12 +1338,12 @@ async fn socks5_handshake(stream: &mut tokio::net::TcpStream) -> Result<(String,
             stream
                 .read_exact(&mut len_buf)
                 .await
-                .map_err(|e| format!("SOCKS5 读取域名长度失败：{e}"))?;
+                .map_err(|e| trf!("SOCKS5 读取域名长度失败：{e}", "SOCKS5: failed to read the domain length: {e}"))?;
             let mut domain = vec![0u8; len_buf[0] as usize];
             stream
                 .read_exact(&mut domain)
                 .await
-                .map_err(|e| format!("SOCKS5 读取域名失败：{e}"))?;
+                .map_err(|e| trf!("SOCKS5 读取域名失败：{e}", "SOCKS5: failed to read the domain: {e}"))?;
             String::from_utf8_lossy(&domain).to_string()
         }
         4 => {
@@ -1310,26 +1352,26 @@ async fn socks5_handshake(stream: &mut tokio::net::TcpStream) -> Result<(String,
             stream
                 .read_exact(&mut addr)
                 .await
-                .map_err(|e| format!("SOCKS5 读取 IPv6 地址失败：{e}"))?;
+                .map_err(|e| trf!("SOCKS5 读取 IPv6 地址失败：{e}", "SOCKS5: failed to read the IPv6 address: {e}"))?;
             format_socks5_ipv6_host(&addr)
         }
         _ => {
             let _ = stream.write_all(&[5, 8, 0, 1, 0, 0, 0, 0, 0, 0]).await;
-            return Err("SOCKS5 不支持的地址类型".to_string());
+            return Err(trf!("SOCKS5 不支持的地址类型", "Unsupported SOCKS5 address type"));
         }
     };
     let mut port_buf = [0u8; 2];
     stream
         .read_exact(&mut port_buf)
         .await
-        .map_err(|e| format!("SOCKS5 读取端口失败：{e}"))?;
+        .map_err(|e| trf!("SOCKS5 读取端口失败：{e}", "SOCKS5: failed to read the port: {e}"))?;
     let dest_port = u16::from_be_bytes(port_buf);
 
     // Reply: success
     stream
         .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
         .await
-        .map_err(|e| format!("SOCKS5 写入回复失败：{e}"))?;
+        .map_err(|e| trf!("SOCKS5 写入回复失败：{e}", "SOCKS5: failed to write the reply: {e}"))?;
 
     Ok((dest_host, dest_port))
 }
@@ -1342,13 +1384,13 @@ async fn resolve_sftp_path(sftp: &SftpSession, path: &str) -> Result<String, Str
         return sftp
             .canonicalize(".")
             .await
-            .map_err(|e| format!("SFTP 解析家目录失败：{e}"));
+            .map_err(|e| trf!("SFTP 解析家目录失败：{e}", "SFTP: failed to resolve the home directory: {e}"));
     }
     if let Some(rest) = path.strip_prefix("~/") {
         let home = sftp
             .canonicalize(".")
             .await
-            .map_err(|e| format!("SFTP 解析家目录失败：{e}"))?;
+            .map_err(|e| trf!("SFTP 解析家目录失败：{e}", "SFTP: failed to resolve the home directory: {e}"))?;
         let rest = rest.trim_start_matches('/');
         return Ok(if home.ends_with('/') {
             format!("{home}{rest}")
@@ -1369,7 +1411,7 @@ async fn run_russh_session(
     let host = validate_host(&request.host)?;
     let port = parse_port(request.port.as_deref())?;
     let username = validate_username(request.username.as_deref())?
-        .ok_or_else(|| "SSH Username 为空，无法建立连接".to_string())?;
+        .ok_or_else(|| trf!("SSH Username 为空，无法建立连接", "SSH Username is empty; cannot establish a connection"))?;
     let password = request
         .password
         .as_deref()
@@ -1385,7 +1427,7 @@ async fn run_russh_session(
 
     // In password mode, password is required. In key mode, it's optional (used as passphrase).
     if auth_mode == "password" && password.is_none() {
-        return Err("SSH Password 为空，无法自动登录".to_string());
+        return Err(trf!("SSH Password 为空，无法自动登录", "SSH Password is empty; cannot sign in automatically"));
     }
 
     emit_session_event(
@@ -1393,7 +1435,7 @@ async fn run_russh_session(
         &session_id,
         "status",
         None,
-        Some(format!("正在连接 {host}:{port}")),
+        Some(trf!("正在连接 {host}:{port}", "Connecting to {host}:{port}")),
     );
 
     let config = Arc::new(client::Config {
@@ -1417,8 +1459,8 @@ async fn run_russh_session(
         tokio::net::TcpStream::connect((host.as_str(), port)),
     )
     .await
-    .map_err(|_| "SSH 连接超时，请检查网络和主机是否可达".to_string())?
-    .map_err(|error| format!("SSH 连接失败：{error}"))?;
+    .map_err(|_| trf!("SSH 连接超时，请检查网络和主机是否可达", "SSH connection timed out. Check the network and whether the host is reachable."))?
+    .map_err(|error| trf!("SSH 连接失败：{error}", "SSH connection failed: {error}"))?;
     // Host-key confirmation (up to 120s) lives inside russh handshake, so it
     // must not share the TCP connect timeout.
     let mut session = client::connect_stream(config, tcp_stream, handler)
@@ -1429,36 +1471,36 @@ async fn run_russh_session(
                     return message.clone();
                 }
             }
-            format!("SSH 连接失败：{error}")
+            trf!("SSH 连接失败：{error}", "SSH connection failed: {error}")
         })?;
 
     let auth_success = if auth_mode == "key" {
         let key_path = request
             .ssh_key_path
             .as_deref()
-            .ok_or_else(|| "SSH 密钥路径为空".to_string())?;
+            .ok_or_else(|| trf!("SSH 密钥路径为空", "The SSH key path is empty"))?;
         let passphrase = password.as_deref();
         let key_pair = russh::keys::load_secret_key(key_path, passphrase)
-            .map_err(|e| format!("SSH 密钥加载失败：{e}"))?;
+            .map_err(|e| trf!("SSH 密钥加载失败：{e}", "Failed to load the SSH key: {e}"))?;
         let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(key_pair), Some(HashAlg::Sha256));
         session
             .authenticate_publickey(&username, key_with_hash)
             .await
-            .map_err(|error| format!("SSH 密钥认证失败：{error}"))?
+            .map_err(|error| trf!("SSH 密钥认证失败：{error}", "SSH key authentication failed: {error}"))?
     } else {
         let pwd = password
             .as_deref()
-            .ok_or_else(|| "SSH Password 为空，无法自动登录".to_string())?;
+            .ok_or_else(|| trf!("SSH Password 为空，无法自动登录", "SSH Password is empty; cannot sign in automatically"))?;
         session
             .authenticate_password(&username, pwd)
             .await
-            .map_err(|error| format!("SSH 认证失败：{error}"))?
+            .map_err(|error| trf!("SSH 认证失败：{error}", "SSH authentication failed: {error}"))?
     };
     if !auth_success.success() {
         return Err(if auth_mode == "key" {
-            "SSH 密钥认证失败：密钥被拒绝".to_string()
+            trf!("SSH 密钥认证失败：密钥被拒绝", "SSH key authentication failed: the key was rejected")
         } else {
-            "SSH 认证失败：用户名或密码不正确".to_string()
+            trf!("SSH 认证失败：用户名或密码不正确", "SSH authentication failed: incorrect username or password")
         });
     }
 
@@ -1470,22 +1512,22 @@ async fn run_russh_session(
     let mut channel = session
         .channel_open_session()
         .await
-        .map_err(|error| format!("SSH 会话打开失败：{error}"))?;
+        .map_err(|error| trf!("SSH 会话打开失败：{error}", "Failed to open the SSH session: {error}"))?;
     channel
         .request_pty(false, term_type, cols, rows, 0, 0, &[])
         .await
-        .map_err(|error| format!("SSH PTY 请求失败：{error}"))?;
+        .map_err(|error| trf!("SSH PTY 请求失败：{error}", "SSH PTY request failed: {error}"))?;
     channel
         .request_shell(true)
         .await
-        .map_err(|error| format!("SSH Shell 请求失败：{error}"))?;
+        .map_err(|error| trf!("SSH Shell 请求失败：{error}", "SSH shell request failed: {error}"))?;
 
     emit_session_event(
         &app,
         &session_id,
         "status",
         None,
-        Some("SSH 已连接".to_string()),
+        Some(trf!("SSH 已连接", "SSH connected")),
     );
 
     let mut output_buffer = String::new();
@@ -1505,7 +1547,7 @@ async fn run_russh_session(
                                 &session_id,
                                 "error",
                                 None,
-                                Some(format!("SSH 写入失败：{error}")),
+                                Some(trf!("SSH 写入失败：{error}", "SSH write failed: {error}")),
                             );
                             break;
                         }
@@ -1520,7 +1562,7 @@ async fn run_russh_session(
                                 &session_id,
                                 "error",
                                 None,
-                                Some(format!("SSH 窗口尺寸更新失败：{error}")),
+                                Some(trf!("SSH 窗口尺寸更新失败：{error}", "Failed to update the SSH window size: {error}")),
                             );
                             break;
                         }
@@ -1535,17 +1577,17 @@ async fn run_russh_session(
                         let result = async {
                             if sftp_session.is_none() {
                                 let sftp_channel = session.channel_open_session().await
-                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 通道打开失败：{e}", "SFTP: failed to open the channel: {e}"))?;
                                 sftp_channel.request_subsystem(true, "sftp").await
-                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 子系统请求失败：{e}", "SFTP: subsystem request failed: {e}"))?;
                                 sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
-                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                                    .map_err(|e| trf!("SFTP 会话创建失败：{e}", "SFTP: failed to create the session: {e}"))?);
                             }
                             let sftp = sftp_session.as_ref().unwrap();
                             let effective_path = resolve_sftp_path(sftp, &path).await?;
                             let mut entries = Vec::new();
                             let read_dir = sftp.read_dir(&effective_path).await
-                                .map_err(|e| format!("SFTP 列目录失败：{e}"))?;
+                                .map_err(|e| trf!("SFTP 列目录失败：{e}", "SFTP: failed to list the directory: {e}"))?;
                             for entry in read_dir {
                                 let name = entry.file_name();
                                 let file_type = entry.file_type();
@@ -1575,31 +1617,31 @@ async fn run_russh_session(
                             use tokio::io::{AsyncReadExt, AsyncWriteExt};
                             if sftp_session.is_none() {
                                 let sftp_channel = session.channel_open_session().await
-                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 通道打开失败：{e}", "SFTP: failed to open the channel: {e}"))?;
                                 sftp_channel.request_subsystem(true, "sftp").await
-                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 子系统请求失败：{e}", "SFTP: subsystem request failed: {e}"))?;
                                 sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
-                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                                    .map_err(|e| trf!("SFTP 会话创建失败：{e}", "SFTP: failed to create the session: {e}"))?);
                             }
                             let sftp = sftp_session.as_ref().unwrap();
                             let remote_path = resolve_sftp_path(sftp, &remote_path).await?;
                             let mut local = tokio::fs::File::open(&local_path).await
-                                .map_err(|e| format!("读取本地文件失败：{e}"))?;
+                                .map_err(|e| trf!("读取本地文件失败：{e}", "Failed to read the local file: {e}"))?;
                             let total = local.metadata().await.map(|m| m.len()).unwrap_or(0);
                             let mut remote = sftp.create(&remote_path).await
-                                .map_err(|e| format!("创建远端文件失败：{e}"))?;
+                                .map_err(|e| trf!("创建远端文件失败：{e}", "Failed to create the remote file: {e}"))?;
                             emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":0,"total":{total}}}"#)), None);
                             let mut buf = vec![0_u8; 64 * 1024];
                             let mut transferred: u64 = 0;
                             loop {
-                                let n = local.read(&mut buf).await.map_err(|e| format!("读取本地文件失败：{e}"))?;
+                                let n = local.read(&mut buf).await.map_err(|e| trf!("读取本地文件失败：{e}", "Failed to read the local file: {e}"))?;
                                 if n == 0 { break; }
-                                remote.write_all(&buf[..n]).await.map_err(|e| format!("SFTP 上传失败：{e}"))?;
+                                remote.write_all(&buf[..n]).await.map_err(|e| trf!("SFTP 上传失败：{e}", "SFTP upload failed: {e}"))?;
                                 transferred += n as u64;
                                 emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":{transferred},"total":{total}}}"#)), None);
                             }
-                            remote.flush().await.map_err(|e| format!("SFTP 刷新失败：{e}"))?;
-                            remote.shutdown().await.map_err(|e| format!("SFTP 关闭失败：{e}"))?;
+                            remote.flush().await.map_err(|e| trf!("SFTP 刷新失败：{e}", "SFTP flush failed: {e}"))?;
+                            remote.shutdown().await.map_err(|e| trf!("SFTP 关闭失败：{e}", "SFTP close failed: {e}"))?;
                             Ok::<(), String>(())
                         }.await;
                         match result {
@@ -1615,34 +1657,34 @@ async fn run_russh_session(
                             use tokio::io::{AsyncReadExt, AsyncWriteExt};
                             if sftp_session.is_none() {
                                 let sftp_channel = session.channel_open_session().await
-                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 通道打开失败：{e}", "SFTP: failed to open the channel: {e}"))?;
                                 sftp_channel.request_subsystem(true, "sftp").await
-                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 子系统请求失败：{e}", "SFTP: subsystem request failed: {e}"))?;
                                 sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
-                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                                    .map_err(|e| trf!("SFTP 会话创建失败：{e}", "SFTP: failed to create the session: {e}"))?);
                             }
                             let sftp = sftp_session.as_ref().unwrap();
                             let remote_path = resolve_sftp_path(sftp, &remote_path).await?;
                             let mut remote = sftp.open(&remote_path).await
-                                .map_err(|e| format!("打开远端文件失败：{e}"))?;
+                                .map_err(|e| trf!("打开远端文件失败：{e}", "Failed to open the remote file: {e}"))?;
                             let total = remote.metadata().await.ok().and_then(|m| m.size).unwrap_or(0);
                             let part_path = format!("{local_path}.part");
                             let mut local = tokio::fs::File::create(&part_path).await
-                                .map_err(|e| format!("创建本地临时文件失败：{e}"))?;
+                                .map_err(|e| trf!("创建本地临时文件失败：{e}", "Failed to create the local temp file: {e}"))?;
                             emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":0,"total":{total}}}"#)), None);
                             let mut buf = vec![0_u8; 64 * 1024];
                             let mut transferred: u64 = 0;
                             loop {
-                                let n = remote.read(&mut buf).await.map_err(|e| format!("SFTP 下载失败：{e}"))?;
+                                let n = remote.read(&mut buf).await.map_err(|e| trf!("SFTP 下载失败：{e}", "SFTP download failed: {e}"))?;
                                 if n == 0 { break; }
-                                local.write_all(&buf[..n]).await.map_err(|e| format!("写入本地文件失败：{e}"))?;
+                                local.write_all(&buf[..n]).await.map_err(|e| trf!("写入本地文件失败：{e}", "Failed to write the local file: {e}"))?;
                                 transferred += n as u64;
                                 emit_session_event(&app, &session_id, "sftp-progress", Some(format!(r#"{{"transferred":{transferred},"total":{total}}}"#)), None);
                             }
-                            local.flush().await.map_err(|e| format!("刷新本地文件失败：{e}"))?;
+                            local.flush().await.map_err(|e| trf!("刷新本地文件失败：{e}", "Failed to flush the local file: {e}"))?;
                             drop(local);
                             tokio::fs::rename(&part_path, &local_path).await
-                                .map_err(|e| format!("完成下载重命名失败：{e}"))?;
+                                .map_err(|e| trf!("完成下载重命名失败：{e}", "Failed to rename the completed download: {e}"))?;
                             let _ = remote.shutdown().await;
                             Ok::<(), String>(())
                         }.await;
@@ -1658,22 +1700,22 @@ async fn run_russh_session(
                         let result = async {
                             if sftp_session.is_none() {
                                 let sftp_channel = session.channel_open_session().await
-                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 通道打开失败：{e}", "SFTP: failed to open the channel: {e}"))?;
                                 sftp_channel.request_subsystem(true, "sftp").await
-                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 子系统请求失败：{e}", "SFTP: subsystem request failed: {e}"))?;
                                 sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
-                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                                    .map_err(|e| trf!("SFTP 会话创建失败：{e}", "SFTP: failed to create the session: {e}"))?);
                             }
                             let sftp = sftp_session.as_ref().unwrap();
                             let path = resolve_sftp_path(sftp, &path).await?;
                             let metadata = sftp.metadata(&path).await
-                                .map_err(|e| format!("SFTP 获取文件信息失败：{e}"))?;
+                                .map_err(|e| trf!("SFTP 获取文件信息失败：{e}", "SFTP: failed to stat the file: {e}"))?;
                             if metadata.is_dir() {
                                 sftp.remove_dir(&path).await
-                                    .map_err(|e| format!("SFTP 删除目录失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 删除目录失败：{e}", "SFTP: failed to remove the directory: {e}"))?;
                             } else {
                                 sftp.remove_file(&path).await
-                                    .map_err(|e| format!("SFTP 删除文件失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 删除文件失败：{e}", "SFTP: failed to remove the file: {e}"))?;
                             }
                             Ok::<(), String>(())
                         }.await;
@@ -1689,17 +1731,17 @@ async fn run_russh_session(
                         let result = async {
                             if sftp_session.is_none() {
                                 let sftp_channel = session.channel_open_session().await
-                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 通道打开失败：{e}", "SFTP: failed to open the channel: {e}"))?;
                                 sftp_channel.request_subsystem(true, "sftp").await
-                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 子系统请求失败：{e}", "SFTP: subsystem request failed: {e}"))?;
                                 sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
-                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                                    .map_err(|e| trf!("SFTP 会话创建失败：{e}", "SFTP: failed to create the session: {e}"))?);
                             }
                             let sftp = sftp_session.as_ref().unwrap();
                             let old_path = resolve_sftp_path(sftp, &old_path).await?;
                             let new_path = resolve_sftp_path(sftp, &new_path).await?;
                             sftp.rename(&old_path, &new_path).await
-                                .map_err(|e| format!("SFTP 重命名失败：{e}"))?;
+                                .map_err(|e| trf!("SFTP 重命名失败：{e}", "SFTP rename failed: {e}"))?;
                             Ok::<(), String>(())
                         }.await;
                         match result {
@@ -1714,16 +1756,16 @@ async fn run_russh_session(
                         let result = async {
                             if sftp_session.is_none() {
                                 let sftp_channel = session.channel_open_session().await
-                                    .map_err(|e| format!("SFTP 通道打开失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 通道打开失败：{e}", "SFTP: failed to open the channel: {e}"))?;
                                 sftp_channel.request_subsystem(true, "sftp").await
-                                    .map_err(|e| format!("SFTP 子系统请求失败：{e}"))?;
+                                    .map_err(|e| trf!("SFTP 子系统请求失败：{e}", "SFTP: subsystem request failed: {e}"))?;
                                 sftp_session = Some(SftpSession::new(sftp_channel.into_stream()).await
-                                    .map_err(|e| format!("SFTP 会话创建失败：{e}"))?);
+                                    .map_err(|e| trf!("SFTP 会话创建失败：{e}", "SFTP: failed to create the session: {e}"))?);
                             }
                             let sftp = sftp_session.as_ref().unwrap();
                             let path = resolve_sftp_path(sftp, &path).await?;
                             sftp.create_dir(&path).await
-                                .map_err(|e| format!("SFTP 创建目录失败：{e}"))?;
+                                .map_err(|e| trf!("SFTP 创建目录失败：{e}", "SFTP: failed to create the directory: {e}"))?;
                             Ok::<(), String>(())
                         }.await;
                         match result {
@@ -1737,11 +1779,11 @@ async fn run_russh_session(
                     Some(SshCommand::StartPortForward { rule, response }) => {
                         let rule_id = rule.id.clone();
                         if rule.forward_type == "remote" {
-                            let _ = response.send(Err("远程端口转发 (-R) 暂不支持".to_string()));
+                            let _ = response.send(Err(trf!("远程端口转发 (-R) 暂不支持", "Remote port forwarding (-R) is not supported yet")));
                             continue;
                         }
                         if port_forward_handles.contains_key(&rule_id) {
-                            let _ = response.send(Err("端口转发规则已在运行".to_string()));
+                            let _ = response.send(Err(trf!("端口转发规则已在运行", "The port forwarding rule is already running")));
                             continue;
                         }
                         let bind_host = match normalize_port_forward_bind_host(&rule.local_host) {
@@ -1888,7 +1930,7 @@ async fn run_russh_session(
                         if !output_buffer.is_empty() {
                             emit_session_event(&app, &session_id, "output", Some(std::mem::take(&mut output_buffer)), None);
                         }
-                        emit_session_event(&app, &session_id, "status", None, Some(format!("SSH 进程已退出，状态码 {exit_status}")));
+                        emit_session_event(&app, &session_id, "status", None, Some(trf!("SSH 进程已退出，状态码 {exit_status}", "The SSH process exited with status {exit_status}")));
                     }
                     ChannelMsg::ExitSignal { signal_name, error_message, .. } => {
                         if !output_buffer.is_empty() {
@@ -1899,7 +1941,7 @@ async fn run_russh_session(
                             &session_id,
                             "status",
                             None,
-                            Some(format!("SSH 进程收到信号 {signal_name:?}: {error_message}")),
+                            Some(trf!("SSH 进程收到信号 {signal_name:?}: {error_message}", "The SSH process received signal {signal_name:?}: {error_message}")),
                         );
                     }
                     ChannelMsg::Close | ChannelMsg::Eof => {
@@ -1958,7 +2000,7 @@ fn open_ssh_session(
     state
         .sessions
         .lock()
-        .map_err(|_| "SSH 会话状态已损坏".to_string())?
+        .map_err(|_| trf!("SSH 会话状态已损坏", "The SSH session state is corrupted"))?
         .insert(
             session_id.clone(),
             SshSessionEntry {
@@ -1987,7 +2029,7 @@ fn open_ssh_session(
             &task_session_id,
             "closed",
             None,
-            Some("SSH 会话已关闭".to_string()),
+            Some(trf!("SSH 会话已关闭", "The SSH session is closed")),
         );
     });
 
@@ -2003,14 +2045,14 @@ fn send_session_command(
         let sessions = state
             .sessions
             .lock()
-            .map_err(|_| "SSH 会话状态已损坏".to_string())?;
+            .map_err(|_| trf!("SSH 会话状态已损坏", "The SSH session state is corrupted"))?;
         sessions.get(session_id).map(|entry| entry.tx.clone())
     }
-    .ok_or_else(|| "SSH 会话不存在或已关闭".to_string())?;
+    .ok_or_else(|| trf!("SSH 会话不存在或已关闭", "The SSH session does not exist or is closed"))?;
 
     sender
         .send(command)
-        .map_err(|_| "SSH 会话已关闭".to_string())
+        .map_err(|_| trf!("SSH 会话已关闭", "The SSH session is closed"))
 }
 
 async fn send_session_command_with_response<T>(
@@ -2021,7 +2063,7 @@ async fn send_session_command_with_response<T>(
     let (tx, rx) = oneshot::channel();
     let command = build_command(tx);
     send_session_command(state, session_id, command)?;
-    rx.await.map_err(|_| "SSH 命令响应通道已关闭".to_string())?
+    rx.await.map_err(|_| trf!("SSH 命令响应通道已关闭", "The SSH command response channel is closed"))?
 }
 
 fn runtime_storage_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -2041,7 +2083,7 @@ fn runtime_storage_lock() -> &'static Mutex<()> {
 fn runtime_storage_get(app: AppHandle, key: String) -> Result<Option<String>, String> {
     let _guard = runtime_storage_lock()
         .lock()
-        .map_err(|e| format!("本地数据锁获取失败：{e}"))?;
+        .map_err(|e| trf!("本地数据锁获取失败：{e}", "Failed to acquire the local data lock: {e}"))?;
     let path = runtime_storage_path(&app)?;
     let data = load_string_map(&path)?;
     Ok(data.get(&key).cloned())
@@ -2051,7 +2093,7 @@ fn runtime_storage_get(app: AppHandle, key: String) -> Result<Option<String>, St
 fn runtime_storage_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
     let _guard = runtime_storage_lock()
         .lock()
-        .map_err(|e| format!("本地数据锁获取失败：{e}"))?;
+        .map_err(|e| trf!("本地数据锁获取失败：{e}", "Failed to acquire the local data lock: {e}"))?;
     let path = runtime_storage_path(&app)?;
     let mut data = load_string_map(&path)?;
     data.insert(key, value);
@@ -2062,7 +2104,7 @@ fn runtime_storage_set(app: AppHandle, key: String, value: String) -> Result<(),
 fn runtime_storage_remove(app: AppHandle, key: String) -> Result<(), String> {
     let _guard = runtime_storage_lock()
         .lock()
-        .map_err(|e| format!("本地数据锁获取失败：{e}"))?;
+        .map_err(|e| trf!("本地数据锁获取失败：{e}", "Failed to acquire the local data lock: {e}"))?;
     let path = runtime_storage_path(&app)?;
     let mut data = load_string_map(&path)?;
     data.remove(&key);
@@ -2134,7 +2176,7 @@ fn set_close_to_tray_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> R
     let mut close_to_tray = state
         .close_to_tray
         .lock()
-        .map_err(|_| "桌面运行状态已损坏".to_string())?;
+        .map_err(|_| trf!("桌面运行状态已损坏", "The desktop run state is corrupted"))?;
     *close_to_tray = enabled;
     Ok(())
 }
@@ -2144,7 +2186,7 @@ fn set_close_prompt_state(state: &Arc<DesktopRuntimeState>, enabled: bool) -> Re
     let mut close_prompt_enabled = state
         .close_prompt_enabled
         .lock()
-        .map_err(|_| "桌面关闭确认状态已损坏".to_string())?;
+        .map_err(|_| trf!("桌面关闭确认状态已损坏", "The desktop close-confirmation state is corrupted"))?;
     *close_prompt_enabled = enabled;
     Ok(())
 }
@@ -2361,7 +2403,7 @@ async fn open_ssh_window(
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         if app.get_webview_window(&label).is_some() {
-            return Err("无法关闭已有的 SSH 窗口，请先手动关闭后再试".to_string());
+            return Err(trf!("无法关闭已有的 SSH 窗口，请先手动关闭后再试", "Cannot close the existing SSH window. Close it manually and try again."));
         }
     }
 
@@ -2376,7 +2418,7 @@ async fn open_ssh_window(
 
     // Stash the request so the new window can pull it by label.
     {
-        let mut map = state.requests.lock().map_err(|e| format!("锁失败：{e}"))?;
+        let mut map = state.requests.lock().map_err(|e| trf!("锁失败：{e}", "Lock failed: {e}"))?;
         map.insert(label.clone(), request);
     }
 
@@ -2395,7 +2437,7 @@ async fn open_ssh_window(
     .visible(true)
     .focused(true)
     .build()
-    .map_err(|e| format!("SSH 窗口创建失败：{e}"))?;
+    .map_err(|e| trf!("SSH 窗口创建失败：{e}", "Failed to create the SSH window: {e}"))?;
 
     Ok(())
 }
@@ -2409,7 +2451,7 @@ fn get_ssh_window_request(
     state: State<'_, Arc<PendingSshWindows>>,
     label: String,
 ) -> Result<Option<SshConnectionRequest>, String> {
-    let mut map = state.requests.lock().map_err(|e| format!("锁失败：{e}"))?;
+    let mut map = state.requests.lock().map_err(|e| trf!("锁失败：{e}", "Lock failed: {e}"))?;
     Ok(map.remove(&label))
 }
 
@@ -2539,20 +2581,20 @@ fn list_known_hosts(app: AppHandle) -> Result<Vec<KnownHostEntry>, String> {
 fn confirm_known_host(prompt_id: String, accept: bool) -> Result<(), String> {
     let sender = pending_host_key_prompts()
         .lock()
-        .map_err(|_| "无法确认主机密钥：内部状态已损坏".to_string())?
+        .map_err(|_| trf!("无法确认主机密钥：内部状态已损坏", "Cannot confirm the host key: internal state is corrupted"))?
         .remove(&prompt_id)
-        .ok_or_else(|| "主机密钥确认请求已失效或超时".to_string())?;
+        .ok_or_else(|| trf!("主机密钥确认请求已失效或超时", "The host key confirmation request expired or timed out"))?;
     sender
         .tx
         .send(accept)
-        .map_err(|_| "主机密钥确认通道已关闭".to_string())
+        .map_err(|_| trf!("主机密钥确认通道已关闭", "The host key confirmation channel is closed"))
 }
 
 #[tauri::command]
 fn remove_known_host(app: AppHandle, host_port: String) -> Result<(), String> {
     let _guard = known_hosts_lock()
         .lock()
-        .map_err(|e| format!("已知主机锁获取失败：{e}"))?;
+        .map_err(|e| trf!("已知主机锁获取失败：{e}", "Failed to acquire the known-hosts lock: {e}"))?;
     let path = app_data_file(&app, "known-ssh-hosts.json")?;
     let mut known_hosts = load_string_map(&path)?;
     known_hosts.remove(&host_port);
@@ -2563,7 +2605,7 @@ fn remove_known_host(app: AppHandle, host_port: String) -> Result<(), String> {
 fn clear_known_hosts(app: AppHandle) -> Result<(), String> {
     let _guard = known_hosts_lock()
         .lock()
-        .map_err(|e| format!("已知主机锁获取失败：{e}"))?;
+        .map_err(|e| trf!("已知主机锁获取失败：{e}", "Failed to acquire the known-hosts lock: {e}"))?;
     let path = app_data_file(&app, "known-ssh-hosts.json")?;
     write_string_map(&path, &HashMap::new())
 }
@@ -2574,11 +2616,11 @@ fn load_ssh_history(path: &Path) -> Result<Vec<SshHistoryEntryValue>, String> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let text = fs::read_to_string(path).map_err(|error| format!("无法读取 SSH 历史：{error}"))?;
+    let text = fs::read_to_string(path).map_err(|error| trf!("无法读取 SSH 历史：{error}", "Failed to read the SSH history: {error}"))?;
     if text.trim().is_empty() {
         return Ok(Vec::new());
     }
-    serde_json::from_str(&text).map_err(|error| format!("SSH 历史格式无法识别：{error}"))
+    serde_json::from_str(&text).map_err(|error| trf!("SSH 历史格式无法识别：{error}", "Unrecognized SSH history format: {error}"))
 }
 
 /// Write via a temp file + rename so an interrupted write cannot leave
@@ -2587,23 +2629,23 @@ fn load_ssh_history(path: &Path) -> Result<Vec<SshHistoryEntryValue>, String> {
 fn write_json_atomically(path: &Path, text: &str, label: &str) -> Result<(), String> {
     let parent = path
         .parent()
-        .ok_or_else(|| format!("无法定位{label}目录"))?;
+        .ok_or_else(|| trf!("无法定位{label}目录", "Failed to locate the {label} directory"))?;
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("无法定位{label}文件名"))?;
+        .ok_or_else(|| trf!("无法定位{label}文件名", "Failed to locate the {label} file name"))?;
     let tmp_path = parent.join(format!("{file_name}.tmp"));
-    fs::write(&tmp_path, text).map_err(|error| format!("无法写入{label}临时文件：{error}"))?;
+    fs::write(&tmp_path, text).map_err(|error| trf!("无法写入{label}临时文件：{error}", "Failed to write the {label} temp file: {error}"))?;
     fs::rename(&tmp_path, path).map_err(|error| {
         let _ = fs::remove_file(&tmp_path);
-        format!("无法提交{label}写入：{error}")
+        trf!("无法提交{label}写入：{error}", "Failed to commit the {label} write: {error}")
     })
 }
 
 fn write_ssh_history(path: &Path, entries: &[SshHistoryEntryValue]) -> Result<(), String> {
     let text = serde_json::to_string_pretty(entries)
-        .map_err(|error| format!("SSH 历史序列化失败：{error}"))?;
-    write_json_atomically(path, &text, "SSH 历史")
+        .map_err(|error| trf!("SSH 历史序列化失败：{error}", "Failed to serialize the SSH history: {error}"))?;
+    write_json_atomically(path, &text, &trf!("SSH 历史", "SSH history"))
 }
 
 #[tauri::command]
@@ -2622,7 +2664,7 @@ fn add_ssh_history(
 ) -> Result<(), String> {
     let _guard = ssh_history_lock()
         .lock()
-        .map_err(|e| format!("SSH 历史锁获取失败：{e}"))?;
+        .map_err(|e| trf!("SSH 历史锁获取失败：{e}", "Failed to acquire the SSH history lock: {e}"))?;
     let path = app_data_file(&app, "ssh-history.json")?;
     let mut entries = load_ssh_history(&path)?;
     let now = std::time::SystemTime::now()
@@ -2650,7 +2692,7 @@ fn add_ssh_history(
 fn clear_ssh_history(app: AppHandle) -> Result<(), String> {
     let _guard = ssh_history_lock()
         .lock()
-        .map_err(|e| format!("SSH 历史锁获取失败：{e}"))?;
+        .map_err(|e| trf!("SSH 历史锁获取失败：{e}", "Failed to acquire the SSH history lock: {e}"))?;
     let path = app_data_file(&app, "ssh-history.json")?;
     write_ssh_history(&path, &[])
 }
@@ -2673,7 +2715,7 @@ fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
     let url = validate_external_url(&url)?;
     app.opener()
         .open_url(url.clone(), None::<&str>)
-        .map_err(|error| format!("无法打开外部链接：{error}"))
+        .map_err(|error| trf!("无法打开外部链接：{error}", "Failed to open the external link: {error}"))
 }
 
 #[cfg(target_os = "android")]
@@ -2682,7 +2724,7 @@ fn mobile_app_arch() -> Result<&'static str, String> {
     match std::env::consts::ARCH {
         "aarch64" => Ok("aarch64"),
         "x86_64" => Ok("x86_64"),
-        architecture => Err(format!("不支持的 Android 架构：{architecture}")),
+        architecture => Err(trf!("不支持的 Android 架构：{architecture}", "Unsupported Android architecture: {architecture}")),
     }
 }
 
@@ -2694,7 +2736,7 @@ async fn install_apk(app: AppHandle, path: String) -> Result<String, String> {
 
     let file_path = Path::new(&path);
     if !file_path.exists() {
-        return Err(format!("APK 文件不存在：{path}"));
+        return Err(trf!("APK 文件不存在：{path}", "The APK file does not exist: {path}"));
     }
     if !file_path.is_file()
         || file_path
@@ -2702,37 +2744,37 @@ async fn install_apk(app: AppHandle, path: String) -> Result<String, String> {
             .and_then(|extension| extension.to_str())
             .map_or(true, |extension| !extension.eq_ignore_ascii_case("apk"))
     {
-        return Err("更新文件不是有效的 APK".to_string());
+        return Err(trf!("更新文件不是有效的 APK", "The update file is not a valid APK"));
     }
 
     let updates_dir = app
         .path()
         .app_cache_dir()
-        .map_err(|error| format!("无法定位应用缓存目录：{error}"))?
+        .map_err(|error| trf!("无法定位应用缓存目录：{error}", "Failed to locate the app cache directory: {error}"))?
         .join("updates")
         .canonicalize()
-        .map_err(|error| format!("无法访问更新缓存目录：{error}"))?;
+        .map_err(|error| trf!("无法访问更新缓存目录：{error}", "Failed to access the update cache directory: {error}"))?;
     let canonical_file_path = file_path
         .canonicalize()
-        .map_err(|error| format!("无法访问 APK 文件：{error}"))?;
+        .map_err(|error| trf!("无法访问 APK 文件：{error}", "Failed to access the APK file: {error}"))?;
     if !canonical_file_path.starts_with(&updates_dir) {
-        return Err("只允许安装应用更新缓存目录中的 APK".to_string());
+        return Err(trf!("只允许安装应用更新缓存目录中的 APK", "Only APKs in the app update cache directory can be installed"));
     }
 
     let mut apk_file = fs::File::open(&canonical_file_path)
-        .map_err(|error| format!("无法读取 APK 文件：{error}"))?;
+        .map_err(|error| trf!("无法读取 APK 文件：{error}", "Failed to read the APK file: {error}"))?;
     let mut signature = [0_u8; 4];
     apk_file
         .read_exact(&mut signature)
-        .map_err(|error| format!("无法验证 APK 文件：{error}"))?;
+        .map_err(|error| trf!("无法验证 APK 文件：{error}", "Failed to verify the APK file: {error}"))?;
     if signature != [0x50, 0x4b, 0x03, 0x04] {
-        return Err("更新文件不是有效的 APK".to_string());
+        return Err(trf!("更新文件不是有效的 APK", "The update file is not a valid APK"));
     }
     let path = canonical_file_path.to_string_lossy().into_owned();
 
     let window = app
         .get_webview_window("main")
-        .ok_or_else(|| "无法获取 Android 主窗口".to_string())?;
+        .ok_or_else(|| trf!("无法获取 Android 主窗口", "Failed to get the Android main window"))?;
     let (sender, receiver) = oneshot::channel();
     window
         .with_webview(move |webview| {
@@ -2740,7 +2782,7 @@ async fn install_apk(app: AppHandle, path: String) -> Result<String, String> {
                 let result = (|| -> Result<String, String> {
                     let java_path = env
                         .new_string(path)
-                        .map_err(|error| format!("无法编码 APK 路径：{error}"))?;
+                        .map_err(|error| trf!("无法编码 APK 路径：{error}", "Failed to encode the APK path: {error}"))?;
                     let java_path_object = JObject::from(java_path);
                     let value = env
                         .call_method(
@@ -2749,19 +2791,19 @@ async fn install_apk(app: AppHandle, path: String) -> Result<String, String> {
                             "(Ljava/lang/String;)Ljava/lang/String;",
                             &[JValue::Object(&java_path_object)],
                         )
-                        .map_err(|error| format!("无法调用 Android 安装器：{error}"))?;
+                        .map_err(|error| trf!("无法调用 Android 安装器：{error}", "Failed to invoke the Android installer: {error}"))?;
                     let response_object = value
                         .l()
-                        .map_err(|error| format!("Android 安装器返回值无效：{error}"))?;
+                        .map_err(|error| trf!("Android 安装器返回值无效：{error}", "The Android installer returned an invalid value: {error}"))?;
                     if response_object.is_null() {
-                        return Err("Android 安装器未返回状态".to_string());
+                        return Err(trf!("Android 安装器未返回状态", "The Android installer did not return a status"));
                     }
                     let response = String::from(
                         env.get_string(&JString::from(response_object))
-                            .map_err(|error| format!("无法读取 Android 安装状态：{error}"))?,
+                            .map_err(|error| trf!("无法读取 Android 安装状态：{error}", "Failed to read the Android install status: {error}"))?,
                     );
                     if let Some(error) = response.strip_prefix("error:") {
-                        Err(format!("无法触发 APK 安装：{error}"))
+                        Err(trf!("无法触发 APK 安装：{error}", "Failed to trigger the APK install: {error}"))
                     } else {
                         Ok(response)
                     }
@@ -2769,12 +2811,12 @@ async fn install_apk(app: AppHandle, path: String) -> Result<String, String> {
                 let _ = sender.send(result);
             });
         })
-        .map_err(|error| format!("无法调度 Android 安装器：{error}"))?;
+        .map_err(|error| trf!("无法调度 Android 安装器：{error}", "Failed to schedule the Android installer: {error}"))?;
 
     tokio::time::timeout(Duration::from_secs(10), receiver)
         .await
-        .map_err(|_| "Android 安装器调用超时".to_string())?
-        .map_err(|_| "Android 安装器调用被中断".to_string())?
+        .map_err(|_| trf!("Android 安装器调用超时", "The Android installer call timed out"))?
+        .map_err(|_| trf!("Android 安装器调用被中断", "The Android installer call was interrupted"))?
 }
 
 #[cfg(desktop)]
@@ -2796,28 +2838,28 @@ async fn http_download_to_file(app: AppHandle, url: String, path: String) -> Res
         .get(&url)
         .send()
         .await
-        .map_err(|error| format!("下载请求失败：{error}"))?
+        .map_err(|error| trf!("下载请求失败：{error}", "The download request failed: {error}"))?
         .error_for_status()
-        .map_err(|error| format!("下载响应错误：{error}"))?;
+        .map_err(|error| trf!("下载响应错误：{error}", "Download response error: {error}"))?;
     let mut stream = response.bytes_stream();
     let mut file = tokio::fs::File::create(&part_path)
         .await
-        .map_err(|error| format!("创建临时文件失败：{error}"))?;
+        .map_err(|error| trf!("创建临时文件失败：{error}", "Failed to create the temp file: {error}"))?;
     let mut written: u64 = 0;
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|error| format!("下载流中断：{error}"))?;
+        let bytes = chunk.map_err(|error| trf!("下载流中断：{error}", "The download stream was interrupted: {error}"))?;
         file.write_all(&bytes)
             .await
-            .map_err(|error| format!("写入本地文件失败：{error}"))?;
+            .map_err(|error| trf!("写入本地文件失败：{error}", "Failed to write the local file: {error}"))?;
         written += bytes.len() as u64;
     }
     file.flush()
         .await
-        .map_err(|error| format!("刷新本地文件失败：{error}"))?;
+        .map_err(|error| trf!("刷新本地文件失败：{error}", "Failed to flush the local file: {error}"))?;
     drop(file);
     tokio::fs::rename(&part_path, &path)
         .await
-        .map_err(|error| format!("完成下载重命名失败：{error}"))?;
+        .map_err(|error| trf!("完成下载重命名失败：{error}", "Failed to rename the completed download: {error}"))?;
     Ok(written)
 }
 
@@ -2874,7 +2916,7 @@ fn complete_desktop_close_prompt(
             app.exit(0);
             Ok(())
         }
-        _ => Err("未知关闭操作".to_string()),
+        _ => Err(trf!("未知关闭操作", "Unknown close action")),
     }
 }
 
@@ -3042,6 +3084,7 @@ pub fn run() {
     log::info!("building Tauri app");
 
     builder = builder.invoke_handler(tauri::generate_handler![
+        set_locale,
         open_external_url,
         runtime_storage_get,
         runtime_storage_set,
@@ -3190,6 +3233,47 @@ fn handle_desktop_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Kept as a single test because the active locale is process-global and
+    /// tests within a binary run concurrently.
+    #[test]
+    fn locale_selects_the_expected_dictionary() {
+        i18n::set_locale("en-US");
+        assert!(i18n::is_english());
+        assert_eq!(trf!("结果：{}", "Result: {}", 7), "Result: 7");
+
+        // Region variants follow the language, as `normalizeLocale()` does in TS.
+        i18n::set_locale("en-GB");
+        assert!(i18n::is_english());
+
+        i18n::set_locale("zh-CN");
+        assert!(!i18n::is_english());
+        assert_eq!(trf!("结果：{}", "Result: {}", 7), "结果：7");
+
+        i18n::set_locale("zh-TW");
+        assert!(!i18n::is_english());
+
+        // Unknown languages fall back to Chinese, the primary interface language.
+        i18n::set_locale("fr-FR");
+        assert!(!i18n::is_english());
+
+        i18n::set_locale("zh-CN");
+    }
+
+    /// The `set_locale` command is a thin wrapper over `i18n::set_locale`, but it
+    /// is the exact function the webview invokes, so keep it pinned. The full IPC
+    /// round-trip needs a window and is covered by `npm run tauri:dev`.
+    #[test]
+    fn set_locale_command_updates_the_native_locale() {
+        i18n::set_locale("zh-CN");
+        assert!(!i18n::is_english());
+
+        set_locale("en-US".to_string());
+        assert!(i18n::is_english());
+
+        set_locale("zh-CN".to_string());
+        assert!(!i18n::is_english());
+    }
 
     #[test]
     fn known_host_key_uses_host_port() {

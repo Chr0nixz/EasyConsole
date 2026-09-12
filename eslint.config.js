@@ -4,6 +4,8 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
+import i18nRules from "./tools/eslint-rules/no-bare-cjk.mjs";
+
 export default tseslint.config(
   { ignores: ["build", "dist", "coverage", "node_modules", "src-tauri/**", "reference"] },
   {
@@ -22,6 +24,21 @@ export default tseslint.config(
       "preserve-caught-error": "warn",
       "react-hooks/set-state-in-effect": "warn",
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
+    },
+  },
+  {
+    files: ["src/**/*.{ts,tsx}", "tools/**/*.ts"],
+    ignores: [
+      // The dictionaries and the locale helper are where the raw text lives.
+      "src/lib/i18n.tsx",
+      "src/lib/i18n-text.ts",
+      "tools/eslint-rules/**",
+      "src/**/*.test.{ts,tsx}",
+      "src/test/**",
+    ],
+    plugins: { "easy-console": i18nRules },
+    rules: {
+      "easy-console/no-bare-cjk": "error",
     },
   },
   {

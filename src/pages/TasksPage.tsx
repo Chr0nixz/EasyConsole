@@ -46,7 +46,7 @@ import { getTaskEditableState } from "../lib/api-factory";
 import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
 import { useCommitQueue } from "../lib/commit-queue-context";
 import { useDownloadQueueActions } from "../lib/use-download-queue";
-import { asJson, formatRelativeUpdatedAt, formatSecondsDuration, getTaskName, getTaskNodeName, taskStatusText, taskStatusTextEn } from "../lib/format";
+import { asJson, formatRelativeUpdatedAt, formatSecondsDuration, getTaskName, getTaskNodeName, localizedText, taskStatusText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { i18nText } from "../lib/i18n-text";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
@@ -1668,9 +1668,9 @@ export function TasksPage() {
             onChange={(event) => updateTaskQuery({ status: event.target.value })}
           >
             <option value="">{text("全部状态", "All statuses")}</option>
-            {Object.entries(locale === "en-US" ? taskStatusTextEn : taskStatusText).map(([value, label]) => (
+            {Object.entries(taskStatusText).map(([value, label]) => (
               <option key={value} value={value}>
-                {label}
+                {localizedText(label, locale)}
               </option>
             ))}
           </Select>

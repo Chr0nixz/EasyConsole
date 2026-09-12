@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import { instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
@@ -52,6 +52,16 @@ export function BackgroundScheduledTaskRunner() {
   const queryClient = useQueryClient();
   const runningRef = useRef(false);
 
+  // `text` from useI18n is recreated whenever the locale changes. The scheduling
+  // effect below owns the interval, the wake-up listeners and the desktop
+  // background lock, so depending on `text` directly meant every language switch
+  // tore the runner down and restarted it. Route translation through a ref.
+  const textRef = useRef(text);
+  useEffect(() => {
+    textRef.current = text;
+  }, [text]);
+  const tt = useCallback((zh: string, en: string) => textRef.current(zh, en), []);
+
   useEffect(() => {
     let disposed = false;
 
@@ -80,30 +90,30 @@ export function BackgroundScheduledTaskRunner() {
             });
             if (result.skipped) continue;
             invalidateTaskQueries(queryClient);
-            toast.success(text("定时任务已执行", "Scheduled task executed"), task.name);
+            toast.success(tt("定时任务已执行", "Scheduled task executed"), task.name);
             void appendRunLog(browserRuntime.storage, {
               source: "scheduled-task",
               level: "info",
               channel: browserRuntime.runLogChannel,
               action: "scheduledTask.execute",
               result: "success",
-              title: text("定时任务已执行", "Scheduled task executed"),
+              title: tt("定时任务已执行", "Scheduled task executed"),
               targetName: task.name,
               targetId: task.id,
               metadata: { remoteTaskId: result.remoteTaskId },
             });
           } catch (error) {
-            toast.error(text("定时任务执行失败", "Scheduled task execution failed"), `${task.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
+            toast.error(tt("定时任务执行失败", "Scheduled task execution failed"), `${task.name}: ${error instanceof Error ? error.message : tt("请稍后重试", "Try again later")}`);
             void appendRunLog(browserRuntime.storage, {
               source: "scheduled-task",
               level: "error",
               channel: browserRuntime.runLogChannel,
               action: "scheduledTask.execute",
               result: "failure",
-              title: text("定时任务执行失败", "Scheduled task execution failed"),
+              title: tt("定时任务执行失败", "Scheduled task execution failed"),
               targetName: task.name,
               targetId: task.id,
-              error: errorMessage(error, text("定时任务执行失败", "Scheduled task execution failed")),
+              error: errorMessage(error, tt("定时任务执行失败", "Scheduled task execution failed")),
             });
           }
         }
@@ -140,7 +150,7 @@ export function BackgroundScheduledTaskRunner() {
       stopBackgroundLock();
       removeDesktopRunDue?.();
     };
-  }, [queryClient, text, toast]);
+  }, [queryClient, tt, toast]);
 
   return null;
 }

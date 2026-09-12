@@ -192,6 +192,8 @@ export function AppShell() {
 
       if (event.key === "/") {
         event.preventDefault();
+        // The search field's placeholder differs per language, so match either.
+        // eslint-disable-next-line easy-console/no-bare-cjk
         const searchInput = document.querySelector<HTMLInputElement>('input[type="search"], input[placeholder*="搜索"], input[placeholder*="search"], input[placeholder*="Search"]');
         searchInput?.focus();
         return;

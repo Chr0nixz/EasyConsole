@@ -9,7 +9,7 @@ import { createAppRouter } from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { RunLoggerProvider } from "./components/RunLoggerProvider";
 import { AuthProvider } from "./lib/auth-context";
-import { I18nProvider } from "./lib/i18n";
+import { I18nProvider, applyInitialDocumentLang } from "./lib/i18n";
 import { initRuntimeKind } from "./lib/runtime";
 
 const queryClient = new QueryClient({
@@ -31,6 +31,10 @@ window.addEventListener("unhandledrejection", (event) => {
 window.addEventListener("error", (event) => {
   console.error("Uncaught error.", event.error ?? event.message);
 });
+
+// Set <html lang> from the browser locale before the first paint; the provider
+// refines it once the persisted language has been read from storage.
+applyInitialDocumentLang();
 
 // Resolve the native runtime kind (web/desktop/mobile) before mounting so the
 // renderer can pick capability flags without race conditions. On web this

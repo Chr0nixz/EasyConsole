@@ -1,5 +1,5 @@
 import { getStatusText, getTaskName } from "./format";
-import { i18nText } from "./i18n-text";
+import type { Locale } from "./i18n-text";
 import type { ImportantNotificationEvent } from "./app-settings";
 import type { Task, TaskStatus } from "./types";
 
@@ -28,6 +28,7 @@ export function needsLogAttention(task: Pick<Task, "status">) {
 export function getImportantTaskStatusNotification(
   task: Task,
   previousStatus: TaskStatus | undefined,
+  locale: Locale,
 ): ImportantTaskStatusNotification | null {
   if (previousStatus === undefined || previousStatus === null || task.status === undefined || task.status === null) return null;
 
@@ -36,13 +37,17 @@ export function getImportantTaskStatusNotification(
   if (!Number.isFinite(current) || current === previous) return null;
 
   const taskId = getTaskNotificationId(task);
+  const en = locale === "en-US";
+  // Task names are user data; only the separator follows the interface language.
+  const body = `${getTaskName(task)}${en ? ": " : "："}${getStatusText(task.status, locale)}`;
+
   if (current === SUCCESS_STATUS) {
     return {
       kind: "success",
       event: "task.success",
       taskId,
-      title: i18nText("实例运行成功", "Instance succeeded"),
-      body: `${getTaskName(task)}：${getStatusText(task.status)}`,
+      title: en ? "Instance succeeded" : "实例运行成功",
+      body,
       tag: `easy-console-task-${taskId}-${current}`,
     };
   }
@@ -53,8 +58,8 @@ export function getImportantTaskStatusNotification(
       kind: "failure",
       event: abnormal ? "task.abnormal" : "task.failure",
       taskId,
-      title: abnormal ? i18nText("实例运行异常", "Instance abnormal") : i18nText("实例运行失败", "Instance failed"),
-      body: `${getTaskName(task)}：${getStatusText(task.status)}`,
+      title: abnormal ? (en ? "Instance abnormal" : "实例运行异常") : en ? "Instance failed" : "实例运行失败",
+      body,
       tag: `easy-console-task-${taskId}-${current}`,
     };
   }

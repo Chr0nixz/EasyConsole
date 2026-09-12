@@ -4,8 +4,10 @@ import type { CreateTaskPayload, ImageCommitPayload, TaskQuery, TaskRecurrence, 
 import { applyEnvToScriptCommand, isValidEnvKey, isValidEnvValue } from "../../src/lib/script-command-env";
 import { appendRunLog, clearRunLogs, filterRunLogs, formatRunLogExport, loadRunLogs, type RunLogChannel, type RunLogResult, type RunLogSource } from "../../src/lib/run-logs";
 import { nonSecretBackupSections, secretBackupSections, type LocalDataBackupSection } from "../../src/lib/local-data-backup";
+import { i18nText } from "../../src/lib/i18n-text";
 import { saveEasyConsoleConfig } from "./config";
 import { createEasyConsoleContext, type EasyConsoleContext, type EasyConsoleContextOptions } from "./context";
+import { setToolLocale } from "./locale";
 import {
   applyTaskTemplate,
   buildCreateTaskPayload,
@@ -273,7 +275,14 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     .option("--config <path>", "Config file path")
     .option("--run-log-path <path>", "Run log file path")
     .option("--allow-insecure-http", "Allow remote cleartext HTTP (lab only; prefer HTTPS or http://127.0.0.1 tunnel)")
+    .option("--lang <locale>", "Language for run log titles: zh-CN or en-US (overrides EASY_CONSOLE_LANG)")
     .option("--json", "Print { ok, data, error } JSON envelopes");
+
+  // Run log titles are written during the action, so re-resolving the locale
+  // after commander has parsed --lang is enough.
+  program.hook("preAction", (thisCommand) => {
+    setToolLocale(thisCommand.optsWithGlobals<{ lang?: string }>().lang);
+  });
 
   program.exitOverride();
   program.configureOutput({
@@ -323,7 +332,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
             level: "info",
             action,
             result: "success",
-            title: `CLI ${action} 成功`,
+            title: i18nText(`CLI ${action} 成功`, `CLI ${action} succeeded`),
             durationMs: Date.now() - startedAt,
             metadata: { options: loggableOptions(command.opts()) },
           });
@@ -337,7 +346,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
             level: "error",
             action,
             result: "failure",
-            title: `CLI ${action} 失败`,
+            title: i18nText(`CLI ${action} 失败`, `CLI ${action} failed`),
             durationMs: Date.now() - startedAt,
             error: error instanceof Error ? error.message : String(error),
             metadata: { options: loggableOptions(command.opts()) },
@@ -381,7 +390,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
         level: "info",
         action: "login",
         result: "success",
-        title: "CLI 登录成功",
+        title: i18nText("CLI 登录成功", "CLI login succeeded"),
         userName: options.username,
         durationMs: Date.now() - startedAt,
       });

@@ -22,7 +22,7 @@ export function AppUpdateDialog() {
     closeUpdateDialog,
     openReleasePage,
   } = useAppUpdate();
-  const { text } = useI18n();
+  const { locale, text } = useI18n();
   const title = state.info
     ? text(`发现新版本 ${state.info.version}`, `Update ${state.info.version} available`)
     : text("应用更新", "App Update");
@@ -52,7 +52,7 @@ export function AppUpdateDialog() {
           </div>
           {state.lastCheckedAt ? (
             <div className="mt-3 text-xs text-app-muted">
-              {text("上次检查", "Last checked")} {new Date(state.lastCheckedAt).toLocaleString()}
+              {text("上次检查", "Last checked")} {new Date(state.lastCheckedAt).toLocaleString(locale)}
             </div>
           ) : null}
         </div>

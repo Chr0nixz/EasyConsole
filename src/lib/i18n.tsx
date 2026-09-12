@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { browserRuntime } from "./runtime";
+import { browserRuntime, setNativeLocale } from "./runtime";
 import { normalizeLocale, setActiveLocale, type Locale } from "./i18n-text";
 export type { Locale } from "./i18n-text";
 
@@ -21,10 +21,7 @@ const zhCN = {
   "common.processing": "处理中",
   "common.requestFailed": "请求失败",
   "common.retry": "重试",
-  "common.save": "保存",
-  "common.settings": "设置",
   "common.apiSettings": "API 设置",
-  "common.switchLanguage": "切换语言",
   "common.selectLanguage": "选择界面语言",
   "confirm.title": "确认操作",
   "language.zh": "中文",
@@ -67,7 +64,6 @@ const zhCN = {
   "shell.logoutConfirmTitle": "退出登录",
   "shell.logoutConfirmDescription": "退出将结束当前会话，进行中的下载、终端和对话框会被关闭。",
   "shell.logoutConfirmLabel": "退出登录",
-  "shell.keepOpen": "继续使用",
   "shell.shortcutsTitle": "键盘快捷键",
   "shell.shortcutsOpenCmd": "命令面板",
   "shell.shortcutsSearch": "聚焦搜索框",
@@ -112,17 +108,13 @@ const zhCN = {
   "settings.transportBlocked": "当前 API 地址不被允许。请检查 URL 是否为 http/https 开头的完整地址。",
   "settings.websshPending": "API Base URL 有效后自动生成",
   "settings.websshHint": "仅反映 API 主机推导，供排查参考。桌面请使用应用内 SSH、系统终端或 VS Code；浏览器不提供 WebSSH 终端。",
-  "settings.saveDescription": "后续请求会使用新的运行时配置",
   "settings.saveFailed": "保存设置失败",
-  "settings.saved": "设置已保存",
   "settings.resetDescription": "当前使用环境变量或内置默认地址",
   "settings.resetDone": "设置已恢复默认",
   "settings.resetFailed": "恢复默认失败",
   "settings.runtimeTitle": "运行时地址",
   "settings.runtimeDescription": "保存在本机，优先级高于 .env 默认值。",
   "settings.resetDefault": "恢复默认",
-  "settings.saving": "保存中",
-  "settings.saveSettings": "保存设置",
   "settings.apiExample": "生产示例：https://console.example.com/api；本机隧道：http://127.0.0.1:28080/api",
   "settings.monitorDashboardUrl": "监控面板 URL",
   "settings.monitorHelp": "打开任务监控时会追加 var-pod 参数。生产环境请使用 HTTPS。",
@@ -146,24 +138,17 @@ const zhCN = {
   "settings.sshTermType": "终端类型",
   "settings.sshAuth": "认证设置",
   "settings.sshAuthMode": "认证模式",
-  "settings.sshAuthPassword": "密码认证",
-  "settings.sshAuthKey": "密钥认证",
   "settings.sshKeyPath": "密钥文件路径",
   "settings.sshChooseKeyFile": "选择文件",
   "settings.sshTerminal": "终端外观",
-  "settings.sshFontFamily": "字体",
   "settings.sshFontSize": "字号",
   "settings.sshScrollback": "滚动行数",
   "settings.sshCursorBlink": "光标闪烁",
   "settings.sshTheme": "主题",
-  "settings.sshThemeDark": "深色",
-  "settings.sshThemeLight": "浅色",
-  "settings.sshThemeHacker": "黑客",
   "settings.sshWebgl": "WebGL 渲染",
   "settings.sshWebLinks": "链接识别",
   "settings.sshKnownHosts": "已知主机",
   "settings.sshKnownHostsEmpty": "暂无已信任的主机",
-  "settings.sshRemoveHost": "移除",
   "settings.sshClearAllHosts": "清空全部",
   "settings.sshClearAllConfirm": "确定要清空所有已信任的 SSH 主机指纹吗？",
   "settings.sshLoadFailed": "加载已知主机失败",
@@ -175,19 +160,14 @@ const zhCN = {
   "settings.sshFontCustom": "自定义字体",
   "settings.sshThemeCustom": "自定义",
   "settings.sshColorBackground": "背景色",
-  "settings.sshColorForeground": "前景色",
-  "settings.sshColorCursor": "光标色",
-  "settings.sshColorSelection": "选区色",
   "settings.sshColorAnsi": "标准 ANSI 色",
   "settings.sshColorAnsiBright": "亮色 ANSI",
   "settings.sshResetColors": "重置为默认",
   "settings.sshHistory": "连接历史",
   "settings.sshHistoryEmpty": "暂无连接历史",
-  "settings.sshHistoryReconnect": "连接",
   "settings.sshClearHistory": "清空全部",
   "settings.sshClearHistoryConfirm": "确定要清空所有 SSH 连接历史吗？",
   "settings.sshHistoryCleared": "已清空连接历史",
-  "settings.sshLogAutoName": "日志自动命名",
   "settings.sshPortForwards": "端口转发",
   "settings.sshPortForwardAdd": "添加规则",
   "settings.sshPortForwardType": "类型",
@@ -204,10 +184,7 @@ const zhCN = {
   "terminal.recording": "录制中",
   "terminal.record": "录制",
   "terminal.stopRecording": "停止录制",
-  "terminal.recordExported": "日志已导出",
   "terminal.newTab": "新标签",
-  "terminal.closeTab": "关闭标签",
-  "terminal.connectTo": "连接到",
   "terminal.host": "主机",
   "terminal.port": "端口",
   "terminal.username": "用户名",
@@ -217,7 +194,6 @@ const zhCN = {
   "terminal.portForwardInactive": "已停止",
   "terminal.portForwardStart": "启动",
   "terminal.portForwardStop": "停止",
-  "terminal.portForwardError": "端口转发错误",
   "sftp.title": "文件管理",
   "sftp.upload": "上传",
   "sftp.download": "下载",
@@ -229,18 +205,11 @@ const zhCN = {
   "sftp.loading": "加载中...",
   "sftp.uploading": "上传中...",
   "sftp.downloading": "下载中...",
-  "sftp.uploadSuccess": "上传成功",
-  "sftp.downloadSuccess": "下载成功",
   "sftp.deleteConfirm": "确定要删除此文件吗？",
   "sftp.namePrompt": "输入新名称",
   "sftp.mkdirPrompt": "输入目录名称",
-  "sftp.permissionDenied": "权限不足",
   "sftp.parentDir": "上级目录",
   "notify.permissionDenied": "系统通知未开启",
-  "notify.unsupported": "当前环境不支持系统通知",
-  "notify.permissionDeniedBody": "实例成功或失败时将只显示应用内提示。",
-  "notify.unavailable": "系统通知不可用",
-  "notify.unavailableBody": "可在设置中改为应用内通知或关闭该事件通知。",
 } as const;
 
 const enUS: Record<TranslationKey, string> = {
@@ -256,10 +225,7 @@ const enUS: Record<TranslationKey, string> = {
   "common.processing": "Processing",
   "common.requestFailed": "Request failed",
   "common.retry": "Retry",
-  "common.save": "Save",
-  "common.settings": "Settings",
   "common.apiSettings": "API settings",
-  "common.switchLanguage": "Switch language",
   "common.selectLanguage": "Select interface language",
   "confirm.title": "Confirm Action",
   "language.zh": "中文",
@@ -302,7 +268,6 @@ const enUS: Record<TranslationKey, string> = {
   "shell.logoutConfirmTitle": "Sign out",
   "shell.logoutConfirmDescription": "Signing out ends the current session. In-progress downloads, terminals, and dialogs will be closed.",
   "shell.logoutConfirmLabel": "Sign out",
-  "shell.keepOpen": "Keep open",
   "shell.shortcutsTitle": "Keyboard shortcuts",
   "shell.shortcutsOpenCmd": "Command palette",
   "shell.shortcutsSearch": "Focus search",
@@ -347,17 +312,13 @@ const enUS: Record<TranslationKey, string> = {
   "settings.transportBlocked": "The current API URL is not allowed. Use a full address starting with http or https.",
   "settings.websshPending": "Generated after API Base URL is valid",
   "settings.websshHint": "Shows the API-host-derived reference URL only. On desktop use in-app SSH, the system terminal, or VS Code; the browser does not provide a WebSSH terminal.",
-  "settings.saveDescription": "Subsequent requests will use the new runtime settings",
   "settings.saveFailed": "Failed to save settings",
-  "settings.saved": "Settings saved",
   "settings.resetDescription": "Using environment variables or built-in defaults",
   "settings.resetDone": "Settings restored to defaults",
   "settings.resetFailed": "Failed to restore defaults",
   "settings.runtimeTitle": "Runtime URLs",
   "settings.runtimeDescription": "Saved locally and takes precedence over .env defaults.",
   "settings.resetDefault": "Restore defaults",
-  "settings.saving": "Saving",
-  "settings.saveSettings": "Save settings",
   "settings.apiExample": "Production: https://console.example.com/api; local tunnel: http://127.0.0.1:28080/api",
   "settings.monitorDashboardUrl": "Monitor Dashboard URL",
   "settings.monitorHelp": "Task monitor links append the var-pod parameter. Prefer HTTPS in production.",
@@ -381,24 +342,17 @@ const enUS: Record<TranslationKey, string> = {
   "settings.sshTermType": "Terminal type",
   "settings.sshAuth": "Authentication",
   "settings.sshAuthMode": "Auth mode",
-  "settings.sshAuthPassword": "Password",
-  "settings.sshAuthKey": "SSH key",
   "settings.sshKeyPath": "Key file path",
   "settings.sshChooseKeyFile": "Choose file",
   "settings.sshTerminal": "Terminal appearance",
-  "settings.sshFontFamily": "Font family",
   "settings.sshFontSize": "Font size",
   "settings.sshScrollback": "Scrollback lines",
   "settings.sshCursorBlink": "Cursor blink",
   "settings.sshTheme": "Theme",
-  "settings.sshThemeDark": "Dark",
-  "settings.sshThemeLight": "Light",
-  "settings.sshThemeHacker": "Hacker",
   "settings.sshWebgl": "WebGL renderer",
   "settings.sshWebLinks": "Web links",
   "settings.sshKnownHosts": "Known hosts",
   "settings.sshKnownHostsEmpty": "No trusted hosts",
-  "settings.sshRemoveHost": "Remove",
   "settings.sshClearAllHosts": "Clear all",
   "settings.sshClearAllConfirm": "Remove all trusted SSH host fingerprints?",
   "settings.sshLoadFailed": "Failed to load known hosts",
@@ -410,19 +364,14 @@ const enUS: Record<TranslationKey, string> = {
   "settings.sshFontCustom": "Custom font",
   "settings.sshThemeCustom": "Custom",
   "settings.sshColorBackground": "Background",
-  "settings.sshColorForeground": "Foreground",
-  "settings.sshColorCursor": "Cursor",
-  "settings.sshColorSelection": "Selection",
   "settings.sshColorAnsi": "Standard ANSI",
   "settings.sshColorAnsiBright": "Bright ANSI",
   "settings.sshResetColors": "Reset to default",
   "settings.sshHistory": "Connection history",
   "settings.sshHistoryEmpty": "No connection history",
-  "settings.sshHistoryReconnect": "Connect",
   "settings.sshClearHistory": "Clear all",
   "settings.sshClearHistoryConfirm": "Remove all SSH connection history?",
   "settings.sshHistoryCleared": "Connection history cleared",
-  "settings.sshLogAutoName": "Auto-name log files",
   "settings.sshPortForwards": "Port forwarding",
   "settings.sshPortForwardAdd": "Add rule",
   "settings.sshPortForwardType": "Type",
@@ -439,10 +388,7 @@ const enUS: Record<TranslationKey, string> = {
   "terminal.recording": "Recording",
   "terminal.record": "Record",
   "terminal.stopRecording": "Stop recording",
-  "terminal.recordExported": "Log exported",
   "terminal.newTab": "New tab",
-  "terminal.closeTab": "Close tab",
-  "terminal.connectTo": "Connect to",
   "terminal.host": "Host",
   "terminal.port": "Port",
   "terminal.username": "Username",
@@ -452,7 +398,6 @@ const enUS: Record<TranslationKey, string> = {
   "terminal.portForwardInactive": "Inactive",
   "terminal.portForwardStart": "Start",
   "terminal.portForwardStop": "Stop",
-  "terminal.portForwardError": "Port forward error",
   "sftp.title": "File manager",
   "sftp.upload": "Upload",
   "sftp.download": "Download",
@@ -464,18 +409,11 @@ const enUS: Record<TranslationKey, string> = {
   "sftp.loading": "Loading...",
   "sftp.uploading": "Uploading...",
   "sftp.downloading": "Downloading...",
-  "sftp.uploadSuccess": "Upload complete",
-  "sftp.downloadSuccess": "Download complete",
   "sftp.deleteConfirm": "Delete this file?",
   "sftp.namePrompt": "Enter new name",
   "sftp.mkdirPrompt": "Enter folder name",
-  "sftp.permissionDenied": "Permission denied",
   "sftp.parentDir": "Parent directory",
   "notify.permissionDenied": "System notifications are disabled",
-  "notify.unsupported": "System notifications are not supported in this environment",
-  "notify.permissionDeniedBody": "In-app toasts will be shown for instance success or failure.",
-  "notify.unavailable": "System notifications are unavailable",
-  "notify.unavailableBody": "Switch to in-app notifications or disable this event in Settings.",
 };
 
 const dictionaries: Record<Locale, Record<TranslationKey, string>> = {
@@ -493,6 +431,18 @@ type I18nContextValue = {
 function detectInitialLocale(): Locale {
   if (typeof window === "undefined") return "zh-CN";
   return normalizeLocale(window.navigator.language) ?? "zh-CN";
+}
+
+/**
+ * Apply the browser-detected locale to `<html lang>` before the app mounts.
+ * The provider keeps it in sync afterwards, but it can only do that after React
+ * has rendered, so index.html's placeholder value is what assistive technology
+ * reads until then.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function applyInitialDocumentLang() {
+  if (typeof document === "undefined") return;
+  document.documentElement.lang = detectInitialLocale();
 }
 
 function translate(locale: Locale, key: TranslationKey, values?: Record<string, string | number>) {
@@ -513,6 +463,12 @@ const I18nContext = createContext<I18nContextValue>(fallbackValue);
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(detectInitialLocale);
 
+  // Sync the module-level locale during render rather than in an effect.
+  // `i18nText()` is called from render paths in `src/lib/*.ts`, and effects run
+  // only after the whole tree has rendered, so an effect would leave those
+  // helpers one pass behind the selected locale.
+  setActiveLocale(locale);
+
   useEffect(() => {
     let cancelled = false;
     void browserRuntime.storage.get(I18N_STORAGE_KEY).then((stored) => {
@@ -525,8 +481,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    setActiveLocale(locale);
     document.documentElement.lang = locale;
+    void setNativeLocale(locale);
   }, [locale]);
 
   const setLocale = useCallback((nextLocale: Locale) => {

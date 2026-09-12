@@ -1,6 +1,9 @@
 #!/usr/bin/env tsx
 
 import { runCli } from "./cli";
+import { initToolLocale } from "./locale";
+
+initToolLocale();
 
 const result = await runCli();
 if (result.stdout) process.stdout.write(result.stdout);

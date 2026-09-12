@@ -12,7 +12,7 @@ import { Button, Input, Panel, Select, TableRegion, Textarea } from "../componen
 import { imageApi, instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
 import { queryKeys } from "../lib/query-keys";
-import { addHours, formatDateTimeLocalInput, formatTaskDefaultName, releaseConditionText, releaseConditionTextEn } from "../lib/format";
+import { addHours, formatDateTimeLocalInput, formatTaskDefaultName, localizedText, releaseConditionText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { i18nText } from "../lib/i18n-text";
 import { parsePositivePrice } from "../lib/resource-price";
@@ -781,9 +781,9 @@ export function ScheduledTasksPage() {
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("释放条件", "Release condition")}</span>
               <Select className="w-full" value={releaseCondition} onChange={(event) => handleReleaseConditionChange(event.target.value)}>
-                {Object.entries(locale === "en-US" ? releaseConditionTextEn : releaseConditionText).map(([value, label]) => (
+                {Object.entries(releaseConditionText).map(([value, label]) => (
                   <option key={value} value={value}>
-                    {label}
+                    {localizedText(label, locale)}
                   </option>
                 ))}
               </Select>
@@ -868,7 +868,7 @@ export function ScheduledTasksPage() {
                       </div>
                       <div>
                         <dt className="text-app-muted">{text("重复", "Repeat")}</dt>
-                        <dd>{item.recurrence ? describeRecurrence(item.recurrence) : text("单次", "Once")}</dd>
+                        <dd>{item.recurrence ? describeRecurrence(item.recurrence, locale) : text("单次", "Once")}</dd>
                       </div>
                       <div>
                         <dt className="text-app-muted">{text("资源", "Resources")}</dt>

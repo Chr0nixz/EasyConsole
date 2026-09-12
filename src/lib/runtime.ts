@@ -1,6 +1,6 @@
 import { isTauri } from "@tauri-apps/api/core";
 
-import { i18nText } from "./i18n-text";
+import { i18nText, type Locale } from "./i18n-text";
 import { createLayeredSecureStorage } from "./secure-storage";
 import type {
   KnownHostEntry,
@@ -359,6 +359,21 @@ async function invokeTauriCommand<T = void>(command: string, args: Record<string
   if (!isTauri()) throw new Error(i18nText("当前环境不是桌面端", "The current environment is not the desktop app"));
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(command, args);
+}
+
+/**
+ * Push the interface language to the native side. Rust produces a number of
+ * user-facing strings itself (SSH/SFTP errors, session events, Android installer
+ * messages) and has no other way to learn the selected locale. On the web this
+ * is a no-op.
+ */
+export async function setNativeLocale(locale: Locale): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    await invokeTauriCommand("set_locale", { locale });
+  } catch (error) {
+    console.warn("Failed to sync the native locale.", error);
+  }
 }
 
 async function getSystemNotificationPermission(): Promise<RuntimeSystemNotificationPermission> {

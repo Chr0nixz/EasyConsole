@@ -212,7 +212,7 @@ export async function checkForMobileAppUpdate(): Promise<AppUpdateCheckResult> {
     connectTimeout: 15_000,
   });
   if (!response.ok) {
-    throw new Error(`GitHub API 请求失败：${response.status} ${response.statusText}`);
+    throw new Error(i18nText(`GitHub API 请求失败：${response.status} ${response.statusText}`, `GitHub API request failed: ${response.status} ${response.statusText}`));
   }
   const release = (await response.json()) as GitHubRelease;
   const remoteVersion = release.tag_name.replace(/^v/, "");
@@ -258,7 +258,7 @@ export async function downloadMobileApk(
 
   const response = await tauriFetch(apkUrl, { connectTimeout: 15_000 });
   if (!response.ok) {
-    throw new Error(`APK 下载失败：${response.status} ${response.statusText}`);
+    throw new Error(i18nText(`APK 下载失败：${response.status} ${response.statusText}`, `APK download failed: ${response.status} ${response.statusText}`));
   }
 
   const contentLength = Number(response.headers.get("content-length")) || undefined;

@@ -26,8 +26,8 @@ import {
   formatDateTimeLocalInput,
   formatExperimentTimedTaskName,
   formatTaskDefaultName,
+  localizedText,
   releaseConditionText,
-  releaseConditionTextEn,
 } from "../../lib/format";
 import { cn } from "../../lib/utils";
 import { useI18n } from "../../lib/i18n";
@@ -790,15 +790,15 @@ export function CreateTaskDialog({
             collapsible
             open={uiPrefs.sections.release}
             onOpenChange={(next) => setSectionOpen("release", next)}
-            hint={(locale === "en-US" ? releaseConditionTextEn : releaseConditionText)[Number(releaseCondition)] ?? undefined}
+            hint={localizedText(releaseConditionText[Number(releaseCondition)], locale)}
           >
             <div className="grid gap-4 md:grid-cols-2">
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("释放条件", "Release condition")}</span>
                 <Select className="w-full" value={releaseCondition} onChange={(event) => handleReleaseConditionChange(event.target.value)}>
-                  {Object.entries(locale === "en-US" ? releaseConditionTextEn : releaseConditionText).map(([value, label]) => (
+                  {Object.entries(releaseConditionText).map(([value, label]) => (
                     <option key={value} value={value}>
-                      {label}
+                      {localizedText(label, locale)}
                     </option>
                   ))}
                 </Select>

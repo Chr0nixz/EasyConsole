@@ -48,6 +48,11 @@ function targetKey(request: SshConnectionRequest) {
 
 // Derive a stable status kind from the status string for icon/color/aria.
 // Check "closed" before "connected" since "Disconnected" contains "connected".
+//
+// The native side emits these strings in the active interface language, so the
+// matcher has to recognize both spellings. Replacing this with a structured
+// status kind from Rust would remove the text matching entirely.
+/* eslint-disable easy-console/no-bare-cjk */
 function deriveStatusKind(status: string): TabStatusKind {
   if (status.includes("已关闭") || /\b(closed|disconnected)\b/i.test(status)) return "closed";
   if (status.includes("已连接") || /\bconnected\b/i.test(status)) return "connected";
@@ -55,6 +60,7 @@ function deriveStatusKind(status: string): TabStatusKind {
   if (status.includes("准备连接") || /\bready\b/i.test(status)) return "ready";
   return "other";
 }
+/* eslint-enable easy-console/no-bare-cjk */
 
 function isLiveStatus(status: string): boolean {
   return deriveStatusKind(status) === "connected";

@@ -1,10 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { I18nProvider, useI18n } from "../../lib/i18n";
 import { browserRuntime } from "../../lib/runtime";
 import { ToastContext, type ToastContextValue } from "../../lib/use-toast";
-import type { SshConnectionRequest } from "../../lib/types";
+import type { SshConnectionRequest, SshSessionEvent } from "../../lib/types";
 import { SshTerminalTab } from "./SshTerminalTab";
 
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
@@ -179,5 +179,42 @@ describe("SshTerminalTab language switching", () => {
     fireEvent.click(portButton);
     const portPanel = await screen.findByRole("region", { name: /端口转发|Port forwards/ });
     expect(portPanel).toHaveClass("absolute", "inset-0", "w-full", "md:static", "md:w-80");
+  });
+
+  it("records SSH history for the English connection status emitted by the native side", async () => {
+    Object.defineProperty(browserRuntime, "supportsInAppSsh", { value: true, configurable: true });
+    const openSshSession = vi.spyOn(browserRuntime, "openSshSession").mockResolvedValue("session-1");
+    vi.spyOn(browserRuntime, "closeSshSession").mockResolvedValue(undefined);
+    vi.spyOn(browserRuntime, "resizeSshSession").mockResolvedValue(undefined);
+    vi.spyOn(browserRuntime, "onPortForwardStatus").mockResolvedValue(() => {});
+    vi.spyOn(browserRuntime, "onSftpProgress").mockResolvedValue(() => {});
+    vi.spyOn(browserRuntime, "sftpList").mockResolvedValue([]);
+    const addSshHistory = vi.spyOn(browserRuntime, "addSshHistory").mockResolvedValue(undefined);
+
+    let handler: ((event: SshSessionEvent) => void) | undefined;
+    vi.spyOn(browserRuntime, "onSshSessionEvent").mockImplementation(async (_sessionId, callback) => {
+      handler = callback;
+      return () => {};
+    });
+
+    render(
+      <ToastContext.Provider value={toast}>
+        <I18nProvider>
+          <SshTerminalTab request={request} tabId="tab-history" active onStatusChange={() => {}} />
+        </I18nProvider>
+      </ToastContext.Provider>,
+    );
+
+    await waitFor(() => expect(openSshSession).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(handler).toBeDefined());
+
+    // Rust localizes this message, so the history hook must not match on the
+    // Chinese spelling alone.
+    act(() => {
+      handler?.({ sessionId: "session-1", kind: "status", message: "SSH connected" });
+    });
+
+    await waitFor(() => expect(addSshHistory).toHaveBeenCalledTimes(1));
+    expect(addSshHistory).toHaveBeenCalledWith(expect.objectContaining({ host: "10.0.0.8", port: "30222" }));
   });
 });

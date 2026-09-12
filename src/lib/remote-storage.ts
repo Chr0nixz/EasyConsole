@@ -1,6 +1,6 @@
 import { storageApi } from "./api";
 import type { UploadCheckpoint, UploadResumeState } from "./api-factory";
-import { i18nText } from "./i18n-text";
+import { getActiveLocale, i18nText } from "./i18n-text";
 import type { StorageEntry, StorageQuery, UploadProgress } from "./types";
 
 export type RemoteStoragePickMode = "directory" | "file";
@@ -45,11 +45,16 @@ function parseStorageSize(value: unknown) {
   if (!Number.isFinite(number) || number < 0) return null;
 
   const unit = match[2].toLowerCase();
+  // Size strings come from the backend, whose unit formatting does not follow
+  // the interface language, so both spellings must parse regardless of locale.
+  // Keying this map by `i18nText("字节", "bytes")` made parsing depend on the
+  // active language, dropping Chinese-formatted sizes in the English UI.
   const multipliers: Record<string, number> = {
     b: 1,
     byte: 1,
     bytes: 1,
-    [i18nText("字节", "bytes")]: 1,
+    // eslint-disable-next-line easy-console/no-bare-cjk -- backend data key, not UI text
+    "字节": 1,
     k: 1024,
     kb: 1024,
     kib: 1024,
@@ -137,7 +142,7 @@ export function getStorageEntrySize(entry: StorageEntry) {
 function formatTimestamp(value: number) {
   const milliseconds = value > 10_000_000_000 ? value : value * 1000;
   const date = new Date(milliseconds);
-  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("zh-CN", { hour12: false });
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString(getActiveLocale(), { hour12: false });
 }
 
 export function getStorageEntryModified(entry: StorageEntry) {

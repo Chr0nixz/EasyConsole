@@ -114,15 +114,15 @@ export const DEFAULT_CUSTOM_COLORS: SshCustomColors = {
   brightWhite: "#a6adc8",
 };
 
-export const SSH_FONT_PRESETS: Array<{ id: string; label: string; value: string }> = [
-  { id: "consolas", label: "Consolas", value: 'Consolas, "SFMono-Regular", "Cascadia Mono", monospace' },
-  { id: "cascadia", label: "Cascadia Mono", value: '"Cascadia Mono", "Cascadia Code", Consolas, monospace' },
-  { id: "jetbrains", label: "JetBrains Mono", value: '"JetBrains Mono", "Fira Code", Consolas, monospace' },
-  { id: "fira", label: "Fira Code", value: '"Fira Code", "JetBrains Mono", Consolas, monospace' },
-  { id: "meslo", label: "Meslo", value: '"Meslo LG S", "Meslo LGS NF", monospace' },
-  { id: "source", label: "Source Code Pro", value: '"Source Code Pro", "SFMono-Regular", monospace' },
-  { id: "monospace", label: "系统默认", value: "monospace" },
-  { id: "custom", label: "自定义", value: "" },
+export const SSH_FONT_PRESETS: Array<{ id: string; zh: string; en: string; value: string }> = [
+  { id: "consolas", zh: "Consolas", en: "Consolas", value: 'Consolas, "SFMono-Regular", "Cascadia Mono", monospace' },
+  { id: "cascadia", zh: "Cascadia Mono", en: "Cascadia Mono", value: '"Cascadia Mono", "Cascadia Code", Consolas, monospace' },
+  { id: "jetbrains", zh: "JetBrains Mono", en: "JetBrains Mono", value: '"JetBrains Mono", "Fira Code", Consolas, monospace' },
+  { id: "fira", zh: "Fira Code", en: "Fira Code", value: '"Fira Code", "JetBrains Mono", Consolas, monospace' },
+  { id: "meslo", zh: "Meslo", en: "Meslo", value: '"Meslo LG S", "Meslo LGS NF", monospace' },
+  { id: "source", zh: "Source Code Pro", en: "Source Code Pro", value: '"Source Code Pro", "SFMono-Regular", monospace' },
+  { id: "monospace", zh: "系统默认", en: "System default", value: "monospace" },
+  { id: "custom", zh: "自定义", en: "Custom", value: "" },
 ];
 
 export const DEFAULT_SSH_SETTINGS: SshSettings = {

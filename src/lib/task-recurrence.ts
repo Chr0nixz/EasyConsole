@@ -1,5 +1,6 @@
 import { Cron } from "croner";
 
+import { i18nText, type Locale } from "./i18n-text";
 import type { ScheduledTask, TaskRecurrence } from "./types";
 
 export class RecurrenceValidationError extends Error {
@@ -12,12 +13,12 @@ export class RecurrenceValidationError extends Error {
 /** Validate cron expression; throws RecurrenceValidationError on failure. */
 export function assertValidCron(expr: string) {
   const trimmed = expr.trim();
-  if (!trimmed) throw new RecurrenceValidationError("Cron expression is required");
+  if (!trimmed) throw new RecurrenceValidationError(i18nText("Cron 表达式不能为空", "Cron expression is required"));
   try {
     // croner uses local timezone by default; catch invalid patterns early.
     new Cron(trimmed, { paused: true });
   } catch (error) {
-    throw new RecurrenceValidationError(error instanceof Error ? error.message : "Invalid cron expression");
+    throw new RecurrenceValidationError(error instanceof Error ? error.message : i18nText("Cron 表达式无效", "Invalid cron expression"));
   }
 }
 
@@ -26,19 +27,19 @@ export function validateRecurrence(recurrence: TaskRecurrence | undefined): void
   if (recurrence.type === "weekly") {
     const weekdays = recurrence.weekdays ?? [];
     if (weekdays.length === 0) {
-      throw new RecurrenceValidationError("Weekly recurrence requires at least one weekday");
+      throw new RecurrenceValidationError(i18nText("按周重复至少需要选择一天", "Weekly recurrence requires at least one weekday"));
     }
     if (weekdays.some((day) => !Number.isInteger(day) || day < 0 || day > 6)) {
-      throw new RecurrenceValidationError("Weekdays must be integers from 0 (Sun) to 6 (Sat)");
+      throw new RecurrenceValidationError(i18nText("星期取值必须是 0（周日）到 6（周六）的整数", "Weekdays must be integers from 0 (Sun) to 6 (Sat)"));
     }
   }
   if (recurrence.type === "interval") {
     if (!recurrence.intervalSec || recurrence.intervalSec <= 0) {
-      throw new RecurrenceValidationError("Interval recurrence requires a positive intervalSec");
+      throw new RecurrenceValidationError(i18nText("按间隔重复需要提供正数的间隔秒数", "Interval recurrence requires a positive intervalSec"));
     }
   }
   if (recurrence.type === "cron") {
-    if (!recurrence.cron?.trim()) throw new RecurrenceValidationError("Cron expression is required");
+    if (!recurrence.cron?.trim()) throw new RecurrenceValidationError(i18nText("Cron 表达式不能为空", "Cron expression is required"));
     assertValidCron(recurrence.cron);
   }
 }
@@ -47,7 +48,7 @@ function nextCronTime(cron: string, after: Date): Date {
   assertValidCron(cron);
   const job = new Cron(cron.trim());
   const next = job.nextRun(after);
-  if (!next) throw new RecurrenceValidationError("No valid cron time found");
+  if (!next) throw new RecurrenceValidationError(i18nText("找不到有效的下次执行时间", "No valid cron time found"));
   return next;
 }
 
@@ -131,19 +132,31 @@ export function isRecurring(task: ScheduledTask): boolean {
   return Boolean(task.recurrence && task.recurrence.type !== "once");
 }
 
-export function describeRecurrence(recurrence: TaskRecurrence): string {
+export function describeRecurrence(recurrence: TaskRecurrence, locale: Locale): string {
+  const en = locale === "en-US";
   switch (recurrence.type) {
     case "once":
-      return "单次";
+      return en ? "Once" : "单次";
     case "daily":
-      return "每天";
+      return en ? "Daily" : "每天";
     case "weekly": {
+      if (en) {
+        const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        const labels = (recurrence.weekdays ?? []).sort().map((d) => days[d] ?? String(d));
+        return labels.length > 0 ? labels.join(", ") : "Weekly";
+      }
       const days = ["日", "一", "二", "三", "四", "五", "六"];
       const labels = (recurrence.weekdays ?? []).sort().map((d) => `周${days[d] ?? d}`);
       return labels.length > 0 ? labels.join("、") : "每周";
     }
     case "interval": {
       const sec = recurrence.intervalSec ?? 0;
+      if (en) {
+        if (sec >= 86400) return `Every ${Math.floor(sec / 86400)} d`;
+        if (sec >= 3600) return `Every ${Math.floor(sec / 3600)} hr`;
+        if (sec >= 60) return `Every ${Math.floor(sec / 60)} min`;
+        return `Every ${sec} sec`;
+      }
       if (sec >= 86400) return `每 ${Math.floor(sec / 86400)} 天`;
       if (sec >= 3600) return `每 ${Math.floor(sec / 3600)} 小时`;
       if (sec >= 60) return `每 ${Math.floor(sec / 60)} 分钟`;
@@ -152,6 +165,6 @@ export function describeRecurrence(recurrence: TaskRecurrence): string {
     case "cron":
       return `Cron: ${recurrence.cron ?? "?"}`;
     default:
-      return "未知";
+      return en ? "Unknown" : "未知";
   }
 }

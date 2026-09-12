@@ -389,7 +389,10 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             setStatus(event.message);
             setStatusKind("connected");
             activeTerminal.writeln(`\r\n${event.message}`);
-            if (!historyRecorded && event.message.includes("已连接")) {
+            // The native side emits this message in the active interface
+            // language, so match both spellings.
+            // eslint-disable-next-line easy-console/no-bare-cjk
+            if (!historyRecorded && (event.message.includes("已连接") || /\bconnected\b/i.test(event.message))) {
               historyRecorded = true;
               void browserRuntime.addSshHistory({
                 host: request.host,

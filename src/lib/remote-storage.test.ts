@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
+import { setActiveLocale } from "./i18n-text";
 import {
   getStorageBreadcrumbs,
   getStorageEntryModified,
@@ -11,6 +12,21 @@ import {
 } from "./remote-storage";
 
 describe("remote storage path helpers", () => {
+  afterEach(() => {
+    setActiveLocale("zh-CN");
+  });
+
+  it("parses backend size units the same way in either interface language", () => {
+    // The backend picks its own unit spelling; parsing must not depend on the
+    // active language, or Chinese-formatted sizes vanish in the English UI.
+    for (const locale of ["zh-CN", "en-US"] as const) {
+      setActiveLocale(locale);
+      expect(getStorageEntrySize({ name: "a", total_size: "1.5 KB" })).toBe(1536);
+      expect(getStorageEntrySize({ name: "a", total_size: "100 字节" })).toBe(100);
+      expect(getStorageEntrySize({ name: "a", total_size: "2 MB" })).toBe(2 * 1024 ** 2);
+    }
+  });
+
   it("normalizes remote paths", () => {
     expect(normalizeStoragePath("")).toBe("/");
     expect(normalizeStoragePath("alice/work")).toBe("/alice/work");

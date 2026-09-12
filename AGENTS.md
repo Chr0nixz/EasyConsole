@@ -107,7 +107,10 @@ Do not commit real account credentials, tokens, or live test secrets.
 - `src/lib/api.ts`: browser/Tauri singleton API client and runtime base URL setter.
 - `src/lib/runtime.ts`: browser/Tauri runtime adapter for storage, fetch, WebSocket, notifications, clipboard, external links, and desktop SSH commands.
 - `src/lib/app-settings.ts`: local runtime URL and notification preference settings.
-- `src/lib/i18n.tsx`: in-app `zh-CN`/`en-US` dictionary, language persistence, and imperative `i18nText` helper.
+- `src/lib/i18n.tsx`: in-app `zh-CN`/`en-US` dictionary, language persistence, and imperative `i18nText` helper. Also pushes the active locale to the native side through `set_locale`.
+- `src-tauri/src/i18n.rs`: native locale flag, driven by the `trf!` macro in `lib.rs` that localizes Rust-produced strings.
+- `tools/easy-console/locale.ts`: CLI/MCP locale bootstrap (`--lang` → `EASY_CONSOLE_LANG` → system locale → English).
+- `tools/eslint-rules/no-bare-cjk.mjs`: ESLint rule that rejects hardcoded CJK text outside the localization helpers. See the Language section of DESIGN.md for which mechanism to use.
 - `src/lib/run-logs.ts`: local operation log model for web, Tauri, CLI, and MCP channels.
 - `src/lib/task-templates.ts`: local instance template persistence and batch payload generation.
 - `src/lib/scheduled-tasks.ts`: local scheduled task persistence and due-state helpers.
@@ -188,7 +191,7 @@ Add focused tests for shared behavior and API adapters:
 - monitor dashboard URL formatting
 - task list query serialization and search ranking
 - task templates, scheduled tasks, run logs, and notification transitions
-- i18n persistence and language switching
+- i18n persistence, language switching, and native locale sync
 - keyboard/focus behavior for dialogs and menus
 
 For live validation, use a local test account only and never commit credentials. Validate login, userinfo, task list, safe task creation path, logs, terminal, storage upload/download/delete, and image list against the real API before marking uncertain flows complete.

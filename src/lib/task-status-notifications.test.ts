@@ -7,13 +7,13 @@ describe("task status notifications", () => {
   it("skips the initial task snapshot", () => {
     const task = { id: 1, name: "train", status: 6 } as Task;
 
-    expect(getImportantTaskStatusNotification(task, undefined)).toBeNull();
+    expect(getImportantTaskStatusNotification(task, undefined, "zh-CN")).toBeNull();
   });
 
   it("notifies when a task enters success", () => {
     const task = { id: 1, task_id: "task-1", name: "train", status: 6 } as Task;
 
-    expect(getImportantTaskStatusNotification(task, 2)).toMatchObject({
+    expect(getImportantTaskStatusNotification(task, 2, "zh-CN")).toMatchObject({
       kind: "success",
       event: "task.success",
       taskId: "task-1",
@@ -24,13 +24,13 @@ describe("task status notifications", () => {
   });
 
   it("notifies when a task enters failure or abnormal states", () => {
-    expect(getImportantTaskStatusNotification({ id: 1, name: "train", status: 7 } as Task, 2)).toMatchObject({
+    expect(getImportantTaskStatusNotification({ id: 1, name: "train", status: 7 } as Task, 2, "zh-CN")).toMatchObject({
       kind: "failure",
       event: "task.failure",
       title: "实例运行失败",
       body: "train：失败",
     });
-    expect(getImportantTaskStatusNotification({ id: 2, name: "dev", status: 8 } as Task, 2)).toMatchObject({
+    expect(getImportantTaskStatusNotification({ id: 2, name: "dev", status: 8 } as Task, 2, "zh-CN")).toMatchObject({
       kind: "failure",
       event: "task.abnormal",
       title: "实例运行异常",
@@ -38,9 +38,24 @@ describe("task status notifications", () => {
     });
   });
 
+  it("localizes the title, status and separator for English", () => {
+    expect(getImportantTaskStatusNotification({ id: 1, task_id: "task-1", name: "train", status: 6 } as Task, 2, "en-US")).toMatchObject({
+      title: "Instance succeeded",
+      body: "train: Succeeded",
+    });
+    expect(getImportantTaskStatusNotification({ id: 1, name: "train", status: 7 } as Task, 2, "en-US")).toMatchObject({
+      title: "Instance failed",
+      body: "train: Failed",
+    });
+    expect(getImportantTaskStatusNotification({ id: 2, name: "dev", status: 8 } as Task, 2, "en-US")).toMatchObject({
+      title: "Instance abnormal",
+      body: "dev: Exception",
+    });
+  });
+
   it("ignores unchanged and non-terminal status updates", () => {
-    expect(getImportantTaskStatusNotification({ id: 1, name: "train", status: 2 } as Task, 1)).toBeNull();
-    expect(getImportantTaskStatusNotification({ id: 1, name: "train", status: 6 } as Task, 6)).toBeNull();
+    expect(getImportantTaskStatusNotification({ id: 1, name: "train", status: 2 } as Task, 1, "zh-CN")).toBeNull();
+    expect(getImportantTaskStatusNotification({ id: 1, name: "train", status: 6 } as Task, 6, "zh-CN")).toBeNull();
   });
 
   it("marks failed and abnormal tasks as needing log attention", () => {

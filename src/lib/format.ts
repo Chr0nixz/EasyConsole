@@ -1,5 +1,5 @@
 import type { TaskStatus, UnknownRecord } from "./types";
-import type { Locale } from "./i18n-text";
+import { i18nText, type Locale } from "./i18n-text";
 
 function pad2(value: number) {
   return String(value).padStart(2, "0");
@@ -30,44 +30,44 @@ export function addHours(date: Date, hours: number) {
   return new Date(date.getTime() + hours * 60 * 60 * 1000);
 }
 
-export const taskStatusText: Record<number, string> = {
-  0: "初始化",
-  1: "队列中",
-  2: "运行中",
-  3: "暂停",
-  4: "已释放",
-  5: "耗尽",
-  6: "成功",
-  7: "失败",
-  8: "异常",
+/** A string that exists in both supported interface languages. */
+export type LocalizedText = { zh: string; en: string };
+
+/**
+ * Look up a value in a `{ zh, en }` map. Keeping the pair together rather than
+ * in two parallel maps means the languages cannot drift apart.
+ */
+export function localizedText(value: LocalizedText | undefined, locale: Locale): string | undefined {
+  if (!value) return undefined;
+  return locale === "en-US" ? value.en : value.zh;
+}
+
+export const taskStatusText: Record<number, LocalizedText> = {
+  0: { zh: "初始化", en: "Initializing" },
+  1: { zh: "队列中", en: "Queued" },
+  2: { zh: "运行中", en: "Running" },
+  3: { zh: "暂停", en: "Paused" },
+  4: { zh: "已释放", en: "Released" },
+  5: { zh: "耗尽", en: "Exhausted" },
+  6: { zh: "成功", en: "Succeeded" },
+  7: { zh: "失败", en: "Failed" },
+  8: { zh: "异常", en: "Exception" },
 };
 
-export const taskStatusTextEn: Record<number, string> = {
-  0: "Initializing",
-  1: "Queued",
-  2: "Running",
-  3: "Paused",
-  4: "Released",
-  5: "Exhausted",
-  6: "Succeeded",
-  7: "Failed",
-  8: "Exception",
+export const releaseConditionText: Record<number, LocalizedText> = {
+  1: { zh: "手动释放", en: "Manual release" },
+  2: { zh: "定时释放", en: "Timed release" },
+  3: { zh: "任务结束释放", en: "Release after task ends" },
 };
 
-export const releaseConditionText: Record<number, string> = {
-  1: "手动释放",
-  2: "定时释放",
-  3: "任务结束释放",
-};
-
-export const releaseConditionTextEn: Record<number, string> = {
-  1: "Manual release",
-  2: "Timed release",
-  3: "Release after task ends",
-};
-
+/**
+ * Display name for a task. Most callers are non-React helpers (`task-search`,
+ * `task-list-query`) that have no locale in scope, so the fallback goes through
+ * `i18nText` rather than taking a locale parameter.
+ */
 export function getTaskName(task: { name?: string; task_name?: string; id?: string | number }) {
-  return task.name || task.task_name || `任务 ${task.id ?? ""}`.trim();
+  const id = task.id ?? "";
+  return task.name || task.task_name || i18nText(`任务 ${id}`.trim(), `Task ${id}`.trim());
 }
 
 export function getTaskNodeName(task: UnknownRecord & {
@@ -80,14 +80,12 @@ export function getTaskNodeName(task: UnknownRecord & {
 
 export function getStatusText(status?: TaskStatus, locale: Locale = "zh-CN") {
   if (status === undefined || status === null) return locale === "en-US" ? "Unknown" : "未知";
-  const map = locale === "en-US" ? taskStatusTextEn : taskStatusText;
-  return map[Number(status)] ?? (locale === "en-US" ? `Status ${status}` : `状态 ${status}`);
+  return localizedText(taskStatusText[Number(status)], locale) ?? (locale === "en-US" ? `Status ${status}` : `状态 ${status}`);
 }
 
 export function getReleaseConditionText(condition?: number, locale: Locale = "zh-CN") {
   if (condition === undefined || condition === null) return "-";
-  const map = locale === "en-US" ? releaseConditionTextEn : releaseConditionText;
-  return map[Number(condition)] ?? (locale === "en-US" ? `Release condition ${condition}` : `释放条件 ${condition}`);
+  return localizedText(releaseConditionText[Number(condition)], locale) ?? (locale === "en-US" ? `Release condition ${condition}` : `释放条件 ${condition}`);
 }
 
 /** Backend spelling is `releace_conditions`; keep `release_condition` as a fallback. */

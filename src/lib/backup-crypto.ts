@@ -1,3 +1,4 @@
+import { i18nText } from "./i18n-text";
 import type { LocalDataBackup } from "./local-data-backup";
 
 const PBKDF2_ITERATIONS = 150_000;
@@ -29,7 +30,7 @@ const rootCrypto = globalThis.crypto;
 
 function assertSubtle() {
   if (!subtle) {
-    throw new Error("Web Crypto API is not available in this environment");
+    throw new Error(i18nText("当前环境不支持 Web Crypto API", "Web Crypto API is not available in this environment"));
   }
   return subtle;
 }
@@ -70,7 +71,7 @@ export function isEncryptedBackup(value: unknown): value is EncryptedBackup {
 }
 
 export async function encryptBackup(backup: LocalDataBackup, password: string): Promise<EncryptedBackup> {
-  if (!password) throw new Error("Password is required for encryption");
+  if (!password) throw new Error(i18nText("加密需要提供密码", "Password is required for encryption"));
   if (!rootCrypto) throw new Error("Web Crypto API is not available in this environment");
   const crypto = assertSubtle();
   const encoder = new TextEncoder();
@@ -99,7 +100,7 @@ export async function encryptBackup(backup: LocalDataBackup, password: string): 
 }
 
 export async function decryptBackup(encrypted: EncryptedBackup, password: string): Promise<LocalDataBackup> {
-  if (!password) throw new Error("Password is required for decryption");
+  if (!password) throw new Error(i18nText("解密需要提供密码", "Password is required for decryption"));
   const crypto = assertSubtle();
   const decoder = new TextDecoder();
   const salt = base64ToBytes(encrypted.kdf.salt);
@@ -110,7 +111,7 @@ export async function decryptBackup(encrypted: EncryptedBackup, password: string
   try {
     plaintext = await crypto.decrypt({ name: "AES-GCM", iv: asBufferSource(iv) }, key, asBufferSource(ciphertext));
   } catch {
-    throw new Error("Decryption failed. Incorrect password or corrupted file.");
+    throw new Error(i18nText("解密失败，密码不正确或文件已损坏。", "Decryption failed. Incorrect password or corrupted file."));
   }
   const json = decoder.decode(plaintext);
   return JSON.parse(json) as LocalDataBackup;

@@ -41,7 +41,22 @@ The desktop shell is the primary layout target. The mobile and browser fallback 
 
 ## Language
 
-Chinese is the primary interface language, with English available through the language switch. New text should be added through the i18n dictionary or `text(zh, en)` helper so the shell, dialogs, toasts, empty states, and settings remain bilingual.
+Chinese is the primary interface language, with English available through the language switch. Every user-facing string must go through one of these so the shell, dialogs, toasts, empty states, settings, native errors and run logs all stay bilingual:
+
+- React components: `text(zh, en)` from `useI18n()`.
+- Non-React modules under `src/lib/`: `i18nText(zh, en)`, or an explicit `locale` parameter when the caller already has one.
+- Module-level tables: `{ zh, en }` pairs read with `localizedText(entry, locale)` from `src/lib/format.ts`.
+- Rust (`src-tauri/src/lib.rs`): `trf!("中文", "English")`, which is `format!` with a language switch. Wrap every user-facing `format!` and `to_string()` literal.
+
+`easy-console/no-bare-cjk` enforces this in ESLint. Where a string genuinely has to match localized text produced elsewhere — status messages coming back from Rust, for example — disable the rule on that line with a comment explaining why.
+
+### Which mechanism
+
+`text(zh, en)` is the default and the intended one for text that lives next to the UI. Keeping both languages on the same line is what stops them drifting apart.
+
+The `t("key")` dictionary in `src/lib/i18n.tsx` is for strings selected **by data** rather than written inline: the navigation table, the shortcut table, and route titles pick their key at runtime and need a `TranslationKey` to stay type-safe. Do not add dictionary keys for one-off component text — that is how the dictionary accumulated 31 dead entries, all of which were pruned once the rule above made them visible.
+
+The webview pushes the active locale to the native side through the `set_locale` command. The CLI and MCP resolve their own locale from `--lang`, then `EASY_CONSOLE_LANG`, then the system locale, then English.
 
 ## Motion
 

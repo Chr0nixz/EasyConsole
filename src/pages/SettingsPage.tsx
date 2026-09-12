@@ -301,7 +301,7 @@ function SettingsGroup({
 
 export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const toast = useToast();
-  const { t, text } = useI18n();
+  const { locale, t, text } = useI18n();
   const auth = useAuth();
   const appUpdate = useAppUpdate();
   const runLogger = useRunLogger();
@@ -1278,7 +1278,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               </div>
               {appUpdate.state.lastCheckedAt ? (
                 <div className="text-app-muted">
-                  {text("上次检查", "Last checked")} {new Date(appUpdate.state.lastCheckedAt).toLocaleString()}
+                  {text("上次检查", "Last checked")} {new Date(appUpdate.state.lastCheckedAt).toLocaleString(locale)}
                 </div>
               ) : null}
               <div className="text-app-muted">
@@ -1388,7 +1388,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 <label className="block text-sm">
                   <span className="mb-1 block text-app-muted">{t("settings.sshFontPreset")}</span>
                   <Select value={form.ssh.terminal.fontPreset} onChange={(e) => syncFontPreset(e.target.value)}>
-                    {SSH_FONT_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+                    {SSH_FONT_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{text(preset.zh, preset.en)}</option>)}
                   </Select>
                 </label>
                 {form.ssh.terminal.fontPreset === "custom" ? (
@@ -1539,7 +1539,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                           {entry.username}
                           {entry.taskName ? ` · ${entry.taskName}` : ""}
                           {" · "}
-                          {new Date(entry.connectedAt).toLocaleString()}
+                          {new Date(entry.connectedAt).toLocaleString(locale)}
                         </div>
                       </div>
                     </div>

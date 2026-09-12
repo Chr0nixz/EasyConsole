@@ -1,5 +1,6 @@
 import { mutateScheduledTasks, scheduleNextRun, STALE_LEASE_MS, resetStaleRunningTasks, updateScheduledTask } from "./scheduled-tasks";
 import { applyScheduledReleasePolicy } from "./scheduled-release";
+import { i18nText } from "./i18n-text";
 import { RecurrenceValidationError } from "./task-recurrence";
 import type { CreateTaskPayload, RuntimeStorage, ScheduledTask } from "./types";
 
@@ -124,7 +125,7 @@ export async function executeScheduledTask(
   let claim: Claim | undefined;
   await mutateScheduledTasks(storage, (current) => {
     const latest = current.find((item) => item.id === taskId);
-    if (!latest) throw new Error(`Scheduled task not found: ${taskId}`);
+    if (!latest) throw new Error(i18nText(`未找到定时任务：${taskId}`, `Scheduled task not found: ${taskId}`));
     const executionKey = makeExecutionKey(latest);
 
     if (isFreshLease(latest, now, staleMs)) {
@@ -138,8 +139,11 @@ export async function executeScheduledTask(
         status: "needs_review",
         lastError:
           latest.lastRemoteTaskId && latest.executionKey
-            ? `Lease expired after remote create (${latest.lastRemoteTaskId}); confirm before replaying.`
-            : "Lease expired while running; result unknown — confirm before replaying.",
+            ? i18nText(
+                `远程创建后租约已过期（${latest.lastRemoteTaskId}）；重放前请先确认。`,
+                `Lease expired after remote create (${latest.lastRemoteTaskId}); confirm before replaying.`,
+              )
+            : i18nText("运行期间租约已过期；结果未知，重放前请先确认。", "Lease expired while running; result unknown — confirm before replaying."),
         leaseStartedAt: undefined,
         updatedAt: now.toISOString(),
       };
@@ -160,7 +164,7 @@ export async function executeScheduledTask(
     return updateScheduledTask(current, leased);
   });
 
-  if (!claim) throw new Error(`Scheduled task not found: ${taskId}`);
+  if (!claim) throw new Error(i18nText(`未找到定时任务：${taskId}`, `Scheduled task not found: ${taskId}`));
   if (claim.kind === "skipped") {
     return { skipped: true, reason: claim.reason, task: claim.task };
   }
