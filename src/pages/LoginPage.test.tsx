@@ -147,13 +147,15 @@ describe("LoginPage", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/tasks"));
     expect(router.state.location.search).toBe("?status=failed&page=2");
     expect(router.state.location.hash).toBe("#row-7");
-    expect(screen.getByText("Tasks")).toBeInTheDocument();
+    // The router updates `state` synchronously but renders on a later pass, so
+    // querying the DOM with getBy* here races that render. Wait for the DOM.
+    expect(await screen.findByText("Tasks")).toBeInTheDocument();
   });
 
   it("falls back to the dashboard for a protocol-relative redirect target", async () => {
     const router = await signInFrom({ pathname: "//evil.example.com/phish" });
 
     await waitFor(() => expect(router.state.location.pathname).toBe("/dashboard"));
-    expect(screen.getByText("Dashboard")).toBeInTheDocument();
+    expect(await screen.findByText("Dashboard")).toBeInTheDocument();
   });
 });
