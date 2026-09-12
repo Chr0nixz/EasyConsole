@@ -14,7 +14,10 @@ static ENGLISH: AtomicBool = AtomicBool::new(false);
 /// Update the active locale. Anything not starting with `en` selects Chinese,
 /// matching `normalizeLocale()` on the TypeScript side.
 pub fn set_locale(locale: &str) {
-    ENGLISH.store(locale.to_ascii_lowercase().starts_with("en"), Ordering::Relaxed);
+    ENGLISH.store(
+        locale.to_ascii_lowercase().starts_with("en"),
+        Ordering::Relaxed,
+    );
 }
 
 pub fn is_english() -> bool {
