@@ -106,7 +106,7 @@ export async function exportLocalDataBackup(
 export function parseLocalDataBackup(text: string): LocalDataBackup {
   const parsed = JSON.parse(text) as Partial<LocalDataBackup>;
   if (parsed.app !== "EasyConsole" || parsed.version !== LOCAL_DATA_BACKUP_VERSION || !parsed.items || typeof parsed.items !== "object") {
-    throw new Error(i18nText("不是有效的 EasyConsole 备份文件", "Unsupported EasyConsole backup file"));
+    throw new Error(i18nText("非有效的 EasyConsole 备份数据文件", "Invalid EasyConsole backup file"));
   }
   return parsed as LocalDataBackup;
 }

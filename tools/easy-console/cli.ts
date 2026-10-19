@@ -332,7 +332,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
             level: "info",
             action,
             result: "success",
-            title: i18nText(`CLI ${action} 成功`, `CLI ${action} succeeded`),
+            title: i18nText(`CLI 操作成功：${action}`, `CLI operation succeeded: ${action}`),
             durationMs: Date.now() - startedAt,
             metadata: { options: loggableOptions(command.opts()) },
           });
@@ -346,7 +346,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
             level: "error",
             action,
             result: "failure",
-            title: i18nText(`CLI ${action} 失败`, `CLI ${action} failed`),
+            title: i18nText(`CLI 操作失败：${action}`, `CLI operation failed: ${action}`),
             durationMs: Date.now() - startedAt,
             error: error instanceof Error ? error.message : String(error),
             metadata: { options: loggableOptions(command.opts()) },

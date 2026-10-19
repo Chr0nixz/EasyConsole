@@ -10,6 +10,7 @@ type ImportMetaWithEnv = ImportMeta & {
   };
 };
 
+/** "hacker" is the persisted settings key (renaming it would drop saved choices); the UI labels it 绿色终端/Green. */
 export type SshTerminalTheme = "dark" | "light" | "hacker" | "custom";
 
 export type { SshAuthMode } from "./types";
@@ -266,7 +267,20 @@ function normalizePortForwardRule(value: unknown, index: number): PortForwardRul
   const remotePort = normalizePositiveInteger(raw.remotePort, 0);
   if (localPort === 0) return null;
   if (type !== "dynamic" && (remoteHost === "" || remotePort === 0)) return null;
-  return { id, type, localHost, localPort, remoteHost, remotePort, enabled: raw.enabled === true };
+  const host = typeof raw.host === "string" && raw.host.trim() ? raw.host.trim() : undefined;
+  return { id, type, localHost, localPort, remoteHost, remotePort, enabled: raw.enabled === true, host };
+}
+
+/**
+ * Whether a port-forward rule applies to a session host. Rules without a host
+ * scope apply to every session; scoped rules match the session host exactly,
+ * case-insensitively.
+ */
+export function portForwardRuleAppliesToHost(rule: PortForwardRule, host: string): boolean {
+  if (!rule.host) return true;
+  const sessionHost = host.trim().toLowerCase();
+  if (!sessionHost) return false;
+  return rule.host.trim().toLowerCase() === sessionHost;
 }
 
 function normalizePortForwards(value: unknown): PortForwardRule[] {
@@ -394,9 +408,85 @@ export function stringifyAccountSettingsStore(store: AccountSettingsStore) {
   const byAccount: Record<string, AppSettings> = {};
   for (const [accountId, settings] of Object.entries(store.byAccount)) {
     if (!accountId.trim()) continue;
-    byAccount[accountId] = normalizeAppSettings(settings);
+    // The SSH default password is persisted in secureStorage (the OS keychain
+    // on desktop); it must never land in runtime-storage.json.
+    byAccount[accountId] = normalizeAppSettings({
+      ...settings,
+      ssh: { ...settings.ssh, defaultPassword: "" },
+    });
   }
   return JSON.stringify({ version: ACCOUNT_SETTINGS_STORE_VERSION, byAccount } satisfies AccountSettingsStore);
+}
+
+/** secureStorage key for an account's SSH default password. */
+export function sshPasswordStorageKey(accountId: string) {
+  const id = accountId.trim() || GLOBAL_SETTINGS_ACCOUNT_ID;
+  return `easy-console.ssh.default-password:${id}`;
+}
+
+/** Persists (or clears) the account's SSH default password in secureStorage. */
+export async function saveAccountSshPassword(
+  secureStorage: Pick<SettingsStorage, "set" | "remove">,
+  accountId: string,
+  password: string,
+) {
+  const key = sshPasswordStorageKey(accountId);
+  if (password) {
+    await secureStorage.set(key, password);
+  } else {
+    await secureStorage.remove?.(key);
+  }
+}
+
+/** Removes the account's SSH default password from secureStorage. */
+export async function deleteAccountSshPassword(
+  secureStorage: Pick<SettingsStorage, "remove">,
+  accountId: string,
+) {
+  await secureStorage.remove?.(sshPasswordStorageKey(accountId));
+}
+
+/**
+ * Loads the account's SSH default password from secureStorage into the runtime
+ * settings. Versions before this stored the password inside the settings JSON;
+ * such a legacy value is migrated to secureStorage and the store is rewritten
+ * without it (one time).
+ *
+ * Pass `persist: false` on runtimes without OS-grade secure storage (the web
+ * runtime's secureStorage is plain localStorage): the password then stays in
+ * memory for the session only and any persisted copy is removed.
+ */
+export async function hydrateAccountSshPassword(
+  storage: Pick<SettingsStorage, "get" | "set">,
+  secureStorage: Pick<SettingsStorage, "get" | "set" | "remove">,
+  accountId: string,
+  options?: { persist?: boolean },
+) {
+  const persist = options?.persist ?? true;
+  const current = getRuntimeSettings();
+  const legacy = current.ssh.defaultPassword;
+  const key = sshPasswordStorageKey(accountId);
+  const secure = (await secureStorage.get(key)) ?? "";
+  const password = secure || legacy;
+  if (persist) {
+    if (legacy && !secure) {
+      await saveAccountSshPassword(secureStorage, accountId, legacy);
+      // saveAccountSettings rewrites the store; stringify strips the password.
+      await saveAccountSettings(storage, accountId, current);
+    }
+  } else {
+    // Nothing on the web runtime may outlive the session: drop whatever an
+    // older version persisted under this key, and rewrite the store without
+    // a legacy plaintext copy (stringify strips the password).
+    await secureStorage.remove?.(key);
+    if (legacy) {
+      await saveAccountSettings(storage, accountId, current);
+    }
+  }
+  if (password !== current.ssh.defaultPassword) {
+    setRuntimeSettings({ ...current, ssh: { ...current.ssh, defaultPassword: password } });
+  }
+  return password;
 }
 
 export function getAccountAppSettings(store: AccountSettingsStore, accountId: string): AppSettings {

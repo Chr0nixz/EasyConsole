@@ -9,6 +9,7 @@ import {
   ExternalLink,
   History,
   KeyRound,
+  KeySquare,
   ListOrdered,
   Network,
   Palette,
@@ -34,12 +35,14 @@ import {
   DEFAULT_CUSTOM_COLORS,
   DEFAULT_SSH_SETTINGS,
   GLOBAL_SETTINGS_ACCOUNT_ID,
+  deleteAccountSshPassword,
   getRuntimeSettings,
   type ImportantNotificationEvent,
   normalizeAppSettings,
   type NotificationMode,
   resetAccountAppSettings,
   saveAccountSettings,
+  saveAccountSshPassword,
   setRuntimeSettings,
   SSH_FONT_PRESETS,
   TASK_AUTO_REFRESH_OPTIONS,
@@ -81,7 +84,7 @@ import { useToast } from "../lib/use-toast";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { queryKeys } from "../lib/query-keys";
 import { useUnsavedChanges } from "../lib/use-unsaved-changes";
-import type { KnownHostEntry, PortForwardRule, PortForwardType, SshHistoryEntry } from "../lib/types";
+import type { KnownHostEntry, PortForwardRule, PortForwardType, SshHistoryEntry, VscodeKeyRecord } from "../lib/types";
 
 function isHttpUrl(value: string) {
   try {
@@ -153,13 +156,11 @@ const sshAuthModeOptions: Array<{ mode: SshAuthMode; zh: string; en: string }> =
 const sshThemeOptions: Array<{ theme: SshTerminalTheme; zh: string; en: string }> = [
   { theme: "dark", zh: "深色", en: "Dark" },
   { theme: "light", zh: "浅色", en: "Light" },
-  { theme: "hacker", zh: "黑客", en: "Hacker" },
+  { theme: "hacker", zh: "绿色终端", en: "Green" },
   { theme: "custom", zh: "自定义", en: "Custom" },
 ];
 
 type LucideIcon = typeof Settings2;
-
-const AUTO_SAVE_DELAY_MS = 500;
 
 type SettingsGroupKey = "connection" | "terminal" | "data" | "notifications";
 
@@ -323,11 +324,15 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const [importSecrets, setImportSecrets] = useState(false);
   const [knownHosts, setKnownHosts] = useState<KnownHostEntry[]>([]);
   const [knownHostsLoading, setKnownHostsLoading] = useState(false);
+  const [vscodeKeys, setVscodeKeys] = useState<VscodeKeyRecord[]>([]);
+  const [vscodeKeysLoading, setVscodeKeysLoading] = useState(false);
+  const [legacyVscodeKey, setLegacyVscodeKey] = useState(false);
   const [sshHistory, setSshHistory] = useState<SshHistoryEntry[]>([]);
   const [sshHistoryLoading, setSshHistoryLoading] = useState(false);
   const [showPortForwardForm, setShowPortForwardForm] = useState(false);
   const [portForwardsOpen, setPortForwardsOpen] = useState(false);
   const [pfType, setPfType] = useState<PortForwardType>("local");
+  const [pfHost, setPfHost] = useState("");
   const [pfLocalHost, setPfLocalHost] = useState("127.0.0.1");
   const [pfLocalPort, setPfLocalPort] = useState("");
   const [pfRemoteHost, setPfRemoteHost] = useState("");
@@ -375,6 +380,33 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     () => JSON.stringify(normalized) !== JSON.stringify(savedBaseline),
     [normalized, savedBaseline],
   );
+  const dirtyGroups = useMemo(() => {
+    if (!settingsDirty) return [] as string[];
+    const groups: string[] = [];
+    if (
+      normalized.apiBaseUrl !== savedBaseline.apiBaseUrl ||
+      normalized.monitorDashboardUrl !== savedBaseline.monitorDashboardUrl ||
+      normalized.desktopClosePrompt !== savedBaseline.desktopClosePrompt ||
+      normalized.desktopCloseToTray !== savedBaseline.desktopCloseToTray
+    ) {
+      groups.push(groupLabels.connection);
+    }
+    if (JSON.stringify(normalized.ssh) !== JSON.stringify(savedBaseline.ssh)) groups.push(groupLabels.terminal);
+    if (JSON.stringify(normalized.notificationPreferences) !== JSON.stringify(savedBaseline.notificationPreferences)) {
+      groups.push(groupLabels.notifications);
+    }
+    if (
+      normalized.autoCheckUpdates !== savedBaseline.autoCheckUpdates ||
+      normalized.taskAutoRefresh !== savedBaseline.taskAutoRefresh ||
+      normalized.taskAutoRefreshIntervalMs !== savedBaseline.taskAutoRefreshIntervalMs ||
+      normalized.autoNumberDuplicateTaskNames !== savedBaseline.autoNumberDuplicateTaskNames ||
+      normalized.runLogLimit !== savedBaseline.runLogLimit ||
+      normalized.runLogRetentionDays !== savedBaseline.runLogRetentionDays
+    ) {
+      groups.push(text("其他偏好", "Other preferences"));
+    }
+    return groups;
+  }, [groupLabels, normalized, savedBaseline, settingsDirty, text]);
   const passwordDirty = Boolean(oldPassword || newPassword || confirmPassword);
   const unsavedMessage = text("设置有未保存的更改，确定要离开吗？", "You have unsaved settings. Leave without saving?");
   useUnsavedChanges(settingsDirty || passwordDirty, unsavedMessage);
@@ -392,15 +424,18 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   const transportBlockedReason = getTransportBlockReason();
   const validationError = settingsDirty ? validate(normalized, t) : null;
   const visibleError = validationError ?? error;
-  const autoSaveStatus = saving
+  const savedTimeText = lastSavedAt
+    ? new Date(lastSavedAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })
+    : null;
+  const saveStatus = saving
     ? text("正在保存", "Saving")
-    : visibleError
+    : error
       ? text("保存失败", "Save failed")
       : settingsDirty
-        ? text("等待保存", "Waiting to save")
-        : lastSavedAt
-          ? text("已自动保存", "Saved automatically")
-          : text("自动保存已启用", "Autosave enabled");
+        ? text("未保存的更改", "Unsaved changes")
+        : savedTimeText
+          ? text(`已保存 ${savedTimeText}`, `Saved ${savedTimeText}`)
+          : text("无未保存更改", "No unsaved changes");
 
   useEffect(() => {
     saveGenerationRef.current += 1;
@@ -469,6 +504,19 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     try {
       applySettings(nextSettings);
       const savedSettings = await saveAccountSettings(browserRuntime.storage, settingsAccountId, nextSettings);
+      // The store JSON never contains the SSH default password; persist it in
+      // secureStorage alongside the store save. The web runtime's secureStorage
+      // is plain localStorage, so there the password stays in memory for the
+      // session only and any stored copy is dropped.
+      if (browserRuntime.runtimeKind === "web") {
+        await deleteAccountSshPassword(browserRuntime.secureStorage, settingsAccountId);
+      } else {
+        await saveAccountSshPassword(
+          browserRuntime.secureStorage,
+          settingsAccountId,
+          nextSettings.ssh.defaultPassword,
+        );
+      }
       if (previousApiBaseUrl !== savedSettings.apiBaseUrl) {
         await queryClient.cancelQueries({ queryKey: queryKeys.images.all });
         await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all });
@@ -502,56 +550,69 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     }
   }, [queryClient, runLogger, settingsAccountId, t]);
 
-  useEffect(() => {
-    if (!settingsDirty) return undefined;
-    if (validationError) return undefined;
+  /** Draft model: settings apply only through an explicit save. */
+  const saveSettings = useCallback(() => {
+    void persistSettings(normalized);
+  }, [normalized, persistSettings]);
 
-    const timer = window.setTimeout(() => {
-      setError(null);
-      void persistSettings(normalized);
-    }, AUTO_SAVE_DELAY_MS);
-    return () => window.clearTimeout(timer);
-  }, [normalized, persistSettings, settingsDirty, validationError]);
+  function discardSettingsChanges() {
+    setForm(savedBaseline);
+    setError(null);
+  }
 
   function resetToDefault() {
-    void (async () => {
-      saveGenerationRef.current += 1;
-      setSaving(true);
-      try {
-        applySettings(DEFAULT_APP_SETTINGS);
-        const store = await readAccountSettingsStore(browserRuntime.storage);
-        await writeAccountSettingsStore(browserRuntime.storage, resetAccountAppSettings(store, settingsAccountId));
-        await queryClient.cancelQueries({ queryKey: queryKeys.images.all });
-        await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.images.all });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all });
-        setForm(DEFAULT_APP_SETTINGS);
-        setSavedBaseline(normalizeAppSettings(DEFAULT_APP_SETTINGS));
-        setError(null);
-        setLastSavedAt(new Date().toISOString());
-        toast.success(t("settings.resetDone"), t("settings.resetDescription"));
-        void runLogger.log({
-          source: "settings",
-          level: "info",
-          action: "settings.reset",
-          result: "success",
-          title: t("settings.resetDone"),
-          metadata: { settingsAccountId },
-        });
-      } catch (resetError) {
-        setError(resetError instanceof Error ? resetError.message : t("settings.resetFailed"));
-        void runLogger.log({
-          source: "settings",
-          level: "error",
-          action: "settings.reset",
-          result: "failure",
-          title: t("settings.resetFailed"),
-          error: errorMessage(resetError, t("settings.resetFailed")),
-        });
-      } finally {
-        setSaving(false);
-      }
-    })();
+    confirm({
+      title: t("settings.resetDefault"),
+      description: text(
+        "将把本账号的应用设置恢复为默认值：运行时地址、SSH 与终端配置、通知偏好等，并清除保存的 SSH 默认密码。此操作不可撤销。",
+        "Restores this account's app settings to defaults: runtime URLs, SSH and terminal configuration, notification preferences, and clears the saved SSH default password. This cannot be undone.",
+      ),
+      confirmLabel: t("settings.resetDefault"),
+      tone: "danger",
+      run: () => {
+        void (async () => {
+          saveGenerationRef.current += 1;
+          setSaving(true);
+          try {
+            applySettings(DEFAULT_APP_SETTINGS);
+            const store = await readAccountSettingsStore(browserRuntime.storage);
+            await writeAccountSettingsStore(browserRuntime.storage, resetAccountAppSettings(store, settingsAccountId));
+            // Reset clears the SSH default password everywhere, including the
+            // secureStorage copy.
+            await saveAccountSshPassword(browserRuntime.secureStorage, settingsAccountId, "");
+            await queryClient.cancelQueries({ queryKey: queryKeys.images.all });
+            await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.images.all });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all });
+            setForm(DEFAULT_APP_SETTINGS);
+            setSavedBaseline(normalizeAppSettings(DEFAULT_APP_SETTINGS));
+            setError(null);
+            setLastSavedAt(new Date().toISOString());
+            toast.success(t("settings.resetDone"), t("settings.resetDescription"));
+            void runLogger.log({
+              source: "settings",
+              level: "info",
+              action: "settings.reset",
+              result: "success",
+              title: t("settings.resetDone"),
+              metadata: { settingsAccountId },
+            });
+          } catch (resetError) {
+            setError(resetError instanceof Error ? resetError.message : t("settings.resetFailed"));
+            void runLogger.log({
+              source: "settings",
+              level: "error",
+              action: "settings.reset",
+              result: "failure",
+              title: t("settings.resetFailed"),
+              error: errorMessage(resetError, t("settings.resetFailed")),
+            });
+          } finally {
+            setSaving(false);
+          }
+        })();
+      },
+    });
   }
 
   function setNotificationPreference(event: ImportantNotificationEvent, mode: NotificationMode) {
@@ -659,6 +720,74 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         toast.error(t("settings.sshRemoveFailed"));
       }
     })();
+  }
+
+  const loadVscodeKeys = useCallback(async () => {
+    if (browserRuntime.runtimeKind !== "desktop") return;
+    setVscodeKeysLoading(true);
+    try {
+      setVscodeKeys(await browserRuntime.listVscodeSshKeys());
+      setLegacyVscodeKey(await browserRuntime.hasLegacyVscodeKey());
+    } catch {
+      toast.error(t("settings.sshVscodeRevokeFailed"));
+    } finally {
+      setVscodeKeysLoading(false);
+    }
+  }, [t, toast]);
+
+  useEffect(() => {
+    void loadVscodeKeys();
+  }, [loadVscodeKeys]);
+
+  function revokeVscodeKey(record: VscodeKeyRecord) {
+    confirm({
+      title: t("settings.sshVscodeRevoke"),
+      description: t("settings.sshVscodeRevokeConfirm"),
+      confirmLabel: t("settings.sshVscodeRevoke"),
+      tone: "danger",
+      run: () => {
+        void (async () => {
+          try {
+            await browserRuntime.revokeVscodeSsh(
+              {
+                host: record.host,
+                port: record.port || undefined,
+                username: record.username || undefined,
+                command: "",
+              },
+              true,
+            );
+            toast.success(t("settings.sshVscodeRevoked"), record.host);
+            void loadVscodeKeys();
+          } catch (error) {
+            toast.error(t("settings.sshVscodeRevokeFailed"), error instanceof Error ? error.message : record.host);
+          }
+        })();
+      },
+    });
+  }
+
+  function cleanupLegacyVscodeKey() {
+    confirm({
+      title: t("settings.sshVscodeLegacyCleanup"),
+      description: t("settings.sshVscodeLegacyCleanupConfirm"),
+      confirmLabel: t("settings.sshVscodeLegacyCleanup"),
+      tone: "danger",
+      run: () => {
+        void (async () => {
+          try {
+            await browserRuntime.cleanupLegacyVscodeKey();
+            setLegacyVscodeKey(false);
+            toast.success(t("settings.sshVscodeLegacyCleaned"));
+          } catch (error) {
+            toast.error(
+              t("settings.sshVscodeLegacyCleanupFailed"),
+              error instanceof Error ? error.message : undefined,
+            );
+          }
+        })();
+      },
+    });
   }
 
   function clearAllKnownHosts() {
@@ -787,16 +916,16 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     const localPort = Number(pfLocalPort);
     const remotePort = Number(pfRemotePort);
     if (!localPort || localPort < 1 || localPort > 65535) {
-      toast.error(t("settings.sshPortForwardLocalPort"));
+      toast.error(text("请输入有效的本地端口 (1-65535)", "Enter a valid local port (1-65535)"));
       return;
     }
     if (pfType !== "dynamic") {
       if (!pfRemoteHost.trim()) {
-        toast.error(t("settings.sshPortForwardRemoteHost"));
+        toast.error(text("请填写远程主机地址", "Enter a remote host address"));
         return;
       }
       if (!remotePort || remotePort < 1 || remotePort > 65535) {
-        toast.error(t("settings.sshPortForwardRemotePort"));
+        toast.error(text("请输入有效的远程端口 (1-65535)", "Enter a valid remote port (1-65535)"));
         return;
       }
     }
@@ -809,12 +938,15 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       remotePort: pfType === "dynamic" ? 0 : remotePort,
       enabled: pfEnabled,
     };
+    const host = pfHost.trim();
+    if (host) rule.host = host;
     setForm((form) => ({
       ...form,
       ssh: { ...form.ssh, portForwards: [...form.ssh.portForwards, rule] },
     }));
     setShowPortForwardForm(false);
     setPfType("local");
+    setPfHost("");
     setPfLocalHost("127.0.0.1");
     setPfLocalPort("");
     setPfRemoteHost("");
@@ -1014,19 +1146,19 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           description={t("settings.runtimeDescription")}
           actions={
             <>
+              <Button disabled={saving} type="button" variant="secondary" onClick={() => void testConnection()}>
+                {text("测试连接", "Test")}
+              </Button>
               <Button disabled={saving} type="button" variant="secondary" onClick={resetToDefault}>
                 <RotateCcw className="h-4 w-4" />
                 {t("settings.resetDefault")}
-              </Button>
-              <Button disabled={saving} type="button" variant="secondary" onClick={() => void testConnection()}>
-                {text("测试连接", "Test")}
               </Button>
               <div
                 aria-live="polite"
                 className="flex h-9 items-center gap-2 rounded-md border border-app-border bg-app-panel px-3 text-xs text-app-muted"
               >
                 <Save className="h-4 w-4" />
-                <span>{autoSaveStatus}</span>
+                <span>{saveStatus}</span>
               </div>
             </>
           }
@@ -1329,6 +1461,14 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                     placeholder={t("settings.sshDefaultPasswordPlaceholder")}
                     onChange={(e) => updateSshField("defaultPassword", e.target.value)}
                   />
+                  {browserRuntime.runtimeKind === "web" ? (
+                    <p className="mt-1 text-xs text-app-muted">
+                      {text(
+                        "浏览器端不会保存该密码，仅在当前会话内生效。",
+                        "The browser runtime does not store this password; it applies to the current session only.",
+                      )}
+                    </p>
+                  ) : null}
                 </label>
                 <label className="block text-sm">
                   <span className="mb-1 block text-app-muted">{t("settings.sshDefaultPort")}</span>
@@ -1510,6 +1650,59 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               )}
             </CollapsibleSubSection>
 
+            {browserRuntime.runtimeKind === "desktop" ? (
+              <CollapsibleSubSection
+                icon={KeySquare}
+                label={t("settings.sshVscodeKeys")}
+                badge={vscodeKeys.length > 0 ? (
+                  <span className="rounded bg-app-accentSoft px-1.5 py-0.5 font-mono text-[10px] font-medium normal-case tracking-normal text-app-accent">
+                    {vscodeKeys.length}
+                  </span>
+                ) : null}
+              >
+                <p className="pb-2 text-xs text-app-muted">{t("settings.sshVscodeKeysHint")}</p>
+                {vscodeKeysLoading ? (
+                  <div className="py-2 text-center text-xs text-app-muted">...</div>
+                ) : vscodeKeys.length === 0 ? (
+                  <div className="py-2 text-center text-xs text-app-muted">{t("settings.sshVscodeKeysEmpty")}</div>
+                ) : (
+                  <div className="max-h-40 space-y-1 overflow-y-auto">
+                    {vscodeKeys.map((record) => (
+                      <div key={record.alias} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs transition-colors hover:border-app-accent/40 hover:bg-app-surface">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-mono text-app-text">
+                            {record.username}
+                            {record.username ? "@" : ""}
+                            {record.host}
+                            {record.port ? `:${record.port}` : ""}
+                          </div>
+                          <div className="truncate font-mono text-app-muted">{record.fingerprint}</div>
+                        </div>
+                        <button
+                          className="ml-2 shrink-0 rounded p-1 text-app-muted hover:bg-app-surface hover:text-app-danger"
+                          type="button"
+                          title={t("settings.sshVscodeRevoke")}
+                          aria-label={t("settings.sshVscodeRevoke")}
+                          onClick={() => revokeVscodeKey(record)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {legacyVscodeKey && !vscodeKeysLoading ? (
+                  <div className="mt-2 flex items-center justify-between gap-3 rounded-md border border-app-warning/40 bg-app-warning-soft px-3 py-2 text-xs text-app-warning-text">
+                    <span className="min-w-0 leading-4">{t("settings.sshVscodeLegacyHint")}</span>
+                    <Button type="button" variant="secondary" onClick={cleanupLegacyVscodeKey}>
+                      <Trash2 className="h-3.5 w-3.5" />
+                      {t("settings.sshVscodeLegacyCleanup")}
+                    </Button>
+                  </div>
+                ) : null}
+              </CollapsibleSubSection>
+            ) : null}
+
             <CollapsibleSubSection
               icon={History}
               label={t("settings.sshHistory")}
@@ -1524,8 +1717,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                   {t("settings.sshClearHistory")}
                 </Button>
               ) : null}
-            >
-              {sshHistoryLoading ? (
+            >              {sshHistoryLoading ? (
                 <div className="py-2 text-center text-xs text-app-muted">...</div>
               ) : sshHistory.length === 0 ? (
                 <div className="py-2 text-center text-xs text-app-muted">{t("settings.sshHistoryEmpty")}</div>
@@ -1580,9 +1772,18 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                       onChange={(e) => setPfType(e.target.value as PortForwardType)}
                     >
                       <option value="local">{t("settings.sshPortForwardLocal")}</option>
-                      <option value="remote">{t("settings.sshPortForwardRemote")}</option>
+                      {/* The native side rejects -R rules at start time; do not
+                          let new ones be created until it is implemented. */}
+                      <option value="remote" disabled>
+                        {t("settings.sshPortForwardRemoteUnsupported")}
+                      </option>
                       <option value="dynamic">{t("settings.sshPortForwardDynamic")}</option>
                     </Select>
+                  </label>
+                  <label className="block text-sm">
+                    <span className="mb-1 block text-app-muted">{t("settings.sshPortForwardHost")}</span>
+                    <Input value={pfHost} onChange={(e) => setPfHost(e.target.value)} placeholder="10.0.0.8" spellCheck={false} />
+                    <span className="mt-1 block text-xs text-app-muted">{t("settings.sshPortForwardHostHint")}</span>
                   </label>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <label className="block text-sm">
@@ -1635,6 +1836,11 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                             {rule.localHost}:{rule.localPort}
                             {rule.type !== "dynamic" ? ` → ${rule.remoteHost}:${rule.remotePort}` : ""}
                           </span>
+                          {rule.host ? (
+                            <span className="rounded bg-app-accentSoft px-1.5 py-0.5 font-mono text-[10px] text-app-accent">
+                              @{rule.host}
+                            </span>
+                          ) : null}
                         </div>
                         <div className="mt-1 flex items-center gap-2 text-app-muted">
                           <label className="flex items-center gap-1">
@@ -1645,6 +1851,9 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                             />
                             <span>{t("settings.sshPortForwardEnabled")}</span>
                           </label>
+                          {rule.type === "remote" ? (
+                            <span className="text-app-warning">{t("settings.sshPortForwardRemoteUnsupported")}</span>
+                          ) : null}
                         </div>
                       </div>
                       <button
@@ -1869,6 +2078,32 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       </SettingsGroup>
       </>
       )}
+
+      {settingsDirty ? (
+        <Panel className="app-settings-draft-bar flex flex-wrap items-center justify-between gap-3 px-3 py-2.5">
+          <div className="min-w-0 text-sm">
+            <p className="font-medium text-app-text">{text("有未保存的更改", "You have unsaved changes")}</p>
+            {validationError ? (
+              <p className="mt-0.5 text-xs text-app-danger">{validationError}</p>
+            ) : (
+              <p className="mt-0.5 text-xs text-app-muted">
+                {dirtyGroups.length > 0
+                  ? text("更改范围：", "Changed: ") + dirtyGroups.join(text("、", ", "))
+                  : text("更改需保存后才会生效", "Changes apply after saving")}
+              </p>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button disabled={saving} type="button" variant="ghost" onClick={discardSettingsChanges}>
+              {text("放弃更改", "Discard changes")}
+            </Button>
+            <Button disabled={saving || Boolean(validationError)} type="button" onClick={saveSettings}>
+              <Save className="h-4 w-4" />
+              {saving ? text("正在保存", "Saving") : text("保存设置", "Save settings")}
+            </Button>
+          </div>
+        </Panel>
+      ) : null}
 
       <Dialog
         open={Boolean(importEncrypted)}

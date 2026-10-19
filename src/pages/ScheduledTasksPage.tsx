@@ -59,7 +59,7 @@ const statusText: Record<ScheduledTaskStatus, { zh: string; en: string }> = {
   done: { zh: "已完成", en: "Done" },
   failed: { zh: "失败", en: "Failed" },
   paused: { zh: "已暂停", en: "Paused" },
-  needs_review: { zh: "待确认", en: "Needs review" },
+  needs_review: { zh: "待重新确认", en: "Needs Review" },
 };
 
 function getImageOptionLabel(image: ImageItem) {
@@ -621,7 +621,7 @@ export function ScheduledTasksPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold">{text("定时任务", "Scheduled Tasks")}</h2>
-          <p className="mt-1 text-sm text-app-muted">{text("按计划提交实例创建请求。浏览器或桌面壳打开时会自动检查到期计划。", "Submit instance creation requests on a schedule. The browser or desktop shell checks due plans while open.")}</p>
+          <p className="mt-1 text-sm text-app-muted">{text("定时任务由本机客户端调度执行；客户端关闭或休眠期间错过的任务将在恢复后提示确认。", "Scheduled tasks are executed by the local client. Tasks missed while the app is closed or sleeping will prompt for confirmation upon resumption.")}</p>
         </div>
         <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => executeTargets(items.filter((item) => isScheduleDue(item)), false)}>
           <RefreshCw className="h-4 w-4" />

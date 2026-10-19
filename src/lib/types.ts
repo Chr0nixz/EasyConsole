@@ -412,19 +412,44 @@ export type RuntimeTransport = {
   confirmKnownHost(promptId: string, accept: boolean): Promise<void>;
   openSystemSshTerminal(request: SshConnectionRequest): Promise<void>;
   openVscodeSsh(request: SshConnectionRequest): Promise<void>;
+  /** Lists every VS Code Remote-SSH key this install installed on hosts. */
+  listVscodeSshKeys(): Promise<VscodeKeyRecord[]>;
+  /** True when a shared VS Code key from a pre-per-host install exists locally. */
+  hasLegacyVscodeKey(): Promise<boolean>;
+  /**
+   * Removes the legacy shared VS Code key from this machine (key files and
+   * config blocks referencing it). The remote authorized_keys line needs the
+   * host's own credentials — use revokeVscodeSsh from the task panel for that.
+   */
+  cleanupLegacyVscodeKey(): Promise<void>;
+  /**
+   * Revokes a VS Code Remote-SSH setup. With `removeRemote` the marked key is
+   * removed from the host's `authorized_keys` first; without it only the local
+   * config block and key files are deleted.
+   */
+  revokeVscodeSsh(request: SshConnectionRequest, removeRemote: boolean): Promise<void>;
   openSshWindow(request: SshConnectionRequest): Promise<void>;
+  /**
+   * Registers a user-picked directory as an allowed root for SFTP local
+   * paths. Native upload/download reject local paths outside every root
+   * registered for the session, so a compromised renderer cannot read or
+   * write arbitrary local files. No-op on runtimes without native SFTP.
+   */
+  sftpRegisterLocalRoot(sessionId: string, rootPath: string): Promise<void>;
   sftpList(sessionId: string, path: string): Promise<SftpEntry[]>;
-  sftpUpload(sessionId: string, localPath: string, remotePath: string): Promise<void>;
-  sftpDownload(sessionId: string, remotePath: string, localPath: string): Promise<void>;
+  sftpUpload(sessionId: string, localPath: string, remotePath: string): Promise<SftpTransferOutcome>;
+  sftpDownload(sessionId: string, remotePath: string, localPath: string): Promise<SftpTransferOutcome>;
   sftpDelete(sessionId: string, path: string): Promise<void>;
   sftpRename(sessionId: string, oldPath: string, newPath: string): Promise<void>;
   sftpMkdir(sessionId: string, path: string): Promise<void>;
+  sftpCancel(sessionId: string, transferId?: string): Promise<void>;
   onSftpProgress(sessionId: string, handler: (progress: SftpProgress) => void): Promise<() => void>;
   startPortForward(sessionId: string, rule: PortForwardRule): Promise<void>;
   stopPortForward(sessionId: string, ruleId: string): Promise<void>;
   onPortForwardStatus(sessionId: string, handler: (status: PortForwardStatus) => void): Promise<() => void>;
   listSshHistory(): Promise<SshHistoryEntry[]>;
-  addSshHistory(entry: Omit<SshHistoryEntry, "id" | "connectedAt">): Promise<void>;
+  /** `limit` caps how many entries are kept (defaults to 20 on every runtime). */
+  addSshHistory(entry: Omit<SshHistoryEntry, "id" | "connectedAt">, limit?: number): Promise<void>;
   clearSshHistory(): Promise<void>;
   setDesktopCloseToTray(enabled: boolean): Promise<void>;
   setDesktopClosePrompt(enabled: boolean): Promise<void>;
@@ -492,9 +517,16 @@ export type SshConnectionRequest = {
   authMode?: SshAuthMode;
 };
 
+export type SshSessionPhase = "connecting" | "connected" | "exited" | "failed" | "closed";
+
+/** Coarse tab status the SSH workspace UI derives from session events. */
+export type SshTabStatusKind = "ready" | "connected" | "failed" | "closed";
+
 export type SshSessionEvent = {
   sessionId: string;
   kind: "status" | "output" | "error" | "closed" | "sftp-progress" | "port-forward-status" | "host-key-prompt";
+  /** Structured session state for status/error/closed events; lets consumers derive the state without matching localized messages. */
+  phase?: SshSessionPhase;
   data?: string;
   message?: string;
 };
@@ -544,6 +576,11 @@ export type PortForwardRule = {
   remoteHost: string;
   remotePort: number;
   enabled: boolean;
+  /**
+   * Session host this rule auto-starts for (case-insensitive exact match).
+   * When absent, the rule auto-starts for every SSH session.
+   */
+  host?: string;
 };
 
 export type PortForwardStatus = {
@@ -564,6 +601,24 @@ export type SftpEntry = {
 };
 
 export type SftpProgress = {
+  /** Identifies the transfer this progress belongs to, so cancellation can target it. */
+  transferId?: string;
+  transferred: number;
+  total: number;
+};
+
+export type SftpTransferStatus = "completed" | "canceled";
+
+/**
+ * Final result of one SFTP transfer, returned by the upload/download command.
+ * Progress events are display-only; this outcome is the success criterion.
+ * Failed transfers reject the command with the error message instead of a
+ * `failed` status.
+ */
+export type SftpTransferOutcome = {
+  transferId: string;
+  operation: "upload" | "download";
+  status: SftpTransferStatus;
   transferred: number;
   total: number;
 };
@@ -575,4 +630,20 @@ export type SshHistoryEntry = {
   username: string;
   taskName: string;
   connectedAt: number;
+};
+
+/**
+ * A VS Code Remote-SSH setup this install configured: the dedicated key it
+ * generated, where it was installed, and its fingerprint. Listed in Settings
+ * so every remote `authorized_keys` change EasyConsole made is visible and
+ * revocable.
+ */
+export type VscodeKeyRecord = {
+  alias: string;
+  host: string;
+  port: string;
+  username: string;
+  /** SHA-256 fingerprint of the installed public key. */
+  fingerprint: string;
+  installedAt: number;
 };

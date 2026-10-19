@@ -15,6 +15,7 @@ import { AppUpdateDialog } from "./components/AppUpdateDialog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { LoadingState } from "./components/DataState";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { SshWorkspaceGate, SshWorkspaceProvider } from "./components/ssh/SshWorkspaceProvider";
 import { TrayMenu } from "./components/TrayMenu";
 import { ToastProvider } from "./components/Toast";
 import { AppUpdateProvider } from "./lib/app-update-context";
@@ -110,13 +111,18 @@ function AppRoot() {
           <DownloadQueueProvider>
             <CommitQueueProvider>
               <AppUpdateProvider>
-                <ErrorBoundary showHomeInFallback={false}>
-                  <Suspense fallback={<LoadingState />}>
-                    <DeepLinkHandler />
-                    <Outlet />
-                    <AppUpdateDialog />
-                  </Suspense>
-                </ErrorBoundary>
+                <SshWorkspaceProvider>
+                  <ErrorBoundary showHomeInFallback={false}>
+                    <Suspense fallback={<LoadingState />}>
+                      <DeepLinkHandler />
+                      <Outlet />
+                      <AppUpdateDialog />
+                      {/* The global in-app SSH workspace: mounted above every
+                          route so its tabs and live sessions survive navigation. */}
+                      <SshWorkspaceGate />
+                    </Suspense>
+                  </ErrorBoundary>
+                </SshWorkspaceProvider>
               </AppUpdateProvider>
             </CommitQueueProvider>
           </DownloadQueueProvider>

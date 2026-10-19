@@ -116,7 +116,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
   return [
     {
       name: "easyconsole_task_list",
-      description: "List EasyConsole tasks.",
+      description: "List EasyConsole tasks with optional filtering by status, name, or pagination.",
       inputSchema: {
         page: z.number().int().positive().optional(),
         page_size: z.number().int().positive().optional(),

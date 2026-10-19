@@ -8,6 +8,8 @@ Light desktop product interface for operators working at a desk during normal de
 
 Use restrained, slightly warm neutrals with one blue accent for primary actions and selection. Semantic colors are reserved for task state, validation, and API failures.
 
+The app palette is defined once in `src/styles.css` under `@theme static`. This emits the same `--color-app-*` variables for Tailwind utilities, focus indicators, and SVG/chart styles; do not duplicate the palette in the JavaScript Tailwind config.
+
 - Background: `oklch(0.982 0.006 95)`
 - Surface: `oklch(0.995 0.004 95)`
 - Panel: `oklch(0.955 0.008 95)`
@@ -41,7 +43,7 @@ The desktop shell is the primary layout target. The mobile and browser fallback 
 
 ## Language
 
-Chinese is the primary interface language, with English available through the language switch. Every user-facing string must go through one of these so the shell, dialogs, toasts, empty states, settings, native errors and run logs all stay bilingual:
+Chinese is the primary interface language, with English available through the language switch. See `I18N_GUIDELINES.md` for the full copywriting philosophy, terminology table, and review checklist. Every user-facing string must go through one of these so the shell, dialogs, toasts, empty states, settings, native errors and run logs all stay bilingual:
 
 - React components: `text(zh, en)` from `useI18n()`.
 - Non-React modules under `src/lib/`: `i18nText(zh, en)`, or an explicit `locale` parameter when the caller already has one.

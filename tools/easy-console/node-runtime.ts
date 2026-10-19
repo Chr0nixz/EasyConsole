@@ -160,9 +160,18 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     async openVscodeSsh() {
       return unsupported("VS Code SSH");
     },
+    async listVscodeSshKeys() {
+      return [];
+    },
+    async hasLegacyVscodeKey() {
+      return false;
+    },
+    async cleanupLegacyVscodeKey() {},
+    async revokeVscodeSsh() {},
     async openSshWindow() {
       return unsupported("Standalone SSH window");
     },
+    async sftpRegisterLocalRoot() {},
     async sftpList() {
       return unsupported("SFTP");
     },
@@ -179,6 +188,9 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
       return unsupported("SFTP");
     },
     async sftpMkdir() {
+      return unsupported("SFTP");
+    },
+    async sftpCancel() {
       return unsupported("SFTP");
     },
     async onSftpProgress() {

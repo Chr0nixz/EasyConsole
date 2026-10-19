@@ -46,3 +46,18 @@ keyring = "3"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
+
+# Test-only: Tauri's mock runtime for integration tests. The russh server
+# module is always compiled in 0.61, so no extra feature is needed for the
+# local mock SSH server.
+[features]
+# Enables the local mock SSH server used by tests/ssh_integration.rs.
+ssh-test-internals = []
+
+[dev-dependencies]
+tauri = { version = "2.11.2", features = ["test"] }
+
+[[test]]
+name = "ssh_integration"
+required-features = ["ssh-test-internals"]
+harness = false

@@ -4,9 +4,23 @@ import {
   appendRecordingChunk,
   createRecordingBuffer,
   isNearTerminalBottom,
+  serializeTerminalBuffer,
   SSH_RECORDING_MAX_CHARS,
   SSH_RECORDING_MAX_CHUNKS,
+  type TerminalBufferSource,
 } from "./ssh-terminal-follow";
+
+function makeBufferSource(lines: string[], rows = 24): TerminalBufferSource {
+  return {
+    rows,
+    buffer: {
+      active: {
+        baseY: Math.max(0, lines.length - rows),
+        getLine: (row: number) => (row < lines.length ? { translateToString: () => lines[row] } : undefined),
+      },
+    },
+  };
+}
 
 describe("ssh-terminal-follow", () => {
   it("appends until chunk or char caps", () => {
@@ -33,5 +47,14 @@ describe("ssh-terminal-follow", () => {
     expect(isNearTerminalBottom(100, 100)).toBe(true);
     expect(isNearTerminalBottom(98, 100)).toBe(true);
     expect(isNearTerminalBottom(97, 100)).toBe(false);
+  });
+
+  it("serializes scrollback with trailing blank lines trimmed", () => {
+    const source = makeBufferSource(["$ run job", "output line", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]);
+    expect(serializeTerminalBuffer(source)).toBe("$ run job\r\noutput line");
+  });
+
+  it("returns an empty string for a blank buffer", () => {
+    expect(serializeTerminalBuffer(makeBufferSource(["", ""]))).toBe("");
   });
 });

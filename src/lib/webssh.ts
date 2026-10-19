@@ -12,7 +12,7 @@ export function deriveWebsshUrl(taskId: string | number, cols: number, rows: num
 }
 
 export function formatTerminalInput(data: string) {
-  return JSON.stringify({ status: 0, data }).replace(/\\\\/, "\\");
+  return JSON.stringify({ status: 0, data });
 }
 
 export function formatTerminalResize(cols: number, rows: number) {

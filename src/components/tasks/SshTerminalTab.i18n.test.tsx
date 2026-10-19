@@ -9,17 +9,37 @@ import { SshTerminalTab } from "./SshTerminalTab";
 
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
+const xtermMock = vi.hoisted(() => ({
+  instances: [] as Array<{
+    writes: string[];
+    bufferLines: string[];
+  }>,
+}));
+
 vi.mock("@xterm/xterm", () => {
   const disposable = { dispose() {} };
   class Terminal {
     cols = 80;
     rows = 24;
+    writes: string[] = [];
+    bufferLines: string[] = [];
     element = document.createElement("div");
-    buffer = { active: { viewportY: 0, baseY: 0 } };
+    buffer = {
+      active: {
+        viewportY: 0,
+        baseY: 0,
+        getLine: (row: number) =>
+          row < this.bufferLines.length ? { translateToString: () => this.bufferLines[row] } : undefined,
+      },
+    };
     loadAddon() {}
     open() {}
-    write() {}
-    writeln() {}
+    write(data: string) {
+      this.writes.push(data);
+    }
+    writeln(data: string) {
+      this.writes.push(`${data}\n`);
+    }
     focus() {}
     dispose() {}
     scrollToBottom() {}
@@ -37,6 +57,9 @@ vi.mock("@xterm/xterm", () => {
       return disposable;
     }
     attachCustomKeyEventHandler() {}
+    constructor() {
+      xtermMock.instances.push(this);
+    }
   }
   return { Terminal };
 });
@@ -55,6 +78,9 @@ vi.mock("@xterm/addon-search", () => {
     findPrevious() {}
     clearDecorations() {}
     dispose() {}
+    onDidChangeResults() {
+      return { dispose() {} };
+    }
   }
   return { SearchAddon };
 });
@@ -109,6 +135,7 @@ function Harness() {
 describe("SshTerminalTab language switching", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    xtermMock.instances.length = 0;
     Object.defineProperty(browserRuntime, "supportsInAppSsh", { get: () => false, configurable: true });
   });
 
@@ -160,12 +187,12 @@ describe("SshTerminalTab language switching", () => {
       </ToastContext.Provider>,
     );
 
-    await waitFor(() => expect(screen.getAllByRole("button", { name: /文件管理器|File manager/ }).some((button) => button.classList.contains("md:hidden"))).toBe(true));
-    const sftpButton = screen.getAllByRole("button", { name: /文件管理器|File manager/ }).find((button) => button.classList.contains("md:hidden"));
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /SFTP|文件管|File manager/ }).some((button) => button.classList.contains("md:hidden"))).toBe(true));
+    const sftpButton = screen.getAllByRole("button", { name: /SFTP|文件管|File manager/ }).find((button) => button.classList.contains("md:hidden"));
     expect(sftpButton).toBeDefined();
     if (!sftpButton) throw new Error("Missing mobile SFTP trigger");
     fireEvent.click(sftpButton);
-    const sftpPanel = await screen.findByRole("region", { name: /文件管理器|File manager/ });
+    const sftpPanel = await screen.findByRole("region", { name: /SFTP|文件管|File manager/ });
     expect(sftpButton).toHaveAttribute("aria-expanded", "true");
     expect(sftpButton).toHaveAttribute("aria-controls", "ssh-sftp-panel-tab-overlay");
     expect(sftpPanel).toHaveClass("absolute", "inset-0", "w-full", "md:static", "md:w-80");
@@ -208,13 +235,117 @@ describe("SshTerminalTab language switching", () => {
     await waitFor(() => expect(openSshSession).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(handler).toBeDefined());
 
-    // Rust localizes this message, so the history hook must not match on the
-    // Chinese spelling alone.
+    // History recording is driven by the structured phase, not by matching
+    // the localized message.
     act(() => {
-      handler?.({ sessionId: "session-1", kind: "status", message: "SSH connected" });
+      handler?.({ sessionId: "session-1", kind: "status", phase: "connected", message: "SSH connected" });
     });
 
     await waitFor(() => expect(addSshHistory).toHaveBeenCalledTimes(1));
-    expect(addSshHistory).toHaveBeenCalledWith(expect.objectContaining({ host: "10.0.0.8", port: "30222" }));
+    expect(addSshHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "10.0.0.8", port: "30222" }),
+      // The configured history limit rides along with the entry.
+      expect.any(Number),
+    );
+  });
+});
+
+describe("SshTerminalTab session recovery", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    xtermMock.instances.length = 0;
+    Object.defineProperty(browserRuntime, "supportsInAppSsh", { get: () => false, configurable: true });
+  });
+
+  function mockSessionLifecycle() {
+    const openSshSession = vi.spyOn(browserRuntime, "openSshSession").mockResolvedValue("session-1");
+    vi.spyOn(browserRuntime, "closeSshSession").mockResolvedValue(undefined);
+    vi.spyOn(browserRuntime, "resizeSshSession").mockResolvedValue(undefined);
+    vi.spyOn(browserRuntime, "onPortForwardStatus").mockResolvedValue(() => {});
+    vi.spyOn(browserRuntime, "onSftpProgress").mockResolvedValue(() => {});
+    vi.spyOn(browserRuntime, "sftpList").mockResolvedValue([]);
+    let handler: ((event: SshSessionEvent) => void) | undefined;
+    vi.spyOn(browserRuntime, "onSshSessionEvent").mockImplementation(async (_sessionId, callback) => {
+      handler = callback;
+      return () => {};
+    });
+    return { openSshSession, emit: (event: SshSessionEvent) => handler?.(event) };
+  }
+
+  function renderTab(tabId: string) {
+    return render(
+      <ToastContext.Provider value={toast}>
+        <I18nProvider>
+          <SshTerminalTab request={request} tabId={tabId} active onStatusChange={() => {}} />
+        </I18nProvider>
+      </ToastContext.Provider>,
+    );
+  }
+
+  it("replays preserved scrollback after a reconnect instead of destroying it", async () => {
+    Object.defineProperty(browserRuntime, "supportsInAppSsh", { value: true, configurable: true });
+    const { openSshSession, emit } = mockSessionLifecycle();
+
+    renderTab("tab-reconnect");
+
+    await waitFor(() => expect(openSshSession).toHaveBeenCalledTimes(1));
+    const firstTerminal = xtermMock.instances[0];
+    firstTerminal.bufferLines = ["$ train --epochs 10", "epoch 1 loss 0.9"];
+
+    act(() => {
+      emit({ sessionId: "session-1", kind: "closed", message: "connection reset" });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /重连|Reconnect/ }));
+
+    await waitFor(() => expect(openSshSession).toHaveBeenCalledTimes(2));
+    const secondTerminal = xtermMock.instances[1];
+    await waitFor(() => {
+      const replay = secondTerminal.writes.join("");
+      expect(replay).toContain("$ train --epochs 10");
+      expect(replay).toContain("epoch 1 loss 0.9");
+    });
+    expect(secondTerminal.writes.join("")).toMatch(/以上为.*重连前的历史输出|Preserved terminal history|Above: output from before/);
+    expect(secondTerminal.writes.join("")).toMatch(/正在建立 SSH 连接|Establishing SSH connection/);
+  });
+
+  it("marks a closed session with warning styling, an icon, and an end time", async () => {
+    Object.defineProperty(browserRuntime, "supportsInAppSsh", { value: true, configurable: true });
+    const { openSshSession, emit } = mockSessionLifecycle();
+
+    renderTab("tab-closed");
+
+    await waitFor(() => expect(openSshSession).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      emit({ sessionId: "session-1", kind: "closed", message: "connection reset" });
+    });
+
+    const statusText = await screen.findByText("connection reset");
+    const statusWrap = statusText.parentElement as HTMLElement;
+    expect(statusWrap.className).toContain("text-app-warning");
+    expect(statusWrap.querySelector("svg")).not.toBeNull();
+    expect(statusWrap.textContent).toMatch(/\d{2}:\d{2}/);
+  });
+
+  it("focuses Reject by default in the host key prompt", async () => {
+    Object.defineProperty(browserRuntime, "supportsInAppSsh", { value: true, configurable: true });
+    const { openSshSession, emit } = mockSessionLifecycle();
+
+    renderTab("tab-host-key");
+
+    await waitFor(() => expect(openSshSession).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      emit({
+        sessionId: "session-1",
+        kind: "host-key-prompt",
+        message: "Confirm host fingerprint",
+        data: JSON.stringify({ promptId: "prompt-1", host: "10.0.0.8", port: 30222, fingerprint: "SHA256:abc" }),
+      });
+    });
+
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByRole("button", { name: /拒绝|Reject/ })).toHaveFocus();
   });
 });

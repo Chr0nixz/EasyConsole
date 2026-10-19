@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   createTask: vi.fn(),
   checkTaskName: vi.fn(),
   tasks: vi.fn(),
+  resources: vi.fn(),
+  prices: vi.fn(),
 }));
 
 vi.mock("../../lib/api", () => ({
@@ -20,6 +22,10 @@ vi.mock("../../lib/api", () => ({
     createTask: (...args: unknown[]) => mocks.createTask(...args),
     checkTaskName: (...args: unknown[]) => mocks.checkTaskName(...args),
     tasks: (...args: unknown[]) => mocks.tasks(...args),
+  },
+  resourceApi: {
+    resources: () => mocks.resources(),
+    prices: () => mocks.prices(),
   },
 }));
 
@@ -52,6 +58,7 @@ vi.mock("../storage/RemoteStoragePicker", () => ({
 }));
 
 import { CreateTaskDialog } from "./CreateTaskDialog";
+import { CREATE_TASK_UI_PREFS_STORAGE_KEY } from "../../lib/create-task-ui-prefs";
 
 function renderDialog(props?: Partial<React.ComponentProps<typeof CreateTaskDialog>>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -83,14 +90,148 @@ describe("CreateTaskDialog", () => {
     mocks.createTask.mockResolvedValue({});
     mocks.checkTaskName.mockResolvedValue({ available: true });
     mocks.tasks.mockResolvedValue({ items: [], total: 0 });
+    mocks.resources.mockResolvedValue([]);
+    mocks.prices.mockResolvedValue([]);
   });
 
-  it("renders dialog with create title", async () => {
+  it("renders dialog with create title and a visible billing rate field", async () => {
     renderDialog();
     await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
     expect(screen.queryByText("有同名实例自动增加编号")).not.toBeInTheDocument();
-    expect(screen.queryByText("资源规格")).not.toBeInTheDocument();
-    expect(screen.queryByText("价格")).not.toBeInTheDocument();
+    expect(screen.getByText("计费单价（元/小时）")).toBeInTheDocument();
+  });
+
+  it("submits the edited billing rate with the create payload", async () => {
+    renderDialog();
+    await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+
+    const priceInput = screen.getByLabelText(/计费单价（元\/小时）|Hourly rate/);
+    fireEvent.change(priceInput, { target: { value: "2.5" } });
+
+    fireEvent.submit(document.querySelector("form")!);
+
+    await waitFor(() => expect(mocks.createTask).toHaveBeenCalled());
+    expect(mocks.createTask).toHaveBeenCalledWith(expect.objectContaining({ price: 2.5 }));
+  });
+
+  it("selects a listed default rate and submits the same value shown to the user", async () => {
+    mocks.prices.mockResolvedValue([4.8, 9.6]);
+    renderDialog();
+
+    const rate = await screen.findByRole("combobox", { name: "计费单价（元/小时）" });
+    await waitFor(() => expect(rate).toHaveDisplayValue("4.8"));
+    expect(within(screen.getByRole("group", { name: "提交摘要" })).getByText("4.8 元/小时")).toBeInTheDocument();
+
+    fireEvent.submit(document.querySelector("form")!);
+
+    await waitFor(() => expect(mocks.createTask).toHaveBeenCalledWith(expect.objectContaining({ price: 4.8 })));
+  });
+
+  it("shows and preserves an original rate that is absent from the current list", async () => {
+    mocks.prices.mockResolvedValue([4.8, 9.6]);
+    renderDialog({ initialTask: { id: 9, name: "source", price: 2.5 } });
+
+    const rate = await screen.findByRole("combobox", { name: "计费单价（元/小时）" });
+    await waitFor(() => expect(rate).toHaveDisplayValue("原实例单价：2.5 元/小时"));
+    expect(rate).toHaveAccessibleDescription(/此单价不在当前价格列表中/);
+
+    fireEvent.submit(document.querySelector("form")!);
+
+    await waitFor(() => expect(mocks.createTask).toHaveBeenCalledWith(expect.objectContaining({ price: 2.5 })));
+  });
+
+  it("initializes and summarizes the listed rate when resources start collapsed", async () => {
+    const storedPrefs = localStorage.getItem(CREATE_TASK_UI_PREFS_STORAGE_KEY);
+    localStorage.setItem(CREATE_TASK_UI_PREFS_STORAGE_KEY, JSON.stringify({ sections: { resources: false } }));
+    let resolvePrices!: (value: number[]) => void;
+    mocks.prices.mockReturnValue(new Promise((resolve) => { resolvePrices = resolve; }));
+    try {
+      renderDialog();
+      await waitFor(() => expect(screen.getByRole("button", { name: /^资源配置/ })).toHaveAttribute("aria-expanded", "false"));
+      await act(async () => { resolvePrices([4.8]); });
+      await waitFor(() => expect(within(screen.getByRole("group", { name: "提交摘要" })).getByText("4.8 元/小时")).toBeInTheDocument());
+
+      fireEvent.submit(document.querySelector("form")!);
+
+      await waitFor(() => expect(mocks.createTask).toHaveBeenCalledWith(expect.objectContaining({ price: 4.8 })));
+    } finally {
+      if (storedPrefs === null) localStorage.removeItem(CREATE_TASK_UI_PREFS_STORAGE_KEY);
+      else localStorage.setItem(CREATE_TASK_UI_PREFS_STORAGE_KEY, storedPrefs);
+    }
+  });
+
+  it("keeps an intentionally cleared manual rate empty and blocks submission", async () => {
+    renderDialog();
+    const rate = screen.getByRole("spinbutton", { name: "计费单价（元/小时）" });
+    await waitFor(() => expect(rate).toHaveValue(1));
+    await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+
+    fireEvent.change(rate, { target: { value: "" } });
+    fireEvent.blur(rate);
+    fireEvent.submit(document.querySelector("form")!);
+
+    await waitFor(() => expect(rate).toHaveAttribute("aria-invalid", "true"));
+    expect(rate).toHaveValue(null);
+    expect(rate).toHaveAccessibleDescription("计费单价必须大于 0");
+    expect(mocks.createTask).not.toHaveBeenCalled();
+  });
+
+  it("cancels without a discard prompt after asynchronous defaults are applied", async () => {
+    mocks.prices.mockResolvedValue([4.8]);
+    const onClose = vi.fn();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      renderDialog({ onClose });
+      await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+      await waitFor(() => expect(screen.getByRole("combobox", { name: "计费单价（元/小时）" })).toHaveDisplayValue("4.8"));
+
+      fireEvent.click(screen.getByRole("button", { name: "取消" }));
+
+      expect(confirm).not.toHaveBeenCalled();
+      expect(onClose).toHaveBeenCalledOnce();
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it("preserves genuine edits made before asynchronous defaults finish loading", async () => {
+    let resolveImages!: (value: { items: Array<{ id: string; name: string }> }) => void;
+    let resolvePrices!: (value: number[]) => void;
+    mocks.imageList.mockReturnValue(new Promise((resolve) => { resolveImages = resolve; }));
+    mocks.prices.mockReturnValue(new Promise((resolve) => { resolvePrices = resolve; }));
+    const onClose = vi.fn();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      renderDialog({ onClose });
+      fireEvent.change(screen.getByLabelText("任务名称"), { target: { value: "my-edited-task" } });
+      await act(async () => {
+        resolveImages({ items: [{ id: "img1", name: "ubuntu" }] });
+        resolvePrices([4.8]);
+      });
+      await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+      await waitFor(() => expect(screen.getByRole("combobox", { name: "计费单价（元/小时）" })).toHaveDisplayValue("4.8"));
+
+      fireEvent.click(screen.getByRole("button", { name: "取消" }));
+
+      expect(confirm).toHaveBeenCalledOnce();
+      expect(onClose).not.toHaveBeenCalled();
+      expect(screen.getByLabelText("任务名称")).toHaveValue("my-edited-task");
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it("does not replace an image the user intentionally cleared", async () => {
+    renderDialog();
+    const image = screen.getByLabelText(/镜像|Image/);
+    await waitFor(() => expect(image).toHaveValue("img1"));
+
+    fireEvent.change(image, { target: { value: "" } });
+    fireEvent.submit(document.querySelector("form")!);
+
+    await waitFor(() => expect(image).toHaveAttribute("aria-invalid", "true"));
+    expect(image).toHaveValue("");
+    expect(mocks.createTask).not.toHaveBeenCalled();
   });
 
   it("auto-numbers colliding names via checkTaskName before create", async () => {

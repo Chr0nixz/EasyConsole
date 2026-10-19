@@ -22,6 +22,8 @@ import { useAuth } from "../lib/use-auth";
 import { useToast } from "../lib/use-toast";
 import {
   DEFAULT_SHELL_NAV_WIDTH,
+  MAX_SHELL_NAV_WIDTH,
+  MIN_SHELL_NAV_WIDTH,
   clampShellNavWidth,
   readStoredShellNavWidth,
   writeStoredShellNavWidth,
@@ -614,7 +616,7 @@ export function AppShell() {
       {confirm.confirmDialog}
       <div className="relative hidden h-full shrink-0 md:flex" style={{ width: navWidth }}>
         <aside className="flex h-full w-full min-w-0 flex-col overflow-hidden border-r border-app-border bg-app-surface">
-          <div className="flex h-14 items-center gap-2 border-b border-app-border px-4">
+          <div className="app-sidebar-header flex h-14 items-center gap-2 border-b border-app-border px-4">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-app-accent text-app-onAccent">
               <TerminalSquare className="h-4 w-4" />
             </div>
@@ -623,7 +625,7 @@ export function AppShell() {
               <div className="truncate text-xs text-app-muted">{t("shell.productSubtitle")}</div>
             </div>
           </div>
-          <nav className="flex flex-1 flex-col gap-1 px-3 py-4">
+          <nav className="app-sidebar-nav flex flex-1 flex-col gap-1 px-3 py-4">
             {navItems.map((item) => (
               <NavLink
                 key={item.to}
@@ -644,10 +646,12 @@ export function AppShell() {
         </aside>
         <div
           aria-orientation="vertical"
+          aria-valuemin={MIN_SHELL_NAV_WIDTH}
+          aria-valuemax={MAX_SHELL_NAV_WIDTH}
           aria-valuenow={navWidth}
           aria-label={t("shell.sidebar")}
-          aria-keyshortcuts="ArrowLeft ArrowRight Enter"
-          className="app-nav-resize-handle absolute inset-y-0 right-0 z-10 w-2 touch-none"
+          aria-keyshortcuts="ArrowLeft ArrowRight Enter Space"
+          className="app-nav-resize-handle absolute inset-y-0 right-0 z-10 touch-none"
           role="separator"
           tabIndex={0}
           title={t("shell.sidebar")}
@@ -808,10 +812,10 @@ export function AppShell() {
                             {appUpdate.state.status === "downloading"
                               ? `${appUpdate.state.progress?.percent ?? 0}%`
                               : appUpdate.state.status === "readyToRestart"
-                                ? browserRuntime.isMobile
-                                  ? text("APK 已就绪", "APK is ready")
-                                  : text("重启后生效", "Takes effect after restart")
-                                : text("有新版本可用", "A new version is available")}
+                                 ? browserRuntime.isMobile
+                                   ? text("APK 已就绪", "APK is ready")
+                                   : text("重启客户端后生效", "Relaunch the app to apply the update")
+                                 : text("有新版本可用", "A new version is available")}
                           </span>
                         </span>
                       </button>
@@ -820,14 +824,14 @@ export function AppShell() {
                 </div>
               ) : null}
             </div>
-            <Button className="hidden shrink-0 sm:inline-flex" variant="secondary" onClick={() => setCommandPaletteOpen(true)}>
+            <Button aria-label={text("打开命令面板（Ctrl K）", "Open command palette (Ctrl K)")} className="hidden shrink-0 sm:inline-flex" variant="secondary" onClick={() => setCommandPaletteOpen(true)}>
               <CommandIcon className="h-4 w-4" />
               Ctrl K
             </Button>
             <Button
-              aria-label={t("shell.shortcutsTitle")}
+              aria-label={text("搜索命令和页面", "Search commands and pages")}
               className="inline-flex shrink-0 sm:hidden"
-              title={t("shell.shortcutsTitle")}
+              title={text("搜索命令和页面", "Search commands and pages")}
               variant="secondary"
               onClick={() => setCommandPaletteOpen(true)}
             >
@@ -846,7 +850,7 @@ export function AppShell() {
         {isOnline ? null : (
           <div className="flex items-center gap-2 bg-app-warningSoft px-4 py-1.5 text-sm font-medium text-app-warningText" role="alert">
             <WifiOff className="h-3.5 w-3.5 shrink-0" />
-            <span>{text("当前处于离线状态，部分功能不可用", "You are offline — some features are unavailable")}</span>
+            <span>{text("网络已断开，部分功能可能不可用", "You are offline. Network features are unavailable.")}</span>
           </div>
         )}
         {transportBlocked ? (

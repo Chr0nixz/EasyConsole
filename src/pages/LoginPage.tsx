@@ -98,7 +98,7 @@ export function LoginPage() {
       navigateAfterLogin();
     } catch (nextError) {
       const raw = nextError instanceof Error ? nextError.message : t("login.savedLoginFailed");
-      setError(friendlyLoginError(raw, "直接登录失败，请重新输入密码", "Saved sign-in failed. Enter the password again.", locale));
+      setError(friendlyLoginError(raw, "使用保存凭据登录失败，请重新输入密码", "Automatic sign-in failed. Please re-enter your password.", locale));
       const account = auth.savedAccounts.find((item) => item.id === accountId);
       if (account) setUsername(account.username);
       setShowPasswordForm(true);

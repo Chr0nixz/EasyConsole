@@ -38,7 +38,6 @@ import { needsLogAttention } from "../lib/task-status-notifications";
 import { EmptyState, ErrorState, LoadingState, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
-import { AppSshTerminalDialog } from "../components/tasks/AppSshTerminalDialog";
 import { TaskInstanceName } from "../components/tasks/TaskInstanceName";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
 import { instanceApi } from "../lib/api";
@@ -48,6 +47,7 @@ import { useCommitQueue } from "../lib/commit-queue-context";
 import { useDownloadQueueActions } from "../lib/use-download-queue";
 import { asJson, formatRelativeUpdatedAt, formatSecondsDuration, getTaskName, getTaskNodeName, localizedText, taskStatusText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
+import { useSshWorkspace } from "../lib/use-ssh-workspace";
 import { i18nText } from "../lib/i18n-text";
 import { openMonitorDashboard } from "../lib/monitor-dashboard";
 import { browserRuntime } from "../lib/runtime";
@@ -63,7 +63,7 @@ import { createTaskTemplate, loadTaskTemplates, saveTaskTemplates, taskToEditabl
 import { TASK_PAGE_SIZE_OPTIONS, type TaskListSortBy } from "../lib/task-list-query";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import { queryKeys } from "../lib/query-keys";
-import type { SshConnectionRequest, Task } from "../lib/types";
+import type { Task } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useCompactLayout } from "../lib/use-compact-layout";
 import { useAuth } from "../lib/use-auth";
@@ -183,9 +183,9 @@ function ActionHeader() {
   const { text } = useI18n();
   return (
     <div className={`${ACTION_GRID_CLASS} text-app-muted`}>
-      <span className="flex justify-center" title={text("终端/连接", "SSH")}>
+      <span className="flex justify-center" title={text("终端连接", "Terminal & SSH")}>
         <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
-        <span className="sr-only">{text("终端/连接", "SSH")}</span>
+        <span className="sr-only">{text("终端连接", "Terminal & SSH")}</span>
       </span>
       <span className="flex justify-center" title={text("日志", "Logs")}>
         <FileText className="h-3.5 w-3.5" aria-hidden="true" />
@@ -195,9 +195,9 @@ function ActionHeader() {
         <CopyPlus className="h-3.5 w-3.5" aria-hidden="true" />
         <span className="sr-only">{text("复制", "Clone")}</span>
       </span>
-      <span className="flex justify-center" title={text("释放/删除", "Release/Delete")}>
+      <span className="flex justify-center" title={text("释放或删除实例", "Release or delete instance")}>
         <Power className="h-3.5 w-3.5" aria-hidden="true" />
-        <span className="sr-only">{text("释放/删除", "Release/Delete")}</span>
+        <span className="sr-only">{text("释放或删除实例", "Release or delete instance")}</span>
       </span>
       <span className="flex justify-center" title={text("更多", "More")}>
         <MoreHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
@@ -851,7 +851,10 @@ export function TasksPage() {
   const [editTask, setEditTask] = useState<Task | null>(null);
   const [logTask, setLogTask] = useState<Task | null>(null);
   const [sshInfoTask, setSshInfoTask] = useState<Task | null>(null);
-  const [appSshRequest, setAppSshRequest] = useState<SshConnectionRequest | null>(null);
+  // The global in-app SSH workspace replaces the page-local dialog state: the
+  // workspace lives above every route, so switching pages keeps sessions.
+  const sshWorkspace = useSshWorkspace();
+  const sshWorkspaceOpen = sshWorkspace.tabs.length > 0;
   const [rawTask, setRawTask] = useState<Task | null>(null);
   const [columnSettingsOpen, setColumnSettingsOpen] = useState(false);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(defaultColumnVisibility);
@@ -1064,7 +1067,7 @@ export function TasksPage() {
     Boolean(editTask) ||
     Boolean(logTask) ||
     Boolean(sshInfoTask) ||
-    Boolean(appSshRequest) ||
+    sshWorkspaceOpen ||
     Boolean(rawTask) ||
     columnSettingsOpen ||
     moreMenuOpen;
@@ -1217,7 +1220,7 @@ export function TasksPage() {
     }
     confirm({
       title: text("确认提交镜像", "Confirm Commit Image"),
-      description: text(`将把 ${getTaskName(task)} 的当前运行环境提交为镜像。此操作可能需要一段时间，请确认实例内文件状态已经稳定。`, `Commit the current runtime environment of ${getTaskName(task)} as an image. This may take some time; confirm files inside the instance are stable.`),
+      description: text(`将把 ${getTaskName(task)} 的当前运行环境提交为自定义镜像。此操作可能需要一段时间，请确认实例内文件操作已经完成。`, `Commit the container runtime of ${getTaskName(task)} into a custom image. This process may take several minutes; ensure container file operations are settled.`),
       confirmLabel: text("提交镜像", "Commit image"),
       run: () => {
         commitQueue.enqueue({
@@ -1233,7 +1236,7 @@ export function TasksPage() {
   const confirmBatchRelease = useCallback((tasks: Task[]) => {
     confirm({
       title: text("确认批量释放", "Confirm Batch Release"),
-      description: text(`将按顺序释放 ${tasks.length} 个可释放实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms。`, `Release ${tasks.length} releasable instances in order, ${BATCH_REQUEST_DELAY_MS}ms apart.`),
+      description: text(`将按顺序释放 ${tasks.length} 个实例（间隔 ${BATCH_REQUEST_DELAY_MS}ms）。释放后将停止计费，容器本地临时数据将被清理。`, `Release ${tasks.length} instances sequentially (${BATCH_REQUEST_DELAY_MS}ms delay). Billing will stop and ephemeral container data will be destroyed.`),
       confirmLabel: text("批量释放", "Batch release"),
       tone: "danger",
       run: () => batchReleaseMutation.mutateAsync(tasks),
@@ -1388,29 +1391,39 @@ export function TasksPage() {
               >
                 <CopyPlus className="h-4 w-4" />
               </Button>
-              {release ? (
-                <Button
-                  className="h-8 w-16 justify-center px-1.5 text-app-muted hover:text-app-warning"
-                  disabled={releaseMutation.isPending}
-                  title={text("释放：停止实例并回收资源", "Release: stop instance and reclaim resources")}
-                  variant="ghost"
-                  onClick={() => confirmReleaseTask(task)}
-                >
-                  <Power className="h-4 w-4" />
-                  {text("释放", "Release")}
-                </Button>
-              ) : (
-                <Button
-                  className="h-8 w-16 justify-center px-1.5 text-app-muted hover:text-app-danger"
-                  disabled={deleteMutation.isPending}
-                  title={text("删除：移除不可释放实例", "Delete: remove a non-releasable instance")}
-                  variant="ghost"
-                  onClick={() => confirmDeleteTask(task)}
-                >
-                  <Trash2 className="h-4 w-4" />
-                  {text("删除", "Delete")}
-                </Button>
-              )}
+              <div className="flex flex-col items-center gap-0.5">
+                {release ? (
+                  <>
+                    <Button
+                      aria-label={text(`释放实例 ${getTaskName(task)}（可释放）`, `Release instance ${getTaskName(task)} (releasable)`)}
+                      className="h-8 w-16 justify-center bg-app-warningSoft px-1.5 text-app-warning hover:bg-app-warningRing/60 hover:text-app-warning"
+                      disabled={releaseMutation.isPending}
+                      title={text("释放：停止实例并回收资源", "Release: stop instance and reclaim resources")}
+                      variant="ghost"
+                      onClick={() => confirmReleaseTask(task)}
+                    >
+                      <Power className="h-4 w-4" />
+                      {text("释放", "Release")}
+                    </Button>
+                    <span className="text-[10px] leading-3 text-app-muted">{text("可释放", "Releasable")}</span>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      aria-label={text(`删除实例 ${getTaskName(task)}（不可释放）`, `Delete instance ${getTaskName(task)} (non-releasable)`)}
+                      className="h-8 w-16 justify-center bg-app-dangerSoft px-1.5 text-app-danger hover:bg-app-dangerRing/60 hover:text-app-danger"
+                      disabled={deleteMutation.isPending}
+                      title={text("删除：移除不可释放实例", "Delete: remove a non-releasable instance")}
+                      variant="ghost"
+                      onClick={() => confirmDeleteTask(task)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      {text("删除", "Delete")}
+                    </Button>
+                    <span className="text-[10px] leading-3 text-app-muted">{text("仅可删除", "Delete only")}</span>
+                  </>
+                )}
+              </div>
               <MoreActionsMenu
                 canEdit={getTaskEditableState() !== false}
                 isPinned={isTaskPinned(pinnedTaskIds, task)}
@@ -1550,7 +1563,7 @@ export function TasksPage() {
         Boolean(editTask) ||
         Boolean(logTask) ||
         Boolean(sshInfoTask) ||
-        Boolean(appSshRequest) ||
+        sshWorkspaceOpen ||
         Boolean(rawTask) ||
         columnSettingsOpen ||
         viewMenuOpen ||
@@ -1600,7 +1613,7 @@ export function TasksPage() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [
     activeRowIndex,
-    appSshRequest,
+    sshWorkspaceOpen,
     columnSettingsOpen,
     confirmReleaseTask,
     createOpen,
@@ -1924,29 +1937,39 @@ export function TasksPage() {
                           <CopyPlus className="h-4 w-4" />
                           {text("复制", "Clone")}
                         </Button>
-                        {release ? (
-                          <Button
-                            className="h-9 px-2 text-app-muted hover:text-app-warning"
-                            disabled={releaseMutation.isPending}
-                            title={text("释放：停止实例并回收资源", "Release: stop instance and reclaim resources")}
-                            variant="ghost"
-                            onClick={() => confirmReleaseTask(task)}
-                          >
-                            <Power className="h-4 w-4" />
-                            {text("释放", "Release")}
-                          </Button>
-                        ) : (
-                          <Button
-                            className="h-9 px-2 text-app-muted hover:text-app-danger"
-                            disabled={deleteMutation.isPending}
-                            title={text("删除：移除不可释放实例", "Delete: remove a non-releasable instance")}
-                            variant="ghost"
-                            onClick={() => confirmDeleteTask(task)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                            {text("删除", "Delete")}
-                          </Button>
-                        )}
+                        <div className="flex flex-col items-center gap-0.5">
+                          {release ? (
+                            <>
+                              <Button
+                                aria-label={text(`释放实例 ${taskName}（可释放）`, `Release instance ${taskName} (releasable)`)}
+                                className="h-9 bg-app-warningSoft px-2 text-app-warning hover:bg-app-warningRing/60 hover:text-app-warning"
+                                disabled={releaseMutation.isPending}
+                                title={text("释放：停止实例并回收资源", "Release: stop instance and reclaim resources")}
+                                variant="ghost"
+                                onClick={() => confirmReleaseTask(task)}
+                              >
+                                <Power className="h-4 w-4" />
+                                {text("释放", "Release")}
+                              </Button>
+                              <span className="text-[10px] leading-3 text-app-muted">{text("可释放", "Releasable")}</span>
+                            </>
+                          ) : (
+                            <>
+                              <Button
+                                aria-label={text(`删除实例 ${taskName}（不可释放）`, `Delete instance ${taskName} (non-releasable)`)}
+                                className="h-9 bg-app-dangerSoft px-2 text-app-danger hover:bg-app-dangerRing/60 hover:text-app-danger"
+                                disabled={deleteMutation.isPending}
+                                title={text("删除：移除不可释放实例", "Delete: remove a non-releasable instance")}
+                                variant="ghost"
+                                onClick={() => confirmDeleteTask(task)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                                {text("删除", "Delete")}
+                              </Button>
+                              <span className="text-[10px] leading-3 text-app-muted">{text("仅可删除", "Delete only")}</span>
+                            </>
+                          )}
+                        </div>
                         <MoreActionsMenu
                           canEdit={getTaskEditableState() !== false}
                           isPinned={isTaskPinned(pinnedTaskIds, task)}
@@ -2033,9 +2056,9 @@ export function TasksPage() {
                               ? [
                                   "sticky right-0 z-30 shadow-stickyColumn",
                                   activeRowIndex === virtualRow.index
-                                    ? "bg-app-accentSoft/50"
+                                    ? "bg-app-accentSoft"
                                     : isRunningTask(row.original)
-                                      ? "bg-app-infoSoft/40"
+                                      ? "bg-app-infoSoft"
                                       : "bg-app-surface",
                                 ].join(" ")
                               : "",
@@ -2069,6 +2092,7 @@ export function TasksPage() {
         <div className="flex flex-wrap items-center gap-2">
           <span>{text("每页", "Per page")}</span>
           <Select
+            aria-label={text("每页实例数", "Instances per page")}
             className="w-24"
             value={String(queryState.pageSize)}
             onChange={(event) => updateTaskQuery({ pageSize: Number(event.target.value) })}
@@ -2140,7 +2164,7 @@ export function TasksPage() {
           onClose={() => setSshInfoTask(null)}
           onOpenAppSsh={(request) => {
             setSshInfoTask(null);
-            setAppSshRequest(request);
+            sshWorkspace.openTarget(request);
           }}
         />
       </Suspense>
@@ -2169,7 +2193,6 @@ export function TasksPage() {
           onTogglePin={handleTogglePin}
         />
       ) : null}
-      <AppSshTerminalDialog request={appSshRequest} onClose={() => setAppSshRequest(null)} />
       <Dialog open={Boolean(rawTask)} title={text(`实例原始 JSON ${rawTask ? getTaskName(rawTask) : ""}`, `Instance Raw JSON ${rawTask ? getTaskName(rawTask) : ""}`)} onClose={() => setRawTask(null)} width="max-w-4xl">
         <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
           {asJson(rawTask)}

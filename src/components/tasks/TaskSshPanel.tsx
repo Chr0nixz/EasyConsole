@@ -1,16 +1,17 @@
-import { Code2, Copy, KeyRound, Server, Terminal } from "lucide-react";
+import { Code2, Copy, KeyRound, KeySquare, Server, Terminal } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { getTaskName } from "../../lib/format";
 import { useI18n } from "../../lib/i18n";
 import { browserRuntime } from "../../lib/runtime";
-import { buildTaskSshInfo, toSshConnectionRequest } from "../../lib/ssh-info";
+import { buildTaskSshInfo, findSshConnectionIssue, resolveSshConnectionRequest, toSshConnectionRequest } from "../../lib/ssh-info";
 import { canConnectTaskSsh } from "../../lib/task-terminal";
 import type { SshConnectionRequest, Task } from "../../lib/types";
 import { useAuth } from "../../lib/use-auth";
+import { useConfirmAction } from "../../lib/use-confirm-action";
+import { useSshWorkspace } from "../../lib/use-ssh-workspace";
 import { useToast } from "../../lib/use-toast";
 import { Button } from "../ui";
-import { AppSshTerminalDialog } from "./AppSshTerminalDialog";
 
 function InfoRow({
   label,
@@ -54,9 +55,10 @@ export function TaskSshPanel({
   onOpenAppSsh?: (request: SshConnectionRequest) => void;
 }) {
   const toast = useToast();
+  const confirmAction = useConfirmAction();
   const { text } = useI18n();
   const auth = useAuth();
-  const [appSshRequest, setAppSshRequest] = useState<SshConnectionRequest | null>(null);
+  const sshWorkspace = useSshWorkspace();
   const [isOpeningVscode, setIsOpeningVscode] = useState(false);
   const loginUsername = auth.user?.username ?? "";
   const sshInfo = useMemo(
@@ -64,6 +66,23 @@ export function TaskSshPanel({
     [task, loginUsername],
   );
   const canConnect = canConnectTaskSsh(sshInfo);
+  // The command text is composed only from validated fields; when an API
+  // field fails validation the entries stay disabled and this explains why.
+  const connectionIssue = useMemo(() => {
+    if (sshInfo.host === "-" || sshInfo.command !== "-") return null;
+    return findSshConnectionIssue(toSshConnectionRequest(sshInfo));
+  }, [sshInfo]);
+  // One resolver for every entry (in-app, system terminal, VS Code): task
+  // fields win, SSH settings fill the gaps, so all three open the same target.
+  const buildRequest = () => resolveSshConnectionRequest(toSshConnectionRequest(sshInfo));
+  // Name the fallback honestly: the "password" row may hold the settings default
+  // or the login username, and the copy toast repeats this label verbatim.
+  const passwordLabel =
+    sshInfo.passwordKind === "login-username"
+      ? text("密码（回退为登录名）", "Password (fallback to login username)")
+      : sshInfo.passwordKind === "settings-default"
+        ? text("密码（来自设置默认值）", "Password (default from settings)")
+        : text("密码", "Password");
 
   const copyValue = (value: string, label: string) => {
     if (!value || value === "-") return;
@@ -75,17 +94,17 @@ export function TaskSshPanel({
 
   const openAppSsh = () => {
     if (!canConnect) return;
-    const request = toSshConnectionRequest(sshInfo);
+    const request = buildRequest();
     if (onOpenAppSsh) {
       onOpenAppSsh(request);
       return;
     }
-    setAppSshRequest(request);
+    sshWorkspace.openTarget(request);
   };
 
   const openSystemSsh = () => {
     if (!canConnect) return;
-    const request = toSshConnectionRequest(sshInfo);
+    const request = buildRequest();
     void browserRuntime
       .openSystemSshTerminal(request)
       .then(() => toast.success(text("已打开系统终端", "System terminal opened"), sshInfo.taskName))
@@ -97,7 +116,7 @@ export function TaskSshPanel({
 
   const openVscodeSsh = () => {
     if (!canConnect || isOpeningVscode) return;
-    const request = toSshConnectionRequest(sshInfo);
+    const request = buildRequest();
     setIsOpeningVscode(true);
     void browserRuntime
       .openVscodeSsh(request)
@@ -107,6 +126,29 @@ export function TaskSshPanel({
         toast.error(text("VS Code 打开失败", "Failed to open VS Code"), message);
       })
       .finally(() => setIsOpeningVscode(false));
+  };
+
+  const revokeVscodeSsh = () => {
+    if (!canConnect) return;
+    const request = buildRequest();
+    confirmAction.confirm({
+      title: text("撤销 VS Code 免密配置", "Revoke VS Code passwordless setup"),
+      description: text(
+        "将从该主机 ~/.ssh/authorized_keys 中删除 EasyConsole 安装的公钥，并删除本机 SSH 配置块和专用私钥。若主机不可达，撤销会失败。",
+        "This deletes the EasyConsole public key from the host's ~/.ssh/authorized_keys and removes the local SSH config block and dedicated key. The revoke fails if the host is unreachable.",
+      ),
+      confirmLabel: text("撤销", "Revoke"),
+      tone: "danger",
+      run: () => {
+        void browserRuntime
+          .revokeVscodeSsh(request, true)
+          .then(() => toast.success(text("已撤销 VS Code 免密配置", "VS Code setup revoked"), sshInfo.taskName))
+          .catch((error) => {
+            const message = error instanceof Error ? error.message : text("撤销失败", "Revoke failed");
+            toast.error(text("撤销 VS Code 免密配置失败", "Failed to revoke the VS Code setup"), message);
+          });
+      },
+    });
   };
 
   return (
@@ -136,6 +178,10 @@ export function TaskSshPanel({
                     <Code2 className="h-4 w-4" />
                     {isOpeningVscode ? text("配置中", "Configuring") : "VS Code"}
                   </Button>
+                  <Button disabled={!canConnect} type="button" variant="secondary" onClick={revokeVscodeSsh}>
+                    <KeySquare className="h-4 w-4" />
+                    {text("撤销免密", "Revoke key")}
+                  </Button>
                   <Button disabled={!canConnect} type="button" onClick={openSystemSsh}>
                     <Terminal className="h-4 w-4" />
                     {text("系统终端", "System terminal")}
@@ -150,9 +196,16 @@ export function TaskSshPanel({
           <InfoRow label={text("主机", "Host")} value={sshInfo.host} onCopy={copyValue} />
           <InfoRow label={text("端口", "Port")} value={sshInfo.port} onCopy={copyValue} />
           <InfoRow label={text("用户名", "Username")} value={sshInfo.username} onCopy={copyValue} />
-          <InfoRow label={text("密码", "Password")} value={sshInfo.password} sensitive onCopy={copyValue} />
+          <InfoRow label={passwordLabel} value={sshInfo.password} sensitive onCopy={copyValue} />
           <InfoRow label={text("SSH 命令", "SSH Command")} value={sshInfo.command} onCopy={copyValue} />
         </div>
+
+        {connectionIssue ? (
+          <p className="rounded-lg border border-app-warning/40 bg-app-warning-soft p-3 text-sm leading-5 text-app-warning-text">
+            {text("SSH 信息未通过连接校验，连接入口已禁用：", "SSH details failed connection validation; connect actions are disabled: ")}
+            {connectionIssue}
+          </p>
+        ) : null}
 
         <div className="grid gap-3 rounded-lg border border-app-border bg-app-panel p-3 text-sm text-app-muted sm:grid-cols-[auto_1fr]">
           <KeyRound className="h-4 w-4 text-app-warning" />
@@ -167,7 +220,7 @@ export function TaskSshPanel({
           </p>
         </div>
       </div>
-      {!onOpenAppSsh ? <AppSshTerminalDialog request={appSshRequest} onClose={() => setAppSshRequest(null)} /> : null}
+      {confirmAction.confirmDialog}
     </>
   );
 }

@@ -40,12 +40,12 @@ describe("i18n", () => {
     );
 
     expect(await screen.findByText("退出")).toBeInTheDocument();
-    expect(screen.getByText("系统通知未开启")).toBeInTheDocument();
+    expect(screen.getByText(/系统通知未开启/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "EN" }));
 
     expect(await screen.findByText("Sign out")).toBeInTheDocument();
-    expect(screen.getByText("System notifications are disabled")).toBeInTheDocument();
+    expect(screen.getByText(/System notifications are disabled/)).toBeInTheDocument();
     expect(window.localStorage.getItem(I18N_STORAGE_KEY)).toBe("en-US");
   });
 

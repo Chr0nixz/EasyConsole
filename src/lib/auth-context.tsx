@@ -5,7 +5,9 @@ import {
   APP_SETTINGS_STORAGE_KEY,
   GLOBAL_SETTINGS_ACCOUNT_ID,
   deleteAccountSettings,
+  deleteAccountSshPassword,
   getAccountAppSettings,
+  hydrateAccountSshPassword,
   loadAccountSettings,
   parseAccountSettingsStore,
   readAccountSettingsStore,
@@ -44,6 +46,13 @@ function writeAuthLog(input: Omit<RunLogInput, "channel" | "source">) {
 async function applyAccountRuntimeSettings(accountId: string) {
   const settings = await loadAccountSettings(browserRuntime.storage, accountId);
   setRuntimeSettings(settings);
+  // The SSH default password is kept in secureStorage; load it into the
+  // runtime settings before any task list can consume it. The web runtime
+  // never persists it — its secureStorage is plain localStorage — so the
+  // value only lives in memory there.
+  await hydrateAccountSshPassword(browserRuntime.storage, browserRuntime.secureStorage, accountId, {
+    persist: browserRuntime.runtimeKind !== "web",
+  }).catch((error) => console.warn("Failed to hydrate the SSH default password.", error));
   setApiBaseUrl(settings.apiBaseUrl);
   void browserRuntime.setDesktopCloseToTray(settings.desktopCloseToTray);
   void browserRuntime.setDesktopClosePrompt(settings.desktopClosePrompt);
@@ -96,6 +105,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (!savedToken && !parsedAccounts.some((account) => account.encryptedPassword)) {
             setRestoringSession(false);
           }
+          // The SSH default password lives in secureStorage, not the store
+          // JSON; hydrate it (and migrate any legacy plaintext copy) once
+          // the rest of the boot is complete. The web runtime only holds it
+          // in memory.
+          void hydrateAccountSshPassword(
+            browserRuntime.storage,
+            browserRuntime.secureStorage,
+            bootAccountId,
+            { persist: browserRuntime.runtimeKind !== "web" },
+          ).catch((error) => console.warn("Failed to hydrate the SSH default password.", error));
         },
         (error) => {
           if (cancelled) return;
@@ -213,7 +232,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           throw new Error(
             tokenError instanceof Error
               ? i18nText(`保存的登录已失效：${tokenError.message}`, `Saved sign-in expired: ${tokenError.message}`)
-              : i18nText("保存的登录已失效，请重新输入密码", "Saved sign-in expired. Enter the password again."),
+              : i18nText("保存的登录凭据已失效，请重新输入密码", "Saved sign-in expired. Please re-enter your password."),
             { cause: tokenError },
           );
         }
@@ -244,7 +263,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           throw new Error(
             reloginError instanceof Error
               ? i18nText(`保存的登录已失效：${reloginError.message}`, `Saved sign-in expired: ${reloginError.message}`)
-              : i18nText("保存的登录已失效，请重新输入密码", "Saved sign-in expired. Enter the password again."),
+              : i18nText("保存的登录凭据已失效，请重新输入密码", "Saved sign-in expired. Please re-enter your password."),
             { cause: reloginError },
           );
         }
@@ -367,6 +386,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await persistSavedAccounts(removeSavedAccount(savedAccountsRef.current, accountId));
     await deleteAccountSettings(browserRuntime.storage, accountId).catch((error) => {
       console.warn("Failed to remove per-account settings.", error);
+    });
+    await deleteAccountSshPassword(browserRuntime.secureStorage, accountId).catch((error) => {
+      console.warn("Failed to remove the stored SSH default password.", error);
     });
   }, [persistSavedAccounts]);
 

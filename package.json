@@ -22,7 +22,7 @@
     "typecheck": "tsc -b --noEmit",
     "typecheck:tools": "tsc -p tsconfig.tools.json --noEmit",
     "version:check": "node tools/easy-console/version-check.mjs",
-    "lint": "eslint . --max-warnings=49",
+    "lint": "eslint . --max-warnings=47",
     "test": "vitest run",
     "test:watch": "vitest"
   },

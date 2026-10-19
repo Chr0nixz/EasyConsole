@@ -112,7 +112,7 @@ export function StoragePage() {
         level: "info",
         action: "storage.mkdir",
         result: "success",
-        title: text("远程文件夹已创建", "Remote folder created"),
+        title: text("远程目录已创建", "Remote directory created"),
         targetName: joinStoragePath(path, mkdirName),
       });
       queryClient.invalidateQueries({ queryKey: ["storage"] });
@@ -134,15 +134,15 @@ export function StoragePage() {
       queryClient.invalidateQueries({ queryKey: ["storage"] });
     },
     onError: (error, entry) => {
-      toast.error(text("远程删除失败", "Remote delete failed"), `${entry.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
+      toast.error(text("删除远程文件失败", "Failed to delete remote file"), `${entry.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
       void runLogger.log({
         source: "storage",
         level: "error",
         action: "storage.delete",
         result: "failure",
-        title: text("远程删除失败", "Remote delete failed"),
+        title: text("删除远程文件失败", "Failed to delete remote file"),
         targetName: getStorageEntryPath(entry, path),
-        error: errorMessage(error, text("远程删除失败", "Remote delete failed")),
+        error: errorMessage(error, text("删除远程文件失败", "Failed to delete remote file")),
       });
     },
   });

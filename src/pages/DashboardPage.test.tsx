@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -19,13 +19,14 @@ import { DashboardPage } from "./DashboardPage";
 
 function renderDashboard() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <DashboardPage />
       </QueryClientProvider>
     </MemoryRouter>,
   );
+  return { ...view, client };
 }
 
 describe("DashboardPage", () => {
@@ -45,6 +46,8 @@ describe("DashboardPage", () => {
     expect(detailLinks.length).toBeGreaterThanOrEqual(1);
     expect(detailLinks[0]).toHaveAttribute("href", "/tasks/1");
     expect(screen.getByRole("link", { name: /^运行中$|^Running$/ })).toHaveAttribute("href", "/tasks?status=2");
+    expect(screen.getByRole("link", { name: /查看失败|View failed/ })).toHaveAttribute("href", "/tasks?status=7");
+    expect(screen.getByRole("link", { name: /查看异常|View exceptions/ })).toHaveAttribute("href", "/tasks?status=8");
     expect(screen.queryByText("/instance/console")).not.toBeInTheDocument();
     expect(screen.queryByText("/instance/statics")).not.toBeInTheDocument();
     expect(screen.queryByText(/run_task_count/)).not.toBeInTheDocument();
@@ -56,6 +59,34 @@ describe("DashboardPage", () => {
 
     await waitFor(() => expect(screen.getByText("statics failed")).toBeInTheDocument());
     expect(screen.queryByText("暂无最近任务")).not.toBeInTheDocument();
+    expect(screen.queryByText("没有失败或异常实例")).not.toBeInTheDocument();
+    expect(screen.queryByText("没有运行中的实例")).not.toBeInTheDocument();
+    expect(screen.queryByText("没有排队中的实例")).not.toBeInTheDocument();
+
+    mocks.statics.mockResolvedValue({ items: [] });
+    fireEvent.click(screen.getByRole("button", { name: /重试|Retry/ }));
+    expect(await screen.findByText("没有失败或异常实例")).toBeInTheDocument();
+  });
+
+  it("keeps task health unknown while the task request is pending", async () => {
+    mocks.statics.mockReturnValue(new Promise(() => {}));
+    renderDashboard();
+
+    expect(await screen.findByRole("status", { name: "正在读取实例状态" })).toBeInTheDocument();
+    expect(screen.queryByText("没有失败或异常实例")).not.toBeInTheDocument();
+    expect(screen.queryByText("没有运行中的实例")).not.toBeInTheDocument();
+    expect(screen.queryByText("没有排队中的实例")).not.toBeInTheDocument();
+  });
+
+  it("marks cached instance status as stale after a failed refresh", async () => {
+    const { client } = renderDashboard();
+    await waitFor(() => expect(screen.getAllByText("demo").length).toBeGreaterThan(0));
+    mocks.statics.mockRejectedValue(new Error("refresh failed"));
+
+    await act(async () => { await client.refetchQueries({ queryKey: ["statics"] }); });
+
+    expect(await screen.findByText(/实例状态刷新失败，以下为上次成功读取的数据/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /查看实例 demo 详情/ })).toBeInTheDocument();
   });
 
   it("shows empty recent-task actions", async () => {

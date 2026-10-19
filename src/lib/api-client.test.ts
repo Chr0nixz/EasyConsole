@@ -87,12 +87,26 @@ function createRuntime() {
     async openSystemSshTerminal() {},
     async openVscodeSsh() {},
     async openSshWindow() {},
+    async sftpRegisterLocalRoot() {},
+    async hasLegacyVscodeKey() {
+      return false;
+    },
+    async cleanupLegacyVscodeKey() {},
+    async listVscodeSshKeys() {
+      return [];
+    },
+    async revokeVscodeSsh() {},
     async sftpList() { return []; },
-    async sftpUpload() {},
-    async sftpDownload() {},
+    async sftpUpload() {
+      return { transferId: "t", operation: "upload", status: "completed", transferred: 0, total: 0 };
+    },
+    async sftpDownload() {
+      return { transferId: "t", operation: "download", status: "completed", transferred: 0, total: 0 };
+    },
     async sftpDelete() {},
     async sftpRename() {},
     async sftpMkdir() {},
+    async sftpCancel() {},
     async onSftpProgress() { return () => {}; },
     async startPortForward() {},
     async stopPortForward() {},

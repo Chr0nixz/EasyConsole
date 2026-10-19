@@ -2,28 +2,18 @@ import { AlertCircle, Check, Circle, ExternalLink, Maximize2, Minimize2, Plus, T
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent as ReactFormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
+import { getRuntimeSettings } from "../../lib/app-settings";
 import { browserRuntime } from "../../lib/runtime";
 import { useI18n } from "../../lib/i18n";
+import { findSshConnectionIssue, formatSshCommand, resolveSshConnectionRequest } from "../../lib/ssh-info";
 import { useConfirmAction } from "../../lib/use-confirm-action";
 import { useToast } from "../../lib/use-toast";
 import { useMobileBackLayer } from "../../lib/use-mobile-back-stack";
-import type { SshConnectionRequest } from "../../lib/types";
+import type { SshAuthMode, SshConnectionRequest } from "../../lib/types";
 import { cn } from "../../lib/utils";
-import { Button, Input } from "../ui";
+import { Button, Input, Select } from "../ui";
 import { SshTerminalTab } from "./SshTerminalTab";
-
-type AppSshTerminalDialogProps = {
-  request: SshConnectionRequest | null;
-  onClose: () => void;
-};
-
-type TabState = {
-  id: string;
-  request: SshConnectionRequest;
-  status: string;
-};
-
-type TabStatusKind = "ready" | "connected" | "failed" | "closed" | "other";
+import { useSshWorkspace } from "../../lib/use-ssh-workspace";
 
 const FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -38,35 +28,18 @@ function tabTitle(request: SshConnectionRequest) {
   return request.taskName || request.host || "SSH";
 }
 
-function sameTarget(a: SshConnectionRequest, b: SshConnectionRequest) {
-  return a.host === b.host && a.port === b.port && a.username === b.username && a.taskId === b.taskId;
-}
-
-function targetKey(request: SshConnectionRequest) {
-  return JSON.stringify([request.host, request.port, request.username ?? "", request.taskId ?? ""]);
-}
-
-// Derive a stable status kind from the status string for icon/color/aria.
-// Check "closed" before "connected" since "Disconnected" contains "connected".
-//
-// The native side emits these strings in the active interface language, so the
-// matcher has to recognize both spellings. Replacing this with a structured
-// status kind from Rust would remove the text matching entirely.
-/* eslint-disable easy-console/no-bare-cjk */
-function deriveStatusKind(status: string): TabStatusKind {
-  if (status.includes("已关闭") || /\b(closed|disconnected)\b/i.test(status)) return "closed";
-  if (status.includes("已连接") || /\bconnected\b/i.test(status)) return "connected";
-  if (status.includes("失败") || /\bfailed\b/i.test(status)) return "failed";
-  if (status.includes("准备连接") || /\bready\b/i.test(status)) return "ready";
-  return "other";
-}
-/* eslint-enable easy-console/no-bare-cjk */
-
-function isLiveStatus(status: string): boolean {
-  return deriveStatusKind(status) === "connected";
-}
-
-export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogProps) {
+/**
+ * The singleton viewport of the global in-app SSH workspace (SSH-P2-11). Tab
+ * state lives in `useSshWorkspaceStore` far above any route, so this dialog
+ * survives route changes: it renders nothing while the workspace is empty and
+ * is mounted once by `SshWorkspaceGate` at the app root.
+ */
+export function AppSshTerminalDialog() {
+  const workspace = useSshWorkspace();
+  const tabs = workspace.tabs;
+  const activeTabId = workspace.activeTabId;
+  const isMinimized = workspace.isMinimized;
+  const hasTabs = tabs.length > 0;
   const { t, text } = useI18n();
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -74,15 +47,15 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const confirmAction = useConfirmAction();
   const toast = useToast();
-  const [tabs, setTabs] = useState<TabState[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
-  const activeTabIdRef = useRef<string | null>(null);
-  const lastSyncedRequestKeyRef = useRef<string | null>(null);
-  const [isMinimized, setIsMinimized] = useState(false);
   const [showNewTabForm, setShowNewTabForm] = useState(false);
   const [newHost, setNewHost] = useState("");
-  const [newPort, setNewPort] = useState("22");
+  // Defaults come from SSH settings so every entry resolves the same target;
+  // the resolver re-reads settings on submit for changes made mid-session.
+  const [newPort, setNewPort] = useState(() => String(getRuntimeSettings().ssh.defaultPort));
   const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newAuthMode, setNewAuthMode] = useState<SshAuthMode>(() => getRuntimeSettings().ssh.authMode);
+  const [newKeyPath, setNewKeyPath] = useState(() => getRuntimeSettings().ssh.sshKeyPath);
   const [dialogSize, setDialogSize] = useState<{ width: number; height: number } | null>(null);
   const [mobileViewportHeight, setMobileViewportHeight] = useState<number | null>(() =>
     browserRuntime.isMobile ? window.visualViewport?.height ?? window.innerHeight : null,
@@ -133,72 +106,29 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
     };
   }, []);
 
-  const openTab = useCallback((tabRequest: SshConnectionRequest) => {
-    const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `tab-${Date.now()}`;
-    setTabs((prev) => [...prev, { id, request: tabRequest, status: text("准备连接", "Ready to connect") }]);
-    activeTabIdRef.current = id;
-    setActiveTabId(id);
-    setShowNewTabForm(false);
-  }, [text]);
-
-  // Initialize or sync incoming requests only when the target changes. The
-  // active tab is deliberately excluded so manually opened sessions cannot be
-  // overwritten by this effect on a subsequent render.
-  useEffect(() => {
-    if (!request) {
-      lastSyncedRequestKeyRef.current = null;
-      return;
-    }
-    const nextRequestKey = targetKey(request);
-    if (lastSyncedRequestKeyRef.current === nextRequestKey) return;
-    lastSyncedRequestKeyRef.current = nextRequestKey;
-    setTabs((prev) => {
-      if (prev.length === 0) {
-        const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `tab-${Date.now()}`;
-        activeTabIdRef.current = id;
-        setActiveTabId(id);
-        return [{ id, request, status: text("准备连接", "Ready to connect") }];
-      }
-      const active = prev.find((tab) => tab.id === activeTabIdRef.current);
-      if (active && sameTarget(active.request, request)) return prev;
-      const exists = prev.find((tab) => sameTarget(tab.request, request));
-      if (exists) {
-        activeTabIdRef.current = exists.id;
-        setActiveTabId(exists.id);
-        return prev;
-      }
-      const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `tab-${Date.now()}`;
-      activeTabIdRef.current = id;
-      setActiveTabId(id);
-      return [...prev, { id, request, status: text("准备连接", "Ready to connect") }];
-    });
-    setIsMinimized(false);
-  }, [request, text]);
-
-  const closeTab = useCallback((id: string) => {
-    setTabs((prev) => {
-      const idx = prev.findIndex((tab) => tab.id === id);
-      if (idx === -1) return prev;
-      const next = prev.filter((tab) => tab.id !== id);
-      if (next.length === 0) {
-        activeTabIdRef.current = null;
-        setActiveTabId(null);
-        onClose();
-        return next;
-      }
-      const fallback = id === activeTabIdRef.current ? next[Math.min(idx, next.length - 1)] : next.find((tab) => tab.id === activeTabIdRef.current) ?? next[0];
-      activeTabIdRef.current = fallback.id;
-      setActiveTabId(fallback.id);
+  // Closing a tab moves focus to the neighbor the store activates; the store
+  // owns the tab array, the dialog only owns focus restoration.
+  const closeTab = useCallback(
+    (id: string) => {
+      const idx = tabs.findIndex((tab) => tab.id === id);
+      if (idx === -1) return;
+      const remaining = tabs.filter((tab) => tab.id !== id);
+      workspace.closeTab(id);
+      if (remaining.length === 0) return;
+      const fallback =
+        id === activeTabId
+          ? remaining[Math.min(idx, remaining.length - 1)]
+          : (remaining.find((tab) => tab.id === activeTabId) ?? remaining[0]);
       window.setTimeout(() => tabRefs.current.get(fallback.id)?.focus(), 0);
-      return next;
-    });
-  }, [onClose]);
+    },
+    [tabs, activeTabId, workspace],
+  );
 
   // Wrap closeTab with a confirmation guard for live (connected) sessions.
   const requestCloseTab = useCallback((id: string) => {
     const tab = tabs.find((t) => t.id === id);
     if (!tab) return;
-    if (isLiveStatus(tab.status)) {
+    if (tab.kind === "connected") {
       confirmAction.confirm({
         title: text("关闭已连接的标签", "Close connected tab"),
         description: text(
@@ -231,9 +161,9 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       });
   }, [tabs, activeTabId, closeTab, text, toast]);
 
-  // Wrap dialog close with a confirmation guard when live sessions exist.
+  // Wrap workspace close with a confirmation guard when live sessions exist.
   const requestCloseDialog = useCallback(() => {
-    const liveCount = tabs.filter((t) => isLiveStatus(t.status)).length;
+    const liveCount = tabs.filter((t) => t.kind === "connected").length;
     if (liveCount > 0) {
       confirmAction.confirm({
         title: text("关闭终端窗口", "Close terminal window"),
@@ -243,25 +173,17 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
         ),
         confirmLabel: text("关闭", "Close"),
         tone: "danger",
-        run: () => {
-          setTabs([]);
-          activeTabIdRef.current = null;
-          setActiveTabId(null);
-          onClose();
-        },
+        run: () => workspace.closeAllTabs(),
       });
     } else {
-      setTabs([]);
-      activeTabIdRef.current = null;
-      setActiveTabId(null);
-      onClose();
+      workspace.closeAllTabs();
     }
-  }, [tabs, text, confirmAction, onClose]);
+  }, [tabs, text, confirmAction, workspace]);
 
-  useMobileBackLayer(Boolean(request) && !isMinimized, requestCloseDialog);
+  useMobileBackLayer(hasTabs && !isMinimized, requestCloseDialog);
 
   useEffect(() => {
-    if (!browserRuntime.isMobile || !request) return undefined;
+    if (!browserRuntime.isMobile || !hasTabs) return undefined;
     const viewport = window.visualViewport;
     const updateHeight = () => {
       setMobileViewportHeight(viewport?.height ?? window.innerHeight);
@@ -279,15 +201,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       viewport?.removeEventListener("scroll", updateTerminal);
       window.removeEventListener("resize", updateHeight);
     };
-  }, [request]);
-
-  const updateTabStatus = useCallback((id: string, status: string) => {
-    setTabs((prev) => {
-      const current = prev.find((tab) => tab.id === id);
-      if (!current || current.status === status) return prev;
-      return prev.map((tab) => (tab.id === id ? { ...tab, status } : tab));
-    });
-  }, []);
+  }, [hasTabs]);
 
   const focusTab = useCallback((id: string) => {
     tabRefs.current.get(id)?.focus();
@@ -298,7 +212,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
 
   // 首次打开时将焦点移入对话框，符合 WAI-ARIA dialog 模式。
   useEffect(() => {
-    if (!request) {
+    if (!hasTabs) {
       hasFocusedRef.current = false;
       return;
     }
@@ -316,7 +230,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [request]);
+  }, [hasTabs]);
 
   // 对话框卸载时恢复焦点到触发元素。
   useEffect(() => {
@@ -328,8 +242,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
   const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, currentIdx: number) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      activeTabIdRef.current = tabs[currentIdx].id;
-      setActiveTabId(tabs[currentIdx].id);
+      workspace.setActiveTabId(tabs[currentIdx].id);
       return;
     }
 
@@ -349,19 +262,46 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
     event.preventDefault();
     const host = newHost.trim();
     if (!host) return;
-    const username = newUsername.trim();
-    const port = newPort.trim() || "22";
-    const newRequest: SshConnectionRequest = {
+    // Auth mode is the user's choice. In password mode an empty field falls
+    // back to the configured default password so platform instances do not
+    // need it retyped; in key mode the field is a passphrase and must never
+    // inherit the account password.
+    const password =
+      newAuthMode === "key"
+        ? newPassword.trim() || undefined
+        : newPassword.trim() || getRuntimeSettings().ssh.defaultPassword || undefined;
+    const request = resolveSshConnectionRequest({
       host,
-      port,
-      username: username || undefined,
-      command: `ssh ${username ? `${username}@` : ""}${host}${port && port !== "22" ? `:${port}` : ""}`,
-      authMode: "password",
-    };
-    openTab(newRequest);
+      port: newPort.trim() || undefined,
+      username: newUsername.trim() || undefined,
+      password,
+      command: "",
+      authMode: newAuthMode,
+      sshKeyPath: newKeyPath.trim() || undefined,
+    });
+    const issue = findSshConnectionIssue(request);
+    if (issue) {
+      toast.error(text("无法连接", "Cannot connect"), issue);
+      return;
+    }
+    // The command is display/copy text; only spell out a non-default port.
+    const defaultPort = String(getRuntimeSettings().ssh.defaultPort);
+    const resolvedPort = request.port ?? defaultPort;
+    // Same formatter as every other entry: bare args (validation already ran
+    // above), `-p` only when the port differs from the settings default.
+    const command = formatSshCommand({
+      host: request.host,
+      port: resolvedPort !== defaultPort ? resolvedPort : undefined,
+      username: request.username,
+    });
+    if (!command) return;
+    request.command = command;
+    workspace.openTab(request);
+    setShowNewTabForm(false);
     setNewHost("");
-    setNewPort("22");
+    setNewPort(defaultPort);
     setNewUsername("");
+    setNewPassword("");
   };
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
@@ -414,7 +354,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
     }
   };
 
-  if (!request && tabs.length === 0) return null;
+  if (!hasTabs) return null;
 
   return createPortal(
     <>
@@ -463,7 +403,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
                 type="button"
                 title={text("最小化", "Minimize")}
                 aria-label={text("最小化", "Minimize")}
-                onClick={() => setIsMinimized(true)}
+                onClick={() => workspace.setMinimized(true)}
               >
                 <Minimize2 className="h-4 w-4" />
                 <span className="sr-only">{text("最小化", "Minimize")}</span>
@@ -488,7 +428,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
           >
             <div className="flex h-12 flex-1 items-center gap-1 overflow-x-auto px-2 md:h-9">
               {tabs.map((tab, idx) => {
-                const kind = deriveStatusKind(tab.status);
+                const kind = tab.kind;
                 const isActive = tab.id === activeTabId;
                 return (
                   <div
@@ -518,8 +458,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
                       aria-controls={`ssh-terminal-panel-${tab.id}`}
                       aria-label={`${tabTitle(tab.request)}，${tab.status}`}
                       onClick={() => {
-                        activeTabIdRef.current = tab.id;
-                        setActiveTabId(tab.id);
+                        workspace.setActiveTabId(tab.id);
                       }}
                       onKeyDown={(event) => handleTabKeyDown(event, idx)}
                       title={tab.request.command}
@@ -553,7 +492,13 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
                 type="button"
                 title={t("terminal.newTab")}
                 aria-label={t("terminal.newTab")}
-                onClick={() => setShowNewTabForm((prev) => !prev)}
+                aria-expanded={showNewTabForm}
+                onClick={() => {
+                  // Drop a typed-but-not-submitted password when the form is
+                  // dismissed; host/port/username may stay for convenience.
+                  if (showNewTabForm) setNewPassword("");
+                  setShowNewTabForm((prev) => !prev);
+                }}
               >
                 <Plus className="h-4 w-4" />
               </button>
@@ -588,6 +533,33 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
                 value={newUsername}
                 onChange={(event) => setNewUsername(event.target.value)}
               />
+              <Select
+                className="h-8 border-app-terminalBorder bg-app-terminalBg text-app-terminalText"
+                aria-label={text("认证方式", "Authentication")}
+                value={newAuthMode}
+                onChange={(event) => setNewAuthMode(event.target.value === "key" ? "key" : "password")}
+              >
+                <option value="password">{text("密码", "Password")}</option>
+                <option value="key">{text("私钥", "Private key")}</option>
+              </Select>
+              {newAuthMode === "key" ? (
+                <Input
+                  className="h-8 w-48 border-app-terminalBorder bg-app-terminalBg text-app-terminalText placeholder:text-app-terminalMuted"
+                  placeholder={text("私钥路径（可选）", "Key path (optional)")}
+                  aria-label={text("私钥路径", "Key path")}
+                  value={newKeyPath}
+                  onChange={(event) => setNewKeyPath(event.target.value)}
+                />
+              ) : null}
+              <Input
+                className="h-8 w-32 border-app-terminalBorder bg-app-terminalBg text-app-terminalText placeholder:text-app-terminalMuted"
+                type="password"
+                autoComplete="off"
+                placeholder={newAuthMode === "key" ? text("私钥口令（可选）", "Key passphrase (optional)") : t("terminal.password")}
+                aria-label={newAuthMode === "key" ? text("私钥口令", "Key passphrase") : t("terminal.password")}
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+              />
               <Button type="submit" className="h-8" disabled={!newHost.trim()}>
                 {t("terminal.connect")}
               </Button>
@@ -606,7 +578,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
                 request={tab.request}
                 tabId={tab.id}
                 active={tab.id === activeTabId}
-                onStatusChange={(status) => updateTabStatus(tab.id, status)}
+                onStatusChange={(status, kind) => workspace.updateTabStatus(tab.id, status, kind)}
               />
             ))}
           </div>
@@ -635,7 +607,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
           style={{ bottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }}
           aria-label={text(`恢复应用内 SSH ${tabTitle(activeTab.request)}`, `Restore in-app SSH ${tabTitle(activeTab.request)}`)}
           type="button"
-          onClick={() => setIsMinimized(false)}
+          onClick={() => workspace.setMinimized(false)}
         >
           <Terminal className="h-4 w-4 shrink-0 text-app-terminalAccent" />
           <span className="min-w-0 flex-1">
@@ -647,7 +619,7 @@ export function AppSshTerminalDialog({ request, onClose }: AppSshTerminalDialogP
               {text(`${tabs.length} 个会话`, `${tabs.length} sessions`)}
             </span>
           ) : null}
-          {tabs.some((tab) => tab.id !== activeTab.id && (deriveStatusKind(tab.status) === "failed" || deriveStatusKind(tab.status) === "closed")) ? (
+          {tabs.some((tab) => tab.id !== activeTab.id && (tab.kind === "failed" || tab.kind === "closed")) ? (
             <span
               className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-app-danger"
               aria-label={text("有会话需要关注", "A session needs attention")}

@@ -9,6 +9,8 @@ describe("webssh", () => {
 
   it("formats terminal input messages", () => {
     expect(formatTerminalInput("ls\n")).toBe(JSON.stringify({ status: 0, data: "ls\n" }));
+    // Backslash sequences in user input must survive JSON escaping untouched.
+    expect(formatTerminalInput("C:\\temp\\a\tb")).toBe(JSON.stringify({ status: 0, data: "C:\\temp\\a\tb" }));
   });
 
   it("formats resize messages", () => {

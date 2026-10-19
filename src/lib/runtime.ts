@@ -17,9 +17,11 @@ import type {
   RuntimeWebSocket,
   SftpEntry,
   SftpProgress,
+  SftpTransferOutcome,
   SshHistoryEntry,
   SshSessionEvent,
   UploadProgress,
+  VscodeKeyRecord,
 } from "./types";
 
 export const RUNTIME_SOCKET_OPEN = 1;
@@ -484,6 +486,23 @@ function dispatchSshSessionEvent(event: SshSessionEvent) {
   bufferSshSessionEvent(event);
 }
 
+/**
+ * Subscribes to the native `ssh-session-event` stream. The native side emits
+ * with `emit_to(this window's label)`, so the listener must register with the
+ * same target: the JS default target (`kind: "Any"`) still matches every emit,
+ * which is exactly the cross-window terminal-output exposure the targeting
+ * exists to close.
+ */
+async function listenSshSessionEvent(
+  handler: (event: { payload: SshSessionEvent }) => void,
+): Promise<() => void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  return listen<SshSessionEvent>("ssh-session-event", handler, {
+    target: { kind: "WebviewWindow", label: getCurrentWindow().label },
+  });
+}
+
 async function ensureGlobalSshListen() {
   if (runtimeKind === "web") return;
   if (sshGlobalListenPromise) {
@@ -491,8 +510,7 @@ async function ensureGlobalSshListen() {
     return;
   }
   sshGlobalListenPromise = (async () => {
-    const { listen } = await import("@tauri-apps/api/event");
-    await listen<SshSessionEvent>("ssh-session-event", (event) => {
+    await listenSshSessionEvent((event) => {
       dispatchSshSessionEvent(event.payload);
     });
   })();
@@ -621,6 +639,30 @@ export const browserRuntime: RuntimeTransport = {
   openVscodeSsh(request) {
     return invokeTauriCommand("open_vscode_ssh", { request });
   },
+  listVscodeSshKeys() {
+    if (runtimeKind !== "desktop") return Promise.resolve([]);
+    return invokeTauriCommand<VscodeKeyRecord[]>("list_vscode_ssh_keys", {});
+  },
+  hasLegacyVscodeKey() {
+    if (runtimeKind !== "desktop") return Promise.resolve(false);
+    return invokeTauriCommand<boolean>("has_legacy_vscode_ssh_key", {});
+  },
+  cleanupLegacyVscodeKey() {
+    if (runtimeKind !== "desktop") {
+      return Promise.reject(
+        new Error(i18nText("当前环境不支持 VS Code Remote-SSH", "VS Code Remote-SSH is not supported in this environment")),
+      );
+    }
+    return invokeTauriCommand("cleanup_legacy_vscode_ssh_key", {});
+  },
+  revokeVscodeSsh(request, removeRemote) {
+    if (runtimeKind !== "desktop") {
+      return Promise.reject(
+        new Error(i18nText("当前环境不支持 VS Code Remote-SSH", "VS Code Remote-SSH is not supported in this environment")),
+      );
+    }
+    return invokeTauriCommand("revoke_vscode_ssh", { request, removeRemote });
+  },
   openSshWindow(request) {
     if (runtimeKind !== "desktop") {
       return Promise.reject(
@@ -631,17 +673,21 @@ export const browserRuntime: RuntimeTransport = {
     }
     return invokeTauriCommand("open_ssh_window", { request });
   },
+  sftpRegisterLocalRoot(sessionId, rootPath) {
+    if (runtimeKind === "web") return Promise.resolve();
+    return invokeTauriCommand("sftp_register_local_root", { sessionId, rootPath });
+  },
   sftpList(sessionId, path) {
     if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
     return invokeTauriCommand<SftpEntry[]>("sftp_list", { sessionId, path });
   },
   sftpUpload(sessionId, localPath, remotePath) {
     if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
-    return invokeTauriCommand("sftp_upload", { sessionId, localPath, remotePath });
+    return invokeTauriCommand<SftpTransferOutcome>("sftp_upload", { sessionId, localPath, remotePath });
   },
   sftpDownload(sessionId, remotePath, localPath) {
     if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
-    return invokeTauriCommand("sftp_download", { sessionId, remotePath, localPath });
+    return invokeTauriCommand<SftpTransferOutcome>("sftp_download", { sessionId, remotePath, localPath });
   },
   sftpDelete(sessionId, path) {
     if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
@@ -655,10 +701,13 @@ export const browserRuntime: RuntimeTransport = {
     if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
     return invokeTauriCommand("sftp_mkdir", { sessionId, path });
   },
+  sftpCancel(sessionId, transferId) {
+    if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持 SFTP", "SFTP is not supported in this environment")));
+    return invokeTauriCommand("sftp_cancel", { sessionId, transferId });
+  },
   async onSftpProgress(sessionId, handler) {
     if (runtimeKind === "web") requireDesktopSsh();
-    const { listen } = await import("@tauri-apps/api/event");
-    return listen<SshSessionEvent>("ssh-session-event", (event) => {
+    return listenSshSessionEvent((event) => {
       if (event.payload.sessionId !== sessionId || event.payload.kind !== "sftp-progress") return;
       try {
         const progress = JSON.parse(event.payload.data ?? "{}") as SftpProgress;
@@ -678,8 +727,7 @@ export const browserRuntime: RuntimeTransport = {
   },
   async onPortForwardStatus(sessionId, handler) {
     if (runtimeKind === "web") requireDesktopSsh();
-    const { listen } = await import("@tauri-apps/api/event");
-    return listen<SshSessionEvent>("ssh-session-event", (event) => {
+    return listenSshSessionEvent((event) => {
       if (event.payload.sessionId !== sessionId || event.payload.kind !== "port-forward-status") return;
       try {
         const status = JSON.parse(event.payload.data ?? "{}") as PortForwardStatus;
@@ -700,7 +748,7 @@ export const browserRuntime: RuntimeTransport = {
     }
     return invokeTauriCommand<SshHistoryEntry[]>("list_ssh_history", {});
   },
-  async addSshHistory(entry) {
+  async addSshHistory(entry, limit = 20) {
     if (runtimeKind === "web") {
       try {
         const raw = window.localStorage.getItem("easy-console-ssh-history");
@@ -714,14 +762,14 @@ export const browserRuntime: RuntimeTransport = {
           connectedAt: Date.now(),
         };
         filtered.unshift(newEntry);
-        const trimmed = filtered.slice(0, 20);
+        const trimmed = filtered.slice(0, Math.max(1, limit));
         window.localStorage.setItem("easy-console-ssh-history", JSON.stringify(trimmed));
       } catch {
         // ignore storage errors
       }
       return;
     }
-    await invokeTauriCommand("add_ssh_history", entry);
+    await invokeTauriCommand("add_ssh_history", { ...entry, limit });
   },
   async clearSshHistory() {
     if (runtimeKind === "web") {

@@ -29,3 +29,36 @@ export function appendRecordingChunk(state: RecordingBufferState, chunk: string)
 export function isNearTerminalBottom(viewportY: number, baseY: number, thresholdRows = SSH_FOLLOW_BOTTOM_THRESHOLD_ROWS) {
   return viewportY >= baseY - thresholdRows;
 }
+
+/**
+ * Structural view of an xterm.js terminal, so callers (and tests) can pass a
+ * mock without importing the xterm runtime into this module.
+ */
+export type TerminalBufferSource = {
+  rows: number;
+  buffer: {
+    active: {
+      baseY: number;
+      getLine(row: number): { translateToString(trimRight?: boolean): string } | undefined;
+    };
+  };
+};
+
+/**
+ * Serializes the visible scrollback + viewport as plain text. ANSI attributes
+ * are intentionally dropped: raw data streams contain cursor-motion sequences
+ * that would replay as garbage into a fresh terminal, while plain text stays
+ * faithful enough to show "what happened before the reconnect".
+ */
+export function serializeTerminalBuffer(terminal: TerminalBufferSource): string {
+  const buffer = terminal.buffer.active;
+  const totalLines = buffer.baseY + terminal.rows;
+  const lines: string[] = [];
+  for (let row = 0; row < totalLines; row += 1) {
+    lines.push(buffer.getLine(row)?.translateToString(true) ?? "");
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines.join("\r\n");
+}

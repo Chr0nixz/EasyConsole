@@ -3,9 +3,9 @@ import { useCallback, useState, type ReactNode } from "react";
 
 import { cn } from "../lib/utils";
 
-export function FieldError({ message }: { message?: string }) {
+export function FieldError({ id, message }: { id?: string; message?: string }) {
   if (!message) return null;
-  return <p className="mt-1 text-xs text-app-danger" role="alert">{message}</p>;
+  return <p className="mt-1 text-xs text-app-danger" id={id} role="alert">{message}</p>;
 }
 
 export function FormSection({
@@ -16,6 +16,7 @@ export function FormSection({
   open = true,
   onOpenChange,
   hint,
+  keepMounted = false,
 }: {
   title: string;
   divided?: boolean;
@@ -25,6 +26,8 @@ export function FormSection({
   onOpenChange?: (open: boolean) => void;
   /** Optional muted summary shown beside the title when collapsed. */
   hint?: ReactNode;
+  /** Keep asynchronous defaults active while the section is collapsed. */
+  keepMounted?: boolean;
 }) {
   const expanded = !collapsible || open;
 
@@ -49,7 +52,7 @@ export function FormSection({
         <span>{title}</span>
         {!expanded && hint ? <span className="min-w-0 truncate font-normal text-app-muted">{hint}</span> : null}
       </button>
-      {expanded ? <div className="space-y-3">{children}</div> : null}
+      {expanded || keepMounted ? <div className="space-y-3" hidden={!expanded}>{children}</div> : null}
     </section>
   );
 }

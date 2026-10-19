@@ -92,32 +92,39 @@ function AttentionGroup({
   tasks,
   emptyLabel,
   now,
+  links,
 }: {
   title: string;
   href: string;
   tasks: Task[];
   emptyLabel: string;
   now: number;
+  links?: Array<{ label: string; href: string }>;
 }) {
   const { locale, text } = useI18n();
   return (
     <section className="min-w-0">
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-sm font-semibold text-app-text">
-          <Link
+          {links ? title : <Link
             to={href}
             className="text-app-text hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/40"
           >
             {title}
-          </Link>
+          </Link>}
           <span className="ml-2 text-xs font-normal text-app-muted">{tasks.length}</span>
         </h2>
-        <Link
-          to={href}
-          className="text-xs text-app-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/40"
-        >
-          {text("查看全部", "View all")}
-        </Link>
+        <div className="flex shrink-0 gap-3">
+          {(links ?? [{ label: text("查看全部", "View all"), href }]).map((link) => (
+            <Link
+              key={link.href}
+              to={link.href}
+              className="text-xs text-app-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/40"
+            >
+              {link.label}
+            </Link>
+          ))}
+        </div>
       </div>
       {tasks.length === 0 ? (
         <p className="mt-2 text-sm text-app-muted">{emptyLabel}</p>
@@ -161,6 +168,7 @@ export function DashboardPage() {
   const summary = toSummary(consoleQuery.data);
   const allTasks = toTasks(staticsQuery.data);
   const tasksFetchedAt = staticsQuery.dataUpdatedAt;
+  const taskDataAvailable = staticsQuery.data !== undefined;
   const recentTasks = allTasks.slice(0, 8);
   const failedTasks = byRecency(allTasks.filter((task) => Number(task.status) === 7 || Number(task.status) === 8));
   const runningTasks = byRecency(allTasks.filter((task) => Number(task.status) === 2));
@@ -177,6 +185,10 @@ export function DashboardPage() {
   }));
 
   const selectedRangeIndex = TIME_RANGES.indexOf(timeRange);
+  const maxRuntime = Math.max(...chartData.map((entry) => entry.runtime), 0);
+  const runtimeAxisDivisor = maxRuntime >= 86_400 ? 86_400 : maxRuntime >= 3_600 ? 3_600 : 60;
+  const runtimeAxisUnit = maxRuntime >= 86_400 ? text("天", "d") : maxRuntime >= 3_600 ? text("时", "h") : text("分", "min");
+  const axisNumber = new Intl.NumberFormat(locale, { maximumFractionDigits: 1, notation: "compact" });
   const chartSummary =
     chartMetric === "runtime"
       ? text(
@@ -189,7 +201,7 @@ export function DashboardPage() {
         );
 
   if (consoleQuery.isLoading) return <LoadingState />;
-  if (consoleQuery.isError) return <ErrorState error={consoleQuery.error} />;
+  if (consoleQuery.isError) return <ErrorState error={consoleQuery.error} action={<Button variant="secondary" onClick={() => consoleQuery.refetch()}>{text("重试", "Retry")}</Button>} />;
 
   return (
     <div className="space-y-5">
@@ -247,10 +259,23 @@ export function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-3">
+      {staticsQuery.isError && taskDataAvailable ? (
+        <p className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warningText" role="alert">
+          {text("实例状态刷新失败，以下为上次成功读取的数据，状态可能已变化。", "Instance status could not be refreshed. The last successful data is shown below and may be out of date.")}
+        </p>
+      ) : null}
+      {!taskDataAvailable ? (
+        staticsQuery.isError
+          ? <ErrorState error={staticsQuery.error} action={<Button variant="secondary" onClick={() => staticsQuery.refetch()}>{text("重试", "Retry")}</Button>} />
+          : <LoadingState label={text("正在读取实例状态", "Loading instance status")} />
+      ) : <div className="grid gap-5 lg:grid-cols-3">
         <AttentionGroup
           title={text("失败 / 异常", "Failed / exception")}
-          href="/tasks"
+          href={tasksHref("7")}
+          links={[
+            { label: text("查看失败", "View failed"), href: tasksHref("7") },
+            { label: text("查看异常", "View exceptions"), href: tasksHref("8") },
+          ]}
           tasks={failedTasks}
           emptyLabel={text("没有失败或异常实例", "No failed or exception instances")}
           now={tasksFetchedAt}
@@ -269,7 +294,7 @@ export function DashboardPage() {
           emptyLabel={text("没有排队中的实例", "No queued instances")}
           now={tasksFetchedAt}
         />
-      </div>
+      </div>}
 
       <Panel className="p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -304,9 +329,13 @@ export function DashboardPage() {
                 tick={{ fontSize: 11 }}
                 stroke="currentColor"
                 className="text-app-muted"
-                width={48}
+                width={64}
+                tickCount={4}
+                minTickGap={8}
                 tickFormatter={(value) =>
-                  chartMetric === "runtime" ? formatSecondsDuration(Number(value), locale) : formatCost(Number(value), locale)
+                  chartMetric === "runtime"
+                    ? `${axisNumber.format(Number(value) / runtimeAxisDivisor)}${runtimeAxisUnit}`
+                    : axisNumber.format(Number(value))
                 }
               />
               <Tooltip
@@ -328,7 +357,7 @@ export function DashboardPage() {
         </div>
       </Panel>
 
-      <Panel>
+      {taskDataAvailable ? <Panel>
         <div className="flex items-center justify-between border-b border-app-border px-4 py-3">
           <div className="text-sm font-semibold">{text("最近任务", "Recent tasks")}</div>
           {staticsQuery.isError ? (
@@ -434,7 +463,7 @@ export function DashboardPage() {
             }
           />
         )}
-      </Panel>
+      </Panel> : null}
     </div>
   );
 }

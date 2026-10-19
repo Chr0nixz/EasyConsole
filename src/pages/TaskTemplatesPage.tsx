@@ -63,9 +63,9 @@ function getImageName(images: ImageItem[], imageId: string, text: (zh: string, e
   return image ? getImageOptionLabel(image) : text(`镜像 #${imageId}`, `Image #${imageId}`);
 }
 
-function getDefaultTemplate(username: string, imageId = ""): EditableTaskTemplate {
+function getDefaultTemplate(username: string, imageId = "", name = "Default dev environment"): EditableTaskTemplate {
   return {
-    name: "Default dev environment",
+    name,
     description: "",
     taskNamePrefix: "dev",
     batchCount: 1,
@@ -110,7 +110,7 @@ function TemplateDialog({
   onSave: (value: EditableTaskTemplate) => void;
 }) {
   const { text } = useI18n();
-  const [form, setForm] = useState<EditableTaskTemplate>(() => getDefaultTemplate(username));
+  const [form, setForm] = useState<EditableTaskTemplate>(() => getDefaultTemplate(username, "", text("默认开发环境模板", "Default dev environment")));
   const [storagePickerTarget, setStoragePickerTarget] = useState<StoragePickerTarget | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
@@ -123,12 +123,12 @@ function TemplateDialog({
         scriptEnv: envVarsFromLegacyExperimentId(initialValue.experimentId, initialValue.scriptEnv ?? []),
       });
     } else {
-      setForm(getDefaultTemplate(username, imageOptions[0] ? String(imageOptions[0].id) : ""));
+      setForm(getDefaultTemplate(username, imageOptions[0] ? String(imageOptions[0].id) : "", text("默认开发环境模板", "Default dev environment")));
     }
     setFormError(null);
     setStoragePickerTarget(null);
     resetTouched();
-  }, [imageOptions, initialValue, open, resetTouched, username]);
+  }, [imageOptions, initialValue, open, resetTouched, text, username]);
 
   function update<K extends keyof EditableTaskTemplate>(key: K, value: EditableTaskTemplate[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -139,7 +139,7 @@ function TemplateDialog({
     if (!form.name.trim()) errors.name = text("模板名称不能为空", "Template name is required");
     if (!form.taskNamePrefix.trim()) errors.taskNamePrefix = text("实例名称前缀不能为空", "Instance name prefix is required");
     if (!form.imageId.trim()) errors.image = text("请选择镜像", "Select an image");
-    if (parsePositivePrice(String(form.price ?? "")) === null) errors.price = text("价格必须大于 0", "Price must be greater than 0");
+    if (parsePositivePrice(String(form.price ?? "")) === null) errors.price = text("计费单价必须大于 0", "Hourly rate must be greater than 0");
     if (form.cpu <= 0) errors.cpu = text("CPU 必须大于 0", "CPU must be greater than 0");
     if (!Number.isInteger(form.gpu) || form.gpu < 0) errors.gpu = text("GPU 必须是非负整数", "GPU must be a non-negative integer");
     if (!Number.isInteger(form.memory) || form.memory <= 0) errors.memory = text("内存必须是正整数", "Memory must be a positive integer");

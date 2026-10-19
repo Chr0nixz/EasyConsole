@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { browserRuntime } from "../../lib/runtime";
 import { ToastContext, type ToastContextValue } from "../../lib/use-toast";
+import { SshWorkspaceProvider } from "../ssh/SshWorkspaceProvider";
 import { TerminalDialog } from "./TerminalDialog";
 
 vi.mock("../../lib/use-auth", () => ({
@@ -72,17 +73,19 @@ function setMobileRuntime() {
 function renderDialog() {
   return render(
     <ToastContext.Provider value={toast}>
-      <TerminalDialog
-        task={{
-          id: 1,
-          task_id: "task-1",
-          name: "demo",
-          ip: "10.0.0.8",
-          port: 30222,
-          user: { username: "alice" },
-        }}
-        onClose={vi.fn()}
-      />
+      <SshWorkspaceProvider>
+        <TerminalDialog
+          task={{
+            id: 1,
+            task_id: "task-1",
+            name: "demo",
+            ip: "10.0.0.8",
+            port: 30222,
+            user: { username: "alice" },
+          }}
+          onClose={vi.fn()}
+        />
+      </SshWorkspaceProvider>
     </ToastContext.Provider>,
   );
 }
@@ -116,7 +119,9 @@ describe("TerminalDialog", () => {
     expect(hostLabel.className).not.toMatch(/tracking-wide/);
     expect(screen.getByText("端口")).toBeInTheDocument();
     expect(screen.getByText("用户名")).toBeInTheDocument();
-    expect(screen.getByText("密码")).toBeInTheDocument();
+    // The password row names its source (task value, settings default, or login
+    // username fallback); "密码（" only appears in that label, not in the note below.
+    expect(screen.getByText(/密码（/)).toBeInTheDocument();
   });
 
   it("shows desktop SSH entry points in the desktop runtime", async () => {

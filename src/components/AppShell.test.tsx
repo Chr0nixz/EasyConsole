@@ -92,6 +92,8 @@ vi.mock("../lib/saved-accounts", () => ({
 
 vi.mock("../lib/shell-nav-width", () => ({
   DEFAULT_SHELL_NAV_WIDTH: 220,
+  MIN_SHELL_NAV_WIDTH: 176,
+  MAX_SHELL_NAV_WIDTH: 360,
   clampShellNavWidth: (w: number) => w,
   readStoredShellNavWidth: () => 220,
   writeStoredShellNavWidth: vi.fn(),
@@ -120,6 +122,12 @@ describe("AppShell", () => {
     expect(skipLink.closest("a")).toHaveAttribute("href", "#main-content");
   });
 
+  it("names the narrow command search for the action it opens", () => {
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: "搜索命令和页面" }));
+    expect(screen.getByTestId("command-palette")).toBeInTheDocument();
+  });
+
   it("shows a route-specific header description on dashboard", () => {
     renderShell();
     expect(screen.getByText(/查看需要处理的实例、时长和费用|See instances that need attention, runtime, and cost/)).toBeInTheDocument();
@@ -128,6 +136,15 @@ describe("AppShell", () => {
   it("renders main content with id main-content", () => {
     renderShell();
     expect(document.getElementById("main-content")).not.toBeNull();
+  });
+
+  it("exposes the sidebar resize range to assistive technology", () => {
+    renderShell();
+    const separator = screen.getByRole("separator", { name: /侧边栏|Sidebar/ });
+    expect(separator).toHaveAttribute("aria-valuemin", "176");
+    expect(separator).toHaveAttribute("aria-valuemax", "360");
+    expect(separator).toHaveAttribute("aria-valuenow", "220");
+    expect(separator).toHaveAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight Enter Space");
   });
 
   it("navigates to dashboard on g d key sequence", () => {

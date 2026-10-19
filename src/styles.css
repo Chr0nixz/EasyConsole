@@ -4,9 +4,53 @@
 @source "../index.html";
 @source "./";
 
+/* Static theme tokens are shared by utilities, focus cues and chart/SVG styles. */
+@theme static {
+  --color-app-bg: oklch(0.982 0.006 95);
+  --color-app-surface: oklch(0.995 0.004 95);
+  --color-app-panel: oklch(0.955 0.008 95);
+  --color-app-border: oklch(0.86 0.012 95);
+  /* 3.52:1 on surface, 3.39:1 on bg, 3.13:1 on panel (WCAG 1.4.11). */
+  --color-app-borderStrong: oklch(0.62 0.014 95);
+  --color-app-text: oklch(0.23 0.018 255);
+  --color-app-muted: oklch(0.48 0.018 255);
+  --color-app-onAccent: oklch(0.995 0.004 95);
+  --color-app-accent: oklch(0.50 0.145 250);
+  --color-app-accentSoft: oklch(0.94 0.035 250);
+  --color-app-success: oklch(0.45 0.12 150);
+  --color-app-successSoft: oklch(0.96 0.035 150);
+  --color-app-successRing: oklch(0.83 0.08 150);
+  --color-app-warning: oklch(0.46 0.12 78);
+  --color-app-warningText: oklch(0.40 0.13 78);
+  --color-app-warningSoft: oklch(0.96 0.055 78);
+  --color-app-warningRing: oklch(0.86 0.11 78);
+  --color-app-danger: oklch(0.50 0.18 25);
+  --color-app-dangerSoft: oklch(0.96 0.04 25);
+  --color-app-dangerRing: oklch(0.84 0.09 25);
+  --color-app-info: oklch(0.50 0.145 250);
+  --color-app-infoSoft: oklch(0.94 0.035 250);
+  --color-app-infoRing: oklch(0.82 0.075 250);
+  --color-app-neutralSoft: oklch(0.925 0.01 95);
+  --color-app-neutralRing: oklch(0.82 0.014 95);
+  --color-app-releaseTimed: oklch(0.49 0.135 305);
+  --color-app-releaseTimedSoft: oklch(0.96 0.035 305);
+  --color-app-releaseTimedRing: oklch(0.84 0.075 305);
+  --color-app-releaseFinished: oklch(0.45 0.105 185);
+  --color-app-releaseFinishedSoft: oklch(0.955 0.035 185);
+  --color-app-releaseFinishedRing: oklch(0.82 0.07 185);
+  --color-app-codeBg: oklch(0.19 0.025 255);
+  --color-app-codeText: oklch(0.91 0.018 255);
+  --color-app-terminalBg: oklch(0.18 0.028 255);
+  --color-app-terminalPanel: oklch(0.23 0.032 255);
+  --color-app-terminalBorder: oklch(0.34 0.035 255);
+  --color-app-terminalText: oklch(0.9 0.018 255);
+  --color-app-terminalMuted: oklch(0.7 0.022 255);
+  --color-app-terminalAccent: oklch(0.78 0.12 235);
+}
+
 :root {
-  color: oklch(0.23 0.018 255);
-  background: oklch(0.982 0.006 95);
+  color: var(--color-app-text);
+  background: var(--color-app-bg);
   --app-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --app-ease-smooth: cubic-bezier(0.25, 1, 0.5, 1);
   --app-motion-fast: 120ms;
@@ -43,6 +87,11 @@ textarea {
   font: inherit;
 }
 
+::selection {
+  color: var(--color-app-text);
+  background: var(--color-app-accentSoft);
+}
+
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
@@ -55,6 +104,7 @@ textarea:focus-visible {
 input,
 select,
 textarea {
+  caret-color: var(--color-app-accent);
   transition:
     border-color var(--app-motion-fast) var(--app-ease-out),
     box-shadow var(--app-motion-fast) var(--app-ease-out),
@@ -120,6 +170,19 @@ tbody tr {
 
 .app-nav-resize-handle {
   cursor: col-resize;
+  touch-action: none;
+  width: 8px;
+}
+
+@media (pointer: coarse) {
+  .app-nav-resize-handle {
+    width: 24px;
+  }
+
+  .app-sidebar-header,
+  .app-sidebar-nav {
+    padding-right: 2rem;
+  }
 }
 
 .app-nav-resize-handle::after {
@@ -145,6 +208,13 @@ tbody tr {
 .app-table-region:focus-visible {
   outline: 2px solid var(--color-app-accent);
   outline-offset: -2px;
+}
+
+/* Settings draft bar: floats above the content bottom edge while the page scrolls. */
+.app-settings-draft-bar {
+  position: sticky;
+  bottom: 1rem;
+  z-index: 30;
 }
 
 @media (max-width: 767px) {
@@ -326,6 +396,16 @@ tbody tr {
   }
 
   .app-mobile-batch-bar {
+    position: fixed;
+    left: 0.75rem;
+    right: 0.75rem;
+    bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+    z-index: 35;
+    border: 1px solid var(--color-app-border);
+    box-shadow: 0 10px 24px oklch(0.23 0.018 255 / 0.14);
+  }
+
+  .app-settings-draft-bar {
     position: fixed;
     left: 0.75rem;
     right: 0.75rem;

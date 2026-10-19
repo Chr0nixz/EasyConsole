@@ -152,10 +152,19 @@ export function describeRecurrence(recurrence: TaskRecurrence, locale: Locale): 
     case "interval": {
       const sec = recurrence.intervalSec ?? 0;
       if (en) {
-        if (sec >= 86400) return `Every ${Math.floor(sec / 86400)} d`;
-        if (sec >= 3600) return `Every ${Math.floor(sec / 3600)} hr`;
-        if (sec >= 60) return `Every ${Math.floor(sec / 60)} min`;
-        return `Every ${sec} sec`;
+        if (sec >= 86400) {
+          const d = Math.floor(sec / 86400);
+          return `Every ${d} ${d === 1 ? "day" : "days"}`;
+        }
+        if (sec >= 3600) {
+          const h = Math.floor(sec / 3600);
+          return `Every ${h} ${h === 1 ? "hour" : "hours"}`;
+        }
+        if (sec >= 60) {
+          const m = Math.floor(sec / 60);
+          return `Every ${m} ${m === 1 ? "minute" : "minutes"}`;
+        }
+        return `Every ${sec} ${sec === 1 ? "second" : "seconds"}`;
       }
       if (sec >= 86400) return `每 ${Math.floor(sec / 86400)} 天`;
       if (sec >= 3600) return `每 ${Math.floor(sec / 3600)} 小时`;

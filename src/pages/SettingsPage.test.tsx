@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -164,30 +164,38 @@ describe("SettingsPage", () => {
     expect(screen.queryByText(/重要事件通知|Important Event Notifications/)).not.toBeInTheDocument();
   });
 
-  it("automatically saves changed runtime settings", async () => {
-    vi.useFakeTimers();
-    try {
-      renderStandaloneSettings();
+  it("keeps runtime settings as a draft until the explicit save", async () => {
+    renderStandaloneSettings();
 
-      const apiBaseInput = screen.getByDisplayValue(DEFAULT_APP_SETTINGS.apiBaseUrl);
-      fireEvent.change(apiBaseInput, { target: { value: "https://console.example.test/api" } });
+    const apiBaseInput = screen.getByDisplayValue(DEFAULT_APP_SETTINGS.apiBaseUrl);
+    fireEvent.change(apiBaseInput, { target: { value: "https://console.example.test/api" } });
 
-      expect(screen.queryByRole("button", { name: /保存设置|Save settings/ })).not.toBeInTheDocument();
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(500);
-      });
+    expect(screen.getByText("有未保存的更改")).toBeInTheDocument();
+    expect(window.localStorage.getItem(APP_SETTINGS_STORAGE_KEY) ?? "").not.toContain("https://console.example.test/api");
 
-      expect(window.localStorage.getItem(APP_SETTINGS_STORAGE_KEY) ?? "").toContain("https://console.example.test/api");
-      expect(screen.getByText(/已自动保存|Saved automatically/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /保存设置|Save settings/ }));
 
-      fireEvent.change(apiBaseInput, { target: { value: "" } });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(500);
-      });
-      expect(apiBaseInput).toHaveValue(DEFAULT_APP_SETTINGS.apiBaseUrl);
-    } finally {
-      vi.useRealTimers();
-    }
+    await waitFor(() =>
+      expect(window.localStorage.getItem(APP_SETTINGS_STORAGE_KEY) ?? "").toContain("https://console.example.test/api"),
+    );
+    expect(await screen.findByText(/已保存|Saved /)).toBeInTheDocument();
+    expect(screen.queryByText("有未保存的更改")).not.toBeInTheDocument();
+  });
+
+  it("discards draft changes and blocks saving invalid URLs", async () => {
+    renderStandaloneSettings();
+
+    const apiBaseInput = screen.getByDisplayValue(DEFAULT_APP_SETTINGS.apiBaseUrl);
+    fireEvent.change(apiBaseInput, { target: { value: "ftp://console.example.test" } });
+
+    expect((await screen.findAllByText(/API Base URL 需要是|API Base URL must be/)).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /保存设置|Save settings/ })).toBeDisabled();
+    expect(window.localStorage.getItem(APP_SETTINGS_STORAGE_KEY) ?? "").not.toContain("ftp://console.example.test");
+
+    fireEvent.click(screen.getByRole("button", { name: /放弃更改|Discard changes/ }));
+
+    expect(apiBaseInput).toHaveValue(DEFAULT_APP_SETTINGS.apiBaseUrl);
+    expect(screen.queryByText("有未保存的更改")).not.toBeInTheDocument();
   });
 
   it("exposes instance list auto refresh in settings", () => {

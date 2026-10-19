@@ -16,30 +16,67 @@ import type { SshConnectionRequest } from "../lib/types";
  * the event-timing race where Tauri emits before the frontend `listen`
  * has registered.
  *
- * A URL hash fallback (`#/ssh-terminal?data=<json>`) is kept for non-Tauri
- * runtimes or manual deep-linking scenarios.
+ * A URL hash fallback (`#/ssh-terminal?data=<json>`) exists only outside
+ * Tauri, where no pending-request channel is available; it refuses requests
+ * that carry a password so credentials can never travel through a URL, and
+ * the Tauri runtime never parses the URL at all.
  */
+/**
+ * Parses the non-Tauri URL fallback (`#/ssh-terminal?data=<json>`). URL search
+ * params are recorded in history and diagnostics, so a password in `data` is
+ * rejected outright and the password field is stripped even from requests
+ * without one. Runs once during the first render — never from an effect.
+ */
+function parseUrlSshRequest(
+  text: (zh: string, en: string) => string,
+): { request: SshConnectionRequest; error: null } | { request: null; error: string } | null {
+  const hash = window.location.hash;
+  const queryIdx = hash.indexOf("?");
+  if (queryIdx === -1) return null;
+  const params = new URLSearchParams(hash.slice(queryIdx + 1));
+  const raw = params.get("data");
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as SshConnectionRequest;
+    if (!parsed.host) {
+      return { request: null, error: text("连接参数无效", "Invalid connection parameters") };
+    }
+    if (parsed.password) {
+      return {
+        request: null,
+        error: text("出于安全考虑，不接受通过 URL 传递密码", "For security reasons, passwords passed through the URL are not accepted"),
+      };
+    }
+    // Strip the (absent) password field defensively: a URL-sourced request
+    // must never carry credential-shaped data at all.
+    const rest = { ...parsed };
+    delete rest.password;
+    return { request: rest, error: null };
+  } catch {
+    return { request: null, error: text("连接参数解析失败", "Failed to parse connection parameters") };
+  }
+}
+
 export function SshTerminalPage() {
   const { text } = useI18n();
-  const [request, setRequest] = useState<SshConnectionRequest | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The URL fallback resolves during the first render (non-Tauri only); the
+  // Tauri path fetches the pending request asynchronously in the effect below.
+  const [urlSource] = useState(() => (isTauri() ? null : parseUrlSshRequest(text)));
+  const [request, setRequest] = useState<SshConnectionRequest | null>(
+    () => urlSource?.request ?? null,
+  );
+  const [error, setError] = useState<string | null>(() => urlSource?.error ?? null);
 
   useEffect(() => {
     let disposed = false;
 
-    // Primary path: pull the request from Rust state by window label.
-    // The main window's `open_ssh_window` call stashed it there before
-    // creating this window.
-    const label = isTauri() ? getCurrentWindow().label : "";
-    if (label) {
+    // Pull the request from Rust state by window label. The main window's
+    // `open_ssh_window` call stashed it there before creating this window.
+    if (isTauri()) {
+      const label = getCurrentWindow().label;
       invoke<SshConnectionRequest | null>("get_ssh_window_request", { label })
         .then((result) => {
-          if (disposed) return;
-          if (!result) {
-            // No pending request for this label — fall through to URL hash
-            // parsing below before surfacing an error.
-            return;
-          }
+          if (disposed || !result) return;
           if (!result.host) {
             setError(text("连接参数无效", "Invalid connection parameters"));
             return;
@@ -47,29 +84,8 @@ export function SshTerminalPage() {
           setRequest(result);
         })
         .catch(() => {
-          // Fall through to URL hash parsing below.
+          if (!disposed) setError(text("连接参数获取失败", "Failed to fetch connection parameters"));
         });
-    }
-
-    // Fallback: parse the connection request from the URL hash query string.
-    // URL format: #/ssh-terminal?data=<json>
-    const hash = window.location.hash;
-    const queryIdx = hash.indexOf("?");
-    if (queryIdx !== -1) {
-      const params = new URLSearchParams(hash.slice(queryIdx + 1));
-      const raw = params.get("data");
-      if (raw) {
-        try {
-          const parsed = JSON.parse(raw) as SshConnectionRequest;
-          if (!parsed.host) {
-            setError(text("连接参数无效", "Invalid connection parameters"));
-          } else {
-            setRequest(parsed);
-          }
-        } catch {
-          setError(text("连接参数解析失败", "Failed to parse connection parameters"));
-        }
-      }
     }
 
     return () => {

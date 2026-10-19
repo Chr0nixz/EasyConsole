@@ -3,21 +3,24 @@ import "@xterm/xterm/css/xterm.css";
 import type { FitAddon as FitAddonInstance } from "@xterm/addon-fit";
 import type { SearchAddon as SearchAddonInstance } from "@xterm/addon-search";
 import type { IDisposable, Terminal as XTermInstance } from "@xterm/xterm";
-import { ChevronDown, ChevronUp, Circle, FolderOpen, MoreHorizontal, Network, RefreshCw, Search, Square, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Circle, FolderOpen, MoreHorizontal, Network, RefreshCw, Search, Square, Unplug, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getRuntimeSettings, type SshTerminalTheme } from "../../lib/app-settings";
+import { getRuntimeSettings, portForwardRuleAppliesToHost, type SshTerminalTheme } from "../../lib/app-settings";
 import { browserRuntime } from "../../lib/runtime";
 import { saveBlob } from "../../lib/download";
 import { useI18n } from "../../lib/i18n";
 import { useMobileBackLayer } from "../../lib/use-mobile-back-stack";
+import { resolveSshConnectionRequest } from "../../lib/ssh-info";
+import { composeMobileControl } from "../../lib/ssh-terminal-input";
 import {
   appendRecordingChunk,
   createRecordingBuffer,
   isNearTerminalBottom,
+  serializeTerminalBuffer,
   type RecordingBufferState,
 } from "../../lib/ssh-terminal-follow";
-import type { PortForwardRule, PortForwardStatus, SshConnectionRequest, SshHostKeyPrompt } from "../../lib/types";
+import type { PortForwardRule, PortForwardStatus, SshConnectionRequest, SshHostKeyPrompt, SshSessionPhase, SshTabStatusKind } from "../../lib/types";
 import { useToast } from "../../lib/use-toast";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui";
@@ -27,10 +30,46 @@ type SshTerminalTabProps = {
   request: SshConnectionRequest;
   tabId: string;
   active: boolean;
-  onStatusChange: (status: string) => void;
+  onStatusChange: (status: string, kind: StatusKind) => void;
 };
 
-type StatusKind = "ready" | "connected" | "failed" | "closed";
+/** Canonical definition lives in lib/types.ts so lib modules can use it. */
+export type StatusKind = SshTabStatusKind;
+
+/** Mirrors HOST_KEY_PROMPT_TIMEOUT_SECS on the native side. */
+const HOST_KEY_PROMPT_TIMEOUT_SECS = 120;
+
+/** Replay chunk size (rows) for preserved scrollback, so large histories do not block one write. */
+const RECONNECT_REPLAY_CHUNK_ROWS = 500;
+
+/**
+ * Overview-ruler-only search decorations: enabling decorations is what makes
+ * the search addon report match counts, and scrollbar stripes stay visually
+ * restrained where in-terminal match highlighting would not.
+ */
+const SEARCH_DECORATIONS = {
+  decorations: {
+    matchOverviewRuler: "oklch(0.62 0.1 250 / 0.7)",
+    activeMatchColorOverviewRuler: "oklch(0.5 0.145 250)",
+  },
+} as const;
+
+function formatClock(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function statusKindFromPhase(phase: SshSessionPhase | undefined): StatusKind {
+  switch (phase) {
+    case "connected":
+      return "connected";
+    case "exited":
+      return "closed";
+    case "connecting":
+    default:
+      return "ready";
+  }
+}
 
 function resolveTerminalTheme(theme: SshTerminalTheme) {
   switch (theme) {
@@ -82,17 +121,21 @@ function resolveTerminalTheme(theme: SshTerminalTheme) {
 }
 
 export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTerminalTabProps) {
-  const { t, text } = useI18n();
+  const { text } = useI18n();
   const toast = useToast();
+  const sftpLabel = text("SFTP 远程文件", "SFTP Remote Files");
+  const portForwardsLabel = text("端口转发", "Port forwards");
+  const disconnectedHint = text("SSH 连接建立后可用", "Available once the SSH connection is established");
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sessionIdRef = useRef<string | null>(null);
-  const [status, setStatus] = useState(() => text("准备连接", "Ready to connect"));
+  const [status, setStatus] = useState(() => text("正在建立连接...", "Connecting..."));
   const [statusKind, setStatusKind] = useState<StatusKind>("ready");
   const [ctrlActive, setCtrlActive] = useState(false);
   const [canReconnect, setCanReconnect] = useState(false);
   const [reconnectKey, setReconnectKey] = useState(0);
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchStatus, setSearchStatus] = useState<{ index: number; count: number } | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [showSftp, setShowSftp] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -101,18 +144,24 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
   const [portForwardStatuses, setPortForwardStatuses] = useState<Record<string, PortForwardStatus>>({});
   const [hostKeyPrompt, setHostKeyPrompt] = useState<SshHostKeyPrompt | null>(null);
   const [hostKeyPending, setHostKeyPending] = useState(false);
+  const [hostKeySecondsLeft, setHostKeySecondsLeft] = useState(HOST_KEY_PROMPT_TIMEOUT_SECS);
   const [followBottom, setFollowBottom] = useState(true);
   const [hasNewOutput, setHasNewOutput] = useState(false);
+  const [closedAt, setClosedAt] = useState<string | null>(null);
   const ctrlActiveRef = useRef(false);
   const isRecordingRef = useRef(false);
   const followBottomRef = useRef(true);
   const activeRef = useRef(active);
   const recordingBufferRef = useRef<RecordingBufferState>(createRecordingBuffer());
   const recordingCapNotifiedRef = useRef(false);
+  // Scrollback text captured before a reconnect so the re-run of the connection
+  // effect (which disposes the old xterm) can replay it into the new terminal.
+  const preservedScrollbackRef = useRef<string | null>(null);
   const termRef = useRef<XTermInstance | null>(null);
   const searchAddonRef = useRef<SearchAddonInstance | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const toolMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const toolMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Port forwarding rules come from runtime settings. Re-read on each render
   // so newly added rules in SettingsPage are reflected when the panel reopens.
@@ -147,8 +196,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
   }, [text]);
   const tt = useCallback((zh: string, en: string) => textRef.current(zh, en), []);
   useEffect(() => {
-    onStatusChangeRef.current(status);
-  }, [status]);
+    onStatusChangeRef.current(status, statusKind);
+  }, [status, statusKind]);
 
   useEffect(() => {
     if (active) {
@@ -198,6 +247,9 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     setIsRecording(false);
     setFollowBottom(true);
     setHasNewOutput(false);
+    setClosedAt(null);
+    // A new connection target must not inherit the previous host's output.
+    preservedScrollbackRef.current = null;
     recordingBufferRef.current = createRecordingBuffer();
     recordingCapNotifiedRef.current = false;
   }, [request, tt]);
@@ -287,6 +339,9 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         const searchAddon = new SearchAddon();
         terminal.loadAddon(searchAddon);
         searchAddonRef.current = searchAddon;
+        searchAddon.onDidChangeResults((results) => {
+          setSearchStatus({ index: results.resultIndex, count: results.resultCount });
+        });
       } catch {
         // Search addon not available
       }
@@ -319,43 +374,47 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         }
         return true;
       });
-      terminal.onKey(({ domEvent: ev }) => {
-        if (!ctrlActiveRef.current) return true;
-        const key = ev.key;
-        if (key.length === 1 && /[a-zA-Z]/.test(key) && !ev.altKey && !ev.metaKey) {
-          const code = key.toLowerCase().charCodeAt(0) - 96;
-          const sid = sessionIdRef.current;
-          if (sid) void browserRuntime.writeSshSession(sid, String.fromCharCode(code));
-          ctrlActiveRef.current = false;
-          setCtrlActive(false);
-          return false;
-        }
-        ctrlActiveRef.current = false;
-        setCtrlActive(false);
-        return true;
-      });
+      // The virtual mobile Ctrl modifier composes its control character in the
+      // onData gate below. xterm's onKey has no return-value semantics, so a
+      // composer there could not stop onData from also forwarding the raw
+      // letter — the historical double-send bug.
       if (activeRef.current) terminal.focus();
+      // Replay the previous session's scrollback (captured by handleReconnect)
+      // so the reconnect does not destroy the only record of what happened.
+      const preservedScrollback = preservedScrollbackRef.current;
+      preservedScrollbackRef.current = null;
+      if (preservedScrollback) {
+        const historyLines = preservedScrollback.split("\r\n");
+        for (let start = 0; start < historyLines.length; start += RECONNECT_REPLAY_CHUNK_ROWS) {
+          if (disposed) return;
+          terminal.write(historyLines.slice(start, start + RECONNECT_REPLAY_CHUNK_ROWS).join("\r\n") + "\r\n");
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
+        }
+        if (disposed) return;
+        terminal.writeln(`\r\n── ${tt("以上为会话重连前的历史输出", "Preserved terminal history from previous session")} ──`);
+      }
       terminal.writeln(tt("正在建立 SSH 连接...", "Establishing SSH connection..."));
 
       dataDisposable = terminal.onData((data) => {
         const sessionId = sessionIdRef.current;
         if (!sessionId) return;
-        void browserRuntime.writeSshSession(sessionId, data);
+        const composed = composeMobileControl(ctrlActiveRef.current, data);
+        if (!composed.send) return;
+        void browserRuntime.writeSshSession(sessionId, composed.send);
+        if (composed.ctrlConsumed) {
+          ctrlActiveRef.current = false;
+          setCtrlActive(false);
+        }
       });
 
       try {
         const activeTerminal = terminal;
-        const sshSettings = getRuntimeSettings().ssh;
-        const sessionId = await browserRuntime.openSshSession({
-          ...request,
-          cols: activeTerminal.cols,
-          rows: activeTerminal.rows,
-          connectTimeoutSec: sshSettings.connectTimeoutSec,
-          keepaliveIntervalSec: sshSettings.keepaliveIntervalSec,
-          termType: sshSettings.termType,
-          sshKeyPath: sshSettings.sshKeyPath || undefined,
-          authMode: sshSettings.authMode,
-        });
+        // The resolver is the single merge point: the request's own values win,
+        // SSH settings fill the gaps, and the measured PTY size overrides both
+        // (settings sizes are only a pre-fit fallback).
+        const sessionId = await browserRuntime.openSshSession(
+          resolveSshConnectionRequest(request, { cols: activeTerminal.cols, rows: activeTerminal.rows }),
+        );
         if (disposed) {
           void browserRuntime.closeSshSession(sessionId);
           return;
@@ -387,19 +446,19 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           }
           if (event.kind === "status" && event.message) {
             setStatus(event.message);
-            setStatusKind("connected");
+            setStatusKind(statusKindFromPhase(event.phase));
             activeTerminal.writeln(`\r\n${event.message}`);
-            // The native side emits this message in the active interface
-            // language, so match both spellings.
-            // eslint-disable-next-line easy-console/no-bare-cjk
-            if (!historyRecorded && (event.message.includes("已连接") || /\bconnected\b/i.test(event.message))) {
+            if (!historyRecorded && event.phase === "connected") {
               historyRecorded = true;
-              void browserRuntime.addSshHistory({
-                host: request.host,
-                port: request.port ?? "",
-                username: request.username ?? "",
-                taskName: request.taskName ?? "",
-              });
+              void browserRuntime.addSshHistory(
+                {
+                  host: request.host,
+                  port: request.port ?? "",
+                  username: request.username ?? "",
+                  taskName: request.taskName ?? "",
+                },
+                getRuntimeSettings().ssh.maxHistoryEntries,
+              );
             }
             return;
           }
@@ -424,11 +483,15 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             setStatusKind("failed");
             activeTerminal.writeln(`\r\n${message}`);
             setCanReconnect(true);
+            // The host-key prompt (or its 120s timeout) is superseded by the
+            // failure; leaving the alertdialog open would strand the user.
+            setHostKeyPrompt(null);
             return;
           }
           if (event.kind === "closed") {
             setStatus(event.message ?? tt("SSH 会话已关闭", "SSH session closed"));
             setStatusKind("closed");
+            setClosedAt(formatClock(new Date()));
             setCanReconnect(true);
           }
         });
@@ -436,9 +499,13 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         unlistenPf = await browserRuntime.onPortForwardStatus(sessionId, (pfStatus) => {
           setPortForwardStatuses((prev) => ({ ...prev, [pfStatus.ruleId]: pfStatus }));
         });
-        // Auto-start enabled port forwarding rules from settings once connected.
+        // Auto-start enabled port forwarding rules from settings once
+        // connected. Rules scoped to a host only start for that host so a
+        // forward configured for one machine is not attempted everywhere.
         if (!disposed) {
-          const enabledRules = getRuntimeSettings().ssh.portForwards.filter((r) => r.enabled);
+          const enabledRules = getRuntimeSettings().ssh.portForwards.filter(
+            (rule) => rule.enabled && portForwardRuleAppliesToHost(rule, request.host),
+          );
           for (const rule of enabledRules) {
             void browserRuntime.startPortForward(sessionId, rule).catch((error) => {
               setPortForwardStatuses((prev) => ({
@@ -480,16 +547,15 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     };
   }, [request, reconnectKey, tt, toast]);
 
-  const sendKeySeq = useCallback((rawKey: string, data: string) => {
+  const sendKeySeq = useCallback((data: string) => {
     const sid = sessionIdRef.current;
     if (!sid) return;
-    if (ctrlActiveRef.current && rawKey.length === 1 && /[a-zA-Z]/.test(rawKey)) {
-      const code = rawKey.toLowerCase().charCodeAt(0) - 96;
-      void browserRuntime.writeSshSession(sid, String.fromCharCode(code));
+    const composed = composeMobileControl(ctrlActiveRef.current, data);
+    if (!composed.send) return;
+    void browserRuntime.writeSshSession(sid, composed.send);
+    if (composed.ctrlConsumed) {
       ctrlActiveRef.current = false;
       setCtrlActive(false);
-    } else {
-      void browserRuntime.writeSshSession(sid, data);
     }
   }, []);
 
@@ -497,9 +563,9 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     const addon = searchAddonRef.current;
     if (!addon || !searchQuery) return;
     if (direction === "next") {
-      addon.findNext(searchQuery);
+      addon.findNext(searchQuery, SEARCH_DECORATIONS);
     } else {
-      addon.findPrevious(searchQuery);
+      addon.findPrevious(searchQuery, SEARCH_DECORATIONS);
     }
   }, [searchQuery]);
 
@@ -510,6 +576,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         setTimeout(() => searchInputRef.current?.focus(), 0);
       } else {
         setSearchQuery("");
+        setSearchStatus(null);
         searchAddonRef.current?.clearDecorations?.();
         setTimeout(() => termRef.current?.focus(), 0);
       }
@@ -518,7 +585,13 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
   }, []);
 
   const handleReconnect = () => {
+    // Capture the scrollback before the reconnect re-runs the connection
+    // effect and disposes the terminal that holds it.
+    if (termRef.current) {
+      preservedScrollbackRef.current = serializeTerminalBuffer(termRef.current);
+    }
     setCanReconnect(false);
+    setClosedAt(null);
     setReconnectKey((key) => key + 1);
   };
 
@@ -535,13 +608,45 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
       });
   };
 
+  // The native side rejects the host-key prompt after 120s; surface the
+  // remaining time so the timeout does not fail as a surprise.
+  useEffect(() => {
+    if (!hostKeyPrompt) return;
+    setHostKeySecondsLeft(HOST_KEY_PROMPT_TIMEOUT_SECS);
+    const timer = window.setInterval(() => {
+      setHostKeySecondsLeft((seconds) => Math.max(0, seconds - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [hostKeyPrompt]);
+
   const statusColorClass =
-    statusKind === "connected" ? "text-app-success" : statusKind === "failed" ? "text-app-danger" : "text-app-terminalMuted";
+    statusKind === "connected"
+      ? "text-app-success"
+      : statusKind === "failed"
+        ? "text-app-danger"
+        : statusKind === "closed"
+          ? "text-app-warning"
+          : "text-app-terminalMuted";
 
   const closeToolMenu = useCallback(() => {
     setShowToolMenu(false);
     window.setTimeout(() => toolMenuTriggerRef.current?.focus(), 0);
   }, []);
+
+  // Escape closes the tool menu no matter where focus sits: the trigger button
+  // lives outside the overlay, so an overlay-level handler would miss it.
+  useEffect(() => {
+    if (!showToolMenu) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeToolMenu();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showToolMenu, closeToolMenu]);
 
   useMobileBackLayer(showToolMenu, closeToolMenu);
 
@@ -573,11 +678,11 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           <button
             className={cn(
               "flex h-6 w-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent",
-              isRecording ? "text-red-500 hover:bg-app-terminalBg" : "text-app-terminalText hover:bg-app-terminalBg",
+              isRecording ? "text-app-danger hover:bg-app-terminalBg" : "text-app-terminalText hover:bg-app-terminalBg",
             )}
             type="button"
-            title={isRecording ? t("terminal.stopRecording") : t("terminal.record")}
-            aria-label={isRecording ? t("terminal.stopRecording") : t("terminal.record")}
+            title={isRecording ? text("停止录制", "Stop recording") : text("录制", "Record")}
+            aria-label={isRecording ? text("停止录制", "Stop recording") : text("录制", "Record")}
             onClick={toggleRecording}
           >
             {isRecording ? <Square className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
@@ -589,8 +694,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                 showSftp ? "bg-app-terminalBg text-app-terminalAccent" : "text-app-terminalText hover:bg-app-terminalBg",
               )}
               type="button"
-              title={t("sftp.title")}
-              aria-label={t("sftp.title")}
+              title={sessionId ? sftpLabel : disconnectedHint}
+              aria-label={sessionId ? sftpLabel : disconnectedHint}
               aria-expanded={showSftp}
               aria-controls={`ssh-sftp-panel-${tabId}`}
               onClick={() => setShowSftp((prev) => !prev)}
@@ -606,8 +711,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                 showPortForward ? "bg-app-terminalBg text-app-terminalAccent" : "text-app-terminalText hover:bg-app-terminalBg",
               )}
               type="button"
-              title={t("terminal.portForwards")}
-              aria-label={t("terminal.portForwards")}
+              title={sessionId ? portForwardsLabel : disconnectedHint}
+              aria-label={sessionId ? portForwardsLabel : disconnectedHint}
               aria-expanded={showPortForward}
               aria-controls={`ssh-port-forward-panel-${tabId}`}
               onClick={() => setShowPortForward((prev) => !prev)}
@@ -624,8 +729,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                 showSftp ? "bg-app-terminalBg text-app-terminalAccent" : "text-app-terminalText hover:bg-app-terminalBg",
               )}
               type="button"
-              title={t("sftp.title")}
-              aria-label={t("sftp.title")}
+              title={sessionId ? sftpLabel : disconnectedHint}
+              aria-label={sessionId ? sftpLabel : disconnectedHint}
               aria-expanded={showSftp}
               aria-controls={`ssh-sftp-panel-${tabId}`}
               onClick={() => setShowSftp((prev) => !prev)}
@@ -643,18 +748,39 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             aria-haspopup="menu"
             aria-expanded={showToolMenu}
             aria-controls={`ssh-terminal-tools-${tabId}`}
-            onClick={() => setShowToolMenu((open) => !open)}
+            onClick={() => {
+              if (showToolMenu) {
+                closeToolMenu();
+              } else {
+                setShowToolMenu(true);
+                // Move focus into the menu so keyboard users start on an item
+                // instead of being left behind on the trigger.
+                window.setTimeout(() => toolMenuRef.current?.querySelector<HTMLButtonElement>("button")?.focus(), 0);
+              }
+            }}
           >
             <MoreHorizontal className="h-5 w-5" />
           </button>
           {isRecording ? (
-            <span className="hidden items-center gap-1 text-xs text-red-500 md:flex">
+            <span className="hidden items-center gap-1 text-xs text-app-danger md:flex">
               <Circle className="h-2 w-2 animate-pulse fill-current" />
-              {t("terminal.recording")}
+              {text("录制中", "Recording")}
             </span>
           ) : null}
-          <span className={cn("hidden shrink-0 md:inline", statusColorClass)}>{status}</span>
-          <span className={cn("h-2 w-2 shrink-0 rounded-full md:hidden", statusKind === "connected" ? "bg-app-success" : statusKind === "failed" ? "bg-app-danger" : "bg-app-terminalMuted")} aria-label={status} />
+          <span className={cn("hidden shrink-0 items-center gap-1 md:inline-flex", statusColorClass)} aria-live="polite">
+            {statusKind === "closed" ? <Unplug className="h-3 w-3 shrink-0" /> : null}
+            <span className="max-w-48 truncate" title={status}>
+              {status}
+            </span>
+            {statusKind === "closed" && closedAt ? <span className="shrink-0 text-app-terminalMuted">· {closedAt}</span> : null}
+          </span>
+          <span
+            className={cn(
+              "h-2 w-2 shrink-0 rounded-full md:hidden",
+              statusKind === "connected" ? "bg-app-success" : statusKind === "failed" ? "bg-app-danger" : statusKind === "closed" ? "bg-app-warning" : "bg-app-terminalMuted",
+            )}
+            aria-label={status}
+          />
         </div>
       </div>
       {showToolMenu ? (
@@ -663,15 +789,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) closeToolMenu();
           }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              event.stopPropagation();
-              closeToolMenu();
-            }
-          }}
         >
-          <div id={`ssh-terminal-tools-${tabId}`} className="w-full rounded-t-lg border border-b-0 border-app-terminalBorder bg-app-terminalPanel p-2 shadow-popover" role="menu" aria-label={text("终端工具", "Terminal tools")}>
+          <div ref={toolMenuRef} id={`ssh-terminal-tools-${tabId}`} className="w-full rounded-t-lg border border-b-0 border-app-terminalBorder bg-app-terminalPanel p-2 shadow-popover" role="menu" aria-label={text("终端工具", "Terminal tools")}>
             <button
               className="flex min-h-11 w-full items-center gap-3 rounded px-3 text-left text-sm text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
               type="button"
@@ -694,13 +813,14 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
               }}
             >
               {isRecording ? <Square className="h-4 w-4 text-app-danger" /> : <Circle className="h-4 w-4" />}
-              {isRecording ? t("terminal.stopRecording") : t("terminal.record")}
+              {isRecording ? text("停止录制", "Stop recording") : text("录制", "Record")}
             </button>
             {browserRuntime.supportsInAppSsh ? (
               <button
                 className="flex min-h-11 w-full items-center gap-3 rounded px-3 text-left text-sm text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent disabled:opacity-40"
                 type="button"
                 role="menuitem"
+                title={sessionId ? undefined : disconnectedHint}
                 aria-expanded={showPortForward}
                 aria-controls={`ssh-port-forward-panel-${tabId}`}
                 disabled={!sessionId}
@@ -710,7 +830,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                 }}
               >
                 <Network className="h-4 w-4" />
-                {t("terminal.portForwards")}
+                {portForwardsLabel}
               </button>
             ) : null}
           </div>
@@ -724,7 +844,10 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             type="text"
             placeholder={text("搜索...", "Search...")}
             value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
+            onChange={(event) => {
+              setSearchQuery(event.target.value);
+              setSearchStatus(null);
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();
@@ -735,6 +858,15 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
               }
             }}
           />
+          {searchQuery && searchStatus ? (
+            <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-app-terminalMuted" aria-live="polite">
+              {searchStatus.count === 0
+                ? text("无匹配", "No matches")
+                : searchStatus.index >= 0
+                  ? `${searchStatus.index + 1}/${searchStatus.count}`
+                  : `${searchStatus.count}+`}
+            </span>
+          ) : null}
           <button
             className="flex h-6 w-6 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
             type="button"
@@ -770,7 +902,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           {!followBottom && hasNewOutput ? (
             <button
               type="button"
-              className="absolute bottom-3 right-3 z-10 rounded-md bg-app-accent px-2.5 py-1.5 text-xs font-medium text-white shadow-shell hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+              className="absolute bottom-3 right-3 z-10 rounded-md bg-app-accent px-2.5 py-1.5 text-xs font-medium text-app-onAccent shadow-shell hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
               onClick={scrollTerminalToBottom}
             >
               {text("有新输出 · 回到底部", "New output · Jump to bottom")}
@@ -782,10 +914,10 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             id={`ssh-sftp-panel-${tabId}`}
             className="absolute inset-0 z-20 flex min-h-0 w-full flex-col border-l border-app-terminalBorder bg-app-surface md:static md:z-auto md:w-80 md:shrink-0"
             role="region"
-            aria-label={t("sftp.title")}
+            aria-label={sftpLabel}
           >
             <div className="flex h-10 shrink-0 items-center justify-between border-b border-app-terminalBorder px-3 text-xs text-app-terminalText md:hidden">
-              <span className="font-medium">{t("sftp.title")}</span>
+              <span className="font-medium">{sftpLabel}</span>
               <button
                 className="flex h-8 w-8 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
                 type="button"
@@ -806,10 +938,10 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             id={`ssh-port-forward-panel-${tabId}`}
             className="absolute inset-0 z-20 flex min-h-0 w-full flex-col overflow-auto border-l border-app-terminalBorder bg-app-terminalPanel p-3 text-xs text-app-terminalText md:static md:z-auto md:w-80 md:shrink-0"
             role="region"
-            aria-label={t("terminal.portForwards")}
+            aria-label={portForwardsLabel}
           >
             <div className="mb-3 flex items-center justify-between">
-              <span className="font-medium">{t("terminal.portForwards")}</span>
+              <span className="font-medium">{portForwardsLabel}</span>
               <button
                 className="flex h-11 w-11 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent md:h-5 md:w-5"
                 type="button"
@@ -821,7 +953,9 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
               </button>
             </div>
             {portForwardRules.length === 0 ? (
-              <div className="py-4 text-center text-app-terminalMuted">{t("settings.sshPortForwardEmpty")}</div>
+              <div className="py-4 text-center text-app-terminalMuted">
+                {text("暂无端口转发规则，可在设置中添加。", "No port-forward rules yet. Add them in Settings.")}
+              </div>
             ) : (
               <div className="space-y-2">
                 {portForwardRules.map((rule) => {
@@ -839,10 +973,18 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                               {rule.localHost}:{rule.localPort}
                               {rule.type !== "dynamic" ? ` → ${rule.remoteHost}:${rule.remotePort}` : ""}
                             </span>
+                            {rule.host ? (
+                              <span
+                                className="shrink-0 rounded bg-app-terminalPanel px-1 py-0.5 text-app-terminalMuted"
+                                title={text("仅对该主机会话自动启动", "Auto-starts for this host's sessions only")}
+                              >
+                                @{rule.host}
+                              </span>
+                            ) : null}
                           </div>
                           <div className="mt-1 flex items-center gap-1 text-xs text-app-terminalMuted">
                             <span className={cn("inline-block h-1.5 w-1.5 rounded-full", active ? "bg-app-success" : "bg-app-terminalMuted")} />
-                            {active ? t("terminal.portForwardActive") : t("terminal.portForwardInactive")}
+                            {active ? text("运行中", "Active") : text("已停止", "Inactive")}
                           </div>
                           {status?.error ? (
                             <div className="mt-1 break-all text-xs text-app-danger">{status.error}</div>
@@ -861,7 +1003,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                             }
                           }}
                         >
-                          {active ? t("terminal.portForwardStop") : t("terminal.portForwardStart")}
+                          {active ? text("停止", "Stop") : text("启动", "Start")}
                         </button>
                       </div>
                     </div>
@@ -882,7 +1024,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                 className={cn(
                   "flex h-8 min-w-9 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent",
                   isCtrl && ctrlActive
-                    ? "bg-app-accent text-white"
+                    ? "bg-app-accent text-app-onAccent"
                     : "text-app-terminalText hover:bg-app-terminalBg",
                 )}
                 type="button"
@@ -894,16 +1036,16 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                     setCtrlActive(next);
                     setTimeout(() => termRef.current?.focus(), 0);
                   } else {
-                    const sequences: Record<string, [string, string]> = {
-                      "Esc": ["Esc", "\x1b"],
-                      "Tab": ["Tab", "\x09"],
-                      "↑": ["Up", "\x1b[A"],
-                      "↓": ["Down", "\x1b[B"],
-                      "←": ["Left", "\x1b[D"],
-                      "→": ["Right", "\x1b[C"],
+                    const sequences: Record<string, string> = {
+                      "Esc": "\x1b",
+                      "Tab": "\x09",
+                      "↑": "\x1b[A",
+                      "↓": "\x1b[B",
+                      "←": "\x1b[D",
+                      "→": "\x1b[C",
                     };
                     const seq = sequences[label];
-                    if (seq) sendKeySeq(seq[0], seq[1]);
+                    if (seq) sendKeySeq(seq);
                     setTimeout(() => termRef.current?.focus(), 0);
                   }
                 }}
@@ -1012,21 +1154,17 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                 <div className="mt-0.5 break-all text-app-text">{hostKeyPrompt.fingerprint}</div>
               </div>
             </div>
+            <p className="text-xs text-app-muted">
+              {text(
+                `未确认将在 ${hostKeySecondsLeft} 秒后自动拒绝并断开连接。`,
+                `Without confirmation the connection is rejected automatically in ${hostKeySecondsLeft}s.`,
+              )}
+            </p>
             <div className="flex flex-col-reverse gap-2 border-t border-app-border pt-3 sm:flex-row sm:justify-end">
-              <Button
-                disabled={hostKeyPending}
-                type="button"
-                variant="secondary"
-                onClick={() => respondHostKey(false)}
-              >
+              <Button disabled={hostKeyPending} type="button" variant="secondary" autoFocus onClick={() => respondHostKey(false)}>
                 {text("拒绝", "Reject")}
               </Button>
-              <Button
-                disabled={hostKeyPending}
-                type="button"
-                autoFocus
-                onClick={() => respondHostKey(true)}
-              >
+              <Button disabled={hostKeyPending} type="button" onClick={() => respondHostKey(true)}>
                 {hostKeyPending ? text("提交中", "Submitting") : text("信任并继续", "Trust and continue")}
               </Button>
             </div>

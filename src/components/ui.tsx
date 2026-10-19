@@ -160,6 +160,7 @@ export function Dialog({
   closeOnOverlayClick = true,
   onOverlayClick,
   mobileMode = "default",
+  contained = false,
 }: {
   open: boolean;
   title: string;
@@ -170,6 +171,8 @@ export function Dialog({
   /** When set, overlay clicks call this instead of `onClose` (e.g. confirm discard). */
   onOverlayClick?: () => void;
   mobileMode?: "default" | "bottom-sheet" | "fullscreen";
+  /** Let the child own scrolling, with room for a persistent form footer. */
+  contained?: boolean;
 }) {
   const titleId = useId();
   const { t } = useI18n();
@@ -256,6 +259,7 @@ export function Dialog({
       className={cn(
         "app-modal-overlay fixed inset-0 z-50 flex items-start justify-center px-3 py-4 sm:px-4 sm:py-10",
         mobileMode === "bottom-sheet" && "items-end px-0 py-0 sm:items-start sm:px-4 sm:py-10",
+        mobileMode === "fullscreen" && "items-stretch px-0 py-0 sm:items-start sm:px-4 sm:py-10",
       )}
       role="dialog"
       aria-modal="true"
@@ -270,6 +274,8 @@ export function Dialog({
           "app-modal-panel max-h-[calc(100vh-2rem)] w-full overflow-hidden rounded-lg bg-app-surface sm:max-h-[calc(100vh-5rem)]",
           mobileMode === "bottom-sheet" && "max-h-[90dvh] rounded-b-none rounded-t-lg sm:max-h-[calc(100vh-5rem)] sm:rounded-lg",
           mobileMode === "fullscreen" && "flex h-[100dvh] max-h-[100dvh] flex-col rounded-none sm:block sm:h-auto sm:max-h-[calc(100vh-5rem)] sm:rounded-lg",
+          contained && "flex flex-col sm:flex sm:h-[calc(100dvh-5rem)]",
+          contained && mobileMode !== "fullscreen" && "h-[calc(100dvh-2rem)]",
           width,
         )}
         style={
@@ -280,7 +286,7 @@ export function Dialog({
               : undefined
         }
       >
-        <div className="flex h-12 items-center justify-between border-b border-app-border px-4">
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-app-border px-4">
           <h2 id={titleId} className="text-sm font-semibold text-app-text">{title}</h2>
           <button
             className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
@@ -294,8 +300,10 @@ export function Dialog({
         </div>
         <div
           className={cn(
-            "max-h-[calc(100vh-5rem)] overflow-auto sm:max-h-[calc(100vh-8rem)]",
-            mobileMode === "fullscreen" && "min-h-0 flex flex-1 flex-col !h-auto max-h-none sm:block sm:flex-none sm:!h-auto sm:max-h-[calc(100vh-8rem)]",
+            contained
+              ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+              : "max-h-[calc(100vh-5rem)] overflow-auto sm:max-h-[calc(100vh-8rem)]",
+            !contained && mobileMode === "fullscreen" && "min-h-0 flex flex-1 flex-col !h-auto max-h-none sm:block sm:flex-none sm:!h-auto sm:max-h-[calc(100vh-8rem)]",
           )}
         >
           {children}

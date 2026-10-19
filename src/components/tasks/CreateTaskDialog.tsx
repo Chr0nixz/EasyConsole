@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderOpen } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { ErrorState } from "../DataState";
 import { FieldError, FormSection, useFormFieldErrors } from "../form-fields";
 import { RemoteStoragePicker } from "../storage/RemoteStoragePicker";
+import { ResourcePriceFields } from "./ResourcePriceFields";
 import { ScriptEnvFields } from "./ScriptEnvFields";
 import { Button, Dialog, Input, Select } from "../ui";
 import { imageApi, instanceApi } from "../../lib/api";
@@ -50,7 +51,7 @@ import type { CreateTaskPayload, ImageItem, ListResult, Task } from "../../lib/t
 import { confirmDiscardUnsavedChanges, useUnsavedChanges } from "../../lib/use-unsaved-changes";
 import { errorMessage, useRunLogger } from "../../lib/use-run-logger";
 
-const DEFAULT_PRICE = "1";
+const DEFAULT_PRICE = "";
 const DEFAULT_CPU = "4";
 const DEFAULT_GPU = "0";
 const DEFAULT_MEMORY = "16";
@@ -250,6 +251,11 @@ export function CreateTaskDialog({
   const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
   const unsavedMessage = text("表单有未保存的更改，确定要关闭吗？", "You have unsaved changes. Discard them and close?");
 
+  const applyDefaultPrice = useCallback((nextPrice: string) => {
+    setPrice(nextPrice);
+    setInitialSnapshot((snapshot) => snapshot ? { ...snapshot, price: nextPrice } : snapshot);
+  }, []);
+
   function persistUiPrefs(next: CreateTaskUiPrefs) {
     setUiPrefs(next);
     void saveCreateTaskUiPrefs(browserRuntime.storage, next);
@@ -311,14 +317,14 @@ export function CreateTaskDialog({
     const experimentId = getScriptEnvValue(scriptEnv, EXPERIMENT_ID_ENV_KEY);
     if (syncActive) {
       if (!experimentId) {
-        errors.name = text("请填写 EXPERIMENT_ID（名称将与其一致）", "Enter EXPERIMENT_ID (the name follows it)");
+        errors.name = text("请填写 EXPERIMENT_ID（实例名称将自动与之同步）", "Enter EXPERIMENT_ID (task name will synchronize with it)");
         errors.scriptEnv = text("请填写 EXPERIMENT_ID", "Enter EXPERIMENT_ID");
       }
     } else if (!name.trim()) {
       errors.name = text("任务名称不能为空", "Task name is required");
     }
     if (!imageId) errors.image = text("请选择镜像", "Select an image");
-    if (parsePositivePrice(price) === null) errors.price = text("价格必须大于 0", "Price must be greater than 0");
+    if (parsePositivePrice(price) === null) errors.price = text("计费单价必须大于 0", "Hourly rate must be greater than 0");
     if (parsePositiveNumber(cpu) === null) errors.cpu = text("CPU 必须大于 0", "CPU must be greater than 0");
     if (parseNonNegativeInteger(gpu) === null) errors.gpu = text("GPU 必须是非负整数", "GPU must be a non-negative integer");
     if (parsePositiveInteger(memory) === null) errors.memory = text("内存必须是正整数", "Memory must be a positive integer");
@@ -332,7 +338,7 @@ export function CreateTaskDialog({
     }
     const count = Number(batchCount);
     if (!Number.isInteger(count) || count < 1 || count > MAX_BATCH_COUNT) {
-      errors.batchCount = text(`数量必须在 1-${MAX_BATCH_COUNT} 之间`, `Count must be 1-${MAX_BATCH_COUNT}`);
+      errors.batchCount = text(`批量创建数量必须在 1-${MAX_BATCH_COUNT} 之间`, `Batch count must be between 1 and ${MAX_BATCH_COUNT}`);
     }
     return errors;
   }, [batchCount, cpu, gpu, imageId, isEditMode, memory, name, price, releaseCondition, releaseTime, scriptEnv, scriptPath, text, uiPrefs.syncNameWithExperimentId, workDirectory]);
@@ -376,7 +382,10 @@ export function CreateTaskDialog({
           if (shouldApplyMobileDefaults) void browserRuntime.storage.set(MOBILE_DEFAULTS_APPLIED_KEY, "1");
           if (!isEditMode && nextPrefs.syncNameWithExperimentId && snapshot.releaseCondition === "3") {
             const id = getScriptEnvValue(JSON.parse(snapshot.scriptEnvJson) as ScriptEnvVar[], EXPERIMENT_ID_ENV_KEY);
-            if (id) setName(id);
+            if (id) {
+              setName((current) => current === snapshot.name ? id : current);
+              setInitialSnapshot((current) => current ? { ...current, name: id } : current);
+            }
           }
         });
       });
@@ -386,10 +395,14 @@ export function CreateTaskDialog({
   }, [initialTask, isEditMode, open, resetTouched, username]);
 
   useEffect(() => {
-    if (!open || imageId || imageOptions.length === 0) return;
+    if (!open || !initialSnapshot || imageId || imageOptions.length === 0 || touchedFields.has("image")) return;
     const latest = getLatestImage(imageOptions);
-    if (latest) setImageId(String(latest.id));
-  }, [imageId, imageOptions, open]);
+    if (latest) {
+      const nextImageId = String(latest.id);
+      setImageId(nextImageId);
+      setInitialSnapshot((snapshot) => snapshot ? { ...snapshot, imageId: nextImageId } : snapshot);
+    }
+  }, [imageId, imageOptions, initialSnapshot, open, touchedFields]);
 
   const syncNameWithExperimentId = !isEditMode && uiPrefs.syncNameWithExperimentId;
   const experimentIdValue = getScriptEnvValue(scriptEnv, EXPERIMENT_ID_ENV_KEY);
@@ -428,6 +441,12 @@ export function CreateTaskDialog({
     if (releaseCondition === "2") {
       setReleaseTime(getDefaultReleaseTime(value));
     }
+  }
+
+  function applyResourceSpec({ cpu: specCpu, gpu: specGpu, memory: specMemory }: { cpu: string; gpu: string; memory: string }) {
+    setCpu(specCpu);
+    handleGpuChange(specGpu);
+    setMemory(specMemory);
   }
 
   function handleScriptEnvChange(next: ScriptEnvVar[]) {
@@ -511,12 +530,12 @@ export function CreateTaskDialog({
   async function submit(event: FormEvent) {
     event.preventDefault();
     setFormError(null);
-    touchAll(["name", "image", "cpu", "gpu", "memory", "batchCount", "releaseTime", "workDirectory", "scriptPath", "scriptEnv"]);
+    touchAll(["name", "image", "price", "cpu", "gpu", "memory", "batchCount", "releaseTime", "workDirectory", "scriptPath", "scriptEnv"]);
     const syncActive = !isEditMode && uiPrefs.syncNameWithExperimentId && Number(releaseCondition) === 3;
     const experimentId = getScriptEnvValue(scriptEnv, EXPERIMENT_ID_ENV_KEY);
     if (syncActive && !experimentId) {
       openSectionsForErrors({ name: "required", scriptEnv: "required" });
-      setFormError(text("请填写 EXPERIMENT_ID（名称将与其一致）", "Enter EXPERIMENT_ID (the name follows it)"));
+      setFormError(text("请填写 EXPERIMENT_ID（实例名称将自动与之同步）", "Enter EXPERIMENT_ID (task name will synchronize with it)"));
       window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
@@ -536,7 +555,7 @@ export function CreateTaskDialog({
     const priceValue = parsePositivePrice(price);
     if (priceValue === null) {
       openSectionsForErrors({ price: "required" });
-      setFormError(text("价格必须大于 0", "Price must be greater than 0"));
+      setFormError(text("计费单价必须大于 0", "Hourly rate must be greater than 0"));
       window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
@@ -648,6 +667,18 @@ export function CreateTaskDialog({
   }
 
   const pickerMode = storagePickerTarget === "scriptPath" ? "file" : "directory";
+  const describedByWorkDirectory = [
+    "create-task-work-directory-hint",
+    touchedFields.has("workDirectory") && fieldErrors.workDirectory ? "create-task-work-directory-error" : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const describedByScriptPath = [
+    "create-task-script-path-hint",
+    touchedFields.has("scriptPath") && fieldErrors.scriptPath ? "create-task-script-path-error" : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
   const pickerInitialPath =
     storagePickerTarget === "scriptPath"
       ? workDirectory || storagePath || "/"
@@ -656,6 +687,15 @@ export function CreateTaskDialog({
         : storagePath || "/";
   const pickerTitle =
     storagePickerTarget === "storage" ? text("选择存储目录", "Select storage directory") : storagePickerTarget === "workDirectory" ? text("选择工作目录", "Select working directory") : text("选择脚本文件", "Select script file");
+  const selectedImage = imageOptions.find((image) => String(image.id) === imageId);
+  const imageSummary = selectedImage
+    ? getImageOptionLabel(selectedImage)
+    : imageId ? text(`原实例镜像 #${imageId}`, `Original instance image #${imageId}`) : text("未选择镜像", "No image selected");
+  const priceValue = parsePositivePrice(price);
+  const priceSummary = priceValue === null
+    ? text("未设置单价", "Rate not set")
+    : text(`${priceValue.toLocaleString(locale, { maximumFractionDigits: 20 })} 元/小时`, `CNY ${priceValue.toLocaleString(locale, { maximumFractionDigits: 20 })}/hr`);
+  const releaseSummary = localizedText(releaseConditionText[Number(releaseCondition)], locale) ?? "-";
 
   return (
     <Dialog
@@ -666,9 +706,10 @@ export function CreateTaskDialog({
       onOverlayClick={requestClose}
       width="max-w-4xl"
       mobileMode="fullscreen"
+      contained
     >
       <form className="flex h-full min-h-0 flex-col overflow-hidden" noValidate onSubmit={submit}>
-        <div className="app-mobile-form-body flex-1 space-y-5 overflow-y-auto px-4 py-4">
+        <div className="app-mobile-form-body min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
           <FormSection
             title={text("基础", "Basic")}
             collapsible
@@ -718,7 +759,7 @@ export function CreateTaskDialog({
             </div>
             <label className="block text-sm">
               <span className="mb-1 block text-app-muted">{text("镜像", "Image")}</span>
-              <Select aria-invalid={Boolean(touchedFields.has("image") && fieldErrors.image)} className={cn("w-full", touchedFields.has("image") && fieldErrors.image && "border-app-danger")} value={imageId} onChange={(event) => setImageId(event.target.value)} onBlur={() => markTouched("image")}>
+              <Select aria-invalid={Boolean(touchedFields.has("image") && fieldErrors.image)} className={cn("w-full", touchedFields.has("image") && fieldErrors.image && "border-app-danger")} value={imageId} onChange={(event) => { markTouched("image"); setImageId(event.target.value); }} onBlur={() => markTouched("image")}>
                 <option value="">{text("请选择镜像", "Select an image")}</option>
                 {imageId && !hasSelectedImageOption ? <option value={imageId}>{text(`原实例镜像 #${imageId}`, `Original instance image #${imageId}`)}</option> : null}
                 {imageOptions.map((image) => (
@@ -735,10 +776,22 @@ export function CreateTaskDialog({
             title={text("资源配置", "Resources")}
             divided
             collapsible
+            keepMounted
             open={uiPrefs.sections.resources}
             onOpenChange={(next) => setSectionOpen("resources", next)}
             hint={`${cpu || "-"}C / ${gpu || "0"}GPU / ${memory || "-"}G`}
           >
+            <ResourcePriceFields
+              onApplySpec={applyResourceSpec}
+              onPriceBlur={() => markTouched("price")}
+              onPriceChange={(nextPrice) => { markTouched("price"); setPrice(nextPrice); }}
+              onDefaultPriceChange={applyDefaultPrice}
+              allowDefaultPrice={initialSnapshot?.price === "" && !touchedFields.has("price")}
+              originalPrice={initialTask?.price}
+              price={price}
+              priceError={fieldErrors.price}
+              priceTouched={touchedFields.has("price")}
+            />
             <div className="grid gap-4 md:grid-cols-3">
               <label className="block text-sm">
                 <span className="mb-1 block text-app-muted">CPU</span>
@@ -768,18 +821,36 @@ export function CreateTaskDialog({
           >
             <div className="grid gap-4 text-sm md:grid-cols-2">
               <div>
-                <span className="mb-1 block text-app-muted">{text("存储路径", "Storage path")}</span>
+                <label className="mb-1 block text-app-muted" htmlFor="create-task-storage-path">{text("存储路径", "Storage path")}</label>
                 <div className="flex gap-2">
-                  <Input className="w-full font-mono text-xs" value={storagePath} onChange={(event) => setStoragePath(event.target.value)} />
+                  <Input
+                    id="create-task-storage-path"
+                    aria-describedby="create-task-storage-path-hint"
+                    className="w-full font-mono text-xs"
+                    value={storagePath}
+                    onChange={(event) => setStoragePath(event.target.value)}
+                  />
                   <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
                     <FolderOpen className="h-4 w-4" />
                     {text("选择", "Select")}
                   </Button>
                 </div>
+                <span className="mt-1 block text-xs leading-5 text-app-muted" id="create-task-storage-path-hint">
+                  {text("远端存储目录；清空时默认", "Remote storage directory; defaults to")} /{username}
+                </span>
               </div>
               <div>
-                <span className="mb-1 block text-app-muted">{text("挂载路径", "Mount path")}</span>
-                <Input className="w-full font-mono text-xs" value={mountPath} onChange={(event) => setMountPath(event.target.value)} />
+                <label className="mb-1 block text-app-muted" htmlFor="create-task-mount-path">{text("挂载路径", "Mount path")}</label>
+                <Input
+                  id="create-task-mount-path"
+                  aria-describedby="create-task-mount-path-hint"
+                  className="w-full font-mono text-xs"
+                  value={mountPath}
+                  onChange={(event) => setMountPath(event.target.value)}
+                />
+                <span className="mt-1 block text-xs leading-5 text-app-muted" id="create-task-mount-path-hint">
+                  {text("挂载到实例内的路径；清空时默认", "Mount point inside the instance; defaults to")} /home/ubuntu/{username}
+                </span>
               </div>
             </div>
           </FormSection>
@@ -814,26 +885,50 @@ export function CreateTaskDialog({
             {releaseCondition === "3" ? (
               <div className="space-y-4">
                 <div className="block text-sm">
-                  <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
+                  <label className="mb-1 block text-app-muted" htmlFor="create-task-work-directory">{text("工作目录", "Working directory")}</label>
                   <div className="flex gap-2">
-                    <Input aria-invalid={Boolean(touchedFields.has("workDirectory") && fieldErrors.workDirectory)} className={cn("w-full font-mono text-xs", touchedFields.has("workDirectory") && fieldErrors.workDirectory && "border-app-danger")} value={workDirectory} onChange={(event) => setWorkDirectory(event.target.value)} onBlur={() => markTouched("workDirectory")} required />
+                    <Input
+                      id="create-task-work-directory"
+                      aria-describedby={describedByWorkDirectory}
+                      aria-invalid={Boolean(touchedFields.has("workDirectory") && fieldErrors.workDirectory)}
+                      className={cn("w-full font-mono text-xs", touchedFields.has("workDirectory") && fieldErrors.workDirectory && "border-app-danger")}
+                      value={workDirectory}
+                      onChange={(event) => setWorkDirectory(event.target.value)}
+                      onBlur={() => markTouched("workDirectory")}
+                      required
+                    />
                     <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("workDirectory")}>
                       <FolderOpen className="h-4 w-4" />
                       {text("选择", "Select")}
                     </Button>
                   </div>
-                  <FieldError message={touchedFields.has("workDirectory") ? fieldErrors.workDirectory : undefined} />
+                  <span className="mt-1 block text-xs leading-5 text-app-muted" id="create-task-work-directory-hint">
+                    {text("脚本在远端实例的该目录中执行", "The script runs in this directory on the remote instance")}
+                  </span>
+                  <FieldError id="create-task-work-directory-error" message={touchedFields.has("workDirectory") ? fieldErrors.workDirectory : undefined} />
                 </div>
                 <div className="block text-sm">
-                  <span className="mb-1 block text-app-muted">{text("脚本路径", "Script path")}</span>
+                  <label className="mb-1 block text-app-muted" htmlFor="create-task-script-path">{text("脚本路径", "Script path")}</label>
                   <div className="flex gap-2">
-                    <Input aria-invalid={Boolean(touchedFields.has("scriptPath") && fieldErrors.scriptPath)} className={cn("w-full font-mono text-xs", touchedFields.has("scriptPath") && fieldErrors.scriptPath && "border-app-danger")} value={scriptPath} onChange={(event) => setScriptPath(event.target.value)} onBlur={() => markTouched("scriptPath")} required />
+                    <Input
+                      id="create-task-script-path"
+                      aria-describedby={describedByScriptPath}
+                      aria-invalid={Boolean(touchedFields.has("scriptPath") && fieldErrors.scriptPath)}
+                      className={cn("w-full font-mono text-xs", touchedFields.has("scriptPath") && fieldErrors.scriptPath && "border-app-danger")}
+                      value={scriptPath}
+                      onChange={(event) => setScriptPath(event.target.value)}
+                      onBlur={() => markTouched("scriptPath")}
+                      required
+                    />
                     <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("scriptPath")}>
                       <FolderOpen className="h-4 w-4" />
                       {text("选择", "Select")}
                     </Button>
                   </div>
-                  <FieldError message={touchedFields.has("scriptPath") ? fieldErrors.scriptPath : undefined} />
+                  <span className="mt-1 block text-xs leading-5 text-app-muted" id="create-task-script-path-hint">
+                    {text("脚本执行完成后，实例将按「任务结束释放」自动释放", "When the script finishes, the instance releases automatically (release after task ends)")}
+                  </span>
+                  <FieldError id="create-task-script-path-error" message={touchedFields.has("scriptPath") ? fieldErrors.scriptPath : undefined} />
                 </div>
                 <ScriptEnvFields
                   envVars={scriptEnv}
@@ -869,21 +964,31 @@ export function CreateTaskDialog({
           {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
           {mutation.isError ? <ErrorState error={mutation.error} /> : null}
         </div>
-        <div className="app-mobile-form-actions flex shrink-0 justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={requestClose}>
-            {text("取消", "Cancel")}
-          </Button>
-          <Button disabled={mutation.isPending || resolvingNames}>
-            {mutation.isPending || resolvingNames
-              ? isEditMode
-                ? text("保存中", "Saving")
-                : resolvingNames
-                  ? text("检查名称中", "Checking names")
-                  : text("正在创建", "Creating")
-              : isEditMode
-                ? text("保存", "Save")
-                : text("创建", "Create")}
-          </Button>
+        <div className="app-mobile-form-actions flex shrink-0 flex-col gap-3 border-t border-app-border bg-app-surface px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 flex-1 text-xs text-app-muted" role="group" aria-label={text("提交摘要", "Submission summary")}>
+            <p className="flex flex-wrap gap-x-3 gap-y-1 font-medium text-app-text">
+              <span>{text(`${isEditMode ? "1" : batchCount || "-"} 个实例`, `${isEditMode ? "1" : batchCount || "-"} ${isEditMode || Number(batchCount) === 1 ? "instance" : "instances"}`)}</span>
+              <span>{priceSummary}</span>
+              <span>{releaseSummary}{releaseCondition === "2" && releaseTime ? ` · ${formatDateTimeForApi(releaseTime)}` : ""}</span>
+            </p>
+            <p className="mt-1 truncate" title={imageSummary}>{text(`镜像：${imageSummary}`, `Image: ${imageSummary}`)}</p>
+          </div>
+          <div className="flex shrink-0 justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={requestClose}>
+              {text("取消", "Cancel")}
+            </Button>
+            <Button disabled={mutation.isPending || resolvingNames}>
+              {mutation.isPending || resolvingNames
+                ? isEditMode
+                  ? text("保存中", "Saving")
+                  : resolvingNames
+                    ? text("检查名称中", "Checking names")
+                    : text("正在创建", "Creating")
+                : isEditMode
+                  ? text("保存", "Save")
+                  : text("创建", "Create")}
+            </Button>
+          </div>
         </div>
       </form>
       <RemoteStoragePicker
