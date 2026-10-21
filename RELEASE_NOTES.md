@@ -1,3 +1,20 @@
+# EasyConsole v0.4.26
+
+A more durable desktop SSH workspace with safer credentials, revocable VS Code access, and restored Android builds.
+
+## Changes
+
+- **SSH survives navigation**: The in-app SSH workspace now lives above the router, so open tabs, scrollback, recordings, and live sessions keep running when you move between pages instead of disconnecting.
+- **Account-scoped SSH password**: The default SSH password is stored per account in the OS keychain on desktop and removed from the settings JSON; the browser runtime keeps it in memory only. Resetting settings clears the stored password as well.
+- **Revocable VS Code access**: Settings lists the dedicated VS Code Remote-SSH keys this installation wrote to remote `authorized_keys`. Revoking a host removes its remote key, local SSH config block, and private key; legacy shared keys can be cleaned up locally.
+- **Scoped port forwarding**: Automatic port-forward rules can be limited to a specific session host, and the UI now labels remote forwarding (`-R`) as unsupported instead of silently ignoring it.
+- **Safer SSH commands**: Host, user, and port values are validated before an SSH command is copied; invalid values are rejected instead of being interpolated into a shell command.
+- **Manual tabs use your defaults**: New SSH tabs honour the configured default port and authentication mode, including private-key authentication and passphrases.
+- **Android build restored**: Mobile builds no longer fail on desktop-only SSH imports or a missing `oneshot` import, so the Android CI and release jobs compile again.
+- **Native coverage**: SSH is split into focused native modules with integration tests against a local mock server.
+
+---
+
 # EasyConsole v0.4.25
 
 Bilingual coverage for the messages the desktop shell, the shared library layer, and the CLI produce themselves.
