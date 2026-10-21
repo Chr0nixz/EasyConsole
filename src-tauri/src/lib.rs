@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager};
+#[cfg(desktop)]
+use tauri::{Emitter, State};
 use tauri_plugin_opener::OpenerExt;
 
 #[cfg(desktop)]
@@ -25,12 +27,11 @@ pub mod ssh;
 use ssh::history::{add_ssh_history, clear_ssh_history, list_ssh_history};
 use ssh::host_key::{clear_known_hosts, confirm_known_host, list_known_hosts, remove_known_host};
 use ssh::port_forward::{ssh_start_port_forward, ssh_stop_port_forward};
-use ssh::session::{
-    close_sessions_for_window, open_ssh_session, ssh_close, ssh_resize, ssh_write,
-    PendingSshWindows, SshSessionState,
-};
 #[cfg(desktop)]
-use ssh::session::{get_ssh_window_request, open_ssh_window};
+use ssh::session::{
+    close_sessions_for_window, get_ssh_window_request, open_ssh_window, PendingSshWindows,
+};
+use ssh::session::{open_ssh_session, ssh_close, ssh_resize, ssh_write, SshSessionState};
 use ssh::sftp::{
     sftp_cancel, sftp_delete, sftp_download, sftp_list, sftp_mkdir, sftp_register_local_root,
     sftp_rename, sftp_upload,
@@ -743,8 +744,6 @@ fn start_desktop_run_due_timer(app: AppHandle) {
     });
 }
 
-#[cfg(desktop)]
-#[cfg(desktop)]
 #[tauri::command]
 fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
     let url = validate_external_url(&url)?;
@@ -776,6 +775,7 @@ fn mobile_app_arch() -> Result<&'static str, String> {
 async fn install_apk(app: AppHandle, path: String) -> Result<String, String> {
     use jni::objects::{JObject, JString, JValue};
     use std::io::Read;
+    use tokio::sync::oneshot;
 
     let file_path = Path::new(&path);
     if !file_path.exists() {
@@ -1273,7 +1273,9 @@ pub fn run() {
         open_vscode_ssh,
         #[cfg(desktop)]
         list_vscode_ssh_keys,
+        #[cfg(desktop)]
         has_legacy_vscode_ssh_key,
+        #[cfg(desktop)]
         cleanup_legacy_vscode_ssh_key,
         #[cfg(desktop)]
         revoke_vscode_ssh,
