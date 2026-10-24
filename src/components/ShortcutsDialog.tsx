@@ -1,5 +1,6 @@
 import { Dialog } from "./ui";
 import { useI18n } from "../lib/i18n";
+import { browserRuntime } from "../lib/runtime";
 
 type ShortcutItem = {
   keys: string;
@@ -7,7 +8,7 @@ type ShortcutItem = {
 };
 
 const SHORTCUTS: ShortcutItem[] = [
-  { keys: "Ctrl K", labelKey: "shell.shortcutsOpenCmd" },
+  { keys: "Mod K", labelKey: "shell.shortcutsOpenCmd" },
   { keys: "/", labelKey: "shell.shortcutsSearch" },
   { keys: "g d / g t / g c / g m / g s / g i / g r / g e", labelKey: "shell.shortcutsNav" },
   { keys: "?", labelKey: "shell.shortcutsShortcuts" },
@@ -30,7 +31,7 @@ export function ShortcutsDialog({ open, onClose }: { open: boolean; onClose: () 
             <li key={item.labelKey} className="flex items-center justify-between gap-3 text-sm">
               <span className="text-app-text">{t(item.labelKey)}</span>
               <kbd className="shrink-0 rounded border border-app-border bg-app-panel px-2 py-0.5 font-mono text-xs text-app-muted">
-                {item.keys}
+                {item.keys.replace("Mod", browserRuntime.isApplePlatform ? "⌘" : "Ctrl")}
               </kbd>
             </li>
           ))}

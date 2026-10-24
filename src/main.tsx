@@ -1,3 +1,5 @@
+import "@fontsource-variable/inter";
+import "@fontsource-variable/jetbrains-mono";
 import "./styles.css";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -8,9 +10,11 @@ import { RouterProvider } from "react-router-dom";
 import { createAppRouter } from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { RunLoggerProvider } from "./components/RunLoggerProvider";
+import { ThemeProvider } from "./components/ThemeProvider";
 import { AuthProvider } from "./lib/auth-context";
 import { I18nProvider, applyInitialDocumentLang } from "./lib/i18n";
 import { initRuntimeKind } from "./lib/runtime";
+import { applyInitialTheme } from "./lib/theme";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -36,6 +40,9 @@ window.addEventListener("error", (event) => {
 // refines it once the persisted language has been read from storage.
 applyInitialDocumentLang();
 
+// Resolve the theme before the first paint so the shell never flashes the other scheme.
+applyInitialTheme();
+
 // Resolve the native runtime kind (web/desktop/mobile) before mounting so the
 // renderer can pick capability flags without race conditions. On web this
 // resolves immediately.
@@ -44,13 +51,15 @@ initRuntimeKind().finally(() => {
     <StrictMode>
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
-          <I18nProvider>
-            <AuthProvider>
-              <RunLoggerProvider>
-                <RouterProvider router={router} />
-              </RunLoggerProvider>
-            </AuthProvider>
-          </I18nProvider>
+          <ThemeProvider>
+            <I18nProvider>
+              <AuthProvider>
+                <RunLoggerProvider>
+                  <RouterProvider router={router} />
+                </RunLoggerProvider>
+              </AuthProvider>
+            </I18nProvider>
+          </ThemeProvider>
         </QueryClientProvider>
       </ErrorBoundary>
     </StrictMode>,

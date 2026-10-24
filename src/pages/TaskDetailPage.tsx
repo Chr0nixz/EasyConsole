@@ -1,11 +1,12 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ChevronDown, FileJson, FileText, Maximize2, Monitor, TerminalSquare } from "lucide-react";
+import { ArrowLeft, ChevronDown, FileJson, FileText, Maximize2, Monitor, Power, TerminalSquare } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
+import { ReleaseConfirmDescription } from "../components/tasks/ReleaseConfirmDescription";
 import { TaskLogPanel } from "../components/tasks/TaskLogPanel";
 import { TaskSshPanel } from "../components/tasks/TaskSshPanel";
 import { Button, Panel, Select } from "../components/ui";
@@ -21,12 +22,14 @@ import { cn } from "../lib/utils";
 import { useAuth } from "../lib/use-auth";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useCompactLayout } from "../lib/use-compact-layout";
+import { useSlidingIndicator } from "../lib/use-sliding-indicator";
 import { useToast } from "../lib/use-toast";
 
 const TaskLogDialog = lazy(() => import("../components/tasks/TaskLogDialog").then((module) => ({ default: module.TaskLogDialog })));
 const TerminalDialog = lazy(() => import("../components/tasks/TerminalDialog").then((module) => ({ default: module.TerminalDialog })));
 
 type Tab = "log" | "monitor" | "ssh" | "raw";
+const TAB_ORDER: Tab[] = ["log", "monitor", "ssh", "raw"];
 type MonitorRange = "now-1h" | "now-6h" | "now-24h" | "now-7d";
 
 const DETAIL_TABS: Tab[] = ["log", "monitor", "ssh", "raw"];
@@ -74,7 +77,7 @@ function SummaryField({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
       <dt className="text-xs text-app-muted">{label}</dt>
-      <dd className="mt-0.5 truncate font-mono text-xs text-app-text">{value}</dd>
+      <dd className="mt-0.5 truncate font-mono text-xs text-app-text" title={value}>{value}</dd>
     </div>
   );
 }
@@ -90,6 +93,13 @@ export function TaskDetailPage() {
   const { confirm, confirmDialog } = useConfirmAction();
   const toast = useToast();
   const [tab, setTab] = useState<Tab>(() => parseDetailTab(searchParams.get("tab")));
+  // Panels slide toward the side the user moved to; the first panel just appears with the page.
+  const [tabDirection, setTabDirection] = useState<"forward" | "back" | null>(null);
+  const selectTab = (next: Tab) => {
+    if (next === tab) return;
+    setTabDirection(TAB_ORDER.indexOf(next) > TAB_ORDER.indexOf(tab) ? "forward" : "back");
+    setTab(next);
+  };
   const [logOpen, setLogOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [monitorRange, setMonitorRange] = useState<MonitorRange>("now-1h");
@@ -172,6 +182,11 @@ export function TaskDetailPage() {
     return series;
   }, [monitorIndexQuery.data, text]);
 
+  const tabListRef = useRef<HTMLDivElement>(null);
+  const tabIndicatorRef = useRef<HTMLSpanElement>(null);
+  // The tab list mounts only once the task resolves, so that is part of the placement key.
+  useSlidingIndicator(tabListRef, tabIndicatorRef, '[aria-selected="true"]', `${tab}:${Boolean(task)}`, "underline");
+
   if (isLoading) return <LoadingState />;
   if (isError) return <ErrorState error={queryError} action={<Button onClick={() => navigate("/tasks")}>{text("返回任务列表", "Back to tasks")}</Button>} />;
   if (!task) return <EmptyState title={text("任务不存在", "Task not found")} action={<Button onClick={() => navigate("/tasks")}>{text("返回任务列表", "Back to tasks")}</Button>} />;
@@ -189,11 +204,8 @@ export function TaskDetailPage() {
   const canRelease = [0, 1, 2].includes(Number(task.status));
   const requestRelease = () => {
     confirm({
-      title: text("释放实例", "Release instance"),
-      description: text(
-        `将停止并回收 ${getTaskName(task)} 的资源，此操作不可撤销。确定继续吗？`,
-        `This will stop ${getTaskName(task)} and reclaim its resources. This cannot be undone. Continue?`,
-      ),
+      title: text("确认释放实例", "Confirm Instance Release"),
+      description: <ReleaseConfirmDescription task={task} />,
       confirmLabel: text("释放", "Release"),
       tone: "danger",
       run: () => releaseMutation.mutateAsync(task),
@@ -207,7 +219,7 @@ export function TaskDetailPage() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="min-w-0 flex-1">
-          <h2 className="truncate text-base font-semibold text-app-text">{getTaskName(task)}</h2>
+          <h2 className="truncate text-lg font-semibold tracking-[-0.015em] text-app-text">{getTaskName(task)}</h2>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
             <span>ID: {String(task.id)}</span>
             {task.task_id ? <span>Task ID: {String(task.task_id)}</span> : null}
@@ -216,31 +228,33 @@ export function TaskDetailPage() {
           </div>
         </div>
         {canRelease ? (
+          // Neutral at rest like the table's release action; danger color only on hover/focus and in the confirm.
           <Button
-            className="shrink-0"
+            className="shrink-0 hover:border-app-dangerRing hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger"
             disabled={releaseMutation.isPending}
             type="button"
-            variant="danger"
+            variant="secondary"
             onClick={requestRelease}
           >
+            <Power className="h-4 w-4" aria-hidden="true" />
             {text("释放", "Release")}
           </Button>
         ) : null}
       </div>
 
-      <dl className="grid gap-3 rounded-md border border-app-border bg-app-surface px-4 py-3 sm:grid-cols-2 xl:grid-cols-4">
+      <dl className="grid gap-3 rounded-lg border border-app-border bg-app-surface px-4 py-3 shadow-shell sm:grid-cols-2 xl:grid-cols-4">
         <SummaryField
           label={text("资源", "Resources")}
           value={`${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`}
         />
         <SummaryField label={text("节点", "Node")} value={getTaskNodeName(task) || "-"} />
-        <div className="col-span-full grid gap-3 sm:grid-cols-2 xl:col-span-2">
+        <div className="col-span-full min-w-0 xl:col-span-2">
           <details className="group" open={!compactLayout}>
             <summary className={cn("flex min-h-11 cursor-pointer list-none items-center justify-between text-sm font-medium text-app-text", !compactLayout && "sm:hidden")}>
               {text("路径与连接", "Paths and connection")}
               <ChevronDown className="h-4 w-4 text-app-muted transition-transform group-open:rotate-180" aria-hidden="true" />
             </summary>
-            <div className={cn("grid gap-3 border-t border-app-border pt-3", !compactLayout && "sm:border-t-0 sm:pt-0 sm:grid-cols-2")}>
+            <div className={cn("grid gap-3 border-t border-app-border pt-3", !compactLayout && "sm:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] sm:border-t-0 sm:pt-0")}>
               <SummaryField label={text("存储路径", "Storage path")} value={storagePath} />
               <SummaryField label={text("入口", "Endpoint")} value={endpoint} />
             </div>
@@ -249,7 +263,8 @@ export function TaskDetailPage() {
       </dl>
 
       <div
-        className="app-task-detail-tabs hidden flex-nowrap gap-1 overflow-x-auto border-b border-app-border sm:flex"
+        ref={tabListRef}
+        className="app-task-detail-tabs relative hidden flex-nowrap gap-1 overflow-x-auto border-b border-app-border sm:flex"
         role="tablist"
         aria-label={text("任务详情页签", "Task detail tabs")}
         onKeyDown={(event) => {
@@ -259,21 +274,22 @@ export function TaskDetailPage() {
             event.preventDefault();
             const delta = event.key === "ArrowRight" ? 1 : -1;
             const next = tabs[(currentIndex + delta + tabs.length) % tabs.length];
-            if (next) setTab(next.key);
+            if (next) selectTab(next.key);
             const nextButton = event.currentTarget.querySelector<HTMLElement>(`[data-tab-key="${next?.key}"]`);
             nextButton?.focus();
           } else if (event.key === "Home") {
             event.preventDefault();
-            setTab(tabs[0].key);
+            selectTab(tabs[0].key);
             event.currentTarget.querySelector<HTMLElement>(`[data-tab-key="${tabs[0].key}"]`)?.focus();
           } else if (event.key === "End") {
             event.preventDefault();
             const last = tabs[tabs.length - 1];
-            setTab(last.key);
+            selectTab(last.key);
             event.currentTarget.querySelector<HTMLElement>(`[data-tab-key="${last.key}"]`)?.focus();
           }
         }}
       >
+        <span ref={tabIndicatorRef} aria-hidden="true" className="app-sliding-indicator rounded-full bg-app-accent" />
         {tabs.map((tabItem) => {
           const Icon = tabItem.icon;
           const selected = tab === tabItem.key;
@@ -287,12 +303,12 @@ export function TaskDetailPage() {
               aria-selected={selected}
               aria-controls={`task-detail-panel-${tabItem.key}`}
               tabIndex={selected ? 0 : -1}
-              className={`app-interactive flex min-h-11 shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+              className={`app-interactive flex min-h-11 shrink-0 items-center gap-1.5 rounded-t-md px-3 py-2 text-sm font-medium transition-colors ${
                 selected
-                  ? "border-app-accent text-app-accent"
-                  : "border-transparent text-app-muted hover:text-app-text"
+                  ? "text-app-accent"
+                  : "text-app-muted hover:bg-app-panel/60 hover:text-app-text"
               }`}
-              onClick={() => setTab(tabItem.key)}
+              onClick={() => selectTab(tabItem.key)}
             >
               <Icon className="h-3.5 w-3.5" />
               {tabItem.label}
@@ -305,7 +321,7 @@ export function TaskDetailPage() {
         aria-label={text("任务详情视图", "Task detail view")}
         className="w-full sm:hidden"
         value={tab}
-        onChange={(event) => setTab(event.target.value as Tab)}
+        onChange={(event) => selectTab(event.target.value as Tab)}
       >
         {tabs.map((tabItem) => (
           <option key={tabItem.key} value={tabItem.key}>{tabItem.label}</option>
@@ -313,7 +329,7 @@ export function TaskDetailPage() {
       </Select>
 
       {tab === "monitor" && monitorUrl ? (
-        <div role="tabpanel" id="task-detail-panel-monitor" aria-labelledby="task-detail-tab-monitor">
+        <div role="tabpanel" id="task-detail-panel-monitor" aria-labelledby="task-detail-tab-monitor" className="app-tab-enter" data-direction={tabDirection ?? undefined}>
           {sparklineMetrics.length > 0 ? (
             <Panel className="p-4">
               <div className="mb-3 text-sm font-semibold text-app-text">{text("实时指标", "Live metrics")}</div>
@@ -382,13 +398,13 @@ export function TaskDetailPage() {
       ) : null}
 
       {tab === "monitor" && !monitorUrl ? (
-        <div role="tabpanel" id="task-detail-panel-monitor" aria-labelledby="task-detail-tab-monitor">
+        <div role="tabpanel" id="task-detail-panel-monitor" aria-labelledby="task-detail-tab-monitor" className="app-tab-enter" data-direction={tabDirection ?? undefined}>
           <EmptyState title={text("无法生成监控链接", "Unable to generate monitor URL")} description={text("任务缺少必要的标识信息", "Task is missing required identifier fields")} />
         </div>
       ) : null}
 
       {tab === "raw" ? (
-        <div role="tabpanel" id="task-detail-panel-raw" aria-labelledby="task-detail-tab-raw">
+        <div role="tabpanel" id="task-detail-panel-raw" aria-labelledby="task-detail-tab-raw" className="app-tab-enter" data-direction={tabDirection ?? undefined}>
           <Panel className="overflow-auto">
             <pre className="max-h-[70vh] overflow-auto bg-app-codeBg p-4 font-mono text-xs leading-5 text-app-codeText">
               {JSON.stringify(task, null, 2)}
@@ -398,21 +414,23 @@ export function TaskDetailPage() {
       ) : null}
 
       {tab === "log" ? (
-        <div role="tabpanel" id="task-detail-panel-log" aria-labelledby="task-detail-tab-log" className="space-y-2">
-          <div className="flex justify-end">
-            <Button className="h-8" type="button" variant="secondary" onClick={() => setLogOpen(true)}>
-              <Maximize2 className="h-4 w-4" />
-              {text("放大", "Expand")}
-            </Button>
-          </div>
+        <div role="tabpanel" id="task-detail-panel-log" aria-labelledby="task-detail-tab-log" className="app-tab-enter" data-direction={tabDirection ?? undefined}>
           <Panel className="h-[min(60vh,36rem)] overflow-hidden p-0">
-            <TaskLogPanel task={task} />
+            <TaskLogPanel
+              task={task}
+              toolbarEnd={
+                <Button className="h-8 px-2" type="button" variant="ghost" onClick={() => setLogOpen(true)}>
+                  <Maximize2 className="h-4 w-4" />
+                  {text("放大", "Expand")}
+                </Button>
+              }
+            />
           </Panel>
         </div>
       ) : null}
 
       {tab === "ssh" ? (
-        <div role="tabpanel" id="task-detail-panel-ssh" aria-labelledby="task-detail-tab-ssh" className="space-y-2">
+        <div role="tabpanel" id="task-detail-panel-ssh" aria-labelledby="task-detail-tab-ssh" className="app-tab-enter space-y-2" data-direction={tabDirection ?? undefined}>
           <div className="flex justify-end">
             <Button className="h-8" type="button" variant="secondary" onClick={() => setTerminalOpen(true)}>
               <Maximize2 className="h-4 w-4" />

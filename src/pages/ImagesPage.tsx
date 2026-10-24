@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Download, Eye, RefreshCw, Search, Star } from "lucide-react";
+import { BadgeCheck, Download, Eye, RefreshCw, Search, Star } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { EmptyState, ErrorState, SearchXIcon, TableSkeleton } from "../components/DataState";
@@ -186,14 +186,14 @@ export function ImagesPage() {
               <option value="custom">{text("自定义镜像", "Custom images")}</option>
               <option value="system">{text("系统镜像", "System images")}</option>
             </Select>
-            <label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-app-border bg-app-surface px-3 text-sm text-app-text">
+            <label className="app-interactive inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-app-borderStrong bg-app-surface px-3 text-sm text-app-text shadow-raised hover:border-app-muted">
               <input
                 type="checkbox"
                 className="h-4 w-4 cursor-pointer accent-app-accent"
                 checked={favoritesOnly}
                 onChange={(event) => setFavoritesOnly(event.target.checked)}
               />
-              <Star className={cn("h-4 w-4", favoritesOnly ? "fill-current text-app-warning" : "text-app-muted")} />
+              <Star className={cn("h-4 w-4", favoritesOnly ? "fill-current text-app-text" : "text-app-muted")} />
               <span className="whitespace-nowrap">{text("仅看收藏", "Favorites only")}</span>
             </label>
           </div>
@@ -226,8 +226,8 @@ export function ImagesPage() {
                       <div className="flex items-center gap-2">
                         <span id={cardId} className="truncate text-sm font-semibold text-app-text">{imageName(image)}</span>
                         {isDefaultImage(image) ? (
-                          <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-app-success/30 bg-app-success/10 px-2 py-0.5 text-xs font-medium text-app-success">
-                            <Star className="h-3 w-3" />
+                          <span className="inline-flex shrink-0 items-center gap-1 rounded-[5px] bg-app-neutralSoft px-2 py-0.5 text-xs font-medium text-app-text">
+                            <BadgeCheck className="h-3 w-3 text-app-muted" aria-hidden="true" />
                             {text("默认", "Default")}
                           </span>
                         ) : null}
@@ -245,7 +245,7 @@ export function ImagesPage() {
                     </div>
                     <div>
                       <dt className="text-app-muted">{text("更新时间", "Updated")}</dt>
-                      <dd className="mt-0.5 text-app-text">{getImageUpdatedAt(image)}</dd>
+                      <dd className="app-numeric mt-0.5 text-app-text">{getImageUpdatedAt(image)}</dd>
                     </div>
                     <div className="col-span-2">
                       <dt className="text-app-muted">{text("说明", "Description")}</dt>
@@ -259,7 +259,7 @@ export function ImagesPage() {
                       title={favorites.includes(String(image.id)) ? text("取消收藏", "Unfavorite") : text("收藏", "Favorite")}
                       onClick={() => void handleToggleFavorite(image)}
                     >
-                      <Star className={cn("h-4 w-4", favorites.includes(String(image.id)) && "fill-current text-app-warning")} />
+                      <Star className={cn("h-4 w-4", favorites.includes(String(image.id)) && "fill-current text-app-text")} />
                       {favorites.includes(String(image.id)) ? text("已收藏", "Favorited") : text("收藏", "Favorite")}
                     </Button>
                     <Button
@@ -277,7 +277,7 @@ export function ImagesPage() {
                       title={text("设为默认", "Set default")}
                       onClick={() => setDefaultImage(image)}
                     >
-                      <Star className="h-4 w-4" />
+                      <BadgeCheck className="h-4 w-4" />
                       {text("设为默认", "Set default")}
                     </Button>
                     <Button
@@ -314,8 +314,8 @@ export function ImagesPage() {
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="truncate font-medium text-app-text">{imageName(image)}</span>
                         {isDefaultImage(image) ? (
-                          <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-app-success/30 bg-app-success/10 px-2 py-0.5 text-xs font-medium text-app-success">
-                            <Star className="h-3 w-3" />
+                          <span className="inline-flex shrink-0 items-center gap-1 rounded-[5px] bg-app-neutralSoft px-2 py-0.5 text-xs font-medium text-app-text">
+                            <BadgeCheck className="h-3 w-3 text-app-muted" aria-hidden="true" />
                             {text("默认", "Default")}
                           </span>
                         ) : null}
@@ -333,7 +333,7 @@ export function ImagesPage() {
                         {imageDescription(image)}
                       </div>
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-middle text-app-text">{getImageUpdatedAt(image)}</td>
+                    <td className="app-numeric whitespace-nowrap px-3 py-2 align-middle text-app-text">{getImageUpdatedAt(image)}</td>
                     <td className="sticky right-0 bg-app-surface px-3 py-2 align-middle shadow-stickyColumnSubtle">
                       <div className="flex justify-end gap-1">
                         <Button
@@ -342,7 +342,7 @@ export function ImagesPage() {
                           title={favorites.includes(String(image.id)) ? text("取消收藏", "Unfavorite") : text("收藏", "Favorite")}
                           onClick={() => void handleToggleFavorite(image)}
                         >
-                          <Star className={cn("h-4 w-4", favorites.includes(String(image.id)) && "fill-current text-app-warning")} />
+                          <Star className={cn("h-4 w-4", favorites.includes(String(image.id)) && "fill-current text-app-text")} />
                         </Button>
                         <Button
                           aria-label={text(`查看 ${imageName(image)} 详情`, `View ${imageName(image)} details`)}
@@ -353,7 +353,7 @@ export function ImagesPage() {
                           <Eye className="h-4 w-4" />
                         </Button>
                         <Button aria-label={text(`将 ${imageName(image)} 设为默认镜像`, `Set ${imageName(image)} as default image`)} variant="ghost" title={text("设为默认", "Set default")} onClick={() => setDefaultImage(image)}>
-                          <Star className="h-4 w-4" />
+                          <BadgeCheck className="h-4 w-4" />
                         </Button>
                         <Button aria-label={text(`下载镜像 ${imageName(image)}`, `Download image ${imageName(image)}`)} variant="ghost" title={text("下载", "Download")} onClick={() => downloadImage(image)}>
                           <Download className="h-4 w-4" />

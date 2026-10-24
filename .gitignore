@@ -50,3 +50,6 @@ src-tauri/*.keystore.b64
 # Agent working artifacts
 .impeccable/
 .trae/
+.claude/
+.zcode/
+.zcodeignore

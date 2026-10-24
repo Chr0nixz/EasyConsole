@@ -9,6 +9,7 @@ import { findSshConnectionIssue, formatSshCommand, resolveSshConnectionRequest }
 import { useConfirmAction } from "../../lib/use-confirm-action";
 import { useToast } from "../../lib/use-toast";
 import { useMobileBackLayer } from "../../lib/use-mobile-back-stack";
+import { claimOverlayKey, useOverlay } from "../../lib/overlay-stack";
 import type { SshAuthMode, SshConnectionRequest } from "../../lib/types";
 import { cn } from "../../lib/utils";
 import { Button, Input, Select } from "../ui";
@@ -47,6 +48,8 @@ export function AppSshTerminalDialog() {
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const confirmAction = useConfirmAction();
   const toast = useToast();
+  // A modal while visible; menus inside it (the terminal tool menu) sit above it in the stack.
+  const layerRef = useOverlay(hasTabs && !isMinimized, "modal");
   const [showNewTabForm, setShowNewTabForm] = useState(false);
   const [newHost, setNewHost] = useState("");
   // Defaults come from SSH settings so every entry resolves the same target;
@@ -308,7 +311,8 @@ export function AppSshTerminalDialog() {
 
   const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
-      // Host-key (and similar) alertdialogs handle Escape themselves.
+      // Mid-composition Escape belongs to the IME; host-key (and similar) alertdialogs handle Escape themselves.
+      if (event.nativeEvent.isComposing) return;
       if (event.target instanceof Element && event.target.closest('[role="alertdialog"]')) {
         return;
       }
@@ -321,7 +325,7 @@ export function AppSshTerminalDialog() {
         return;
       }
       const isTerminalFocused = activeElement?.closest(".xterm") ?? false;
-      if (!isTerminalFocused || event.ctrlKey) {
+      if ((!isTerminalFocused || event.ctrlKey) && claimOverlayKey(layerRef.current, event.nativeEvent)) {
         event.preventDefault();
         requestCloseDialog();
       }
@@ -371,7 +375,7 @@ export function AppSshTerminalDialog() {
       >
         <div
           className={cn(
-            "app-terminal-modal-panel app-ssh-terminal-panel relative flex flex-col overflow-hidden rounded-lg bg-app-terminalBg",
+            "app-terminal-modal-panel app-ssh-terminal-panel app-terminal-chrome relative flex flex-col overflow-hidden rounded-lg bg-app-terminalBg",
             dialogSize ? "shadow-popover" : "max-h-[calc(100vh-5rem)] w-full max-w-5xl",
           )}
           style={browserRuntime.isMobile ? { height: mobileViewportHeight ? `${mobileViewportHeight}px` : "100dvh", width: "100%" } : dialogSize ?? undefined}
@@ -387,7 +391,7 @@ export function AppSshTerminalDialog() {
             <div className="flex items-center gap-1">
               {browserRuntime.supportsSshPopOut ? (
                 <button
-                  className="app-ssh-desktop-control flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1 disabled:opacity-40"
+                  className="app-ssh-desktop-control flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText disabled:opacity-40"
                   type="button"
                   title={text("弹出为独立窗口", "Pop out to standalone window")}
                   aria-label={text("弹出为独立窗口", "Pop out to standalone window")}
@@ -399,7 +403,7 @@ export function AppSshTerminalDialog() {
                 </button>
               ) : null}
               <button
-                className="app-ssh-desktop-control flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1"
+                className="app-ssh-desktop-control flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText"
                 type="button"
                 title={text("最小化", "Minimize")}
                 aria-label={text("最小化", "Minimize")}
@@ -409,7 +413,7 @@ export function AppSshTerminalDialog() {
                 <span className="sr-only">{text("最小化", "Minimize")}</span>
               </button>
               <button
-                className="flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1"
+                className="flex h-8 w-8 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText"
                 type="button"
                 title={text("关闭", "Close")}
                 aria-label={text("关闭", "Close")}
@@ -450,7 +454,7 @@ export function AppSshTerminalDialog() {
                         if (element) tabRefs.current.set(tab.id, element);
                         else tabRefs.current.delete(tab.id);
                       }}
-                      className="flex h-full min-w-0 items-center gap-1.5 rounded-l-md px-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1"
+                      className="flex h-full min-w-0 items-center gap-1.5 rounded-l-md px-2.5 text-left focus-visible:-outline-offset-2"
                       type="button"
                       role="tab"
                       tabIndex={isActive ? 0 : -1}
@@ -473,7 +477,7 @@ export function AppSshTerminalDialog() {
                       <span className="max-w-[8rem] truncate md:max-w-[10rem]">{tabTitle(tab.request)}</span>
                     </button>
                     <button
-                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-r-md text-app-terminalMuted hover:bg-app-terminalPanel hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent md:h-6 md:w-6"
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-r-md text-app-terminalMuted hover:bg-app-terminalPanel hover:text-app-terminalText focus-visible:-outline-offset-2 md:h-6 md:w-6"
                       type="button"
                       onClick={() => {
                         requestCloseTab(tab.id);
@@ -488,7 +492,7 @@ export function AppSshTerminalDialog() {
             </div>
             <div className="flex h-12 shrink-0 items-center px-2 md:h-9">
               <button
-                className="flex h-11 w-11 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-1 md:h-7 md:w-7"
+                className="flex h-11 w-11 items-center justify-center rounded-md text-app-terminalMuted hover:bg-app-terminalBg hover:text-app-terminalText md:h-7 md:w-7"
                 type="button"
                 title={t("terminal.newTab")}
                 aria-label={t("terminal.newTab")}
@@ -603,7 +607,7 @@ export function AppSshTerminalDialog() {
 
       {isMinimized && activeTab ? (
         <button
-          className="fixed right-4 z-50 flex max-w-[min(28rem,calc(100vw-2rem))] items-center gap-3 rounded-lg bg-app-terminalBg px-4 py-3 text-left text-app-terminalText shadow-popover hover:bg-app-terminalPanel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+          className="app-terminal-chrome fixed right-4 z-50 flex max-w-[min(28rem,calc(100vw-2rem))] items-center gap-3 rounded-lg bg-app-terminalBg px-4 py-3 text-left text-app-terminalText shadow-popover hover:bg-app-terminalPanel"
           style={{ bottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }}
           aria-label={text(`恢复应用内 SSH ${tabTitle(activeTab.request)}`, `Restore in-app SSH ${tabTitle(activeTab.request)}`)}
           type="button"

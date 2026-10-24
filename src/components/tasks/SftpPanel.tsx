@@ -18,7 +18,7 @@ import { useConfirmAction } from "../../lib/use-confirm-action";
 import { useToast } from "../../lib/use-toast";
 import type { SftpEntry, SftpProgress } from "../../lib/types";
 import { cn } from "../../lib/utils";
-import { Button, Input } from "../ui";
+import { Button, Input, ProgressBar } from "../ui";
 
 type SftpPanelProps = {
   sessionId: string;
@@ -493,7 +493,7 @@ export function SftpPanel({ sessionId }: SftpPanelProps) {
             <span className="flex items-center gap-2">
               <span>{progressPct}%</span>
               <button
-                className="rounded px-1.5 py-0.5 underline-offset-2 hover:bg-app-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+                className="rounded px-1.5 py-0.5 underline-offset-2 hover:bg-app-panel"
                 type="button"
                 onClick={handleCancelTransfer}
               >
@@ -501,16 +501,11 @@ export function SftpPanel({ sessionId }: SftpPanelProps) {
               </button>
             </span>
           </div>
-          <div
-            className="mt-1 h-1 w-full overflow-hidden rounded bg-app-border"
-            role="progressbar"
-            aria-label={busy?.startsWith("upload") ? text("上传进度", "Upload progress") : text("下载进度", "Download progress")}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={progressPct}
-          >
-            <div className="h-full bg-app-accent transition-all" style={{ width: `${progressPct}%` }} />
-          </div>
+          <ProgressBar
+            className="mt-1 h-1"
+            label={busy?.startsWith("upload") ? text("上传进度", "Upload progress") : text("下载进度", "Download progress")}
+            value={progressPct}
+          />
         </div>
       )}
       {error && (
@@ -518,7 +513,7 @@ export function SftpPanel({ sessionId }: SftpPanelProps) {
           <div className="flex items-start justify-between gap-1">
             <span className="min-w-0 break-all">{error.message}</span>
             <button
-              className="shrink-0 rounded px-1 hover:bg-app-danger/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+              className="shrink-0 rounded px-1 hover:bg-app-danger/10"
               type="button"
               aria-label={text("关闭错误提示", "Dismiss error")}
               onClick={() => setError(null)}
@@ -528,7 +523,7 @@ export function SftpPanel({ sessionId }: SftpPanelProps) {
           </div>
           {error.retry ? (
             <button
-              className="mt-1 rounded px-1.5 py-0.5 underline underline-offset-2 hover:bg-app-danger/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+              className="mt-1 rounded px-1.5 py-0.5 underline underline-offset-2 hover:bg-app-danger/10"
               type="button"
               onClick={error.retry}
             >
@@ -553,7 +548,7 @@ export function SftpPanel({ sessionId }: SftpPanelProps) {
               <li key={entry.name}>
                 <button
                   className={cn(
-                    "flex min-h-11 w-full items-center gap-2 px-2 py-1.5 text-left text-sm hover:bg-app-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-app-accent",
+                    "flex min-h-11 w-full items-center gap-2 px-2 py-1.5 text-left text-sm hover:bg-app-panel focus-visible:-outline-offset-2",
                     selected === entry.name && "bg-app-panel",
                   )}
                   type="button"
@@ -599,14 +594,14 @@ export function SftpPanel({ sessionId }: SftpPanelProps) {
       </div>
       {prompt ? (
         <div
-          className="absolute inset-0 z-30 flex items-center justify-center bg-black/55 p-4"
+          className="app-scrim absolute inset-0 z-30 flex items-center justify-center p-4"
           role="alertdialog"
           aria-modal="true"
           aria-label={prompt.kind === "rename" ? text("重命名", "Rename") : text("新建目录", "New directory")}
           onKeyDown={handlePromptKeyDown}
         >
           <form
-            className="w-full max-w-sm space-y-3 rounded-lg border border-app-border bg-app-surface p-4 shadow-popover"
+            className="w-full max-w-sm space-y-3 rounded-lg border border-app-border bg-app-elevated p-4 shadow-popover"
             onSubmit={handlePromptSubmit}
           >
             <h3 className="text-sm font-semibold text-app-text">
@@ -614,7 +609,7 @@ export function SftpPanel({ sessionId }: SftpPanelProps) {
             </h3>
             <input
               ref={promptInputRef}
-              className="h-8 w-full rounded-md border border-app-border bg-transparent px-2 text-sm text-app-text outline-none focus:ring-2 focus:ring-app-accent"
+              className="h-8 w-full rounded-md border border-app-borderStrong bg-app-surface px-2 text-sm text-app-text hover:border-app-muted"
               value={promptValue}
               onChange={(event) => setPromptValue(event.target.value)}
               placeholder={prompt.kind === "rename" ? text("输入新名称", "Enter new name") : text("输入目录名称", "Enter directory name")}

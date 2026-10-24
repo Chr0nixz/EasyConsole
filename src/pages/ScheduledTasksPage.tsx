@@ -118,13 +118,15 @@ export function ScheduledTasksPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // The list leads; the 14-field form opens on demand (new plan, edit, or the empty state).
+  const [formOpen, setFormOpen] = useState(false);
   const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
   const [storagePickerTarget, setStoragePickerTarget] = useState<StoragePickerTarget | null>(null);
   const [name, setName] = useState(formatTaskDefaultName());
   const [description, setDescription] = useState("");
   const [scheduleTime, setScheduleTime] = useState(formatDateTimeLocalInput(addHours(new Date(), 1)).slice(0, 16));
   const [imageId, setImageId] = useState("");
-  const [price, setPrice] = useState(DEFAULT_PRICE);
+  const [price, setPrice] = useState("");
   const [cpu, setCpu] = useState(DEFAULT_CPU);
   const [gpu, setGpu] = useState(DEFAULT_GPU);
   const [memory, setMemory] = useState(DEFAULT_MEMORY);
@@ -236,10 +238,11 @@ export function ScheduledTasksPage() {
 
   function resetForm() {
     setEditingId(null);
+    setFormOpen(false);
     setName(formatTaskDefaultName());
     setDescription("");
     setScheduleTime(formatDateTimeLocalInput(addHours(new Date(), 1)).slice(0, 16));
-    setPrice(DEFAULT_PRICE);
+    setPrice("");
     setCpu(DEFAULT_CPU);
     setGpu(DEFAULT_GPU);
     setMemory(DEFAULT_MEMORY);
@@ -262,6 +265,9 @@ export function ScheduledTasksPage() {
   function beginEdit(item: ScheduledTask) {
     const payload = item.payload;
     setEditingId(item.id);
+    setFormOpen(true);
+    // The form sits above the list; bring it into view when editing from further down.
+    window.requestAnimationFrame(() => document.getElementById("scheduled-task-form")?.scrollIntoView({ block: "start" }));
     setName(item.name);
     setDescription(item.description ?? "");
     setScheduleTime(toDateTimeLocalInput(item.scheduleTime));
@@ -619,33 +625,40 @@ export function ScheduledTasksPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold">{text("定时任务", "Scheduled Tasks")}</h2>
-          <p className="mt-1 text-sm text-app-muted">{text("定时任务由本机客户端调度执行；客户端关闭或休眠期间错过的任务将在恢复后提示确认。", "Scheduled tasks are executed by the local client. Tasks missed while the app is closed or sleeping will prompt for confirmation upon resumption.")}</p>
+        {/* The shell header already names the page; this lead explains how it behaves. */}
+        <div className="min-w-0 max-w-2xl">
+          <p className="text-sm leading-6 text-app-muted">{text("定时任务由本机客户端调度执行；客户端关闭或休眠期间错过的任务将在恢复后提示确认。", "Scheduled tasks are executed by the local client. Tasks missed while the app is closed or sleeping will prompt for confirmation upon resumption.")}</p>
         </div>
-        <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => executeTargets(items.filter((item) => isScheduleDue(item)), false)}>
-          <RefreshCw className="h-4 w-4" />
-          {text("执行到期", "Run due")} {dueCount > 0 ? dueCount : ""}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => executeTargets(items.filter((item) => isScheduleDue(item)), false)}>
+            <RefreshCw className="h-4 w-4" />
+            {text("执行到期", "Run due")} {dueCount > 0 ? dueCount : ""}
+          </Button>
+          {formOpen ? null : (
+            <Button onClick={() => setFormOpen(true)}>
+              <Plus className="h-4 w-4" />
+              {text("新建计划", "New plan")}
+            </Button>
+          )}
+        </div>
       </div>
 
       {loadError ? <ErrorState error={loadError} action={<Button variant="secondary" onClick={() => window.location.reload()}>{text("重新加载", "Reload")}</Button>} /> : null}
       {images.isError ? <ErrorState error={images.error} /> : null}
       {systemImages.isError ? <ErrorState error={systemImages.error} /> : null}
 
+      {formOpen ? (
       <Panel>
-        <form className="space-y-4 p-4" onSubmit={(event) => saveMutation.mutate(event)}>
+        <form id="scheduled-task-form" className="scroll-mt-16 space-y-4 p-4" onSubmit={(event) => saveMutation.mutate(event)}>
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm font-semibold">
             <div className="flex items-center gap-2">
-              <CalendarClock className="h-4 w-4 text-app-accent" />
+              <CalendarClock className="h-4 w-4 text-app-muted" aria-hidden="true" />
               {editingId ? text("编辑计划", "Edit Plan") : text("新建计划", "New Plan")}
             </div>
-            {editingId ? (
-              <Button type="button" variant="secondary" onClick={resetForm}>
-                <X className="h-4 w-4" />
-                {text("取消编辑", "Cancel edit")}
-              </Button>
-            ) : null}
+            <Button type="button" variant="ghost" onClick={resetForm}>
+              <X className="h-4 w-4" />
+              {editingId ? text("取消编辑", "Cancel edit") : text("收起", "Close")}
+            </Button>
           </div>
           <div className="grid gap-4 md:grid-cols-3">
             <label className="block text-sm">
@@ -830,11 +843,9 @@ export function ScheduledTasksPage() {
           ) : null}
           {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
           <div className="flex justify-end gap-2">
-            {editingId ? (
-              <Button type="button" variant="secondary" onClick={resetForm}>
-                {text("取消", "Cancel")}
-              </Button>
-            ) : null}
+            <Button type="button" variant="secondary" onClick={resetForm}>
+              {text("取消", "Cancel")}
+            </Button>
             <Button disabled={saveMutation.isPending}>
               {editingId ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
               {editingId ? text("保存修改", "Save changes") : text("保存定时任务", "Save scheduled task")}
@@ -842,10 +853,20 @@ export function ScheduledTasksPage() {
           </div>
         </form>
       </Panel>
+      ) : null}
 
       <Panel className="overflow-hidden">
         {items.length === 0 ? (
-          <EmptyState title={text("还没有定时任务。设置计划时间后，EasyConsole 会在到期时提交实例创建请求。", "No scheduled tasks yet. After you set a schedule, EasyConsole submits the instance creation request when it is due.")} />
+          <EmptyState
+            title={text("还没有定时任务", "No scheduled tasks yet")}
+            description={text("设置计划时间后，EasyConsole 会在到期时提交实例创建请求。", "After you set a schedule, EasyConsole submits the instance creation request when it is due.")}
+            action={formOpen ? undefined : (
+              <Button onClick={() => setFormOpen(true)}>
+                <Plus className="h-4 w-4" />
+                {text("新建计划", "New plan")}
+              </Button>
+            )}
+          />
         ) : (
           <>
               {/* Mobile card view */}

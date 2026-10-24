@@ -813,9 +813,9 @@ export function TaskTemplatesPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold">{text("实例模板", "Instance Templates")}</h2>
-          <p className="mt-1 text-sm text-app-muted">{text("保存常用资源、镜像和路径配置，从模板直接提交新实例。", "Save common resource, image, and path settings, then create new instances directly from templates.")}</p>
+        {/* The shell header already names the page; this lead explains how it behaves. */}
+        <div className="min-w-0 max-w-2xl">
+          <p className="text-sm leading-6 text-app-muted">{text("保存常用资源、镜像和路径配置，从模板直接提交新实例。", "Save common resource, image, and path settings, then create new instances directly from templates.")}</p>
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           <Button className="flex-1 sm:flex-none" variant="secondary" onClick={() => runningTasksQuery.refetch()}>

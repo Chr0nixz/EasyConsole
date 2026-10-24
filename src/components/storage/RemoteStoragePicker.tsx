@@ -171,7 +171,7 @@ export function RemoteStoragePicker({
                   <li key={entryPath}>
                     <button
                       className={cn(
-                        "flex min-h-11 w-full items-start gap-3 px-3 py-3 text-left text-sm hover:bg-app-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-app-accent",
+                        "flex min-h-11 w-full items-start gap-3 px-3 py-3 text-left text-sm hover:bg-app-panel focus-visible:-outline-offset-2",
                         selected && "bg-app-infoSoft",
                       )}
                       type="button"

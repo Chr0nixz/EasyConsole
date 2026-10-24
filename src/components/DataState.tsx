@@ -1,7 +1,8 @@
 import { AlertCircle, FolderOpen, Inbox, Loader2, SearchX } from "lucide-react";
-import type { ComponentType, ReactNode } from "react";
+import { useContext, type ComponentType, type ReactNode } from "react";
 
 import { isAuthError, isNetworkError } from "../lib/api-client";
+import { AuthContext } from "../lib/auth-state";
 import { useI18n } from "../lib/i18n";
 import { cn } from "../lib/utils";
 
@@ -16,10 +17,10 @@ export function LoadingState({ label, variant = "spinner" }: { label?: string; v
       <div className="space-y-3 p-4" role="status" aria-live="polite" aria-busy="true" aria-atomic="true" aria-label={loadingLabel}>
         {Array.from({ length: 4 }, (_, index) => (
           <div key={index} className="flex items-center gap-3">
-            <div className="h-8 w-8 animate-pulse rounded-full bg-app-panel" />
+            <div className="h-8 w-8 animate-pulse rounded-full bg-app-neutralSoft" />
             <div className="flex-1 space-y-2">
-              <div className="h-3 w-1/3 animate-pulse rounded bg-app-panel" />
-              <div className="h-3 w-1/2 animate-pulse rounded bg-app-panel" />
+              <div className="h-3 w-1/3 animate-pulse rounded bg-app-neutralSoft" />
+              <div className="h-3 w-1/2 animate-pulse rounded bg-app-neutralSoft" />
             </div>
           </div>
         ))}
@@ -46,7 +47,7 @@ export function TableSkeleton({ rows = 6, columns = 5, className }: { rows?: num
             <div
               key={columnIndex}
               className={cn(
-                "h-4 animate-pulse rounded bg-app-panel",
+                "h-4 animate-pulse rounded bg-app-neutralSoft",
                 columnIndex === 0 ? "w-full" : "w-3/4",
                 rowIndex === 0 && "opacity-80",
               )}
@@ -60,11 +61,13 @@ export function TableSkeleton({ rows = 6, columns = 5, className }: { rows?: num
 
 export function EmptyState({ title, description, action, icon: Icon = Inbox }: { title: string; description?: ReactNode; action?: ReactNode; icon?: EmptyStateIcon }) {
   return (
-    <div className="flex min-h-32 flex-col items-center justify-center gap-3 text-center text-sm text-app-muted">
-      <Icon className="h-8 w-8 opacity-50" aria-hidden="true" />
-      <div className="space-y-1">
+    <div className="flex min-h-40 flex-col items-center justify-center gap-3 px-4 py-6 text-center text-sm text-app-muted">
+      <span className="flex h-11 w-11 items-center justify-center rounded-full bg-app-panel text-app-muted ring-1 ring-inset ring-app-border">
+        <Icon className="h-5 w-5" aria-hidden="true" />
+      </span>
+      <div className="max-w-sm space-y-1">
         <span className="block font-medium text-app-text">{title}</span>
-        {description ? <span className="block text-xs text-app-muted">{description}</span> : null}
+        {description ? <span className="block text-xs leading-5 text-app-muted">{description}</span> : null}
       </div>
       {action}
     </div>
@@ -75,6 +78,8 @@ export { Inbox as InboxIcon, SearchX as SearchXIcon, FolderOpen as FolderOpenIco
 
 export function ErrorState({ error, action }: { error: unknown; action?: ReactNode }) {
   const { t } = useI18n();
+  // Read the context directly: ErrorState also renders outside the signed-in tree.
+  const auth = useContext(AuthContext);
   const authError = isAuthError(error);
   const networkError = isNetworkError(error);
   const message = authError
@@ -85,10 +90,20 @@ export function ErrorState({ error, action }: { error: unknown; action?: ReactNo
         ? error.message
         : t("common.requestFailed");
   return (
-    <div className="flex min-h-32 flex-col items-center justify-center gap-3 text-center text-sm text-app-danger" role="alert" aria-live="assertive" aria-atomic="true">
-      <AlertCircle className="h-5 w-5" aria-hidden="true" />
-      <span>{message}</span>
-      {action}
+    <div className="flex min-h-40 flex-col items-center justify-center gap-3 px-4 py-6 text-center text-sm text-app-danger" role="alert" aria-live="assertive" aria-atomic="true">
+      <span className="flex h-11 w-11 items-center justify-center rounded-full bg-app-dangerSoft ring-1 ring-inset ring-app-dangerRing">
+        <AlertCircle className="h-5 w-5" aria-hidden="true" />
+      </span>
+      <span className="max-w-md leading-5">{message}</span>
+      {authError && auth?.token ? (
+        <button
+          type="button"
+          className="app-interactive inline-flex h-9 items-center rounded-md bg-app-accent px-3 text-sm font-medium text-app-onAccent shadow-raised"
+          onClick={() => void auth.logout({ expired: true })}
+        >
+          {t("common.signInAgain")}
+        </button>
+      ) : action}
     </div>
   );
 }

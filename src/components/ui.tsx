@@ -13,9 +13,12 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { exitPresets, useExitGhost } from "../lib/exit-motion";
 import { useI18n } from "../lib/i18n";
+import { claimOverlayKey, useOverlay } from "../lib/overlay-stack";
 import { useCompactLayout } from "../lib/use-compact-layout";
 import { useMobileBackLayer } from "../lib/use-mobile-back-stack";
+import { useSlidingIndicator } from "../lib/use-sliding-indicator";
 import { useVisualViewport } from "../lib/use-visual-viewport";
 import { cn } from "../lib/utils";
 
@@ -83,11 +86,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLBut
     <button
       ref={ref}
       className={cn(
-        "app-interactive inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11",
-        variant === "primary" && "bg-app-accent text-app-onAccent hover:brightness-95 active:brightness-90",
-        variant === "secondary" && "border border-app-borderStrong bg-app-surface text-app-text hover:bg-app-panel",
+        "app-interactive inline-flex h-9 select-none items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11",
+        variant === "primary" && "bg-app-accent text-app-onAccent shadow-raised hover:brightness-[0.94] active:brightness-90",
+        variant === "secondary" && "border border-app-borderStrong bg-app-surface text-app-text shadow-raised hover:border-app-muted hover:bg-app-panel",
         variant === "ghost" && "text-app-muted hover:bg-app-panel hover:text-app-text",
-        variant === "danger" && "bg-app-danger text-app-onAccent hover:brightness-95",
+        variant === "danger" && "bg-app-danger text-app-onAccent shadow-raised hover:brightness-[0.94] active:brightness-90",
         className,
       )}
       {...props}
@@ -100,7 +103,7 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
     <input
       {...props}
       className={cn(
-        "h-9 rounded-md border border-app-borderStrong bg-app-surface px-3 text-sm text-app-text placeholder:text-app-muted [@media(pointer:coarse)]:min-h-11",
+        "h-9 rounded-md border border-app-borderStrong bg-app-surface px-3 text-sm text-app-text placeholder:text-app-muted hover:border-app-muted disabled:cursor-not-allowed disabled:bg-app-panel disabled:text-app-muted [@media(pointer:coarse)]:min-h-11",
         props.className,
       )}
     />
@@ -111,7 +114,7 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
       {...props}
-      className={cn("h-9 rounded-md border border-app-borderStrong bg-app-surface px-3 text-sm text-app-text [@media(pointer:coarse)]:min-h-11", props.className)}
+      className={cn("h-9 rounded-md border border-app-borderStrong bg-app-surface px-3 text-sm text-app-text hover:border-app-muted disabled:cursor-not-allowed disabled:bg-app-panel disabled:text-app-muted [@media(pointer:coarse)]:min-h-11", props.className)}
     />
   );
 }
@@ -121,7 +124,7 @@ export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
     <textarea
       {...props}
       className={cn(
-        "min-h-24 rounded-md border border-app-borderStrong bg-app-surface px-3 py-2 text-sm text-app-text placeholder:text-app-muted [@media(pointer:coarse)]:min-h-32",
+        "min-h-24 rounded-md border border-app-borderStrong bg-app-surface px-3 py-2 text-sm leading-6 text-app-text placeholder:text-app-muted hover:border-app-muted disabled:cursor-not-allowed disabled:bg-app-panel disabled:text-app-muted [@media(pointer:coarse)]:min-h-32",
         props.className,
       )}
     />
@@ -129,7 +132,77 @@ export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
 }
 
 export function Panel({ children, className }: { children: ReactNode; className?: string }) {
-  return <section className={cn("app-surface-enter rounded-lg border border-app-border bg-app-surface shadow-shell", className)}>{children}</section>;
+  return <section className={cn("rounded-lg border border-app-border bg-app-surface shadow-shell", className)}>{children}</section>;
+}
+
+/** Determinate progress: a neutral track and an accent fill that slides in by transform, never by width. */
+export function ProgressBar({ value, label, className }: { value: number; label: string; className?: string }) {
+  const percent = Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
+  return (
+    <div
+      className={cn("h-1.5 overflow-hidden rounded-full bg-app-neutralSoft", className)}
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(percent)}
+    >
+      <div
+        className="h-full w-full rounded-full bg-app-accent transition-transform duration-[var(--app-motion-emphasized)] ease-[var(--app-ease-out)] motion-reduce:transition-none"
+        style={{ transform: `translateX(${percent - 100}%)` }}
+      />
+    </div>
+  );
+}
+
+export type SegmentedOption<T extends string> = {
+  value: T;
+  label: ReactNode;
+  title?: string;
+  ariaLabel?: string;
+};
+
+/** Mutually exclusive options with one raised thumb that glides to the selection. */
+export function SegmentedControl<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+  className,
+  optionClassName,
+}: {
+  value: T;
+  options: Array<SegmentedOption<T>>;
+  onChange: (value: T, event: MouseEvent<HTMLButtonElement>) => void;
+  label: string;
+  className?: string;
+  optionClassName?: string;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const indicatorRef = useRef<HTMLSpanElement | null>(null);
+  useSlidingIndicator(containerRef, indicatorRef, '[aria-pressed="true"]', value);
+
+  return (
+    <div ref={containerRef} className={cn("relative inline-flex shrink-0 items-center gap-0.5 rounded-md bg-app-panel p-0.5", className)} role="group" aria-label={label}>
+      <span ref={indicatorRef} aria-hidden="true" className="app-sliding-indicator rounded-[6px] bg-app-thumb shadow-raised" />
+      {options.map((option) => (
+        <button
+          key={option.value}
+          aria-label={option.ariaLabel}
+          aria-pressed={option.value === value}
+          className={cn(
+            "app-interactive relative inline-flex h-7 items-center justify-center gap-1.5 rounded-[6px] px-2.5 text-xs font-medium text-app-muted hover:text-app-text aria-pressed:text-app-text [@media(pointer:coarse)]:min-h-10",
+            optionClassName,
+          )}
+          title={option.title}
+          type="button"
+          onClick={(event) => onChange(option.value, event)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 export const TableRegion = forwardRef<HTMLDivElement, { children: ReactNode; label: string; className?: string; "aria-activedescendant"?: string }>(
@@ -179,7 +252,11 @@ export function Dialog({
   const compactLayout = useCompactLayout();
   const viewport = useVisualViewport(open && compactLayout);
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  useExitGhost(open, overlayRef, exitPresets.dialog);
+  // Only the topmost overlay answers Escape and traps Tab (a picker or confirm can sit on top).
+  const layerRef = useOverlay(open, "modal");
   // Keep latest onClose without re-running focus/lock setup (unstable callbacks stole input focus).
   const onCloseRef = useRef(onClose);
   useEffect(() => {
@@ -199,12 +276,14 @@ export function Dialog({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        // Mid-composition (pinyin candidates open) Escape belongs to the IME, not the dialog.
+        if (event.isComposing || !claimOverlayKey(layerRef.current, event)) return;
         event.stopPropagation();
         onCloseRef.current();
         return;
       }
 
-      if (event.key !== "Tab") return;
+      if (event.key !== "Tab" || !claimOverlayKey(layerRef.current, event)) return;
 
       const focusable = getFocusableElements(dialogRef.current);
       if (focusable.length === 0) {
@@ -238,7 +317,7 @@ export function Dialog({
       }
       previousFocusRef.current?.focus();
     };
-  }, [open]);
+  }, [open, layerRef]);
 
   useMobileBackLayer(open, onClose);
 
@@ -256,6 +335,7 @@ export function Dialog({
 
   return createPortal(
     <div
+      ref={overlayRef}
       className={cn(
         "app-modal-overlay fixed inset-0 z-50 flex items-start justify-center px-3 py-4 sm:px-4 sm:py-10",
         mobileMode === "bottom-sheet" && "items-end px-0 py-0 sm:items-start sm:px-4 sm:py-10",
@@ -269,9 +349,10 @@ export function Dialog({
     >
       <div
         ref={dialogRef}
+        data-exit-panel=""
         tabIndex={-1}
         className={cn(
-          "app-modal-panel max-h-[calc(100vh-2rem)] w-full overflow-hidden rounded-lg bg-app-surface sm:max-h-[calc(100vh-5rem)]",
+          "app-modal-panel max-h-[calc(100vh-2rem)] w-full overflow-hidden rounded-lg bg-app-elevated sm:max-h-[calc(100vh-5rem)]",
           mobileMode === "bottom-sheet" && "max-h-[90dvh] rounded-b-none rounded-t-lg sm:max-h-[calc(100vh-5rem)] sm:rounded-lg",
           mobileMode === "fullscreen" && "flex h-[100dvh] max-h-[100dvh] flex-col rounded-none sm:block sm:h-auto sm:max-h-[calc(100vh-5rem)] sm:rounded-lg",
           contained && "flex flex-col sm:flex sm:h-[calc(100dvh-5rem)]",
@@ -286,10 +367,10 @@ export function Dialog({
               : undefined
         }
       >
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-app-border px-4">
-          <h2 id={titleId} className="text-sm font-semibold text-app-text">{title}</h2>
+        <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-app-border pl-5 pr-3">
+          <h2 id={titleId} className="truncate text-[0.9375rem] font-semibold tracking-[-0.01em] text-app-text">{title}</h2>
           <button
-            className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+            className="app-interactive flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
             data-dialog-close=""
             type="button"
             onClick={onClose}
@@ -336,7 +417,11 @@ export function Drawer({
   const compactLayout = useCompactLayout();
   const viewport = useVisualViewport(open && compactLayout);
   const drawerRef = useRef<HTMLDivElement | null>(null);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  useExitGhost(open, overlayRef, exitPresets.drawer);
+  // Only the topmost overlay answers Escape and traps Tab (a picker or confirm can sit on top).
+  const layerRef = useOverlay(open, "modal");
   const onCloseRef = useRef(onClose);
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -355,12 +440,14 @@ export function Drawer({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        // Mid-composition (pinyin candidates open) Escape belongs to the IME, not the dialog.
+        if (event.isComposing || !claimOverlayKey(layerRef.current, event)) return;
         event.stopPropagation();
         onCloseRef.current();
         return;
       }
 
-      if (event.key !== "Tab") return;
+      if (event.key !== "Tab" || !claimOverlayKey(layerRef.current, event)) return;
 
       const focusable = getFocusableElements(drawerRef.current);
       if (focusable.length === 0) {
@@ -394,7 +481,7 @@ export function Drawer({
       }
       previousFocusRef.current?.focus();
     };
-  }, [open]);
+  }, [open, layerRef]);
 
   useMobileBackLayer(open, onClose);
 
@@ -407,6 +494,7 @@ export function Drawer({
 
   return createPortal(
     <div
+      ref={overlayRef}
       className={cn("app-drawer-overlay fixed inset-0 z-50 flex justify-end", mobileMode === "bottom-sheet" && "items-end")}
       role="dialog"
       aria-modal="true"
@@ -416,9 +504,10 @@ export function Drawer({
     >
       <div
         ref={drawerRef}
+        data-exit-panel={mobileMode === "bottom-sheet" ? "sheet" : "side"}
         tabIndex={-1}
         className={cn(
-          "app-drawer-panel flex h-full w-full flex-col overflow-hidden border-l border-app-border bg-app-surface shadow-shell",
+          "app-drawer-panel flex h-full w-full flex-col overflow-hidden border-l border-app-border bg-app-elevated",
           mobileMode === "bottom-sheet" && "h-auto max-h-[90dvh] rounded-t-lg border-l-0 border-t sm:h-full sm:max-h-none sm:rounded-none sm:border-l sm:border-t-0",
           mobileMode === "fullscreen" && "h-[100dvh] rounded-none border-0",
           width,
@@ -431,10 +520,10 @@ export function Drawer({
               : undefined
         }
       >
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-app-border px-4">
-          <h2 id={titleId} className="truncate text-sm font-semibold text-app-text">{title}</h2>
+        <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-app-border pl-5 pr-3">
+          <h2 id={titleId} className="truncate text-[0.9375rem] font-semibold tracking-[-0.01em] text-app-text">{title}</h2>
           <button
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+            className="app-interactive flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
             data-dialog-close=""
             type="button"
             onClick={onClose}

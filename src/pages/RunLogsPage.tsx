@@ -169,9 +169,9 @@ export function RunLogsPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold">{text("运行日志", "Run Logs")}</h2>
-          <p className="mt-1 text-sm text-app-muted">{text("记录 EasyConsole 的关键操作，与实例日志分开保存。", "Records key EasyConsole operations separately from instance logs.")}</p>
+        {/* The shell header already names the page; this lead explains how it behaves. */}
+        <div className="min-w-0 max-w-2xl">
+          <p className="text-sm leading-6 text-app-muted">{text("记录 EasyConsole 的关键操作，与实例日志分开保存。", "Records key EasyConsole operations separately from instance logs.")}</p>
         </div>
         <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
           <Button variant="secondary" onClick={() => void reload()}>
@@ -185,14 +185,14 @@ export function RunLogsPage() {
               <ChevronDown className="h-3 w-3" />
             </Button>
             {exportMenuOpen ? (
-              <div className="absolute right-0 top-full z-30 mt-1 w-40 rounded-md border border-app-border bg-app-surface py-1 shadow-popover" role="menu">
+              <div className="app-pop-enter absolute right-0 top-full z-30 mt-1 w-40 origin-top-right rounded-lg border border-app-border bg-app-elevated py-1 shadow-popover" role="menu">
                 <button className="block w-full px-3 py-1.5 text-left text-sm hover:bg-app-panel" type="button" onClick={() => exportLogs("json")}>JSON</button>
                 <button className="block w-full px-3 py-1.5 text-left text-sm hover:bg-app-panel" type="button" onClick={() => exportLogs("csv")}>CSV</button>
                 <button className="block w-full px-3 py-1.5 text-left text-sm hover:bg-app-panel" type="button" onClick={() => exportLogs("markdown")}>Markdown</button>
               </div>
             ) : null}
           </div>
-          <Button className="border-app-danger text-app-danger hover:text-app-danger" variant="secondary" onClick={confirmClear}>
+          <Button className="hover:border-app-dangerRing hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger" variant="secondary" onClick={confirmClear}>
             <Trash2 className="h-4 w-4" />
             {text("清空", "Clear")}
           </Button>
@@ -260,7 +260,7 @@ export function RunLogsPage() {
             {visibleLogs.map((item) => (
               <article key={item.id} className="space-y-3 px-3 py-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-app-muted">{formatDateTime(item.createdAt, locale)}</span>
+                  <span className="app-numeric text-xs text-app-muted">{formatDateTime(item.createdAt, locale)}</span>
                   <span className={`rounded-full px-2 py-0.5 text-xs ring-1 ${levelClass(item.level)}`}>{item.level}</span>
                   <span className={`rounded-full px-2 py-0.5 text-xs ring-1 ${resultClass(item.result)}`}>{labelFor(resultLabels, item.result, locale)}</span>
                 </div>
@@ -319,7 +319,7 @@ export function RunLogsPage() {
               <tbody>
                 {visibleLogs.map((item) => (
                   <tr key={item.id} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
-                    <td className="whitespace-nowrap px-3 py-2 text-app-text">{formatDateTime(item.createdAt, locale)}</td>
+                    <td className="app-numeric whitespace-nowrap px-3 py-2 text-app-text">{formatDateTime(item.createdAt, locale)}</td>
                     <td className="whitespace-nowrap px-3 py-2">
                       <span className={`rounded-full px-2 py-0.5 text-xs ring-1 ${levelClass(item.level)}`}>{item.level}</span>
                     </td>

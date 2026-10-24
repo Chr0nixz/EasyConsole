@@ -5,7 +5,11 @@ import {
   FileText,
   Image,
   LayoutDashboard,
+  Keyboard,
+  Languages,
   ListFilter,
+  Moon,
+  Plus,
   Power,
   Search,
   ScrollText,
@@ -20,12 +24,16 @@ import { useNavigate } from "react-router-dom";
 import { instanceApi } from "../lib/api";
 import { getTaskName } from "../lib/format";
 import { useI18n } from "../lib/i18n";
+import { SHOW_SHORTCUTS_EVENT } from "../lib/shell-events";
+import { requestCreateTask } from "../lib/task-create-request";
+import { useTheme } from "../lib/use-theme";
 import { needsLogAttention } from "../lib/task-status-notifications";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import type { Task } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
+import { ReleaseConfirmDescription } from "./tasks/ReleaseConfirmDescription";
 import { Dialog, Input } from "./ui";
 
 type PaletteCommand = {
@@ -101,7 +109,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const toast = useToast();
   const runLogger = useRunLogger();
   const { confirm, confirmDialog } = useConfirmAction();
-  const { t, text } = useI18n();
+  const { locale, setLocale, t, text } = useI18n();
+  const { resolved: resolvedTheme, setPreference } = useTheme();
   const inputId = useId();
   const listboxId = useId();
   const [query, setQuery] = useState("");
@@ -153,8 +162,41 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       { id: "images", label: t("nav.images"), description: "/images", icon: Image, shortcut: "g i", run: () => navigate("/images") },
       { id: "logs", label: t("nav.runLogs"), description: "/run-logs", icon: ScrollText, shortcut: "g r", run: () => navigate("/run-logs") },
       { id: "settings", label: t("nav.settings"), description: "/settings", icon: Settings, shortcut: "g e", run: () => navigate("/settings") },
+      // Actions, not just pages: the placeholder promises 操作, so the palette carries them.
+      {
+        id: "action-new-task",
+        label: text("新建任务", "New task"),
+        description: text("打开新建任务表单", "Open the new task form"),
+        icon: Plus,
+        run: () => {
+          requestCreateTask();
+          navigate("/tasks");
+        },
+      },
+      {
+        id: "action-theme",
+        label: resolvedTheme === "dark" ? text("切换到浅色主题", "Switch to light theme") : text("切换到深色主题", "Switch to dark theme"),
+        description: text("界面主题", "Theme"),
+        icon: Moon,
+        run: () => setPreference(resolvedTheme === "dark" ? "light" : "dark"),
+      },
+      {
+        id: "action-language",
+        label: locale === "en-US" ? "切换到中文" : "Switch to English",
+        description: text("界面语言", "Language"),
+        icon: Languages,
+        run: () => setLocale(locale === "en-US" ? "zh-CN" : "en-US"),
+      },
+      {
+        id: "action-shortcuts",
+        label: text("键盘快捷键", "Keyboard shortcuts"),
+        description: text("查看全部快捷键", "Show all shortcuts"),
+        icon: Keyboard,
+        shortcut: "?",
+        run: () => window.dispatchEvent(new CustomEvent(SHOW_SHORTCUTS_EVENT)),
+      },
     ],
-    [navigate, t],
+    [locale, navigate, resolvedTheme, setLocale, setPreference, t, text],
   );
 
   const normalizedQuery = query.trim().toLowerCase();
@@ -178,10 +220,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     (task: Task) => {
       confirm({
         title: text("确认释放实例", "Confirm Instance Release"),
-        description: text(
-          `将释放 ${getTaskName(task)}。释放会停止实例并回收计算资源；适用于运行中/排队等可释放状态。此操作不可从 EasyConsole 撤销。`,
-          `Release ${getTaskName(task)}. Release stops the instance and reclaims compute resources; use it for releasable states (running, queued, etc.). EasyConsole cannot undo this.`,
-        ),
+        description: <ReleaseConfirmDescription task={task} />,
         confirmLabel: text("释放", "Release"),
         tone: "danger",
         run: () => releaseMutation.mutateAsync(task),
@@ -215,6 +254,12 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   useEffect(() => {
     setActiveIndex((index) => (commands.length === 0 ? 0 : Math.min(index, commands.length - 1)));
   }, [commands.length]);
+
+  // Focus stays in the input (aria-activedescendant), so the list has to follow the selection itself.
+  useEffect(() => {
+    if (!open) return;
+    document.getElementById(`${listboxId}-option-${activeIndex}`)?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, listboxId, open]);
 
   function runCommand(command: PaletteCommand) {
     command.run();
@@ -277,7 +322,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           </div>
           <div
             id={listboxId}
-            className="mt-3 max-h-[55vh] overflow-auto rounded-md border border-app-border"
+            className="-mx-1 mt-3 max-h-[55vh] space-y-0.5 overflow-auto px-1"
             role="listbox"
             aria-label={text("命令结果", "Command results")}
             aria-busy={taskQuery.isFetching}
@@ -291,7 +336,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                 <div
                   key={command.id}
                   id={`${listboxId}-option-${index}`}
-                  className={`flex w-full cursor-pointer select-none items-center gap-3 border-b border-app-border px-3 py-2 text-left text-sm last:border-0 ${index === activeIndex ? "bg-app-accentSoft text-app-accent" : "hover:bg-app-panel"}`}
+                  className={`flex w-full cursor-pointer select-none items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors duration-100 ${index === activeIndex ? "bg-app-accentSoft text-app-accent" : "hover:bg-app-panel"}`}
                   role="option"
                   aria-selected={index === activeIndex}
                   onMouseDown={(event) => event.preventDefault()}
@@ -304,7 +349,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                     <span className="block truncate text-xs text-app-muted">{command.description}</span>
                   </span>
                   {command.shortcut ? (
-                    <kbd className="shrink-0 rounded border border-app-border bg-app-panel px-1.5 py-0.5 font-mono text-[10px] text-app-muted">
+                    <kbd className="shrink-0 rounded border border-app-border bg-app-panel px-1.5 py-0.5 font-mono text-[0.6875rem] text-app-muted">
                       {command.shortcut}
                     </kbd>
                   ) : null}

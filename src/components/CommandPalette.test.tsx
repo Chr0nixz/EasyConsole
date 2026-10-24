@@ -79,6 +79,25 @@ describe("CommandPalette", () => {
     expect(finalOptions.at(-1)).toHaveAttribute("aria-selected", "true");
   });
 
+  it("scrolls the active result into view as the selection moves", async () => {
+    const scrolled: Element[] = [];
+    const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element) {
+      scrolled.push(this);
+    });
+    try {
+      renderCommandPalette();
+      const input = screen.getByRole("combobox");
+
+      fireEvent.keyDown(input, { key: "End" });
+
+      const options = screen.getAllByRole("option");
+      await waitFor(() => expect(scrolled.at(-1)).toBe(options.at(-1)));
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: "nearest" });
+    } finally {
+      scrollIntoView.mockRestore();
+    }
+  });
+
   it("expands matched tasks into detail, log, and terminal actions", async () => {
     mocks.tasks.mockResolvedValue({
       items: [{ id: 42, name: "demo-task", status: 2 }],

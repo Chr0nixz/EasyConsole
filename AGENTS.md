@@ -59,7 +59,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 Use `npm.cmd run build` for the web-only production build. Use `npm.cmd run build:desktop` for Tauri build inputs; it builds sidecars, typechecks the app, and runs Vite. Use `npm.cmd run tauri:build` when an actual desktop bundle or installer is required. When time is limited, prioritize desktop input build and Tauri shell checks over web-only verification.
 
-`lint` runs with `--max-warnings=47`, which is a ratchet rather than a target. The number may only go down: when you remove warnings, lower it in the same commit. Never raise it to make a build pass -- fix the new warning instead. Remaining warnings are `react-hooks/set-state-in-effect`, `react-refresh/only-export-components`, `react-hooks/exhaustive-deps`, and `react-hooks/incompatible-library`.
+`lint` runs with `--max-warnings=46`, which is a ratchet rather than a target. The number may only go down: when you remove warnings, lower it in the same commit. Never raise it to make a build pass -- fix the new warning instead. Remaining warnings are `react-hooks/set-state-in-effect`, `react-refresh/only-export-components`, `react-hooks/exhaustive-deps`, and `react-hooks/incompatible-library`.
 
 For `react-refresh/only-export-components` in context files, follow the existing split used by `use-toast.ts` and `use-download-queue.ts`: contexts, hooks, and plain helpers live in a `use-*.ts` file, and the `*Provider` component stays in its own file. That removes the warning instead of suppressing it.
 
@@ -119,6 +119,7 @@ Do not commit real account credentials, tokens, or live test secrets.
 - `src/lib/ssh-info.ts`: task SSH field extraction and normalized connection request mapping.
 - `src/lib/upload-queue.ts`: upload queue state helpers for storage uploads.
 - `src/lib/webssh.ts`: WebSSH URL and message formatting.
+- `src/lib/overlay-stack.ts`: open-overlay stack; new dialogs, menus, and popovers that listen for Escape/Tab on `document` register with `useOverlay` and gate their keys with `claimOverlayKey`.
 - `src/lib/download.ts`: browser download helper boundary.
 - `src/lib/monitor-dashboard.ts`: Grafana monitor URL generation for task rows.
 - `src/pages/*`: route pages.

@@ -201,7 +201,7 @@ export function TaskSshPanel({
         </div>
 
         {connectionIssue ? (
-          <p className="rounded-lg border border-app-warning/40 bg-app-warning-soft p-3 text-sm leading-5 text-app-warning-text">
+          <p className="rounded-lg border border-app-warning/40 bg-app-warningSoft p-3 text-sm leading-5 text-app-warningText">
             {text("SSH 信息未通过连接校验，连接入口已禁用：", "SSH details failed connection validation; connect actions are disabled: ")}
             {connectionIssue}
           </p>

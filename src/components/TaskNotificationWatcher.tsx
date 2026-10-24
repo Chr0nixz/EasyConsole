@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useMatch } from "react-router-dom";
+import { useMatch, useNavigate } from "react-router-dom";
 
 import { instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
 import { useI18n } from "../lib/i18n";
 import { browserRuntime } from "../lib/runtime";
+import { recordUnseenTaskFailure } from "../lib/task-attention";
 import { getImportantTaskStatusNotification, getTaskNotificationId, type ImportantTaskStatusNotification } from "../lib/task-status-notifications";
 import {
   nextNotificationPollInterval,
@@ -19,7 +20,8 @@ import { useToast } from "../lib/use-toast";
 export function TaskNotificationWatcher() {
   const auth = useAuth();
   const toast = useToast();
-  const { locale } = useI18n();
+  const { locale, text } = useI18n();
+  const navigate = useNavigate();
   const initializedRef = useRef(false);
   const statusSnapshotRef = useRef<Map<string, TaskStatus | undefined>>(new Map());
   const [hidden, setHidden] = useState(() => typeof document !== "undefined" && document.visibilityState === "hidden");
@@ -52,9 +54,23 @@ export function TaskNotificationWatcher() {
   }, [hidden, onTasksPage, query.dataUpdatedAt, query.isFetched]);
 
   const showInAppNotification = useCallback((notification: ImportantTaskStatusNotification) => {
-    const notify = notification.kind === "failure" ? toast.error : toast.success;
-    notify(notification.title, notification.body);
-  }, [toast]);
+    if (notification.kind !== "failure") {
+      toast.success(notification.title, notification.body);
+      return;
+    }
+    // A failure is only useful if it leads somewhere: the toast opens the task's log,
+    // and stays long enough to be acted on (hover or focus still pauses it).
+    toast.notify({
+      kind: "error",
+      title: notification.title,
+      description: notification.body,
+      durationMs: 15_000,
+      action: {
+        label: text("查看日志", "View logs"),
+        onClick: () => navigate(`/tasks/${encodeURIComponent(notification.routeId)}?tab=log`),
+      },
+    });
+  }, [navigate, text, toast]);
 
   useEffect(() => {
     if (!auth.token) {
@@ -78,6 +94,7 @@ export function TaskNotificationWatcher() {
       const notification = getImportantTaskStatusNotification(task, previousStatus, locale);
 
       if (notification) {
+        if (notification.kind === "failure") recordUnseenTaskFailure(notification.routeId);
         const mode = getRuntimeSettings().notificationPreferences[notification.event];
         if (mode === "app") {
           showInAppNotification(notification);

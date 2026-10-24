@@ -142,7 +142,7 @@ describe("MoreActionsMenu", () => {
     fireEvent.click(screen.getByRole("button"));
     const items = await screen.findAllByRole("menuitem");
     expect(items[0]).toHaveTextContent(/Logs|日志/);
-    expect(items[1]).toHaveTextContent(/Connection info|连接信息/);
+    expect(items[1]).toHaveTextContent(/Terminal|终端/);
     expect(items[2]).toHaveTextContent(/Clone|克隆/);
 
     fireEvent.click(await screen.findByRole("menuitem", { name: /Logs|日志/ }));
@@ -153,7 +153,7 @@ describe("MoreActionsMenu", () => {
     expect(onClone).toHaveBeenCalledWith(task);
 
     fireEvent.click(screen.getByRole("button"));
-    fireEvent.click(await screen.findByRole("menuitem", { name: /Connection info|连接信息/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Terminal|终端/ }));
     expect(onSshInfo).toHaveBeenCalledWith(task);
   });
 
@@ -163,9 +163,27 @@ describe("MoreActionsMenu", () => {
     fireEvent.click(screen.getByRole("button"));
     const items = await screen.findAllByRole("menuitem");
     expect(items).toHaveLength(7);
-    expect(screen.queryByRole("menuitem", { name: /Connection info|连接信息/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /Terminal|终端/ })).not.toBeInTheDocument();
     expect(items[0]).toHaveTextContent(/Logs|日志/);
     expect(items[1]).toHaveTextContent(/Clone|克隆/);
+  });
+
+  it("offers delete only for ended tasks, as a separate last item", async () => {
+    const onDelete = vi.fn();
+    const ended = { ...task, status: 6 } as Task;
+    const { unmount } = render(<MoreActionsMenu task={ended} {...defaultProps} onDelete={onDelete} />);
+
+    fireEvent.click(screen.getByRole("button"));
+    const items = await screen.findAllByRole("menuitem");
+    expect(items[items.length - 1]).toHaveTextContent(/Delete instance|删除实例/);
+    fireEvent.click(items[items.length - 1]);
+    expect(onDelete).toHaveBeenCalledWith(ended);
+    unmount();
+
+    render(<MoreActionsMenu task={task} {...defaultProps} onDelete={onDelete} />);
+    fireEvent.click(screen.getByRole("button"));
+    await screen.findAllByRole("menuitem");
+    expect(screen.queryByRole("menuitem", { name: /Delete instance|删除实例/ })).not.toBeInTheDocument();
   });
 
   it("keeps the menu open while the page scrolls", async () => {

@@ -555,6 +555,9 @@ export const browserRuntime: RuntimeTransport = {
   get supportsFileReveal() {
     return runtimeKind === "desktop";
   },
+  get isApplePlatform() {
+    return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  },
   storage: isTauri() ? tauriStorageAdapter : localStorageAdapter,
   secureStorage: isTauri() ? tauriSecureStorageAdapter : localStorageAdapter,
   request: fetchRequest,
@@ -809,6 +812,16 @@ export const browserRuntime: RuntimeTransport = {
   quitDesktopApp() {
     if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("quit_desktop_app", {});
+  },
+  async setNativeTheme(theme) {
+    if (runtimeKind !== "desktop") return;
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().setTheme(theme);
+    } catch (error) {
+      // Title bar theming is cosmetic; the webview theme already applied.
+      console.warn("Failed to set native window theme.", error);
+    }
   },
   async onDesktopCloseRequested(handler) {
     if (runtimeKind !== "desktop") return () => undefined;

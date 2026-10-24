@@ -11,6 +11,7 @@ import { browserRuntime } from "../../lib/runtime";
 import { saveBlob } from "../../lib/download";
 import { useI18n } from "../../lib/i18n";
 import { useMobileBackLayer } from "../../lib/use-mobile-back-stack";
+import { claimOverlayKey, useOverlay } from "../../lib/overlay-stack";
 import { resolveSshConnectionRequest } from "../../lib/ssh-info";
 import { composeMobileControl } from "../../lib/ssh-terminal-input";
 import {
@@ -635,10 +636,11 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
 
   // Escape closes the tool menu no matter where focus sits: the trigger button
   // lives outside the overlay, so an overlay-level handler would miss it.
+  const toolMenuLayerRef = useOverlay(showToolMenu, "popover");
   useEffect(() => {
     if (!showToolMenu) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && claimOverlayKey(toolMenuLayerRef.current, event)) {
         event.preventDefault();
         event.stopPropagation();
         closeToolMenu();
@@ -646,14 +648,14 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [showToolMenu, closeToolMenu]);
+  }, [showToolMenu, closeToolMenu, toolMenuLayerRef]);
 
   useMobileBackLayer(showToolMenu, closeToolMenu);
 
   return (
     <div
       id={`ssh-terminal-panel-${tabId}`}
-      className={cn("relative flex h-full flex-col", !active && "hidden")}
+      className={cn("app-terminal-chrome relative flex h-full flex-col", !active && "hidden")}
       data-tab-id={tabId}
       role="tabpanel"
       aria-labelledby={`ssh-tab-${tabId}`}
@@ -665,7 +667,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           <div className="hidden items-center gap-2 md:flex">
           <button
             className={cn(
-              "flex h-6 w-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent",
+              "flex h-6 w-6 items-center justify-center rounded",
               showSearch ? "bg-app-terminalBg text-app-terminalAccent" : "text-app-terminalText hover:bg-app-terminalBg",
             )}
             type="button"
@@ -677,7 +679,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           </button>
           <button
             className={cn(
-              "flex h-6 w-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent",
+              "flex h-6 w-6 items-center justify-center rounded",
               isRecording ? "text-app-danger hover:bg-app-terminalBg" : "text-app-terminalText hover:bg-app-terminalBg",
             )}
             type="button"
@@ -690,7 +692,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           {browserRuntime.supportsInAppSsh ? (
             <button
               className={cn(
-                "flex h-6 w-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent",
+                "flex h-6 w-6 items-center justify-center rounded",
                 showSftp ? "bg-app-terminalBg text-app-terminalAccent" : "text-app-terminalText hover:bg-app-terminalBg",
               )}
               type="button"
@@ -707,7 +709,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           {browserRuntime.supportsInAppSsh ? (
             <button
               className={cn(
-                "flex h-6 w-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent",
+                "flex h-6 w-6 items-center justify-center rounded",
                 showPortForward ? "bg-app-terminalBg text-app-terminalAccent" : "text-app-terminalText hover:bg-app-terminalBg",
               )}
               type="button"
@@ -725,7 +727,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           {browserRuntime.supportsInAppSsh ? (
             <button
               className={cn(
-                "flex h-11 w-11 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent md:hidden",
+                "flex h-11 w-11 items-center justify-center rounded md:hidden",
                 showSftp ? "bg-app-terminalBg text-app-terminalAccent" : "text-app-terminalText hover:bg-app-terminalBg",
               )}
               type="button"
@@ -741,7 +743,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           ) : null}
           <button
             ref={toolMenuTriggerRef}
-            className="flex h-11 w-11 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent md:hidden"
+            className="flex h-11 w-11 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg md:hidden"
             type="button"
             title={text("更多终端工具", "More terminal tools")}
             aria-label={text("更多终端工具", "More terminal tools")}
@@ -785,14 +787,14 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
       </div>
       {showToolMenu ? (
         <div
-          className="absolute inset-0 z-30 flex items-end bg-black/40 md:hidden"
+          className="app-scrim absolute inset-0 z-30 flex items-end md:hidden"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) closeToolMenu();
           }}
         >
           <div ref={toolMenuRef} id={`ssh-terminal-tools-${tabId}`} className="w-full rounded-t-lg border border-b-0 border-app-terminalBorder bg-app-terminalPanel p-2 shadow-popover" role="menu" aria-label={text("终端工具", "Terminal tools")}>
             <button
-              className="flex min-h-11 w-full items-center gap-3 rounded px-3 text-left text-sm text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+              className="flex min-h-11 w-full items-center gap-3 rounded px-3 text-left text-sm text-app-terminalText hover:bg-app-terminalBg"
               type="button"
               role="menuitem"
               onClick={() => {
@@ -804,7 +806,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
               {text("搜索终端输出", "Search terminal output")}
             </button>
             <button
-              className="flex min-h-11 w-full items-center gap-3 rounded px-3 text-left text-sm text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+              className="flex min-h-11 w-full items-center gap-3 rounded px-3 text-left text-sm text-app-terminalText hover:bg-app-terminalBg"
               type="button"
               role="menuitem"
               onClick={() => {
@@ -817,7 +819,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             </button>
             {browserRuntime.supportsInAppSsh ? (
               <button
-                className="flex min-h-11 w-full items-center gap-3 rounded px-3 text-left text-sm text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent disabled:opacity-40"
+                className="flex min-h-11 w-full items-center gap-3 rounded px-3 text-left text-sm text-app-terminalText hover:bg-app-terminalBg disabled:opacity-40"
                 type="button"
                 role="menuitem"
                 title={sessionId ? undefined : disconnectedHint}
@@ -840,7 +842,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         <div className="flex h-9 items-center gap-1.5 border-b border-app-terminalBorder bg-app-terminalPanel px-3">
           <input
             ref={searchInputRef}
-            className="h-6 min-w-0 flex-1 rounded bg-app-terminalBg px-2 text-xs text-app-terminalText outline-none ring-1 ring-app-terminalBorder focus:ring-app-accent"
+            className="h-6 min-w-0 flex-1 rounded border border-app-terminalBorder bg-app-terminalBg px-2 text-xs text-app-terminalText placeholder:text-app-terminalMuted"
             type="text"
             placeholder={text("搜索...", "Search...")}
             value={searchQuery}
@@ -868,7 +870,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             </span>
           ) : null}
           <button
-            className="flex h-6 w-6 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+            className="flex h-6 w-6 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg"
             type="button"
             title={text("上一个", "Previous")}
             aria-label={text("上一个", "Previous")}
@@ -877,7 +879,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             <ChevronUp className="h-3.5 w-3.5" />
           </button>
           <button
-            className="flex h-6 w-6 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+            className="flex h-6 w-6 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg"
             type="button"
             title={text("下一个", "Next")}
             aria-label={text("下一个", "Next")}
@@ -886,7 +888,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             <ChevronDown className="h-3.5 w-3.5" />
           </button>
           <button
-            className="flex h-6 w-6 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+            className="flex h-6 w-6 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg"
             type="button"
             title={text("关闭", "Close")}
             aria-label={text("关闭", "Close")}
@@ -902,7 +904,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           {!followBottom && hasNewOutput ? (
             <button
               type="button"
-              className="absolute bottom-3 right-3 z-10 rounded-md bg-app-accent px-2.5 py-1.5 text-xs font-medium text-app-onAccent shadow-shell hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+              className="absolute bottom-3 right-3 z-10 rounded-md bg-app-accent px-2.5 py-1.5 text-xs font-medium text-app-onAccent shadow-shell hover:opacity-90"
               onClick={scrollTerminalToBottom}
             >
               {text("有新输出 · 回到底部", "New output · Jump to bottom")}
@@ -919,7 +921,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             <div className="flex h-10 shrink-0 items-center justify-between border-b border-app-terminalBorder px-3 text-xs text-app-terminalText md:hidden">
               <span className="font-medium">{sftpLabel}</span>
               <button
-                className="flex h-8 w-8 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+                className="flex h-8 w-8 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg"
                 type="button"
                 title={text("关闭", "Close")}
                 aria-label={text("关闭", "Close")}
@@ -943,7 +945,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             <div className="mb-3 flex items-center justify-between">
               <span className="font-medium">{portForwardsLabel}</span>
               <button
-                className="flex h-11 w-11 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent md:h-5 md:w-5"
+                className="flex h-11 w-11 items-center justify-center rounded text-app-terminalText hover:bg-app-terminalBg md:h-5 md:w-5"
                 type="button"
                 title={text("关闭", "Close")}
                 aria-label={text("关闭", "Close")}
@@ -991,7 +993,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                           ) : null}
                         </div>
                         <button
-                          className="shrink-0 rounded bg-app-terminalPanel px-2 py-1 text-xs text-app-terminalText hover:bg-app-terminalBorder focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+                          className="shrink-0 rounded bg-app-terminalPanel px-2 py-1 text-xs text-app-terminalText hover:bg-app-terminalBorder"
                           type="button"
                           disabled={!sessionId}
                           onClick={() => {
@@ -1022,7 +1024,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
               <button
                 key={label}
                 className={cn(
-                  "flex h-8 min-w-9 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent",
+                  "flex h-8 min-w-9 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px]",
                   isCtrl && ctrlActive
                     ? "bg-app-accent text-app-onAccent"
                     : "text-app-terminalText hover:bg-app-terminalBg",
@@ -1060,7 +1062,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             return (
               <button
                 key={combo}
-                className="flex h-8 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px] text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+                className="flex h-8 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px] text-app-terminalText hover:bg-app-terminalBg"
                 type="button"
                 onPointerDown={(event) => {
                   event.preventDefault();
@@ -1075,7 +1077,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
           })}
           <div className="mx-0.5 h-5 w-px shrink-0 bg-app-terminalBorder" />
           <button
-            className="flex h-8 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px] text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+            className="flex h-8 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px] text-app-terminalText hover:bg-app-terminalBg"
             type="button"
             onPointerDown={(event) => {
               event.preventDefault();
@@ -1087,7 +1089,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             {text("复制", "Copy")}
           </button>
           <button
-            className="flex h-8 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px] text-app-terminalText hover:bg-app-terminalBg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+            className="flex h-8 shrink-0 items-center justify-center rounded px-2 font-mono text-[11px] text-app-terminalText hover:bg-app-terminalBg"
             type="button"
             onPointerDown={(event) => {
               event.preventDefault();
@@ -1118,7 +1120,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
       ) : null}
       {hostKeyPrompt ? (
         <div
-          className="absolute inset-0 z-20 flex items-center justify-center bg-black/55 p-4"
+          className="app-scrim absolute inset-0 z-20 flex items-center justify-center p-4"
           role="alertdialog"
           aria-modal="true"
           aria-labelledby={`ssh-host-key-title-${tabId}`}
@@ -1130,7 +1132,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             }
           }}
         >
-          <div className="w-full max-w-md space-y-4 rounded-lg border border-app-border bg-app-surface p-4 text-sm shadow-popover">
+          <div className="w-full max-w-md space-y-4 rounded-lg border border-app-border bg-app-elevated p-4 text-sm shadow-popover">
             <div>
               <h3 id={`ssh-host-key-title-${tabId}`} className="text-sm font-semibold text-app-text">
                 {text("确认 SSH 主机密钥", "Confirm SSH Host Key")}

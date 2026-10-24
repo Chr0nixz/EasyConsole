@@ -3,7 +3,7 @@ import { Download, ExternalLink, Minimize2, RefreshCw, RotateCw, Smartphone } fr
 import { useAppUpdate } from "../lib/app-update-context";
 import { useI18n } from "../lib/i18n";
 import { browserRuntime } from "../lib/runtime";
-import { Button, Dialog } from "./ui";
+import { Button, Dialog, ProgressBar } from "./ui";
 
 function formatBytes(value?: number) {
   if (!value) return "";
@@ -102,9 +102,11 @@ export function AppUpdateDialog() {
               <span>{isMobile ? text("正在下载 APK", "Downloading APK") : text("正在下载并安装更新", "Downloading and installing update")}</span>
               <span>{state.progress?.percent ?? 0}% {formatBytes(state.progress?.loaded)}{state.progress?.total ? ` / ${formatBytes(state.progress.total)}` : ""}</span>
             </div>
-            <div className="h-2 overflow-hidden rounded-full bg-app-border">
-              <div className="h-full bg-app-accent transition-all" style={{ width: `${state.progress?.percent ?? 0}%` }} />
-            </div>
+            <ProgressBar
+              className="h-2"
+              label={isMobile ? text("APK 下载进度", "APK download progress") : text("更新下载进度", "Update download progress")}
+              value={state.progress?.percent ?? 0}
+            />
             <p className="mt-2 text-xs text-app-muted">
               {text("可关闭此窗口，下载会在后台继续；进度可在顶部状态栏查看。", "You can close this window — the download continues in the background. Check progress in the status bar.")}
             </p>

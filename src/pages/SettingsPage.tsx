@@ -28,6 +28,8 @@ import {
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
+import { LanguageSwitch } from "../components/LanguageSwitch";
+import { ThemeSwitch } from "../components/ThemeSwitch";
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
 import { authApi, getTransportBlockReason, setApiBaseUrl } from "../lib/api";
 import {
@@ -83,7 +85,9 @@ import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { queryKeys } from "../lib/query-keys";
+import { useSlidingIndicator } from "../lib/use-sliding-indicator";
 import { useUnsavedChanges } from "../lib/use-unsaved-changes";
+import { UnsavedChangesPrompt } from "../components/UnsavedChangesPrompt";
 import type { KnownHostEntry, PortForwardRule, PortForwardType, SshHistoryEntry, VscodeKeyRecord } from "../lib/types";
 
 function isHttpUrl(value: string) {
@@ -162,13 +166,15 @@ const sshThemeOptions: Array<{ theme: SshTerminalTheme; zh: string; en: string }
 
 type LucideIcon = typeof Settings2;
 
-type SettingsGroupKey = "connection" | "terminal" | "data" | "notifications";
+type SettingsGroupKey = "connection" | "terminal" | "data" | "notifications" | "appearance";
 
 const SETTINGS_GROUPS: { key: SettingsGroupKey; zh: string; en: string }[] = [
-  { key: "connection", zh: "连接", en: "Connection" },
+  // The password form lives here too, so the group names both.
+  { key: "connection", zh: "连接与账户", en: "Connection & account" },
   { key: "terminal", zh: "终端", en: "Terminal" },
   { key: "data", zh: "数据", en: "Data" },
   { key: "notifications", zh: "通知", en: "Notifications" },
+  { key: "appearance", zh: "外观", en: "Appearance" },
 ];
 
 function settingsGroupId(key: SettingsGroupKey) {
@@ -188,14 +194,13 @@ function SectionHeader({
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border px-4 py-3">
-      <div className="flex min-w-0 items-center gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-app-border bg-app-panel text-app-accent">
-          <Icon className="h-4 w-4" />
-        </div>
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-app-text">{title}</h2>
-          {description ? <p className="mt-1 text-xs leading-5 text-app-muted">{description}</p> : null}
-        </div>
+      {/* A plain heading with an inline icon: no boxed icon tile, so the panel is the only container. */}
+      <div className="min-w-0">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-app-text">
+          <Icon className="h-4 w-4 shrink-0 text-app-muted" aria-hidden="true" />
+          {title}
+        </h2>
+        {description ? <p className="mt-1 text-xs leading-5 text-app-muted">{description}</p> : null}
       </div>
       {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
     </div>
@@ -206,7 +211,7 @@ function SubSectionHeading({ icon: Icon, label, trailing }: { icon: LucideIcon; 
   return (
     <div className="mb-3 flex items-center justify-between gap-2">
       <div className="flex items-center gap-2 text-sm font-medium text-app-text">
-        <Icon className="h-3.5 w-3.5 text-app-accent" />
+        <Icon className="h-3.5 w-3.5 text-app-muted" aria-hidden="true" />
         <span>{label}</span>
       </div>
       {trailing}
@@ -248,8 +253,8 @@ function CollapsibleSubSection({
           aria-expanded={open}
           onClick={() => setOpen(!open)}
         >
-          <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? "" : "-rotate-90"}`} />
-          <Icon className="h-3.5 w-3.5 shrink-0 text-app-accent" />
+          <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform duration-200 ease-out ${open ? "" : "-rotate-90"}`} />
+          <Icon className="h-3.5 w-3.5 shrink-0 text-app-muted" aria-hidden="true" />
           <span className="truncate">{label}</span>
           {badge}
         </button>
@@ -292,10 +297,10 @@ function SettingsGroup({
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
-        <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? "" : "-rotate-90"}`} />
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform duration-200 ease-out ${open ? "" : "-rotate-90"}`} />
         <span>{label}</span>
       </button>
-      {open ? <div className="space-y-5">{children}</div> : null}
+      {open ? <div className="app-collapse-enter space-y-5">{children}</div> : null}
     </section>
   );
 }
@@ -348,9 +353,14 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     terminal: false,
     data: false,
     notifications: false,
+    appearance: false,
   });
   const [scrollRequest, setScrollRequest] = useState<{ key: SettingsGroupKey; seq: number } | null>(null);
   const scrollSeqRef = useRef(0);
+  const [activeGroup, setActiveGroup] = useState<SettingsGroupKey>("connection");
+  const sectionNavRef = useRef<HTMLElement>(null);
+  const sectionIndicatorRef = useRef<HTMLSpanElement>(null);
+  useSlidingIndicator(sectionNavRef, sectionIndicatorRef, '[aria-current="true"]', activeGroup);
 
   const groupLabels = useMemo(() => {
     const labels = {} as Record<SettingsGroupKey, string>;
@@ -359,10 +369,42 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   }, [text]);
 
   function goToGroup(key: SettingsGroupKey) {
+    setActiveGroup(key);
     setOpenGroups((current) => (current[key] ? current : { ...current, [key]: true }));
     scrollSeqRef.current += 1;
     setScrollRequest({ key, seq: scrollSeqRef.current });
   }
+
+  // Scroll-spy: the section nav marks the group whose header has passed beneath it.
+  useEffect(() => {
+    if (standalone) return undefined;
+    const scroller = document.getElementById("main-content");
+    if (!scroller) return undefined;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const threshold = scroller.getBoundingClientRect().top + 72;
+      let current: SettingsGroupKey = SETTINGS_GROUPS[0].key;
+      for (const group of SETTINGS_GROUPS) {
+        const element = document.getElementById(settingsGroupId(group.key));
+        if (element && element.getBoundingClientRect().top <= threshold) current = group.key;
+      }
+      const scrollable = scroller.scrollHeight > scroller.clientHeight + 2;
+      if (scrollable && scroller.scrollTop > 0 && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2) {
+        current = SETTINGS_GROUPS[SETTINGS_GROUPS.length - 1].key;
+      }
+      setActiveGroup(current);
+    };
+    const schedule = () => {
+      if (!frame) frame = window.requestAnimationFrame(measure);
+    };
+    schedule();
+    scroller.addEventListener("scroll", schedule, { passive: true });
+    return () => {
+      scroller.removeEventListener("scroll", schedule);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [standalone, openGroups]);
 
   // A collapsed group has no body in the DOM, so scroll only after the expanded layout commits.
   useEffect(() => {
@@ -409,7 +451,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   }, [groupLabels, normalized, savedBaseline, settingsDirty, text]);
   const passwordDirty = Boolean(oldPassword || newPassword || confirmPassword);
   const unsavedMessage = text("设置有未保存的更改，确定要离开吗？", "You have unsaved settings. Leave without saving?");
-  useUnsavedChanges(settingsDirty || passwordDirty, unsavedMessage);
+  const navigationBlocker = useUnsavedChanges(settingsDirty || passwordDirty, unsavedMessage);
   const derivedWebsshUrl = useMemo(() => {
     if (!isHttpUrl(normalized.apiBaseUrl)) return t("settings.websshPending");
     try {
@@ -1110,16 +1152,19 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       {/* Buttons, not anchors: the Tauri build uses HashRouter, where a #fragment href reads as a route change. */}
       {standalone ? null : (
         <nav
+          ref={sectionNavRef}
           aria-label={text("设置分区", "Settings sections")}
           // Sticky resolves against the content box, so this cancels AppShell main's py-4/sm:p-5 top padding.
-          className="sticky -top-4 z-10 rounded-md border border-app-border bg-app-bg p-1 sm:-top-5"
+          className="sticky -top-4 z-10 rounded-lg border border-app-border bg-app-panel p-1 sm:-top-5"
         >
+          <span ref={sectionIndicatorRef} aria-hidden="true" className="app-sliding-indicator rounded-md bg-app-thumb shadow-raised" />
           <ul className="flex flex-wrap items-center gap-1">
             {SETTINGS_GROUPS.map((group) => (
               <li key={group.key}>
                 <button
                   type="button"
-                  className="app-interactive rounded px-2.5 py-1 text-xs font-medium text-app-muted hover:bg-app-panel hover:text-app-text"
+                  className="app-interactive relative rounded-md px-3 py-1.5 text-xs font-medium text-app-muted hover:text-app-text aria-[current=true]:text-app-text"
+                  aria-current={activeGroup === group.key ? "true" : undefined}
                   aria-label={text(`跳转到 ${groupLabels[group.key]}`, `Go to ${groupLabels[group.key]}`)}
                   aria-expanded={openGroups[group.key]}
                   aria-controls={settingsGroupId(group.key)}
@@ -1618,7 +1663,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               icon={ShieldCheck}
               label={t("settings.sshKnownHosts")}
               badge={knownHosts.length > 0 ? (
-                <span className="rounded bg-app-accentSoft px-1.5 py-0.5 font-mono text-[10px] font-medium normal-case tracking-normal text-app-accent">
+                <span className="rounded bg-app-neutralSoft px-1.5 py-0.5 font-mono text-[0.6875rem] font-medium normal-case tracking-normal text-app-text">
                   {knownHosts.length}
                 </span>
               ) : null}
@@ -1655,7 +1700,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 icon={KeySquare}
                 label={t("settings.sshVscodeKeys")}
                 badge={vscodeKeys.length > 0 ? (
-                  <span className="rounded bg-app-accentSoft px-1.5 py-0.5 font-mono text-[10px] font-medium normal-case tracking-normal text-app-accent">
+                  <span className="rounded bg-app-neutralSoft px-1.5 py-0.5 font-mono text-[0.6875rem] font-medium normal-case tracking-normal text-app-text">
                     {vscodeKeys.length}
                   </span>
                 ) : null}
@@ -1692,7 +1737,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                   </div>
                 )}
                 {legacyVscodeKey && !vscodeKeysLoading ? (
-                  <div className="mt-2 flex items-center justify-between gap-3 rounded-md border border-app-warning/40 bg-app-warning-soft px-3 py-2 text-xs text-app-warning-text">
+                  <div className="mt-2 flex items-center justify-between gap-3 rounded-md border border-app-warning/40 bg-app-warningSoft px-3 py-2 text-xs text-app-warningText">
                     <span className="min-w-0 leading-4">{t("settings.sshVscodeLegacyHint")}</span>
                     <Button type="button" variant="secondary" onClick={cleanupLegacyVscodeKey}>
                       <Trash2 className="h-3.5 w-3.5" />
@@ -1707,7 +1752,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               icon={History}
               label={t("settings.sshHistory")}
               badge={sshHistory.length > 0 ? (
-                <span className="rounded bg-app-accentSoft px-1.5 py-0.5 font-mono text-[10px] font-medium normal-case tracking-normal text-app-accent">
+                <span className="rounded bg-app-neutralSoft px-1.5 py-0.5 font-mono text-[0.6875rem] font-medium normal-case tracking-normal text-app-text">
                   {sshHistory.length}
                 </span>
               ) : null}
@@ -1746,7 +1791,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               open={portForwardsOpen}
               onOpenChange={setPortForwardsOpen}
               badge={form.ssh.portForwards.length > 0 ? (
-                <span className="rounded bg-app-accentSoft px-1.5 py-0.5 font-mono text-[10px] font-medium normal-case tracking-normal text-app-accent">
+                <span className="rounded bg-app-neutralSoft px-1.5 py-0.5 font-mono text-[0.6875rem] font-medium normal-case tracking-normal text-app-text">
                   {form.ssh.portForwards.length}
                 </span>
               ) : null}
@@ -1829,7 +1874,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                     <div key={rule.id} className="flex items-center justify-between rounded-md border border-app-border bg-app-panel px-3 py-2 text-xs transition-colors hover:border-app-accent/40 hover:bg-app-surface">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="rounded bg-app-accentSoft px-1.5 py-0.5 font-mono text-[10px] font-medium text-app-accent">
+                          <span className="rounded bg-app-neutralSoft px-1.5 py-0.5 font-mono text-[0.6875rem] font-medium text-app-text">
                             {rule.type === "local" ? "-L" : rule.type === "remote" ? "-R" : "-D"}
                           </span>
                           <span className="font-mono text-app-text">
@@ -1837,7 +1882,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                             {rule.type !== "dynamic" ? ` → ${rule.remoteHost}:${rule.remotePort}` : ""}
                           </span>
                           {rule.host ? (
-                            <span className="rounded bg-app-accentSoft px-1.5 py-0.5 font-mono text-[10px] text-app-accent">
+                            <span className="rounded bg-app-neutralSoft px-1.5 py-0.5 font-mono text-[0.6875rem] text-app-text">
                               @{rule.host}
                             </span>
                           ) : null}
@@ -2076,6 +2121,37 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         </div>
       </Panel>
       </SettingsGroup>
+
+      <SettingsGroup
+        id={settingsGroupId("appearance")}
+        label={groupLabels.appearance}
+        open={openGroups.appearance}
+        onOpenChange={(open) => setOpenGroups((current) => ({ ...current, appearance: open }))}
+      >
+      <Panel>
+        <SectionHeader
+          icon={Palette}
+          title={text("界面外观", "Interface appearance")}
+          description={text("主题和语言只保存在本机，立即生效，不需要保存。", "Theme and language are stored on this device and apply immediately; no save needed.")}
+        />
+        <div className="divide-y divide-app-border">
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-app-text">{text("主题", "Theme")}</div>
+              <p className="mt-0.5 text-xs leading-5 text-app-muted">{text("跟随系统时，会随操作系统的浅色或深色模式自动切换。", "System follows your operating system's light or dark mode.")}</p>
+            </div>
+            <ThemeSwitch showLabels />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-app-text">{text("语言", "Language")}</div>
+              <p className="mt-0.5 text-xs leading-5 text-app-muted">{text("界面、通知和桌面端原生提示使用同一语言。", "The interface, notifications, and native desktop messages share one language.")}</p>
+            </div>
+            <LanguageSwitch />
+          </div>
+        </div>
+      </Panel>
+      </SettingsGroup>
       </>
       )}
 
@@ -2191,6 +2267,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       </Dialog>
     </div>
     {confirmDialog}
+    <UnsavedChangesPrompt blocker={navigationBlocker} message={unsavedMessage} />
   </>
   );
 

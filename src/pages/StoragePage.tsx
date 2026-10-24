@@ -4,7 +4,7 @@ import { useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import { EmptyState, ErrorState, FolderOpenIcon, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { MobileLongText } from "../components/MobileLongText";
-import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
+import { Button, Dialog, Input, Panel, ProgressBar, Select, TableRegion } from "../components/ui";
 import { useDownloadQueueActions } from "../lib/use-download-queue";
 import { formatBytes } from "../lib/format";
 import { useI18n } from "../lib/i18n";
@@ -474,9 +474,7 @@ export function StoragePage() {
               </Button>
             </div>
           </div>
-          <div className="h-2 overflow-hidden rounded bg-app-panel">
-            <div className="h-full bg-app-accent transition-all" style={{ width: `${uploadSummary.percent}%` }} />
-          </div>
+          <ProgressBar className="h-2" label={text("上传队列总进度", "Overall upload progress")} value={uploadSummary.percent} />
           <div className="max-h-40 overflow-auto rounded-md border border-app-border">
             {uploadQueue.map((item) => (
               <div key={item.id} className="grid gap-2 border-b border-app-border px-3 py-2 text-xs last:border-0 sm:grid-cols-[1fr_6rem_4rem]">
@@ -510,14 +508,14 @@ export function StoragePage() {
               const entryCardId = `storage-card-${index}`;
               const directSize = getStorageEntrySize(entry);
               const directorySize = directorySizes[entryPath];
-              const entrySize = directory ? directorySize?.size ?? directSize : directSize;
+              const entrySize = directory ? directorySize?.size ?? null : directSize;
               const entrySizeText =
                 directory && directorySize?.status === "loading"
                   ? text("计算中", "Calculating")
                   : directory && directorySize?.status === "error"
                     ? text("计算失败", "Calculation failed")
                     : entrySize === null
-                      ? "-"
+                      ? "—"
                       : formatBytes(entrySize);
               return (
                 <article key={entryPath} className="space-y-3 px-3 py-3" aria-labelledby={entryCardId}>
@@ -552,11 +550,11 @@ export function StoragePage() {
                     </div>
                     <div>
                       <dt className="text-app-muted">{text("大小", "Size")}</dt>
-                      <dd className="mt-0.5 text-app-text">{entrySizeText}</dd>
+                      <dd className="app-numeric mt-0.5 text-app-text">{entrySizeText}</dd>
                     </div>
                     <div className="col-span-2">
                       <dt className="text-app-muted">{text("更新时间", "Updated")}</dt>
-                      <dd className="mt-0.5 text-app-text">{getStorageEntryModified(entry)}</dd>
+                      <dd className="app-numeric mt-0.5 text-app-text">{getStorageEntryModified(entry)}</dd>
                     </div>
                   </dl>
                   <div className="flex flex-wrap gap-1.5">
@@ -586,7 +584,7 @@ export function StoragePage() {
                         </Button>
                       </>
                     )}
-                    <Button className="h-9 px-2 text-app-danger hover:text-app-danger" variant="ghost" title={text("删除远程文件或目录", "Delete remote file or directory")} onClick={() => confirmDeleteEntry(entry)}>
+                    <Button className="h-9 px-2 hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger" variant="ghost" title={text("删除远程文件或目录", "Delete remote file or directory")} onClick={() => confirmDeleteEntry(entry)}>
                       <Trash2 className="h-4 w-4" />
                       {text("删除", "Delete")}
                     </Button>
@@ -613,14 +611,14 @@ export function StoragePage() {
                 const entryPath = getStorageEntryPath(entry, path);
                 const directSize = getStorageEntrySize(entry);
                 const directorySize = directorySizes[entryPath];
-                const entrySize = directory ? directorySize?.size ?? directSize : directSize;
+                const entrySize = directory ? directorySize?.size ?? null : directSize;
                 const entrySizeText =
                   directory && directorySize?.status === "loading"
                     ? text("计算中", "Calculating")
                     : directory && directorySize?.status === "error"
                       ? text("计算失败", "Calculation failed")
                       : entrySize === null
-                        ? "-"
+                        ? "—"
                         : formatBytes(entrySize);
                   return (
                     <tr key={entryPath} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
@@ -647,7 +645,7 @@ export function StoragePage() {
                     <td className="px-3 py-2 text-app-text">{directory ? text("目录", "Directory") : text("文件", "File")}</td>
                     <td className="px-3 py-2 text-app-text">
                       <div className="flex items-center gap-2">
-                        <span>{entrySizeText}</span>
+                        <span className="app-numeric">{entrySizeText}</span>
                         {directory ? (
                           <Button
                             className="h-7 px-2 text-xs"
@@ -661,7 +659,7 @@ export function StoragePage() {
                         ) : null}
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-app-text">{getStorageEntryModified(entry)}</td>
+                    <td className="app-numeric px-3 py-2 text-app-text">{getStorageEntryModified(entry)}</td>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap gap-1">
                         {directory ? (
@@ -697,8 +695,8 @@ export function StoragePage() {
                             </Button>
                           </>
                         )}
-                        <Button className="h-8 px-2" variant="ghost" title={text("删除远程文件或目录", "Delete remote file or directory")} onClick={() => confirmDeleteEntry(entry)}>
-                          <Trash2 className="h-4 w-4 text-app-danger" />
+                        <Button className="h-8 px-2 hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger" variant="ghost" title={text("删除远程文件或目录", "Delete remote file or directory")} onClick={() => confirmDeleteEntry(entry)}>
+                          <Trash2 className="h-4 w-4" />
                           {text("删除", "Delete")}
                         </Button>
                       </div>

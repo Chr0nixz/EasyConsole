@@ -64,6 +64,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [ready, setReady] = useState(false);
   const [restoringSession, setRestoringSession] = useState(true);
+  // Set when the session ended because the server rejected the token, so the login page can
+  // say why the user is there; any successful sign-in clears it.
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [savedAccounts, setSavedAccounts] = useState<SavedLoginAccount[]>([]);
   const savedAccountsRef = useRef<SavedLoginAccount[]>([]);
   const refreshAttemptedRef = useRef(false);
@@ -167,6 +170,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setToken(result.token);
       setUser(next);
       setRestoringSession(false);
+      setSessionExpired(false);
       writeAuthLog({
         level: "info",
         action: "auth.login",
@@ -301,6 +305,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setToken(activeToken);
       setUser(next);
       setRestoringSession(false);
+      setSessionExpired(false);
       writeAuthLog({
         level: "info",
         action: "auth.loginSaved",
@@ -400,13 +405,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await persistSavedAccounts(upsertSavedAccount(savedAccountsRef.current, rest));
   }, [persistSavedAccounts]);
 
-  const logout = useCallback(async () => {
+  const logout = useCallback(async (options?: { expired?: boolean }) => {
     const userName = user?.username ?? user?.name;
     apiClient.setToken(null);
     await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
     setToken(null);
     setUser(null);
     setRestoringSession(false);
+    setSessionExpired(Boolean(options?.expired));
     await applyAccountRuntimeSettings(GLOBAL_SETTINGS_ACCOUNT_ID).catch((error) => {
       console.warn("Failed to restore global settings after logout.", error);
     });
@@ -471,15 +477,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // failed token-refresh races with loginSaved and clears the freshly
       // restored session.
       if (reloginInProgressRef.current) return;
-      void logout();
+      void logout({ expired: true });
     };
     window.addEventListener(UNAUTHORIZED_EVENT, handler);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, handler);
   }, [logout]);
 
   const value = useMemo(
-    () => ({ token, user, ready, restoringSession, savedAccounts, login, loginSaved, forgetSavedAccount, clearSavedPassword, logout, refreshUser }),
-    [token, user, ready, restoringSession, savedAccounts, login, loginSaved, forgetSavedAccount, clearSavedPassword, logout, refreshUser],
+    () => ({ token, user, ready, restoringSession, sessionExpired, savedAccounts, login, loginSaved, forgetSavedAccount, clearSavedPassword, logout, refreshUser }),
+    [token, user, ready, restoringSession, sessionExpired, savedAccounts, login, loginSaved, forgetSavedAccount, clearSavedPassword, logout, refreshUser],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -1,5 +1,5 @@
-import { ArrowUpCircle, CalendarClock, Command as CommandIcon, Database, DownloadCloud, ExternalLink, FolderOpen, Image, LayoutDashboard, LogOut, Minimize2, MoreHorizontal, Power, RotateCcw, Save, ScrollText, Search, Server, Settings, SquareStack, TerminalSquare, WifiOff, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { AlertCircle, ArrowUpCircle, CalendarClock, Database, DownloadCloud, ExternalLink, FolderOpen, Image, LayoutDashboard, LogOut, Minimize2, MoreHorizontal, Power, RotateCcw, Save, ScrollText, Search, Server, Settings, SquareStack, WifiOff, X } from "lucide-react";
+import { useEffect, useRef, useState, type RefObject, type UIEvent } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { LanguageSwitch } from "./LanguageSwitch";
@@ -7,7 +7,8 @@ import { BackgroundScheduledTaskRunner } from "./BackgroundScheduledTaskRunner";
 import { CommandPalette } from "./CommandPalette";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { TaskNotificationWatcher } from "./TaskNotificationWatcher";
-import { Button, Dialog } from "./ui";
+import { ThemeSwitch } from "./ThemeSwitch";
+import { Button, Dialog, ProgressBar } from "./ui";
 import { GLOBAL_SETTINGS_ACCOUNT_ID, getRuntimeSettings, saveAccountSettings, setRuntimeSettings } from "../lib/app-settings";
 import { getTransportBlockReason, subscribeTransportPolicy } from "../lib/api";
 import { useAppUpdate } from "../lib/app-update-context";
@@ -30,6 +31,11 @@ import {
 } from "../lib/shell-nav-width";
 import { cn } from "../lib/utils";
 import { useMobileBackLayer } from "../lib/use-mobile-back-stack";
+import { useSlidingIndicator } from "../lib/use-sliding-indicator";
+import { SHOW_SHORTCUTS_EVENT } from "../lib/shell-events";
+import { markTaskFailuresSeen, useUnseenTaskFailureCount } from "../lib/task-attention";
+import { exitPresets, useExitGhost } from "../lib/exit-motion";
+import { claimOverlayKey, hasOpenModalOverlay, useOverlay } from "../lib/overlay-stack";
 
 const navItems = [
   { to: "/dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard, shortcut: "g d" },
@@ -44,6 +50,13 @@ const navItems = [
 
 const primaryMobileNav = navItems.slice(0, 3);
 const secondaryMobileNav = navItems.slice(3);
+
+// Sidebar sections: workloads you launch, resources they use, and EasyConsole itself.
+const navGroups = [
+  { id: "workloads", zh: "工作负载", en: "Workloads", items: navItems.slice(0, 4) },
+  { id: "resources", zh: "资源", en: "Resources", items: navItems.slice(4, 6) },
+  { id: "system", zh: "系统", en: "System", items: navItems.slice(6) },
+] as const;
 
 const titles: Record<string, TranslationKey> = {
   "/dashboard": "title.dashboard",
@@ -68,13 +81,46 @@ const headerDescriptions: Record<string, TranslationKey> = {
 };
 
 function headerTitleKey(pathname: string): TranslationKey {
-  if (/^\/tasks\/[^/]+$/.test(pathname)) return "title.tasks";
+  if (/^\/tasks\/[^/]+$/.test(pathname)) return "title.taskDetail";
   return titles[pathname] ?? "common.console";
 }
 
 function headerDescriptionKey(pathname: string): TranslationKey {
   if (/^\/tasks\/[^/]+$/.test(pathname)) return "shell.desc.taskDetail";
   return headerDescriptions[pathname] ?? "shell.headerDescription";
+}
+
+/**
+ * A queue panel stays open while you work (no outside-press close), but it takes focus when it
+ * opens, answers Escape, and hands focus back to the status button it was opened from.
+ */
+function useQueuePanel(open: boolean, panelRef: RefObject<HTMLDivElement | null>, returnFocusRef: RefObject<HTMLElement | null>, onClose: () => void) {
+  const layerRef = useOverlay(open, "popover");
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const returnTarget = returnFocusRef.current;
+    const focusTimer = window.setTimeout(() => {
+      panelRef.current?.querySelector<HTMLElement>("button:not([disabled])")?.focus();
+    }, 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !claimOverlayKey(layerRef.current, event)) return;
+      event.stopPropagation();
+      onCloseRef.current();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener("keydown", onKeyDown);
+      // Focus left with the panel's own nodes; a click elsewhere keeps the focus it moved.
+      const active = document.activeElement;
+      if (!active || active === document.body) returnTarget?.focus();
+    };
+  }, [open, layerRef, panelRef, returnFocusRef]);
 }
 
 export function AppShell() {
@@ -104,10 +150,49 @@ export function AppShell() {
   const statusButtonRef = useRef<HTMLButtonElement>(null);
   const statusPopoverPreviousFocusRef = useRef<HTMLElement | null>(null);
   const userName = auth.user?.username || auth.user?.name || t("shell.loggedIn");
+  const userInitial = (auth.user?.name || auth.user?.username || "?").trim().charAt(0).toUpperCase() || "?";
+  const userGroup = typeof auth.user?.user_group === "string" && auth.user.user_group ? auth.user.user_group : t("shell.loggedIn");
+  const sidebarNavRef = useRef<HTMLElement>(null);
+  const sidebarIndicatorRef = useRef<HTMLSpanElement>(null);
+  const mobileNavRef = useRef<HTMLElement>(null);
+  const mobileIndicatorRef = useRef<HTMLSpanElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+  const downloadQueueRef = useRef<HTMLDivElement>(null);
+  const commitQueueRef = useRef<HTMLDivElement>(null);
+  const moreScrimRef = useRef<HTMLDivElement>(null);
+  useExitGhost(statusPopoverOpen, statusPopoverRef, exitPresets.popover);
+  useExitGhost(downloadQueueOpen, downloadQueueRef, exitPresets.popover);
+  useExitGhost(commitQueueOpen, commitQueueRef, exitPresets.popover);
+  useExitGhost(moreMenuOpen, moreMenuRef, exitPresets.sheet);
+  useExitGhost(moreMenuOpen, moreScrimRef, exitPresets.fade);
+  const commandShortcut = browserRuntime.isApplePlatform ? "⌘ K" : "Ctrl K";
+  const unseenFailureCount = useUnseenTaskFailureCount();
+  const unseenFailureLabel = text(`${unseenFailureCount} 个实例在你上次查看后失败`, `${unseenFailureCount} ${unseenFailureCount === 1 ? "instance" : "instances"} failed since you last looked`);
+  const activeQueueCount = (downloadQueue.summary.active ?? 0) + (commitQueue.summary.active ?? 0);
+  const failedQueueCount = (downloadQueue.summary.failed ?? 0) + (commitQueue.summary.failed ?? 0);
+  const updatePending = browserRuntime.supportsUpdater
+    && (appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading");
+  const statusBadgeCount = activeQueueCount + failedQueueCount + (updatePending ? 1 : 0);
+  // The badge is a bare number, so the button's name carries what it counts.
+  const statusDetails = [
+    failedQueueCount > 0 ? text(`${failedQueueCount} 项失败`, `${failedQueueCount} failed`) : null,
+    activeQueueCount > 0 ? text(`${activeQueueCount} 项进行中`, `${activeQueueCount} in progress`) : null,
+    updatePending ? text("有可用更新", "update available") : null,
+  ].filter(Boolean).join(text("，", ", "));
+  const statusButtonLabel = statusDetails
+    ? text(`${t("shell.statusLabel")}：${statusDetails}`, `${t("shell.statusLabel")}: ${statusDetails}`)
+    : t("shell.statusLabel");
+  const secondaryRouteActive = secondaryMobileNav.some((item) => location.pathname.startsWith(item.to));
+  useSlidingIndicator(sidebarNavRef, sidebarIndicatorRef, '[aria-current="page"]', location.pathname);
+  useSlidingIndicator(mobileNavRef, mobileIndicatorRef, '[aria-current="page"] .app-nav-pill, [data-active="true"] .app-nav-pill', `${location.pathname}:${secondaryRouteActive}`);
   useMobileBackLayer(moreMenuOpen, () => setMoreMenuOpen(false));
   useMobileBackLayer(statusPopoverOpen, () => setStatusPopoverOpen(false));
   useMobileBackLayer(downloadQueueOpen, () => setDownloadQueueOpen(false));
   useMobileBackLayer(commitQueueOpen, () => setCommitQueueOpen(false));
+  const moreMenuLayerRef = useOverlay(moreMenuOpen, "modal");
+  const statusPopoverLayerRef = useOverlay(statusPopoverOpen, "popover");
+  useQueuePanel(downloadQueueOpen, downloadQueueRef, statusButtonRef, () => setDownloadQueueOpen(false));
+  useQueuePanel(commitQueueOpen, commitQueueRef, statusButtonRef, () => setCommitQueueOpen(false));
   const [navWidth, setNavWidth] = useState(() => readStoredShellNavWidth());
   const navResizeSessionRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
   function finishNavResize() {
@@ -173,12 +258,24 @@ export function AppShell() {
   useEffect(() => subscribeTransportPolicy(() => setTransportBlocked(Boolean(getTransportBlockReason()))), []);
 
   useEffect(() => {
+    const onShowShortcuts = () => setShortcutsOpen(true);
+    window.addEventListener(SHOW_SHORTCUTS_EVENT, onShowShortcuts);
+    return () => window.removeEventListener(SHOW_SHORTCUTS_EVENT, onShowShortcuts);
+  }, []);
+
+  useEffect(() => {
     let lastKeyTime = 0;
     let pendingKey: string | null = null;
     const onKeyDown = (event: KeyboardEvent) => {
+      // An open dialog, drawer or sheet owns the keyboard: no palette, page jump or help on top of it.
+      const modalOpen = hasOpenModalOverlay();
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setCommandPaletteOpen(true);
+        if (!modalOpen) setCommandPaletteOpen(true);
+        return;
+      }
+      if (modalOpen) {
+        pendingKey = null;
         return;
       }
 
@@ -239,6 +336,25 @@ export function AppShell() {
     setStatusPopoverOpen(false);
   }, [location.pathname]);
 
+  // The page leads the document title, so browser tabs, history and screen readers name the page.
+  const pageTitle = t(headerTitleKey(location.pathname));
+  useEffect(() => {
+    document.title = `${pageTitle} · EasyConsole`;
+    return () => {
+      document.title = "EasyConsole";
+    };
+  }, [pageTitle]);
+
+  // Looking at the list acknowledges every new failure; opening one task acknowledges that task.
+  useEffect(() => {
+    if (location.pathname === "/tasks") {
+      markTaskFailuresSeen();
+      return;
+    }
+    const detail = /^\/tasks\/([^/]+)$/.exec(location.pathname);
+    if (detail) markTaskFailuresSeen(decodeURIComponent(detail[1]));
+  }, [location.pathname]);
+
   useEffect(() => {
     if (!moreMenuOpen) {
       moreMenuPreviousFocusRef.current?.focus();
@@ -257,11 +373,12 @@ export function AppShell() {
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (!claimOverlayKey(moreMenuLayerRef.current, event)) return;
         event.stopPropagation();
         setMoreMenuOpen(false);
         return;
       }
-      if (event.key !== "Tab" || focusable.length === 0) return;
+      if (event.key !== "Tab" || focusable.length === 0 || !claimOverlayKey(moreMenuLayerRef.current, event)) return;
       const activeElement = document.activeElement;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
@@ -285,7 +402,7 @@ export function AppShell() {
       document.removeEventListener("pointerdown", onClickOutside);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [moreMenuOpen]);
+  }, [moreMenuOpen, moreMenuLayerRef]);
 
   useEffect(() => {
     if (!statusPopoverOpen) {
@@ -314,11 +431,12 @@ export function AppShell() {
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (!claimOverlayKey(statusPopoverLayerRef.current, event)) return;
         event.stopPropagation();
         setStatusPopoverOpen(false);
         return;
       }
-      if (event.key !== "Tab" || focusable.length === 0) return;
+      if (event.key !== "Tab" || focusable.length === 0 || !claimOverlayKey(statusPopoverLayerRef.current, event)) return;
       const activeElement = document.activeElement;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
@@ -346,7 +464,7 @@ export function AppShell() {
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [statusPopoverOpen]);
+  }, [statusPopoverOpen, statusPopoverLayerRef]);
 
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   useEffect(() => {
@@ -423,6 +541,13 @@ export function AppShell() {
     });
   }
 
+  function handleMainScroll(event: UIEvent<HTMLElement>) {
+    const header = headerRef.current;
+    if (!header) return;
+    const scrolled = event.currentTarget.scrollTop > 4 ? "true" : "false";
+    if (header.dataset.scrolled !== scrolled) header.dataset.scrolled = scrolled;
+  }
+
   function onLogoutClick() {
     confirm.confirm({
       title: t("shell.logoutConfirmTitle"),
@@ -435,147 +560,13 @@ export function AppShell() {
 
   return (
     <div className="flex h-full max-h-full flex-col overflow-hidden bg-app-bg text-app-text md:flex-row">
-      <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[100] focus:rounded focus:bg-app-surface focus:px-3 focus:py-1.5 focus:text-sm focus:shadow-popover">
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[100] focus:rounded focus:bg-app-elevated focus:px-3 focus:py-1.5 focus:text-sm focus:shadow-popover">
         {text("跳到主内容", "Skip to main content")}
       </a>
       <TaskNotificationWatcher />
       <BackgroundScheduledTaskRunner />
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
-      {downloadQueueOpen ? (
-        <div className="app-mobile-queue-panel fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="region" aria-label={text("下载队列", "Download queue")}>
-          <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-app-text">{text("下载队列", "Download queue")}</div>
-              <div className="text-xs text-app-muted">
-                {downloadQueue.summary.total
-                  ? text(
-                      `${downloadQueue.summary.completed}/${downloadQueue.summary.total} 完成，${downloadQueue.summary.failed} 失败`,
-                      `${downloadQueue.summary.completed}/${downloadQueue.summary.total} done, ${downloadQueue.summary.failed} failed`,
-                    )
-                  : text("暂无下载任务", "No downloads")}
-              </div>
-            </div>
-            <div className="flex items-center gap-1">
-              <Button className="h-8 px-2 text-xs" disabled={downloadQueue.summary.completed + downloadQueue.summary.cancelled === 0} type="button" variant="ghost" onClick={downloadQueue.clearCompleted}>
-                {text("清理", "Clear")}
-              </Button>
-              <button className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text" type="button" onClick={() => setDownloadQueueOpen(false)}>
-                <X className="h-4 w-4" />
-                <span className="sr-only">{t("common.close")}</span>
-              </button>
-            </div>
-          </div>
-          <div className="max-h-[min(28rem,calc(100vh-8rem))] overflow-auto p-2">
-            {downloadQueue.items.length === 0 ? (
-              <div className="px-3 py-8 text-center text-sm text-app-muted">{text("下载任务会显示在这里", "Downloads will appear here")}</div>
-            ) : (
-              <div className="space-y-2">
-                {downloadQueue.items.map((item) => {
-                  const active = item.status === "queued" || item.status === "downloading";
-                  return (
-                    <div key={item.id} className="rounded-md border border-app-border bg-app-surface p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium text-app-text" title={item.filename}>{item.filename}</div>
-                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
-                            <span>{item.sourceLabel}</span>
-                            <span>{downloadStatusText(item.status)}</span>
-                            <span>{formatDownloadProgress(item)}</span>
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          {item.status === "failed" || item.status === "cancelled" ? (
-                            <Button aria-label={t("common.retry")} className="h-8 w-8 px-0" type="button" title={t("common.retry")} variant="ghost" onClick={() => downloadQueue.retry(item.id)}>
-                              <RotateCcw className="h-4 w-4" />
-                            </Button>
-                          ) : null}
-                          {browserRuntime.supportsFileReveal && item.status === "done" && item.destinationPath ? (
-                            <>
-                              <Button aria-label={text("打开所在文件夹", "Open containing folder")} className="h-8 w-8 px-0" type="button" title={text("打开所在文件夹", "Open containing folder")} variant="ghost" onClick={() => revealDownloadedPath(item.destinationPath!)}>
-                                <FolderOpen className="h-4 w-4" />
-                              </Button>
-                              <Button aria-label={text("打开文件", "Open file")} className="h-8 w-8 px-0" type="button" title={text("打开文件", "Open file")} variant="ghost" onClick={() => openDownloadedPath(item.destinationPath!)}>
-                                <ExternalLink className="h-4 w-4" />
-                              </Button>
-                            </>
-                          ) : null}
-                          {active ? (
-                            <Button aria-label={text("取消下载", "Cancel download")} className="h-8 w-8 px-0" type="button" title={text("取消下载", "Cancel download")} variant="ghost" onClick={() => downloadQueue.cancel(item.id)}>
-                              <X className="h-4 w-4" />
-                            </Button>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-app-panel" role="progressbar" aria-label={item.filename} aria-valuemin={0} aria-valuemax={100} aria-valuenow={item.progress}>
-                        <div className="h-full bg-app-accent transition-all" style={{ width: `${item.status === "done" ? 100 : item.progress}%` }} />
-                      </div>
-                      {item.error ? <div className="mt-2 text-xs text-app-danger">{item.error}</div> : null}
-                      {item.destinationPath ? <div className="mt-2 truncate font-mono text-xs text-app-muted" title={item.destinationPath}>{item.destinationPath}</div> : null}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      ) : null}
-      {commitQueueOpen ? (
-        <div className="app-mobile-queue-panel fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl rounded-lg border border-app-border bg-app-surface shadow-popover md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="region" aria-label={text("提交队列", "Commit queue")}>
-          <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-app-text">{text("提交队列", "Commit queue")}</div>
-              <div className="text-xs text-app-muted">
-                {commitQueue.summary.total
-                  ? text(
-                      `${commitQueue.summary.completed}/${commitQueue.summary.total} 完成，${commitQueue.summary.failed} 失败`,
-                      `${commitQueue.summary.completed}/${commitQueue.summary.total} done, ${commitQueue.summary.failed} failed`,
-                    )
-                  : text("暂无提交任务", "No commits")}
-              </div>
-            </div>
-            <div className="flex items-center gap-1">
-              <Button className="h-8 px-2 text-xs" disabled={commitQueue.summary.completed === 0} type="button" variant="ghost" onClick={commitQueue.clearCompleted}>
-                {text("清理", "Clear")}
-              </Button>
-              <button className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text" type="button" onClick={() => setCommitQueueOpen(false)}>
-                <X className="h-4 w-4" />
-                <span className="sr-only">{t("common.close")}</span>
-              </button>
-            </div>
-          </div>
-          <div className="max-h-[min(28rem,calc(100vh-8rem))] overflow-auto p-2">
-            {commitQueue.items.length === 0 ? (
-              <div className="px-3 py-8 text-center text-sm text-app-muted">{text("提交任务会显示在这里", "Commits will appear here")}</div>
-            ) : (
-              <div className="space-y-2">
-                {commitQueue.items.map((item) => {
-                  const active = item.status === "queued" || item.status === "running";
-                  const statusLabel = active
-                    ? text("进行中", "Running")
-                    : item.status === "done"
-                      ? text("已完成", "Done")
-                      : text("失败", "Failed");
-                  return (
-                    <div key={item.id} className="rounded-md border border-app-border bg-app-surface p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium text-app-text" title={item.taskName}>{item.taskName}</div>
-                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
-                            <span>{statusLabel}</span>
-                            {active ? <RotateCcw className="h-3 w-3 animate-spin" /> : null}
-                          </div>
-                        </div>
-                      </div>
-                      {item.error ? <div className="mt-2 text-xs text-app-danger">{item.error}</div> : null}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      ) : null}
       <Dialog
         open={closePromptOpen}
         title={text("关闭 EasyConsole", "Close EasyConsole")}
@@ -615,34 +606,71 @@ export function AppShell() {
       </Dialog>
       {confirm.confirmDialog}
       <div className="relative hidden h-full shrink-0 md:flex" style={{ width: navWidth }}>
-        <aside className="flex h-full w-full min-w-0 flex-col overflow-hidden border-r border-app-border bg-app-surface">
-          <div className="app-sidebar-header flex h-14 items-center gap-2 border-b border-app-border px-4">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-app-accent text-app-onAccent">
-              <TerminalSquare className="h-4 w-4" />
-            </div>
+        <aside className="flex h-full w-full min-w-0 flex-col overflow-hidden border-r border-app-border bg-app-sidebar">
+          <div className="app-sidebar-header flex h-14 shrink-0 items-center gap-2.5 px-4">
+            <img src="/favicon.svg" alt="" className="h-8 w-8 shrink-0" draggable={false} />
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold">EasyConsole</div>
+              <div className="truncate text-sm font-semibold tracking-[-0.01em]">EasyConsole</div>
               <div className="truncate text-xs text-app-muted">{t("shell.productSubtitle")}</div>
             </div>
           </div>
-          <nav className="app-sidebar-nav flex flex-1 flex-col gap-1 px-3 py-4">
-            {navItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                title={`${t(item.labelKey)} (${item.shortcut})`}
-                className={({ isActive }) =>
-                  cn(
-                    "app-interactive flex h-9 min-w-0 items-center gap-2 rounded-md px-3 text-sm text-app-muted hover:bg-app-panel hover:text-app-text",
-                    isActive && "bg-app-accentSoft text-app-accent",
-                  )
-                }
-              >
-                <item.icon className="h-4 w-4 shrink-0" />
-                <span className="truncate">{t(item.labelKey)}</span>
-              </NavLink>
+          <nav ref={sidebarNavRef} className="app-sidebar-nav relative flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3" aria-label={text("主导航", "Main navigation")}>
+            <span ref={sidebarIndicatorRef} aria-hidden="true" className="app-sliding-indicator rounded-md bg-app-thumb shadow-raised" />
+            {navGroups.map((group) => (
+              <div key={group.id} role="group" aria-labelledby={`nav-group-${group.id}`} className="flex flex-col gap-0.5">
+                <div id={`nav-group-${group.id}`} className="truncate px-3 pb-1.5 pt-4 text-[0.6875rem] font-medium text-app-muted">
+                  {text(group.zh, group.en)}
+                </div>
+                {group.items.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    title={`${t(item.labelKey)} (${item.shortcut})`}
+                    className={({ isActive }) =>
+                      cn(
+                        "app-interactive relative flex h-9 min-w-0 items-center gap-2.5 rounded-md px-3 text-sm",
+                        isActive ? "font-medium text-app-text" : "text-app-muted hover:bg-app-panel hover:text-app-text",
+                      )
+                    }
+                  >
+                    {({ isActive }) => (
+                      <>
+                        <item.icon className={cn("h-4 w-4 shrink-0 transition-colors duration-[var(--app-motion-fast)]", isActive && "text-app-accent")} />
+                        <span className="truncate">{t(item.labelKey)}</span>
+                        {item.to === "/tasks" && unseenFailureCount > 0 ? (
+                          <span
+                            className="app-numeric ml-auto min-w-5 shrink-0 rounded-full bg-app-danger px-1.5 text-center text-[0.6875rem] font-semibold leading-5 text-app-onAccent"
+                            title={unseenFailureLabel}
+                          >
+                            {unseenFailureCount}
+                            <span className="sr-only">{unseenFailureLabel}</span>
+                          </span>
+                        ) : null}
+                      </>
+                    )}
+                  </NavLink>
+                ))}
+              </div>
             ))}
           </nav>
+          <div className="shrink-0 space-y-2.5 border-t border-app-border p-3">
+            <div className="flex min-w-0 items-center gap-2.5 pl-1">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-app-accentSoft text-sm font-semibold text-app-accent" aria-hidden="true">
+                {userInitial}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-app-text" title={userName}>{userName}</div>
+                <div className="truncate text-xs text-app-muted">{userGroup}</div>
+              </div>
+              <Button aria-label={t("shell.logout")} className="h-8 w-8 shrink-0 px-0" title={t("shell.logout")} type="button" variant="ghost" onClick={onLogoutClick}>
+                <LogOut className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <ThemeSwitch />
+              <LanguageSwitch compact />
+            </div>
+          </div>
         </aside>
         <div
           aria-orientation="vertical"
@@ -661,21 +689,33 @@ export function AppShell() {
         />
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="z-40 flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-app-border bg-app-surface px-4 md:px-5" style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}>
+        <header ref={headerRef} className="app-shell-header z-40 flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-app-border bg-app-surface px-4 md:px-6" data-scrolled="false" style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}>
           <div className="min-w-0">
-            <h1 className="truncate text-base font-semibold">{t(headerTitleKey(location.pathname))}</h1>
+            <h1 className="truncate text-[1.0625rem] font-semibold leading-6 tracking-[-0.015em]">{pageTitle}</h1>
             <p className="hidden truncate text-xs text-app-muted sm:block">{t(headerDescriptionKey(location.pathname))}</p>
           </div>
-          <div className="flex shrink-0 items-center gap-3">
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              aria-keyshortcuts={browserRuntime.isApplePlatform ? "Meta+K" : "Control+K"}
+              aria-label={text("搜索命令和页面", "Search commands and pages")}
+              className="app-interactive flex h-9 w-9 items-center justify-center gap-2 rounded-md border border-transparent text-sm text-app-muted hover:bg-app-panel hover:text-app-text sm:w-56 sm:justify-start sm:border-app-borderStrong sm:bg-app-surface sm:px-3 sm:shadow-raised sm:hover:border-app-muted sm:hover:bg-app-surface lg:w-64 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 sm:[@media(pointer:coarse)]:w-56"
+              title={text(`搜索命令和页面（${commandShortcut}）`, `Search commands and pages (${commandShortcut})`)}
+              type="button"
+              onClick={() => setCommandPaletteOpen(true)}
+            >
+              <Search className="h-4 w-4 shrink-0" />
+              <span className="hidden min-w-0 flex-1 truncate text-left sm:block">{text("搜索或跳转…", "Search or jump to…")}</span>
+              <kbd className="hidden shrink-0 rounded border border-app-border bg-app-panel px-1.5 font-sans text-[0.6875rem] font-medium leading-5 text-app-muted sm:block">{commandShortcut}</kbd>
+            </button>
             <div className="relative">
               <Button
                 ref={statusButtonRef}
                 aria-expanded={statusPopoverOpen}
                 aria-haspopup="dialog"
-                aria-label={t("shell.statusLabel")}
-                className="shrink-0"
-                title={t("shell.statusLabel")}
-                variant="secondary"
+                aria-label={statusButtonLabel}
+                className="relative shrink-0 px-2.5"
+                title={statusButtonLabel}
+                variant="ghost"
                 onClick={() => {
                   if (!statusPopoverOpen) {
                     const anchor = statusButtonRef.current?.getBoundingClientRect();
@@ -689,24 +729,25 @@ export function AppShell() {
                   setStatusPopoverOpen((value) => !value);
                 }}
               >
-                <DownloadCloud className="h-4 w-4" />
-                <span className="hidden sm:inline">{t("shell.status")}</span>
-                {(() => {
-                  const activeCount = (downloadQueue.summary.active ?? 0) + (commitQueue.summary.active ?? 0);
-                  const failedCount = (downloadQueue.summary.failed ?? 0) + (commitQueue.summary.failed ?? 0);
-                  const updateAvailable = browserRuntime.supportsUpdater && (appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading");
-                  const total = activeCount + failedCount + (updateAvailable ? 1 : 0);
-                  return total > 0 ? (
-                    <span className="rounded bg-app-panel px-1.5 py-0.5 text-xs text-app-muted">
-                      {total}
-                    </span>
-                  ) : null;
-                })()}
+                {/* A failure changes the icon's shape, not only the badge's fill. */}
+                {failedQueueCount > 0 ? <AlertCircle className="h-4 w-4 text-app-danger" /> : <DownloadCloud className="h-4 w-4" />}
+                <span className="hidden lg:inline">{t("shell.status")}</span>
+                {statusBadgeCount > 0 ? (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "app-numeric min-w-5 rounded-full px-1.5 text-center text-[0.6875rem] font-semibold leading-5",
+                      failedQueueCount > 0 ? "bg-app-danger text-app-onAccent" : "bg-app-accent text-app-onAccent",
+                    )}
+                  >
+                    {statusBadgeCount}
+                  </span>
+                ) : null}
               </Button>
               {statusPopoverOpen ? (
                 <div
                   ref={statusPopoverRef}
-                  className="fixed z-50 w-[min(16rem,calc(100vw-1.5rem))] rounded-lg border border-app-border bg-app-surface shadow-popover"
+                  className="app-pop-enter fixed z-50 w-[min(16rem,calc(100vw-1.5rem))] origin-top-right rounded-lg border border-app-border bg-app-elevated shadow-popover"
                   role="dialog"
                   aria-label={t("shell.statusLabel")}
                   style={statusPopoverPosition}
@@ -714,7 +755,7 @@ export function AppShell() {
                   <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
                     <div className="text-sm font-semibold text-app-text">{t("shell.statusLabel")}</div>
                     <button
-                      className="flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text"
+                      className="app-interactive flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text"
                       type="button"
                       onClick={() => setStatusPopoverOpen(false)}
                     >
@@ -728,6 +769,7 @@ export function AppShell() {
                       type="button"
                       onClick={() => {
                         setDownloadQueueOpen(true);
+                        setCommitQueueOpen(false);
                         setStatusPopoverOpen(false);
                       }}
                     >
@@ -755,6 +797,7 @@ export function AppShell() {
                       title={t("shell.commitTooltip")}
                       onClick={() => {
                         setCommitQueueOpen(true);
+                        setDownloadQueueOpen(false);
                         setStatusPopoverOpen(false);
                       }}
                     >
@@ -776,7 +819,7 @@ export function AppShell() {
                         </span>
                       ) : null}
                     </button>
-                    {browserRuntime.supportsUpdater && (appUpdate.state.status === "available" || appUpdate.state.status === "readyToRestart" || appUpdate.state.status === "downloading") ? (
+                    {updatePending ? (
                       <button
                         className={cn(
                           "app-interactive flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-app-panel",
@@ -824,29 +867,140 @@ export function AppShell() {
                 </div>
               ) : null}
             </div>
-            <Button aria-label={text("打开命令面板（Ctrl K）", "Open command palette (Ctrl K)")} className="hidden shrink-0 sm:inline-flex" variant="secondary" onClick={() => setCommandPaletteOpen(true)}>
-              <CommandIcon className="h-4 w-4" />
-              Ctrl K
-            </Button>
-            <Button
-              aria-label={text("搜索命令和页面", "Search commands and pages")}
-              className="inline-flex shrink-0 sm:hidden"
-              title={text("搜索命令和页面", "Search commands and pages")}
-              variant="secondary"
-              onClick={() => setCommandPaletteOpen(true)}
-            >
-              <Search className="h-4 w-4" />
-            </Button>
-            <div className="hidden items-center gap-3 sm:flex">
-              <LanguageSwitch />
-              <span className="hidden max-w-32 truncate text-sm text-app-muted sm:inline md:max-w-48">{userName}</span>
-            </div>
-            <Button className="hidden shrink-0 sm:inline-flex" variant="secondary" onClick={onLogoutClick}>
-              <LogOut className="h-4 w-4" />
-              {t("shell.logout")}
-            </Button>
           </div>
         </header>
+        {downloadQueueOpen ? (
+          <div ref={downloadQueueRef} className="app-mobile-queue-panel fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl origin-top-right rounded-lg border border-app-border bg-app-elevated shadow-popover app-pop-enter md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="dialog" aria-label={text("下载队列", "Download queue")}>
+            <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-app-text">{text("下载队列", "Download queue")}</div>
+                <div className="text-xs text-app-muted">
+                  {downloadQueue.summary.total
+                    ? text(
+                        `${downloadQueue.summary.completed}/${downloadQueue.summary.total} 完成，${downloadQueue.summary.failed} 失败`,
+                        `${downloadQueue.summary.completed}/${downloadQueue.summary.total} done, ${downloadQueue.summary.failed} failed`,
+                      )
+                    : text("暂无下载任务", "No downloads")}
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <Button className="h-8 px-2 text-xs" disabled={downloadQueue.summary.completed + downloadQueue.summary.cancelled === 0} type="button" variant="ghost" onClick={downloadQueue.clearCompleted}>
+                  {text("清理", "Clear")}
+                </Button>
+                <button className="app-interactive flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text" type="button" onClick={() => setDownloadQueueOpen(false)}>
+                  <X className="h-4 w-4" />
+                  <span className="sr-only">{t("common.close")}</span>
+                </button>
+              </div>
+            </div>
+            <div className="max-h-[min(28rem,calc(100vh-8rem))] overflow-auto p-2">
+              {downloadQueue.items.length === 0 ? (
+                <div className="px-3 py-8 text-center text-sm text-app-muted">{text("下载任务会显示在这里", "Downloads will appear here")}</div>
+              ) : (
+                <div className="space-y-2">
+                  {downloadQueue.items.map((item) => {
+                    const active = item.status === "queued" || item.status === "downloading";
+                    return (
+                      <div key={item.id} className="rounded-md bg-app-panel/60 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-app-text" title={item.filename}>{item.filename}</div>
+                            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
+                              <span>{item.sourceLabel}</span>
+                              <span>{downloadStatusText(item.status)}</span>
+                              <span>{formatDownloadProgress(item)}</span>
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1">
+                            {item.status === "failed" || item.status === "cancelled" ? (
+                              <Button aria-label={t("common.retry")} className="h-8 w-8 px-0" type="button" title={t("common.retry")} variant="ghost" onClick={() => downloadQueue.retry(item.id)}>
+                                <RotateCcw className="h-4 w-4" />
+                              </Button>
+                            ) : null}
+                            {browserRuntime.supportsFileReveal && item.status === "done" && item.destinationPath ? (
+                              <>
+                                <Button aria-label={text("打开所在文件夹", "Open containing folder")} className="h-8 w-8 px-0" type="button" title={text("打开所在文件夹", "Open containing folder")} variant="ghost" onClick={() => revealDownloadedPath(item.destinationPath!)}>
+                                  <FolderOpen className="h-4 w-4" />
+                                </Button>
+                                <Button aria-label={text("打开文件", "Open file")} className="h-8 w-8 px-0" type="button" title={text("打开文件", "Open file")} variant="ghost" onClick={() => openDownloadedPath(item.destinationPath!)}>
+                                  <ExternalLink className="h-4 w-4" />
+                                </Button>
+                              </>
+                            ) : null}
+                            {active ? (
+                              <Button aria-label={text("取消下载", "Cancel download")} className="h-8 w-8 px-0" type="button" title={text("取消下载", "Cancel download")} variant="ghost" onClick={() => downloadQueue.cancel(item.id)}>
+                                <X className="h-4 w-4" />
+                              </Button>
+                            ) : null}
+                          </div>
+                        </div>
+                        <ProgressBar className="mt-3" label={item.filename} value={item.status === "done" ? 100 : item.progress} />
+                        {item.error ? <div className="mt-2 text-xs text-app-danger">{item.error}</div> : null}
+                        {item.destinationPath ? <div className="mt-2 truncate font-mono text-xs text-app-muted" title={item.destinationPath}>{item.destinationPath}</div> : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+        {commitQueueOpen ? (
+          <div ref={commitQueueRef} className="app-mobile-queue-panel fixed right-3 top-16 z-50 w-[calc(100vw-1.5rem)] max-w-xl origin-top-right rounded-lg border border-app-border bg-app-elevated shadow-popover app-pop-enter md:right-5" style={{ top: "calc(3.5rem + env(safe-area-inset-top, 0px))" }} role="dialog" aria-label={text("提交队列", "Commit queue")}>
+            <div className="flex h-12 items-center justify-between border-b border-app-border px-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-app-text">{text("提交队列", "Commit queue")}</div>
+                <div className="text-xs text-app-muted">
+                  {commitQueue.summary.total
+                    ? text(
+                        `${commitQueue.summary.completed}/${commitQueue.summary.total} 完成，${commitQueue.summary.failed} 失败`,
+                        `${commitQueue.summary.completed}/${commitQueue.summary.total} done, ${commitQueue.summary.failed} failed`,
+                      )
+                    : text("暂无提交任务", "No commits")}
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <Button className="h-8 px-2 text-xs" disabled={commitQueue.summary.completed === 0} type="button" variant="ghost" onClick={commitQueue.clearCompleted}>
+                  {text("清理", "Clear")}
+                </Button>
+                <button className="app-interactive flex h-8 w-8 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text" type="button" onClick={() => setCommitQueueOpen(false)}>
+                  <X className="h-4 w-4" />
+                  <span className="sr-only">{t("common.close")}</span>
+                </button>
+              </div>
+            </div>
+            <div className="max-h-[min(28rem,calc(100vh-8rem))] overflow-auto p-2">
+              {commitQueue.items.length === 0 ? (
+                <div className="px-3 py-8 text-center text-sm text-app-muted">{text("提交任务会显示在这里", "Commits will appear here")}</div>
+              ) : (
+                <div className="space-y-2">
+                  {commitQueue.items.map((item) => {
+                    const active = item.status === "queued" || item.status === "running";
+                    const statusLabel = active
+                      ? text("进行中", "Running")
+                      : item.status === "done"
+                        ? text("已完成", "Done")
+                        : text("失败", "Failed");
+                    return (
+                      <div key={item.id} className="rounded-md bg-app-panel/60 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-app-text" title={item.taskName}>{item.taskName}</div>
+                            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
+                              <span>{statusLabel}</span>
+                              {active ? <RotateCcw className="h-3 w-3 animate-spin" /> : null}
+                            </div>
+                          </div>
+                        </div>
+                        {item.error ? <div className="mt-2 text-xs text-app-danger">{item.error}</div> : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
         {isOnline ? null : (
           <div className="flex items-center gap-2 bg-app-warningSoft px-4 py-1.5 text-sm font-medium text-app-warningText" role="alert">
             <WifiOff className="h-3.5 w-3.5 shrink-0" />
@@ -862,30 +1016,38 @@ export function AppShell() {
             </Button>
           </div>
         ) : null}
-        <main id="main-content" className="app-main-content min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain px-3 py-4 pb-32 sm:p-5 sm:pb-32 md:pb-5">
+        <main id="main-content" className="app-main-content min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain px-3 py-4 pb-32 sm:p-5 sm:pb-32 md:px-6 md:pb-6" onScroll={handleMainScroll}>
           <div key={location.pathname} className="app-page-enter">
             <Outlet />
           </div>
         </main>
       </div>
       {moreMenuOpen ? (
+        <>
+        {/* Dims the page above the sheet; the existing outside-press handler closes on tap. */}
+        <div
+          ref={moreScrimRef}
+          aria-hidden="true"
+          className="app-scrim fixed inset-x-0 top-0 z-[45] md:hidden"
+          style={{ bottom: "calc(3.5rem + env(safe-area-inset-bottom, 0px))" }}
+        />
         <div
           ref={moreMenuRef}
-          className="app-mobile-action-sheet fixed inset-x-0 z-50 border-t border-app-border bg-app-surface shadow-popover md:hidden"
+          className="app-mobile-action-sheet app-surface-enter fixed inset-x-0 z-50 rounded-t-lg border-t border-app-border bg-app-elevated shadow-popover md:hidden"
           role="dialog"
           aria-modal="true"
           aria-label={text("更多页面", "More pages")}
           style={{ bottom: "calc(3.5rem + env(safe-area-inset-bottom, 0px))" }}
         >
-          <div className="grid grid-cols-3 gap-0">
+          <div className="grid grid-cols-3 gap-1 p-2">
             {secondaryMobileNav.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 className={({ isActive }) =>
                   cn(
-                    "app-interactive flex flex-col items-center justify-center gap-1 py-3 text-xs text-app-muted",
-                    isActive && "bg-app-accentSoft text-app-accent",
+                    "app-interactive flex flex-col items-center justify-center gap-1.5 rounded-md py-3 text-xs",
+                    isActive ? "bg-app-accentSoft font-medium text-app-accent" : "text-app-muted hover:bg-app-panel hover:text-app-text",
                   )
                 }
                 onClick={() => setMoreMenuOpen(false)}
@@ -895,29 +1057,57 @@ export function AppShell() {
               </NavLink>
             ))}
           </div>
-          <div className="flex items-center justify-between gap-3 border-t border-app-border px-3 py-2" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
-            <LanguageSwitch compact />
-            <Button className="h-9" type="button" variant="secondary" onClick={onLogoutClick}>
-              <LogOut className="h-4 w-4" />
-              {t("shell.logout")}
-            </Button>
+          <div className="space-y-3 border-t border-app-border px-3 pb-3 pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <ThemeSwitch />
+              <LanguageSwitch compact />
+            </div>
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-app-accentSoft text-sm font-semibold text-app-accent" aria-hidden="true">
+                {userInitial}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-app-text">{userName}</span>
+              <Button className="h-9 shrink-0" type="button" variant="secondary" onClick={onLogoutClick}>
+                <LogOut className="h-4 w-4" />
+                {t("shell.logout")}
+              </Button>
+            </div>
           </div>
         </div>
+        </>
       ) : null}
-      <nav className="fixed inset-x-0 bottom-0 z-40 flex items-stretch border-t border-app-border bg-app-surface md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+      <nav
+        ref={mobileNavRef}
+        aria-label={text("主导航", "Main navigation")}
+        className="fixed inset-x-0 bottom-0 z-40 flex items-stretch border-t border-app-border bg-app-surface md:hidden"
+        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+      >
+        <span ref={mobileIndicatorRef} aria-hidden="true" className="app-sliding-indicator rounded-full bg-app-accentSoft" />
         {primaryMobileNav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             className={({ isActive }) =>
               cn(
-                "app-interactive flex h-14 min-w-0 flex-1 flex-col items-center justify-center gap-1 text-xs text-app-muted",
-                isActive && "bg-app-accentSoft text-app-accent",
+                "flex h-14 min-w-0 flex-1 flex-col items-center justify-center gap-0.5 text-[0.6875rem] transition-colors duration-[var(--app-motion-fast)]",
+                isActive ? "font-medium text-app-text" : "text-app-muted",
               )
             }
           >
-            <item.icon className="h-5 w-5" />
-            <span>{t(item.labelKey)}</span>
+            {({ isActive }) => (
+              <>
+                <span className="app-nav-pill relative flex h-7 w-14 items-center justify-center rounded-full">
+                  <item.icon className={cn("h-5 w-5", isActive && "text-app-accent")} />
+                  {item.to === "/tasks" && unseenFailureCount > 0 ? (
+                    <span className="app-numeric absolute -top-1 right-2 min-w-4 rounded-full bg-app-danger px-1 text-center text-[0.6875rem] font-semibold leading-4 text-app-onAccent">
+                      {unseenFailureCount}
+                      <span className="sr-only">{unseenFailureLabel}</span>
+                    </span>
+                  ) : null}
+                </span>
+                <span>{t(item.labelKey)}</span>
+              </>
+            )}
           </NavLink>
         ))}
         <button
@@ -925,13 +1115,16 @@ export function AppShell() {
           type="button"
           aria-expanded={moreMenuOpen}
           aria-haspopup="dialog"
+          data-active={secondaryRouteActive ? "true" : undefined}
           className={cn(
-            "app-interactive flex h-14 min-w-0 flex-1 flex-col items-center justify-center gap-1 text-xs text-app-muted",
-            secondaryMobileNav.some((item) => location.pathname.startsWith(item.to)) && "bg-app-accentSoft text-app-accent",
+            "flex h-14 min-w-0 flex-1 flex-col items-center justify-center gap-0.5 text-[0.6875rem] transition-colors duration-[var(--app-motion-fast)]",
+            secondaryRouteActive || moreMenuOpen ? "font-medium text-app-text" : "text-app-muted",
           )}
           onClick={() => setMoreMenuOpen((v) => !v)}
         >
-          <MoreHorizontal className="h-5 w-5" />
+          <span className="app-nav-pill relative flex h-7 w-14 items-center justify-center rounded-full">
+            <MoreHorizontal className={cn("h-5 w-5", secondaryRouteActive && "text-app-accent")} />
+          </span>
           <span>{text("更多", "More")}</span>
         </button>
       </nav>

@@ -1,9 +1,10 @@
-import { Eye, EyeOff, LockKeyhole, Server, Trash2, UserCheck, UserRoundPlus } from "lucide-react";
+import { Eye, EyeOff, Settings2, Trash2, UserRoundPlus } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { LoadingState } from "../components/DataState";
 import { LanguageSwitch } from "../components/LanguageSwitch";
+import { ThemeSwitch } from "../components/ThemeSwitch";
 import { Button, Input } from "../components/ui";
 import { getTransportBlockReason } from "../lib/api";
 import { getSavedAccountLabel } from "../lib/saved-accounts";
@@ -122,41 +123,31 @@ export function LoginPage() {
   }
 
   return (
-    <main className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)] overflow-x-hidden overflow-y-auto overscroll-contain bg-app-bg text-app-text lg:grid-cols-[minmax(0,1fr)_460px]">
-      <section className="hidden flex-col justify-between border-r border-app-border bg-app-surface p-10 lg:flex">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-app-accent text-app-onAccent">
-            <Server className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold">EasyConsole</h1>
-            <p className="text-sm text-app-muted">{t("login.tagline")}</p>
-          </div>
+    <main className="flex h-full min-w-0 flex-col items-center overflow-x-hidden overflow-y-auto overscroll-contain bg-app-bg px-4 py-10 text-app-text sm:px-6">
+      <div className="my-auto flex w-full min-w-0 max-w-[360px] flex-col">
+        <div className="mb-7 flex flex-col items-center text-center">
+          <img src="/favicon.svg" alt="" className="h-14 w-14" draggable={false} />
+          <h1 className="mt-4 text-xl font-semibold tracking-[-0.02em]">EasyConsole</h1>
+          <p className="mt-1 text-sm text-app-muted">{t("login.tagline")}</p>
         </div>
-        <div className="max-w-xl">
-          <p className="text-sm leading-6 text-app-muted">
-            {t("login.heroCopy")}
-          </p>
-        </div>
-      </section>
-      <section className="flex min-w-0 items-center justify-center overflow-x-hidden px-4 py-10 sm:px-6">
-        <div className="app-surface-enter box-border w-full min-w-0 max-w-[320px] rounded-lg border border-app-border bg-app-surface p-6 shadow-shell sm:max-w-sm">
+        <section className="app-surface-enter box-border w-full min-w-0 rounded-lg border border-app-border bg-app-surface p-6 shadow-popover">
           <div className="mb-6">
-            <div className="mb-3 flex items-start justify-between gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-md bg-app-accentSoft text-app-accent">
-                {showSavedAccounts ? <UserCheck className="h-5 w-5" /> : <LockKeyhole className="h-5 w-5" />}
-              </div>
+            <div className="flex items-start justify-between gap-3">
+              <h2 className="text-lg font-semibold tracking-[-0.01em]">{showSavedAccounts ? t("login.chooseSavedTitle") : t("login.passwordTitle")}</h2>
               <Link
-                className="app-interactive rounded-md px-2 py-1 text-xs text-app-muted hover:bg-app-panel hover:text-app-text"
+                className="app-interactive -mr-2 -mt-0.5 inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-app-muted hover:bg-app-panel hover:text-app-text"
                 to="/login/settings"
               >
+                <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
                 {t("common.apiSettings")}
               </Link>
             </div>
-            <h2 className="text-lg font-semibold">{showSavedAccounts ? t("login.chooseSavedTitle") : t("login.passwordTitle")}</h2>
             <p className="mt-1 text-sm text-app-muted">
               {showSavedAccounts ? t("login.chooseSavedDescription") : t("login.passwordDescription")}
             </p>
+            {auth.sessionExpired ? (
+              <div className="mt-3 rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warningText" role="status">{t("login.sessionExpired")}</div>
+            ) : null}
             {transportBlocked ? (
               <div className="mt-3 rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{t("login.transportBlocked")}</div>
             ) : null}
@@ -167,10 +158,13 @@ export function LoginPage() {
               <div className="space-y-2">
                 {auth.savedAccounts.map((account) => (
                   <div
-                    className="flex items-center justify-between gap-3 rounded-md border border-app-border bg-app-bg px-3 py-2"
+                    className="flex items-center justify-between gap-3 rounded-md border border-app-border bg-app-bg px-3 py-2.5"
                     key={account.id}
                   >
-                    <div className="min-w-0">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-app-accentSoft text-sm font-semibold text-app-accent" aria-hidden="true">
+                      {getSavedAccountLabel(account).trim().charAt(0).toUpperCase() || "?"}
+                    </span>
+                    <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-medium">{getSavedAccountLabel(account)}</div>
                       <div className="truncate text-xs text-app-muted">{account.username}</div>
                     </div>
@@ -217,7 +211,7 @@ export function LoginPage() {
           ) : (
             <form className="space-y-4" onSubmit={onSubmit}>
               <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{t("login.username")}</span>
+                <span className="mb-1.5 block font-medium text-app-text">{t("login.username")}</span>
                 <Input
                   autoComplete="username"
                   className="w-full"
@@ -227,7 +221,7 @@ export function LoginPage() {
                 />
               </label>
               <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{t("login.password")}</span>
+                <span className="mb-1.5 block font-medium text-app-text">{t("login.password")}</span>
                 <div className="relative">
                   <Input
                     autoComplete="current-password"
@@ -277,11 +271,13 @@ export function LoginPage() {
               </div>
             </form>
           )}
-          <div className="mt-5 flex justify-center">
-            <LanguageSwitch compact />
-          </div>
+        </section>
+        <p className="mt-6 px-2 text-center text-xs leading-5 text-app-muted">{t("login.heroCopy")}</p>
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <LanguageSwitch compact />
+          <ThemeSwitch />
         </div>
-      </section>
+      </div>
       {confirm.confirmDialog}
     </main>
   );

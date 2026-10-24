@@ -4,13 +4,19 @@
 @source "../index.html";
 @source "./";
 
-/* Static theme tokens are shared by utilities, focus cues and chart/SVG styles. */
+/* Static theme tokens are shared by utilities, focus cues and chart/SVG styles.
+   These are the light values; the dark theme overrides the same variables below,
+   so every utility, opacity modifier and inline var() follows the active theme. */
 @theme static {
   --color-app-bg: oklch(0.982 0.006 95);
+  --color-app-sidebar: oklch(0.968 0.007 95);
   --color-app-surface: oklch(0.995 0.004 95);
+  --color-app-elevated: oklch(0.998 0.003 95);
   --color-app-panel: oklch(0.955 0.008 95);
-  --color-app-border: oklch(0.86 0.012 95);
-  /* 3.52:1 on surface, 3.39:1 on bg, 3.13:1 on panel (WCAG 1.4.11). */
+  /* Raised thumb for segmented controls and the active nav item: lifts off panel/sidebar. */
+  --color-app-thumb: oklch(0.998 0.003 95);
+  --color-app-border: oklch(0.885 0.011 95);
+  /* 3.52:1 on surface, 3.39:1 on bg, 3.13:1 on panel, 3.32:1 on sidebar (WCAG 1.4.11). */
   --color-app-borderStrong: oklch(0.62 0.014 95);
   --color-app-text: oklch(0.23 0.018 255);
   --color-app-muted: oklch(0.48 0.018 255);
@@ -30,14 +36,12 @@
   --color-app-info: oklch(0.50 0.145 250);
   --color-app-infoSoft: oklch(0.94 0.035 250);
   --color-app-infoRing: oklch(0.82 0.075 250);
-  --color-app-neutralSoft: oklch(0.925 0.01 95);
-  --color-app-neutralRing: oklch(0.82 0.014 95);
-  --color-app-releaseTimed: oklch(0.49 0.135 305);
-  --color-app-releaseTimedSoft: oklch(0.96 0.035 305);
-  --color-app-releaseTimedRing: oklch(0.84 0.075 305);
-  --color-app-releaseFinished: oklch(0.45 0.105 185);
-  --color-app-releaseFinishedSoft: oklch(0.955 0.035 185);
-  --color-app-releaseFinishedRing: oklch(0.82 0.07 185);
+  --color-app-neutralSoft: oklch(0.935 0.009 95);
+  --color-app-neutralRing: oklch(0.84 0.013 95);
+  /* Opaque row fills, so a sticky table cell can match its row without its own mix. */
+  --color-app-rowHover: color-mix(in oklab, var(--color-app-panel) 60%, var(--color-app-surface));
+  --color-app-rowDanger: color-mix(in oklab, var(--color-app-dangerSoft) 55%, var(--color-app-surface));
+  --color-app-rowDangerHover: var(--color-app-dangerSoft);
   --color-app-codeBg: oklch(0.19 0.025 255);
   --color-app-codeText: oklch(0.91 0.018 255);
   --color-app-terminalBg: oklch(0.18 0.028 255);
@@ -46,110 +50,282 @@
   --color-app-terminalText: oklch(0.9 0.018 255);
   --color-app-terminalMuted: oklch(0.7 0.022 255);
   --color-app-terminalAccent: oklch(0.78 0.12 235);
+
+  /* Controls stay at 8px; panels, dialogs and popovers step up to 12px. */
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+
+  --font-sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
 }
 
 :root {
   color: var(--color-app-text);
   background: var(--color-app-bg);
+  color-scheme: light;
   --app-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --app-ease-smooth: cubic-bezier(0.25, 1, 0.5, 1);
+  --app-ease-in: cubic-bezier(0.4, 0, 1, 1);
   --app-motion-fast: 120ms;
-  --app-motion-standard: 170ms;
+  --app-motion-standard: 180ms;
+  --app-motion-emphasized: 280ms;
+  --app-shadow-ink: oklch(0.23 0.018 255);
+  --app-shadow-raised: 0 1px 2px oklch(0.23 0.018 255 / 0.08), 0 0 0 1px oklch(0.23 0.018 255 / 0.04);
+  --app-shadow-shell: 0 1px 2px oklch(0.23 0.018 255 / 0.04);
+  --app-shadow-popover: 0 16px 36px -12px oklch(0.23 0.018 255 / 0.22), 0 4px 10px -4px oklch(0.23 0.018 255 / 0.08);
+  --app-shadow-modal: 0 28px 64px -20px oklch(0.19 0.025 255 / 0.36), 0 8px 20px -8px oklch(0.19 0.025 255 / 0.14);
+  --app-shadow-sticky: -10px 0 16px -16px oklch(0.23 0.018 255 / 0.45);
+  --app-shadow-sticky-subtle: -8px 0 12px -12px oklch(0.23 0.018 255 / 0.35);
+  --app-overlay: oklch(0.19 0.025 255 / 0.36);
+  /* Focus follows its surface: the app accent here, the terminal accent on the dark terminal chrome. */
+  --app-focus-color: var(--color-app-accent);
+  --app-focus-halo-mix: 24%;
+  --app-scrollbar: oklch(0.80 0.012 95);
+  --app-scrollbar-hover: oklch(0.68 0.014 95);
   font-synthesis: none;
+  font-feature-settings: "cv11", "ss03";
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-* {
-  box-sizing: border-box;
+/* Dark theme: a cool graphite workstation for late or dim sessions. Defined
+   twice so "follow system" works without JS and an explicit choice overrides it. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --color-app-bg: oklch(0.178 0.011 260);
+    --color-app-sidebar: oklch(0.162 0.010 260);
+    --color-app-surface: oklch(0.215 0.012 260);
+    --color-app-elevated: oklch(0.245 0.013 260);
+    --color-app-panel: oklch(0.262 0.013 260);
+    --color-app-thumb: oklch(0.335 0.015 260);
+    --color-app-border: oklch(0.30 0.013 260);
+    /* 3.77:1 on surface, 3.32:1 on panel. */
+    --color-app-borderStrong: oklch(0.56 0.014 260);
+    --color-app-text: oklch(0.94 0.006 260);
+    --color-app-muted: oklch(0.72 0.012 260);
+    --color-app-onAccent: oklch(0.17 0.02 255);
+    --color-app-accent: oklch(0.74 0.125 250);
+    --color-app-accentSoft: oklch(0.31 0.06 255);
+    --color-app-success: oklch(0.76 0.13 152);
+    --color-app-successSoft: oklch(0.29 0.05 152);
+    --color-app-successRing: oklch(0.42 0.08 152);
+    --color-app-warning: oklch(0.80 0.13 80);
+    --color-app-warningText: oklch(0.84 0.12 82);
+    --color-app-warningSoft: oklch(0.30 0.05 80);
+    --color-app-warningRing: oklch(0.45 0.08 80);
+    --color-app-danger: oklch(0.72 0.16 25);
+    --color-app-dangerSoft: oklch(0.30 0.07 25);
+    --color-app-dangerRing: oklch(0.45 0.11 25);
+    --color-app-info: oklch(0.74 0.125 250);
+    --color-app-infoSoft: oklch(0.31 0.06 255);
+    --color-app-infoRing: oklch(0.45 0.09 252);
+    --color-app-neutralSoft: oklch(0.29 0.012 260);
+    --color-app-neutralRing: oklch(0.38 0.014 260);
+    --color-app-codeBg: oklch(0.15 0.016 260);
+    --color-app-codeText: oklch(0.91 0.018 255);
+    --color-app-terminalBg: oklch(0.145 0.018 260);
+    --color-app-terminalPanel: oklch(0.2 0.022 260);
+    --color-app-terminalBorder: oklch(0.31 0.025 260);
+    --app-shadow-raised: 0 1px 2px oklch(0 0 0 / 0.4), 0 0 0 1px oklch(1 0 0 / 0.06);
+    --app-shadow-shell: 0 1px 2px oklch(0 0 0 / 0.24);
+    --app-shadow-popover: 0 18px 40px -12px oklch(0 0 0 / 0.6), 0 0 0 1px oklch(1 0 0 / 0.06);
+    --app-shadow-modal: 0 32px 72px -20px oklch(0 0 0 / 0.7), 0 0 0 1px oklch(1 0 0 / 0.07);
+    --app-shadow-sticky: -10px 0 16px -14px oklch(0 0 0 / 0.75);
+    --app-shadow-sticky-subtle: -8px 0 12px -10px oklch(0 0 0 / 0.6);
+    --app-overlay: oklch(0.08 0.01 260 / 0.62);
+    --app-focus-halo-mix: 32%;
+    --app-scrollbar: oklch(0.36 0.013 260);
+    --app-scrollbar-hover: oklch(0.46 0.014 260);
+  }
 }
 
-body {
-  margin: 0;
-  min-width: 320px;
-  min-height: 100%;
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-app-bg: oklch(0.178 0.011 260);
+  --color-app-sidebar: oklch(0.162 0.010 260);
+  --color-app-surface: oklch(0.215 0.012 260);
+  --color-app-elevated: oklch(0.245 0.013 260);
+  --color-app-panel: oklch(0.262 0.013 260);
+  --color-app-thumb: oklch(0.335 0.015 260);
+  --color-app-border: oklch(0.30 0.013 260);
+  --color-app-borderStrong: oklch(0.56 0.014 260);
+  --color-app-text: oklch(0.94 0.006 260);
+  --color-app-muted: oklch(0.72 0.012 260);
+  --color-app-onAccent: oklch(0.17 0.02 255);
+  --color-app-accent: oklch(0.74 0.125 250);
+  --color-app-accentSoft: oklch(0.31 0.06 255);
+  --color-app-success: oklch(0.76 0.13 152);
+  --color-app-successSoft: oklch(0.29 0.05 152);
+  --color-app-successRing: oklch(0.42 0.08 152);
+  --color-app-warning: oklch(0.80 0.13 80);
+  --color-app-warningText: oklch(0.84 0.12 82);
+  --color-app-warningSoft: oklch(0.30 0.05 80);
+  --color-app-warningRing: oklch(0.45 0.08 80);
+  --color-app-danger: oklch(0.72 0.16 25);
+  --color-app-dangerSoft: oklch(0.30 0.07 25);
+  --color-app-dangerRing: oklch(0.45 0.11 25);
+  --color-app-info: oklch(0.74 0.125 250);
+  --color-app-infoSoft: oklch(0.31 0.06 255);
+  --color-app-infoRing: oklch(0.45 0.09 252);
+  --color-app-neutralSoft: oklch(0.29 0.012 260);
+  --color-app-neutralRing: oklch(0.38 0.014 260);
+  --color-app-codeBg: oklch(0.15 0.016 260);
+  --color-app-codeText: oklch(0.91 0.018 255);
+  --color-app-terminalBg: oklch(0.145 0.018 260);
+  --color-app-terminalPanel: oklch(0.2 0.022 260);
+  --color-app-terminalBorder: oklch(0.31 0.025 260);
+  --app-shadow-raised: 0 1px 2px oklch(0 0 0 / 0.4), 0 0 0 1px oklch(1 0 0 / 0.06);
+  --app-shadow-shell: 0 1px 2px oklch(0 0 0 / 0.24);
+  --app-shadow-popover: 0 18px 40px -12px oklch(0 0 0 / 0.6), 0 0 0 1px oklch(1 0 0 / 0.06);
+  --app-shadow-modal: 0 32px 72px -20px oklch(0 0 0 / 0.7), 0 0 0 1px oklch(1 0 0 / 0.07);
+  --app-shadow-sticky: -10px 0 16px -14px oklch(0 0 0 / 0.75);
+  --app-shadow-sticky-subtle: -8px 0 12px -10px oklch(0 0 0 / 0.6);
+  --app-overlay: oklch(0.08 0.01 260 / 0.62);
+  --app-focus-halo-mix: 32%;
+  --app-scrollbar: oklch(0.36 0.013 260);
+  --app-scrollbar-hover: oklch(0.46 0.014 260);
 }
 
-html,
-body,
-#root {
-  height: 100%;
-  overflow: hidden;
-  overscroll-behavior: none;
-}
+/* Element defaults live in the base layer so component utilities (text-sm, h-8,
+   focus-visible:ring) can refine them. Unlayered, the font reset used to pin every
+   button, input and select to 16px whatever size it declared. */
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
 
-button,
-input,
-select,
-textarea {
-  font: inherit;
-}
+  body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100%;
+    font-family: var(--font-sans);
+    background: var(--color-app-bg);
+  }
 
-::selection {
-  color: var(--color-app-text);
-  background: var(--color-app-accentSoft);
-}
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
 
-button:focus-visible,
-a:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
-  outline: 2px solid var(--color-app-accent);
-  outline-offset: 2px;
-}
-
-input,
-select,
-textarea {
-  caret-color: var(--color-app-accent);
-  transition:
-    border-color var(--app-motion-fast) var(--app-ease-out),
-    box-shadow var(--app-motion-fast) var(--app-ease-out),
-    background-color var(--app-motion-fast) var(--app-ease-out);
-}
-
-tbody tr {
-  transition:
-    background-color var(--app-motion-fast) var(--app-ease-out),
-    color var(--app-motion-fast) var(--app-ease-out);
-}
-
-@media (pointer: coarse) {
   button,
-  a,
+  input,
   select,
-  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
-  textarea,
-  label:has(input[type="file"]) {
-    min-height: 44px;
+  textarea {
+    font: inherit;
   }
 
-  button,
-  a,
-  label:has(input[type="file"]) {
-    min-width: 44px;
+  /* Fixed-width numerals where figures change in place or are compared. Not table-wide:
+     Inter's tabular forms also widen hyphens and colons, which spreads out task names. */
+  time,
+  .app-numeric {
+    font-variant-numeric: tabular-nums;
   }
 
-  input[type="checkbox"],
-  input[type="radio"] {
-    min-height: 24px;
-    min-width: 24px;
+  ::selection {
+    color: var(--color-app-text);
+    background: color-mix(in oklch, var(--color-app-accent) 26%, transparent);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--app-scrollbar) transparent;
+  }
+
+  *:hover {
+    scrollbar-color: var(--app-scrollbar-hover) transparent;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  [role="separator"]:focus-visible,
+  input[type="checkbox"]:focus-visible,
+  input[type="radio"]:focus-visible,
+  input[type="file"]:focus-visible {
+    outline: 2px solid var(--app-focus-color);
+    outline-offset: 2px;
+  }
+
+  /* Text fields signal focus with an accent edge plus a soft halo instead of a detached outline. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: none;
+    border-color: var(--app-focus-color);
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--app-focus-color) var(--app-focus-halo-mix), transparent);
+  }
+
+  input,
+  select,
+  textarea {
+    caret-color: var(--color-app-accent);
+    accent-color: var(--color-app-accent);
+    transition:
+      border-color var(--app-motion-fast) var(--app-ease-out),
+      box-shadow var(--app-motion-fast) var(--app-ease-out),
+      background-color var(--app-motion-fast) var(--app-ease-out);
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-app-muted);
+    opacity: 1;
+  }
+
+  tbody tr {
+    transition:
+      background-color var(--app-motion-fast) var(--app-ease-out),
+      color var(--app-motion-fast) var(--app-ease-out);
+  }
+
+  @media (pointer: coarse) {
+    button,
+    a,
+    select,
+    input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+    textarea,
+    label:has(input[type="file"]) {
+      min-height: 44px;
+    }
+
+    button,
+    a,
+    label:has(input[type="file"]) {
+      min-width: 44px;
+    }
+
+    input[type="checkbox"],
+    input[type="radio"] {
+      min-height: 24px;
+      min-width: 24px;
+    }
   }
 }
 
+/* Text fields stay at 16px on touch screens so mobile browsers do not zoom on focus. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  select,
+  textarea {
+    font-size: max(16px, 1em);
+  }
+}
+
+/* The one route transition: a short fade with a few pixels of travel. Panels, titles and
+   list items inside the page do not add entrances of their own. */
 .app-page-enter {
-  animation: app-page-in 180ms var(--app-ease-out);
+  animation: app-page-in 160ms var(--app-ease-out);
 }
 
 .app-surface-enter {
-  animation: app-surface-in 170ms var(--app-ease-out);
+  animation: app-surface-in 220ms var(--app-ease-out);
 }
 
 .app-toast-enter {
-  animation: app-toast-in 180ms var(--app-ease-out);
+  animation: app-toast-in 260ms var(--app-ease-out);
   transform-origin: bottom right;
 }
 
@@ -160,12 +336,87 @@ tbody tr {
     color var(--app-motion-fast) var(--app-ease-out),
     box-shadow var(--app-motion-fast) var(--app-ease-out),
     filter var(--app-motion-fast) var(--app-ease-out),
-    transform var(--app-motion-fast) var(--app-ease-out),
+    transform var(--app-motion-standard) var(--app-ease-out),
     opacity var(--app-motion-fast) var(--app-ease-out);
 }
 
 .app-interactive:active:not(:disabled) {
-  transform: translateY(1px) scale(0.99);
+  transform: scale(0.97);
+  transition-duration: 60ms;
+}
+
+/* Menus and popovers grow from the control that opened them (set origin-* on the element). */
+.app-pop-enter {
+  animation: app-pop-in 170ms var(--app-ease-out);
+}
+
+/* A surface that has closed but is still animating out (see lib/exit-motion.ts):
+   its own entrance animations must not replay when it is re-inserted. */
+.app-exit-ghost,
+.app-exit-ghost * {
+  animation: none !important;
+  transition: none !important;
+}
+
+.app-toast-leave {
+  animation: app-toast-out 170ms var(--app-ease-in) forwards;
+}
+
+/* Tab panels slide a few pixels in the direction of travel. */
+.app-tab-enter[data-direction="forward"] {
+  animation: app-tab-in-forward 220ms var(--app-ease-out);
+}
+
+.app-tab-enter[data-direction="back"] {
+  animation: app-tab-in-back 220ms var(--app-ease-out);
+}
+
+/* Disclosure bodies unfold from under their header. */
+.app-collapse-enter,
+details[open] > :not(summary) {
+  animation: app-collapse-in 220ms var(--app-ease-out);
+}
+
+/* One indicator glides between options (nav, segmented controls, tabs) instead of
+   each option repainting its own selected background. Placed by useSlidingIndicator. */
+.app-sliding-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  opacity: 0;
+  will-change: transform;
+}
+
+.app-sliding-indicator[data-ready="true"] {
+  transition:
+    transform var(--app-motion-emphasized) var(--app-ease-out),
+    width var(--app-motion-emphasized) var(--app-ease-out),
+    height var(--app-motion-emphasized) var(--app-ease-out),
+    opacity var(--app-motion-fast) var(--app-ease-out);
+}
+
+/* The dashboard's running count pulses; nothing else in the product loops. */
+.app-live-dot {
+  position: relative;
+}
+
+.app-live-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  animation: app-live-ping 2.2s var(--app-ease-out) infinite;
+}
+
+/* Header gains depth only once content scrolls beneath it. */
+.app-shell-header {
+  transition: box-shadow var(--app-motion-standard) var(--app-ease-out);
+}
+
+.app-shell-header[data-scrolled="true"] {
+  box-shadow: 0 1px 0 var(--color-app-border), 0 8px 18px -14px var(--app-shadow-ink);
 }
 
 .app-nav-resize-handle {
@@ -201,13 +452,44 @@ tbody tr {
   background: color-mix(in oklch, var(--color-app-accent) 45%, transparent);
 }
 
-.app-table-region {
-  scrollbar-gutter: stable;
+/* The terminal chrome is dark in both themes, where the app accent drops under 3:1 in light;
+   focus there takes the terminal accent. Light cards inside it (SFTP, prompts) return to the app accent. */
+.app-terminal-chrome {
+  --app-focus-color: var(--color-app-terminalAccent);
+}
+
+.app-terminal-chrome :is(.bg-app-surface, .bg-app-elevated) {
+  --app-focus-color: var(--color-app-accent);
 }
 
 .app-table-region:focus-visible {
   outline: 2px solid var(--color-app-accent);
   outline-offset: -2px;
+}
+
+/* Once a row carries the cursor frame, that frame is the focus cue; the region outline would double it. */
+.app-table-region:focus-visible:has(.app-row-active),
+[role="region"]:focus-visible:has(.app-card-active) {
+  outline-color: transparent;
+}
+
+/* Keyboard row cursor: a 2px accent frame (>=3:1 on every row fill) drawn as inset cell
+   shadows, so the sticky action cell carries its side of the frame. */
+.app-row-active > td {
+  box-shadow: inset 0 2px 0 var(--color-app-accent), inset 0 -2px 0 var(--color-app-accent);
+}
+
+.app-row-active > td:first-child {
+  box-shadow: inset 2px 0 0 var(--color-app-accent), inset 0 2px 0 var(--color-app-accent), inset 0 -2px 0 var(--color-app-accent);
+}
+
+.app-row-active > td:last-child {
+  box-shadow: inset -2px 0 0 var(--color-app-accent), inset 0 2px 0 var(--color-app-accent), inset 0 -2px 0 var(--color-app-accent), var(--app-shadow-sticky);
+}
+
+/* Mobile cards: the same cursor as a single inset frame. */
+.app-card-active {
+  box-shadow: inset 0 0 0 2px var(--color-app-accent);
 }
 
 /* Settings draft bar: floats above the content bottom edge while the page scrolls. */
@@ -225,30 +507,36 @@ tbody tr {
 
 .app-modal-overlay {
   inset: -1px 0 0;
-  background: oklch(0.19 0.025 255 / 0.42);
-  animation: app-modal-overlay-in 150ms var(--app-ease-out);
+  background: var(--app-overlay);
+  animation: app-modal-overlay-in 180ms var(--app-ease-out);
 }
 
 .app-modal-panel {
-  box-shadow: 0 16px 40px oklch(0.19 0.025 255 / 0.20);
-  animation: app-modal-panel-in 160ms var(--app-ease-out);
+  box-shadow: var(--app-shadow-modal);
+  animation: app-modal-panel-in 240ms var(--app-ease-out);
   transform-origin: top center;
 }
 
 .app-terminal-modal-panel {
-  box-shadow: 0 16px 40px oklch(0.19 0.025 255 / 0.32);
-  animation: app-modal-panel-in 160ms var(--app-ease-out);
+  box-shadow: var(--app-shadow-modal);
+  animation: app-modal-panel-in 240ms var(--app-ease-out);
   transform-origin: top center;
+}
+
+.app-scrim {
+  background: var(--app-overlay);
+  animation: app-modal-overlay-in 180ms var(--app-ease-out);
 }
 
 .app-drawer-overlay {
   inset: -1px 0 0;
-  background: oklch(0.19 0.025 255 / 0.32);
-  animation: app-modal-overlay-in 150ms var(--app-ease-out);
+  background: var(--app-overlay);
+  animation: app-modal-overlay-in 180ms var(--app-ease-out);
 }
 
 .app-drawer-panel {
-  animation: app-drawer-panel-in 170ms var(--app-ease-out);
+  box-shadow: var(--app-shadow-modal);
+  animation: app-drawer-panel-in 280ms var(--app-ease-out);
 }
 
 @keyframes app-page-in {
@@ -266,7 +554,7 @@ tbody tr {
 @keyframes app-surface-in {
   from {
     opacity: 0;
-    transform: translateY(5px);
+    transform: translateY(6px);
   }
 
   to {
@@ -278,7 +566,7 @@ tbody tr {
 @keyframes app-toast-in {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.985);
+    transform: translateY(12px) scale(0.96);
   }
 
   to {
@@ -300,7 +588,7 @@ tbody tr {
 @keyframes app-modal-panel-in {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.985);
+    transform: translateY(10px) scale(0.97);
   }
 
   to {
@@ -312,12 +600,112 @@ tbody tr {
 @keyframes app-drawer-panel-in {
   from {
     opacity: 0;
-    transform: translateX(12px);
+    transform: translateX(28px);
   }
 
   to {
     opacity: 1;
     transform: translateX(0);
+  }
+}
+
+@keyframes app-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes app-toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(24px) scale(0.98);
+  }
+}
+
+@keyframes app-tab-in-forward {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes app-tab-in-back {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes app-collapse-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes app-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* Theme changes crossfade the whole window once, briefly; a preference toggle is not a moment. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 160ms;
+  animation-timing-function: var(--app-ease-out);
+}
+
+@keyframes app-live-ping {
+  0% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(2.6);
+  }
+}
+
+@media (max-width: 639px) {
+  /* Bottom sheets rise from the edge they are attached to. */
+  .app-drawer-panel.rounded-t-lg {
+    animation-name: app-sheet-in;
+  }
+}
+
+@keyframes app-sheet-in {
+  from {
+    opacity: 0.6;
+    transform: translateY(24px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
@@ -328,26 +716,45 @@ tbody tr {
     scroll-behavior: auto !important;
   }
 
+  /* Keep the fade so state changes stay legible; drop the travel. */
   .app-page-enter,
   .app-surface-enter,
   .app-toast-enter,
-  .app-modal-overlay,
   .app-modal-panel,
   .app-terminal-modal-panel,
-  .app-drawer-overlay,
   .app-drawer-panel {
+    animation-name: app-modal-overlay-in;
+    animation-duration: 120ms;
+  }
+
+  .app-interactive:active:not(:disabled) {
+    transform: none;
+  }
+
+  .app-pop-enter,
+  .app-tab-enter[data-direction],
+  .app-collapse-enter,
+  details[open] > :not(summary) {
+    animation: app-modal-overlay-in 120ms linear both;
+    animation-delay: 0s;
+  }
+
+  .app-toast-leave {
+    animation: app-fade-out 120ms linear forwards;
+  }
+
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
     animation: none;
   }
 
-  .app-interactive,
-  .app-interactive:active:not(:disabled),
-  button,
-  input,
-  select,
-  textarea,
-  tbody tr,
-  .app-nav-resize-handle::after {
-    transition: none;
+  .app-sliding-indicator[data-ready="true"] {
+    transition: opacity var(--app-motion-fast) linear;
+  }
+
+  .app-live-dot::after {
+    animation: none;
+    display: none;
   }
 
   .animate-spin,
@@ -402,7 +809,7 @@ tbody tr {
     bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
     z-index: 35;
     border: 1px solid var(--color-app-border);
-    box-shadow: 0 10px 24px oklch(0.23 0.018 255 / 0.14);
+    box-shadow: var(--app-shadow-popover);
   }
 
   .app-settings-draft-bar {
@@ -412,7 +819,7 @@ tbody tr {
     bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
     z-index: 35;
     border: 1px solid var(--color-app-border);
-    box-shadow: 0 10px 24px oklch(0.23 0.018 255 / 0.14);
+    box-shadow: var(--app-shadow-popover);
   }
 
   .app-task-pagination {

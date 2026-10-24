@@ -17,6 +17,7 @@ describe("task status notifications", () => {
       kind: "success",
       event: "task.success",
       taskId: "task-1",
+      routeId: "1",
       title: "实例运行成功",
       body: "train：成功",
       tag: "easy-console-task-task-1-6",

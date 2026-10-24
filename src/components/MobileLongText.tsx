@@ -47,7 +47,7 @@ export function MobileLongText({ value, className, copyValue, copyable = false, 
         <div className="mt-1 flex flex-wrap items-center gap-1">
           {canExpand ? (
             <button
-              className="inline-flex h-11 items-center gap-1 rounded px-2 text-xs font-medium text-app-accent hover:bg-app-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+              className="inline-flex h-11 items-center gap-1 rounded px-2 text-xs font-medium text-app-accent hover:bg-app-panel"
               type="button"
               aria-expanded={expanded}
               onClick={() => setExpanded((current) => !current)}
@@ -58,7 +58,7 @@ export function MobileLongText({ value, className, copyValue, copyable = false, 
           ) : null}
           {copyable ? (
             <button
-              className="inline-flex h-11 w-11 items-center justify-center rounded text-app-muted hover:bg-app-panel hover:text-app-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+              className="inline-flex h-11 w-11 items-center justify-center rounded text-app-muted hover:bg-app-panel hover:text-app-text"
               type="button"
               title={text("复制", "Copy")}
               aria-label={text("复制", "Copy")}

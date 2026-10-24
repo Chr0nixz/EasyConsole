@@ -459,6 +459,10 @@ export type RuntimeTransport = {
   hideDesktopTrayMenu(): Promise<void>;
   runDueScheduledTasks(): Promise<void>;
   quitDesktopApp(): Promise<void>;
+  /** macOS / iOS keyboards label the command modifier ⌘ rather than Ctrl. */
+  isApplePlatform?: boolean;
+  /** Match native window chrome to the app theme; `null` follows the OS. No-op outside desktop. */
+  setNativeTheme?(theme: "light" | "dark" | null): Promise<void>;
   onDesktopCloseRequested(handler: () => void): Promise<() => void>;
   onDesktopRunDueScheduledTasks(handler: () => void): Promise<() => void>;
   onDeepLink(handler: (urls: string[]) => void): Promise<() => void>;

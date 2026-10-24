@@ -4,6 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const navigateMock = vi.fn();
 const locationState = vi.hoisted(() => ({ pathname: "/dashboard" }));
+const queueSummaries = vi.hoisted(() => ({
+  download: { active: 0, completed: 0, failed: 0 },
+  commit: { active: 0, failed: 0 },
+}));
 
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
@@ -45,12 +49,12 @@ vi.mock("../lib/app-update-context", () => ({
 }));
 
 vi.mock("../lib/use-download-queue", () => ({
-  useDownloadQueue: () => ({ items: [], totalProgress: 0, summary: { active: 0, completed: 0, failed: 0 }, clear: vi.fn(), cancel: vi.fn() }),
+  useDownloadQueue: () => ({ items: [], totalProgress: 0, summary: queueSummaries.download, clear: vi.fn(), cancel: vi.fn() }),
   formatDownloadProgress: () => "0%",
 }));
 
 vi.mock("../lib/commit-queue-context", () => ({
-  useCommitQueue: () => ({ items: [], summary: { active: 0, failed: 0 }, clear: vi.fn() }),
+  useCommitQueue: () => ({ items: [], summary: queueSummaries.commit, clear: vi.fn() }),
 }));
 
 vi.mock("../lib/use-toast", () => ({
@@ -113,6 +117,8 @@ describe("AppShell", () => {
   beforeEach(() => {
     navigateMock.mockReset();
     locationState.pathname = "/dashboard";
+    queueSummaries.download = { active: 0, completed: 0, failed: 0 };
+    queueSummaries.commit = { active: 0, failed: 0 };
   });
 
   it("renders a skip-to-content link", () => {
@@ -167,10 +173,36 @@ describe("AppShell", () => {
     expect(screen.getByTestId("command-palette")).toBeInTheDocument();
   });
 
-  it("uses the task list title on task detail routes", () => {
+  it("keeps page jumps and the palette off while a dialog is open", async () => {
+    renderShell();
+    fireEvent.keyDown(document, { key: "?" });
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "g" });
+    fireEvent.keyDown(document, { key: "d" });
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("command-palette")).not.toBeInTheDocument();
+  });
+
+  it("names what the status badge counts", () => {
+    queueSummaries.download = { active: 2, completed: 0, failed: 1 };
+    renderShell();
+    expect(screen.getByRole("button", { name: /后台状态：1 项失败，2 项进行中|Background status: 1 failed, 2 in progress/ })).toBeInTheDocument();
+  });
+
+  it("titles the document after the page and restores it on unmount", () => {
+    const view = renderShell();
+    expect(document.title).toMatch(/^(运行总览|Runtime Overview) · EasyConsole$/);
+    view.unmount();
+    expect(document.title).toBe("EasyConsole");
+  });
+
+  it("titles task detail routes as instance detail", () => {
     locationState.pathname = "/tasks/42";
     renderShell();
-    expect(screen.getByRole("heading", { level: 1, name: /任务实例|Task Instances/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /实例详情|Instance Detail/ })).toBeInTheDocument();
     expect(screen.getByText(/对照状态、路径、日志和终端|Compare status, paths, logs, and terminal access/)).toBeInTheDocument();
   });
 });

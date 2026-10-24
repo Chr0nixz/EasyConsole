@@ -179,19 +179,14 @@ describe("CreateTaskDialog", () => {
   it("cancels without a discard prompt after asynchronous defaults are applied", async () => {
     mocks.prices.mockResolvedValue([4.8]);
     const onClose = vi.fn();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    try {
-      renderDialog({ onClose });
-      await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
-      await waitFor(() => expect(screen.getByRole("combobox", { name: "计费单价（元/小时）" })).toHaveDisplayValue("4.8"));
+    renderDialog({ onClose });
+    await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "计费单价（元/小时）" })).toHaveDisplayValue("4.8"));
 
-      fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
 
-      expect(confirm).not.toHaveBeenCalled();
-      expect(onClose).toHaveBeenCalledOnce();
-    } finally {
-      confirm.mockRestore();
-    }
+    expect(screen.queryByText("放弃未保存的更改？")).not.toBeInTheDocument();
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("preserves genuine edits made before asynchronous defaults finish loading", async () => {
@@ -200,25 +195,25 @@ describe("CreateTaskDialog", () => {
     mocks.imageList.mockReturnValue(new Promise((resolve) => { resolveImages = resolve; }));
     mocks.prices.mockReturnValue(new Promise((resolve) => { resolvePrices = resolve; }));
     const onClose = vi.fn();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    try {
-      renderDialog({ onClose });
-      fireEvent.change(screen.getByLabelText("任务名称"), { target: { value: "my-edited-task" } });
-      await act(async () => {
-        resolveImages({ items: [{ id: "img1", name: "ubuntu" }] });
-        resolvePrices([4.8]);
-      });
-      await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
-      await waitFor(() => expect(screen.getByRole("combobox", { name: "计费单价（元/小时）" })).toHaveDisplayValue("4.8"));
+    renderDialog({ onClose });
+    fireEvent.change(screen.getByLabelText("任务名称"), { target: { value: "my-edited-task" } });
+    await act(async () => {
+      resolveImages({ items: [{ id: "img1", name: "ubuntu" }] });
+      resolvePrices([4.8]);
+    });
+    await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "计费单价（元/小时）" })).toHaveDisplayValue("4.8"));
 
-      fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
 
-      expect(confirm).toHaveBeenCalledOnce();
-      expect(onClose).not.toHaveBeenCalled();
-      expect(screen.getByLabelText("任务名称")).toHaveValue("my-edited-task");
-    } finally {
-      confirm.mockRestore();
-    }
+    // The in-app discard confirm opens; keeping editing leaves the form as it was.
+    expect(await screen.findByText("放弃未保存的更改？")).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    const discardDialog = screen.getByRole("dialog", { name: "放弃未保存的更改？" });
+    fireEvent.click(within(discardDialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByText("放弃未保存的更改？")).not.toBeInTheDocument());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("任务名称")).toHaveValue("my-edited-task");
   });
 
   it("does not replace an image the user intentionally cleared", async () => {
@@ -296,7 +291,7 @@ describe("CreateTaskDialog", () => {
         memory: 16,
       } as never,
     });
-    await waitFor(() => expect(screen.getByText("复制实例")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("克隆实例")).toBeInTheDocument());
     const nameInput = screen.getAllByRole("textbox")[0] as HTMLInputElement;
     expect(nameInput.value).not.toBe("source-instance");
     expect(nameInput.value.length).toBeGreaterThan(0);

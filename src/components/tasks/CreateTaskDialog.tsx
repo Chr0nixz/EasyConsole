@@ -48,7 +48,9 @@ import {
 import { allocateUniqueTaskNames, collectExistingTaskNames, createCombinedTaskNameAvailabilityChecker } from "../../lib/task-name-unique";
 import { invalidateTaskQueries, TASK_SNAPSHOT_QUERY_KEY } from "../../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, ListResult, Task } from "../../lib/types";
-import { confirmDiscardUnsavedChanges, useUnsavedChanges } from "../../lib/use-unsaved-changes";
+import { useUnsavedChanges } from "../../lib/use-unsaved-changes";
+import { useConfirmAction } from "../../lib/use-confirm-action";
+import { UnsavedChangesPrompt } from "../UnsavedChangesPrompt";
 import { errorMessage, useRunLogger } from "../../lib/use-run-logger";
 
 const DEFAULT_PRICE = "";
@@ -304,11 +306,21 @@ export function CreateTaskDialog({
     [batchCount, cpu, gpu, imageId, memory, mountPath, name, price, releaseCondition, releaseTime, scriptEnv, scriptPath, storagePath, workDirectory],
   );
   const dirty = open && isFormDirty(currentSnapshot, initialSnapshot);
-  useUnsavedChanges(dirty, unsavedMessage);
+  const navigationBlocker = useUnsavedChanges(dirty, unsavedMessage);
+  const { confirm: confirmDiscard, confirmDialog: discardDialog } = useConfirmAction();
 
   function requestClose() {
-    if (dirty && !confirmDiscardUnsavedChanges(unsavedMessage)) return;
-    onClose();
+    if (!dirty) {
+      onClose();
+      return;
+    }
+    confirmDiscard({
+      title: text("放弃未保存的更改？", "Discard unsaved changes?"),
+      description: unsavedMessage,
+      confirmLabel: text("放弃并关闭", "Discard and close"),
+      tone: "danger",
+      run: onClose,
+    });
   }
 
   const fieldErrors = useMemo(() => {
@@ -692,15 +704,32 @@ export function CreateTaskDialog({
     ? getImageOptionLabel(selectedImage)
     : imageId ? text(`原实例镜像 #${imageId}`, `Original instance image #${imageId}`) : text("未选择镜像", "No image selected");
   const priceValue = parsePositivePrice(price);
+  // The summary states what the user is committing to: with a batch, the rate is shown as
+  // count × per-instance rate = total, so 50 instances never read as one instance's price.
+  const instanceCount = isEditMode ? 1 : Number(batchCount);
+  const validCount = Number.isInteger(instanceCount) && instanceCount >= 1 ? instanceCount : null;
+  const gpuPerInstance = parseNonNegativeInteger(gpu);
+  const rateText = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 4 });
   const priceSummary = priceValue === null
     ? text("未设置单价", "Rate not set")
-    : text(`${priceValue.toLocaleString(locale, { maximumFractionDigits: 20 })} 元/小时`, `CNY ${priceValue.toLocaleString(locale, { maximumFractionDigits: 20 })}/hr`);
+    : validCount !== null && validCount > 1
+      ? text(
+          `${validCount} × ${rateText(priceValue)} = ${rateText(validCount * priceValue)} 元/小时`,
+          `${validCount} × CNY ${rateText(priceValue)} = CNY ${rateText(validCount * priceValue)}/hr`,
+        )
+      : text(`${rateText(priceValue)} 元/小时`, `CNY ${rateText(priceValue)}/hr`);
+  const gpuSummary = validCount !== null && gpuPerInstance !== null && gpuPerInstance > 0
+    ? text(`共 ${validCount * gpuPerInstance} GPU`, `${validCount * gpuPerInstance} GPU total`)
+    : null;
+  const createLabel = validCount !== null && validCount > 1
+    ? text(`创建 ${validCount} 个实例`, `Create ${validCount} instances`)
+    : text("创建", "Create");
   const releaseSummary = localizedText(releaseConditionText[Number(releaseCondition)], locale) ?? "-";
 
   return (
     <Dialog
       open={open}
-      title={isEditMode ? text("编辑任务", "Edit Task") : initialTask ? text("复制实例", "Clone Instance") : text("新建任务", "New Task")}
+      title={isEditMode ? text("编辑任务", "Edit Task") : initialTask ? text("克隆实例", "Clone Instance") : text("新建任务", "New Task")}
       onClose={requestClose}
       closeOnOverlayClick={false}
       onOverlayClick={requestClose}
@@ -968,7 +997,8 @@ export function CreateTaskDialog({
           <div className="min-w-0 flex-1 text-xs text-app-muted" role="group" aria-label={text("提交摘要", "Submission summary")}>
             <p className="flex flex-wrap gap-x-3 gap-y-1 font-medium text-app-text">
               <span>{text(`${isEditMode ? "1" : batchCount || "-"} 个实例`, `${isEditMode ? "1" : batchCount || "-"} ${isEditMode || Number(batchCount) === 1 ? "instance" : "instances"}`)}</span>
-              <span>{priceSummary}</span>
+              <span className="app-numeric">{priceSummary}</span>
+              {gpuSummary ? <span className="app-numeric">{gpuSummary}</span> : null}
               <span>{releaseSummary}{releaseCondition === "2" && releaseTime ? ` · ${formatDateTimeForApi(releaseTime)}` : ""}</span>
             </p>
             <p className="mt-1 truncate" title={imageSummary}>{text(`镜像：${imageSummary}`, `Image: ${imageSummary}`)}</p>
@@ -986,7 +1016,7 @@ export function CreateTaskDialog({
                     : text("正在创建", "Creating")
                 : isEditMode
                   ? text("保存", "Save")
-                  : text("创建", "Create")}
+                  : createLabel}
             </Button>
           </div>
         </div>
@@ -1004,6 +1034,8 @@ export function CreateTaskDialog({
           setStoragePickerTarget(null);
         }}
       />
+      {discardDialog}
+      <UnsavedChangesPrompt blocker={navigationBlocker} message={unsavedMessage} />
     </Dialog>
   );
 }

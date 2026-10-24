@@ -1,3 +1,19 @@
+# EasyConsole v0.4.27
+
+A refreshed desktop workspace with light and dark themes, clearer task operations, and more reliable keyboard interaction.
+
+## Changes
+
+- **Light, dark, or system appearance**: Theme preferences persist across launches, apply before the first render, and synchronize with the desktop window chrome. Settings now groups appearance and language controls together.
+- **A more compact workspace**: Refined navigation, typography, tables, status badges, loading states, and shared controls follow the updated visual system. The sidebar can be resized, and motion respects reduced-motion preferences.
+- **Actionable task failures**: Failure notifications offer a direct link to task logs, while the shell tracks failures that have not been viewed yet.
+- **Clearer task commitments**: Batch creation shows the combined hourly rate and total GPU count. Release confirmations explain the operation, and task actions and log views are easier to scan.
+- **Safer dialog navigation**: Unsaved changes use an in-app confirmation. Stacked dialogs and popovers coordinate Escape and Tab handling so one keypress reaches the active overlay.
+- **Dashboard monitoring**: The dashboard refreshes every minute by default, remembers the selected refresh interval, and keeps relative task times current.
+- **Session and shortcut clarity**: Expired sessions explain why sign-in is required; command-palette creation requests work across navigation, and shortcut labels follow the platform.
+
+---
+
 # EasyConsole v0.4.26
 
 A more durable desktop SSH workspace with safer credentials, revocable VS Code access, and restored Android builds.

@@ -15,7 +15,9 @@ type TaskInstanceNameProps = {
 
 function nameLinkClass(compact: boolean) {
   return [
-    "min-w-0 break-all text-app-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/40",
+    // Wrap at hyphens first and mid-word only when a segment cannot fit. On touch screens the
+    // padding gives the one-line link a ~40px hit area; the negative margins keep it out of layout.
+    "min-w-0 wrap-anywhere text-app-accent hover:underline [@media(pointer:coarse)]:-my-3 [@media(pointer:coarse)]:py-3",
     compact ? "text-sm font-semibold" : "font-medium",
   ].join(" ");
 }
@@ -56,7 +58,7 @@ export function TaskInstanceName({ name, taskId, className = "", compact = false
         aria-expanded={expanded}
         aria-label={toggleLabel}
         title={toggleLabel}
-        className="mt-0.5 shrink-0 rounded text-app-muted hover:text-app-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/40"
+        className="mt-0.5 shrink-0 rounded text-app-muted hover:text-app-text"
         onClick={() => setExpanded((current) => !current)}
       >
         {expanded ? <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" /> : <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />}
@@ -66,7 +68,7 @@ export function TaskInstanceName({ name, taskId, className = "", compact = false
           {displayName}
         </Link>
       ) : (
-        <span className="min-w-0 break-all">{displayName}</span>
+        <span className="min-w-0 wrap-anywhere">{displayName}</span>
       )}
     </span>
   );

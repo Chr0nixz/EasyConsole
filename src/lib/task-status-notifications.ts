@@ -7,6 +7,8 @@ export type ImportantTaskStatusNotification = {
   kind: "success" | "failure";
   event: ImportantNotificationEvent;
   taskId: string;
+  /** The id the detail route uses (`/tasks/:id`), which is `task.id`, not `task_id`. */
+  routeId: string;
   title: string;
   body: string;
   tag: string;
@@ -37,6 +39,7 @@ export function getImportantTaskStatusNotification(
   if (!Number.isFinite(current) || current === previous) return null;
 
   const taskId = getTaskNotificationId(task);
+  const routeId = String(task.id ?? task.task_id);
   const en = locale === "en-US";
   // Task names are user data; only the separator follows the interface language.
   const body = `${getTaskName(task)}${en ? ": " : "："}${getStatusText(task.status, locale)}`;
@@ -46,6 +49,7 @@ export function getImportantTaskStatusNotification(
       kind: "success",
       event: "task.success",
       taskId,
+      routeId,
       title: en ? "Instance succeeded" : "实例运行成功",
       body,
       tag: `easy-console-task-${taskId}-${current}`,
@@ -58,6 +62,7 @@ export function getImportantTaskStatusNotification(
       kind: "failure",
       event: abnormal ? "task.abnormal" : "task.failure",
       taskId,
+      routeId,
       title: abnormal ? (en ? "Instance abnormal" : "实例运行异常") : en ? "Instance failed" : "实例运行失败",
       body,
       tag: `easy-console-task-${taskId}-${current}`,

@@ -3,7 +3,22 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ConfirmDialog } from "./ConfirmDialog";
-import { Button, Dialog, Drawer } from "./ui";
+import { Button, Dialog, Drawer, ProgressBar } from "./ui";
+
+describe("ProgressBar", () => {
+  it("names its progress and clamps the value it reports", () => {
+    const { rerender } = render(<ProgressBar label="上传进度" value={40} />);
+    const bar = screen.getByRole("progressbar", { name: "上传进度" });
+    expect(bar).toHaveAttribute("aria-valuenow", "40");
+    expect(bar.firstElementChild).toHaveStyle({ transform: "translateX(-60%)" });
+
+    rerender(<ProgressBar label="上传进度" value={140} />);
+    expect(bar).toHaveAttribute("aria-valuenow", "100");
+
+    rerender(<ProgressBar label="上传进度" value={Number.NaN} />);
+    expect(bar).toHaveAttribute("aria-valuenow", "0");
+  });
+});
 
 describe("ConfirmDialog", () => {
   it("runs confirm action and exposes cancel", () => {
@@ -51,6 +66,47 @@ describe("Dialog", () => {
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(trigger).toHaveFocus();
+  });
+
+  it("closes only the topmost of stacked dialogs on Escape", async () => {
+    function StackedHarness() {
+      const [outerOpen, setOuterOpen] = useState(true);
+      const [innerOpen, setInnerOpen] = useState(false);
+      return (
+        <Dialog open={outerOpen} title="新建任务" onClose={() => setOuterOpen(false)}>
+          <button type="button" onClick={() => setInnerOpen(true)}>选择目录</button>
+          <Dialog open={innerOpen} title="选择存储目录" onClose={() => setInnerOpen(false)}>
+            <button type="button">选择</button>
+          </Dialog>
+        </Dialog>
+      );
+    }
+
+    render(<StackedHarness />);
+    fireEvent.click(screen.getByRole("button", { name: "选择目录" }));
+    expect(screen.getAllByRole("dialog")).toHaveLength(2);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "选择存储目录" })).not.toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "新建任务" })).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("leaves Escape to the input method while a composition is open", () => {
+    const onClose = vi.fn();
+    render(
+      <Dialog open title="输入法" onClose={onClose}>
+        <input aria-label="名称" />
+      </Dialog>,
+    );
+
+    fireEvent.keyDown(document, { key: "Escape", isComposing: true });
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("keeps Tab focus inside the dialog", async () => {

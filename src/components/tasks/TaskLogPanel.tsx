@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDownToLine, Copy, RefreshCw, WrapText } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { ErrorState, LoadingState } from "../DataState";
 import { Button, Input } from "../ui";
 import { instanceApi } from "../../lib/api";
+import { formatRelativeUpdatedAt } from "../../lib/format";
 import { useI18n } from "../../lib/i18n";
 import { browserRuntime } from "../../lib/runtime";
 import type { Task } from "../../lib/types";
@@ -15,6 +16,8 @@ const LONG_LOG_CHARS = 200_000;
 const MAX_LOG_DISPLAY_CHARS = 500_000;
 const FOLLOW_BOTTOM_THRESHOLD_PX = 48;
 const FILTER_DEBOUNCE_MS = 200;
+/** While following a running task the log re-reads on this cadence; paused when the window is hidden. */
+const LIVE_LOG_POLL_MS = 6_000;
 
 function truncateLogForDisplay(value: string, maxChars: number) {
   if (value.length <= maxChars) {
@@ -28,8 +31,9 @@ function truncateLogForDisplay(value: string, maxChars: number) {
   };
 }
 
-export function TaskLogPanel({ task }: { task: Task }) {
-  const { text } = useI18n();
+/** `toolbarEnd` sits at the right end of the toolbar, e.g. the detail page's expand action. */
+export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: ReactNode }) {
+  const { locale, text } = useI18n();
   const toast = useToast();
   const [wrapLines, setWrapLines] = useState(() => browserRuntime.isMobile);
   const [followBottom, setFollowBottom] = useState(true);
@@ -37,10 +41,25 @@ export function TaskLogPanel({ task }: { task: Task }) {
   const [debouncedFilter, setDebouncedFilter] = useState("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const programmaticScrollRef = useRef(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  // Only a running task still writes to its log; following one turns the panel into a feed.
+  const live = followBottom && Number(task.status) === 2;
   const query = useQuery({
     queryKey: ["task-log", task.task_id ?? task.id],
     queryFn: () => instanceApi.taskLog(task),
+    refetchInterval: live ? LIVE_LOG_POLL_MS : false,
   });
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), live ? 1_000 : 10_000);
+    return () => window.clearInterval(timer);
+  }, [live]);
+
+  const refreshNow = () => {
+    setManualRefreshing(true);
+    void query.refetch().finally(() => setManualRefreshing(false));
+  };
 
   const rawLog = query.data ?? "";
   const emptyLabel = text("暂无日志输出", "No log output");
@@ -99,6 +118,14 @@ export function TaskLogPanel({ task }: { task: Task }) {
       .catch(() => toast.error(text("复制失败", "Copy failed"), text("当前浏览器不允许写入剪贴板", "The current browser does not allow clipboard writes")));
   };
 
+  const updatedAt = query.dataUpdatedAt;
+  const updatedLabel = updatedAt
+    ? text(
+        `${live ? "实时跟随 · " : ""}更新于 ${formatRelativeUpdatedAt(updatedAt, Math.max(nowMs, updatedAt), locale)}`,
+        `${live ? "Live · " : ""}updated ${formatRelativeUpdatedAt(updatedAt, Math.max(nowMs, updatedAt), locale)}`,
+      )
+    : "";
+
   const charCount = rawLog.length;
   const showLongHint = display.truncated || charCount >= LONG_LOG_CHARS;
   const longHint = display.truncated
@@ -116,17 +143,17 @@ export function TaskLogPanel({ task }: { task: Task }) {
       <div className="flex flex-wrap items-center gap-2 border-b border-app-border px-3 py-2">
         <Button
           className="h-8 px-2"
-          disabled={query.isFetching}
+          disabled={manualRefreshing}
           type="button"
           variant="secondary"
-          onClick={() => void query.refetch()}
+          onClick={refreshNow}
         >
-          <RefreshCw className={cn("h-4 w-4", query.isFetching && "animate-spin")} />
-          {text("刷新", "Refresh")}
+          <RefreshCw className={cn("h-4 w-4", manualRefreshing && "animate-spin")} aria-hidden="true" />
+          <span className="max-sm:sr-only">{text("刷新", "Refresh")}</span>
         </Button>
         <Button className="h-8 px-2" disabled={!canCopy} type="button" variant="secondary" onClick={copyAll}>
           <Copy className="h-4 w-4" aria-hidden="true" />
-          {text("复制全部", "Copy all")}
+          <span className="max-sm:sr-only">{text("复制全部", "Copy all")}</span>
         </Button>
         <Button
           aria-pressed={wrapLines}
@@ -136,21 +163,24 @@ export function TaskLogPanel({ task }: { task: Task }) {
           onClick={() => setWrapLines((value) => !value)}
         >
           <WrapText className="h-4 w-4" aria-hidden="true" />
-          {text("自动换行", "Wrap lines")}
+          <span className="max-sm:sr-only">{text("自动换行", "Wrap lines")}</span>
         </Button>
         <Button
           aria-pressed={followBottom}
           className={cn("h-8 px-2", followBottom && "border-app-accent/40 text-app-accent")}
           type="button"
           variant="secondary"
+          title={Number(task.status) === 2
+            ? text("跟随底部时每 6 秒自动读取新日志", "While following, new log output is read every 6 seconds")
+            : text("实例未在运行，日志不再更新", "The instance is not running, so its log no longer changes")}
           onClick={() => setFollowBottom((value) => !value)}
         >
           <ArrowDownToLine className="h-4 w-4" aria-hidden="true" />
-          {text("跟随底部", "Follow bottom")}
+          <span className="max-sm:sr-only">{text("跟随底部", "Follow bottom")}</span>
         </Button>
         <Input
           aria-label={text("查找日志", "Search logs")}
-          className="h-8 w-full min-w-[10rem] flex-1 sm:max-w-xs"
+          className="h-8 min-w-[8rem] flex-1 sm:max-w-xs"
           placeholder={text("查找…", "Find…")}
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
@@ -159,6 +189,17 @@ export function TaskLogPanel({ task }: { task: Task }) {
           <span className="text-xs text-app-muted" aria-live="polite">
             {filterStatus}
           </span>
+        ) : null}
+        {updatedLabel || toolbarEnd ? (
+          <div className="ml-auto flex shrink-0 items-center gap-3">
+            {updatedLabel ? (
+              <span className="flex items-center gap-1.5 whitespace-nowrap text-xs text-app-muted" title={updatedAt ? new Date(updatedAt).toLocaleString(locale) : undefined}>
+                {live ? <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-app-info" /> : null}
+                {updatedLabel}
+              </span>
+            ) : null}
+            {toolbarEnd}
+          </div>
         ) : null}
       </div>
       {showLongHint ? (
@@ -173,7 +214,7 @@ export function TaskLogPanel({ task }: { task: Task }) {
           <ErrorState
             error={query.error}
             action={
-              <Button disabled={query.isFetching} type="button" variant="secondary" onClick={() => void query.refetch()}>
+              <Button disabled={query.isFetching} type="button" variant="secondary" onClick={refreshNow}>
                 {text("重试", "Retry")}
               </Button>
             }

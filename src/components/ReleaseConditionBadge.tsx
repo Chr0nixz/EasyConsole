@@ -1,22 +1,20 @@
+import { CalendarClock, Flag, Hand } from "lucide-react";
+
 import { getReleaseConditionText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
-import { cn } from "../lib/utils";
 
+const icons = { 1: Hand, 2: CalendarClock, 3: Flag } as const;
+
+// A squared neutral tag: release is a setting, not a state, so it carries no color.
+// The icon tells the three conditions apart without borrowing the status hues.
 export function ReleaseConditionBadge({ condition }: { condition?: number }) {
   const { locale } = useI18n();
   const value = Number(condition);
-  const tone = value === 1 ? "manual" : value === 2 ? "timed" : value === 3 ? "finished" : "neutral";
+  const Icon = value === 1 || value === 2 || value === 3 ? icons[value] : null;
 
   return (
-    <span
-      className={cn(
-        "inline-flex min-w-20 items-center justify-center rounded-md px-2 py-1 text-xs font-medium",
-        tone === "manual" && "bg-app-infoSoft text-app-info ring-1 ring-app-infoRing",
-        tone === "timed" && "bg-app-releaseTimedSoft text-app-releaseTimed ring-1 ring-app-releaseTimedRing",
-        tone === "finished" && "bg-app-releaseFinishedSoft text-app-releaseFinished ring-1 ring-app-releaseFinishedRing",
-        tone === "neutral" && "bg-app-neutralSoft text-app-muted ring-1 ring-app-neutralRing",
-      )}
-    >
+    <span className="inline-flex min-w-20 items-center justify-center gap-1.5 whitespace-nowrap rounded-[5px] bg-app-neutralSoft px-2 py-0.5 text-xs font-medium leading-5 text-app-text">
+      {Icon ? <Icon className="h-3 w-3 shrink-0 text-app-muted" aria-hidden="true" /> : null}
       {getReleaseConditionText(condition, locale)}
     </span>
   );

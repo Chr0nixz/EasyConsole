@@ -1,6 +1,7 @@
 import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type ReactNode } from "react";
 
+import { motionEnabled } from "../lib/exit-motion";
 import { ToastContext, type ToastInput, type ToastItem, type ToastKind, type ToastContextValue } from "../lib/use-toast";
 import { useI18n } from "../lib/i18n";
 import { useVisualViewport } from "../lib/use-visual-viewport";
@@ -16,10 +17,11 @@ function iconFor(kind: ToastKind) {
   return <Info className="h-4 w-4 text-app-accent" />;
 }
 
+// Routine confirmations sit on the neutral elevated surface with a colored icon;
+// only failures keep a tinted fill, so color in the corner always means trouble.
 function getToastClasses(kind: ToastKind) {
-  if (kind === "success") return "border-app-successRing bg-app-successSoft";
   if (kind === "error") return "border-app-dangerRing bg-app-dangerSoft";
-  return "border-app-infoRing bg-app-infoSoft";
+  return "border-app-border bg-app-elevated";
 }
 
 type ToastTimer = {
@@ -32,6 +34,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const { t } = useI18n();
   const viewport = useVisualViewport();
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [leavingIds, setLeavingIds] = useState<ReadonlySet<string>>(() => new Set());
   const timersRef = useRef(new Map<string, ToastTimer>());
 
   const clearTimer = useCallback((id: string) => {
@@ -42,7 +45,21 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const remove = useCallback((id: string) => {
     clearTimer(id);
-    setToasts((items) => items.filter((item) => item.id !== id));
+    const drop = () => setToasts((items) => items.filter((item) => item.id !== id));
+    if (!motionEnabled()) {
+      drop();
+      return;
+    }
+    // Slide out first, then leave the stack, so the remaining toasts close the gap after it.
+    setLeavingIds((current) => new Set(current).add(id));
+    window.setTimeout(() => {
+      drop();
+      setLeavingIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    }, 170);
   }, [clearTimer]);
 
   const armTimer = useCallback((id: string, remainingMs: number) => {
@@ -108,7 +125,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           <div
             key={toast.id}
             className={cn(
-              "app-toast-enter rounded-md border p-3 shadow-popover",
+              "app-toast-enter rounded-lg border p-3 shadow-popover",
+              leavingIds.has(toast.id) && "app-toast-leave pointer-events-none",
               getToastClasses(toast.kind),
             )}
             role={toast.kind === "error" ? "alert" : "status"}
@@ -129,7 +147,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 {toast.action ? (
                   <button
                     type="button"
-                    className="app-interactive mt-2 rounded border border-app-border px-2 py-0.5 text-xs font-medium text-app-text hover:bg-app-panel"
+                    className="app-interactive mt-2 rounded-md border border-app-borderStrong px-2 py-0.5 text-xs font-medium text-app-text hover:bg-app-panel"
                     onClick={() => {
                       toast.action?.onClick();
                       remove(toast.id);
@@ -140,7 +158,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 ) : null}
               </div>
               <button
-                className="app-interactive rounded p-1 text-app-muted hover:bg-app-panel hover:text-app-text"
+                className="app-interactive rounded-md p-1 text-app-muted hover:bg-app-panel hover:text-app-text"
                 type="button"
                 onClick={() => remove(toast.id)}
               >

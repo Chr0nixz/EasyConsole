@@ -1,15 +1,16 @@
 import { useEffect } from "react";
 import { useBlocker } from "react-router-dom";
 
+import { i18nText } from "./i18n-text";
+
 /**
  * Warn before discarding dirty form state:
- * - `beforeunload` for tab/window close or refresh
- * - React Router `useBlocker` for in-app navigations (requires a data router)
+ * - `beforeunload` for tab/window close or refresh (the browser shows its own prompt)
+ * - React Router `useBlocker` for in-app navigations (requires a data router). The caller
+ *   renders `<UnsavedChangesPrompt blocker={...} />` for the in-app confirm.
  */
 export function useUnsavedChanges(when: boolean, message?: string) {
-  const confirmMessage =
-    message ??
-    "You have unsaved changes. Leave this page?";
+  const confirmMessage = message ?? i18nText("有未保存的更改，确定要离开吗？", "You have unsaved changes. Leave this page?");
 
   useEffect(() => {
     if (!when) return undefined;
@@ -21,21 +22,5 @@ export function useUnsavedChanges(when: boolean, message?: string) {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [confirmMessage, when]);
 
-  const blocker = useBlocker(when);
-
-  useEffect(() => {
-    if (blocker.state !== "blocked") return;
-    const leave = window.confirm(confirmMessage);
-    if (leave) blocker.proceed();
-    else blocker.reset();
-  }, [blocker, confirmMessage]);
-
-  return blocker;
-}
-
-/** Imperative confirm for dialogs that cannot rely on route blockers alone. */
-export function confirmDiscardUnsavedChanges(message?: string) {
-  return window.confirm(
-    message ?? "You have unsaved changes. Discard them and close?",
-  );
+  return useBlocker(when);
 }
