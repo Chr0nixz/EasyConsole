@@ -32,6 +32,7 @@ import {
   getImageDetail,
   getMonitorIndex,
   getStorageInfo,
+  getTask,
   getTaskLog,
   importBackup,
   listImages,
@@ -58,6 +59,7 @@ import {
   updateTask,
   updateTaskTemplateRecord,
   userInfo,
+  waitForTask,
 } from "./operations";
 import type { EditableTaskTemplate } from "../../src/lib/task-templates";
 
@@ -77,6 +79,29 @@ export type EasyConsoleMcpDeps = {
 
 const idSchema = z.union([z.string(), z.number()]);
 const optionalQuerySchema = z.record(z.string(), z.unknown()).optional();
+
+/**
+ * Known create/update payload fields, typed as narrowly as the shared
+ * CreateTaskPayload type. `passthrough` keeps unknown backend fields working
+ * (the live API is only partially verified), but typos in known field names
+ * and wrong value kinds are now rejected at the tool boundary instead of
+ * surfacing as backend errors.
+ */
+const taskPayloadFields = {
+  price: z.union([z.string(), z.number()]).optional(),
+  cpu: z.union([z.string(), z.number()]).optional(),
+  gpu: z.union([z.string(), z.number()]).optional(),
+  memory: z.union([z.string(), z.number()]).optional(),
+  img: z.union([z.string(), z.number()]).optional(),
+  storage_path: z.string().optional(),
+  mount_path: z.string().optional(),
+  releace_conditions: z.union([z.number(), z.string()]).optional(),
+  releace_time: z.string().optional(),
+  work_directory: z.string().optional(),
+  script_path: z.string().optional(),
+};
+const createTaskPayloadSchema = z.object({ name: z.string().min(1), ...taskPayloadFields }).passthrough();
+const updateTaskPayloadSchema = z.object({ name: z.string().min(1).optional(), ...taskPayloadFields }).passthrough();
 
 function asId(value: unknown): JsonId {
   if (typeof value === "string" || typeof value === "number") return value;
@@ -159,10 +184,41 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       },
     },
     {
+      name: "easyconsole_task_get",
+      description:
+        "Get one task by id or task_id: full task fields plus statusText, an `ssh` endpoint summary (host/port/username — credentials are deliberately omitted) and its Grafana monitor URL.",
+      inputSchema: {
+        taskId: idSchema,
+      },
+      handler(context, input) {
+        return getTask(context.api, asId(input.taskId));
+      },
+    },
+    {
+      name: "easyconsole_task_wait",
+      description:
+        "Read-only poll until the task reaches a target status (default [2] running), enters a failure state (7 failed / 8 abnormal — returns early with outcome \"failed\"), or times out (outcome \"timeout\"). " +
+        "Defaults: timeout 300s (max 900s), poll every 10s (min 5s). Ideal for create-then-connect flows: wait for running, then use the returned task's SSH fields.",
+      inputSchema: {
+        taskId: idSchema,
+        statuses: z.array(z.number().int()).optional(),
+        timeoutSeconds: z.number().int().positive().max(900).optional(),
+        intervalSeconds: z.number().int().min(5).optional(),
+      },
+      handler(context, input) {
+        const statuses = Array.isArray(input.statuses) ? input.statuses.map(Number) : undefined;
+        return waitForTask(context.api, asId(input.taskId), {
+          targetStatuses: statuses,
+          timeoutMs: (asOptionalNumber(input.timeoutSeconds) ?? 300) * 1000,
+          intervalMs: (asOptionalNumber(input.intervalSeconds) ?? 10) * 1000,
+        });
+      },
+    },
+    {
       name: "easyconsole_task_create",
       description: "Create an EasyConsole task. Requires confirm=true to execute; otherwise returns a dry-run payload.",
       inputSchema: {
-        payload: z.record(z.string(), z.unknown()),
+        payload: createTaskPayloadSchema,
         confirm: z.boolean().optional(),
       },
       handler(context, input) {
@@ -331,7 +387,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       description: "Update an EasyConsole task. Requires confirm=true to execute.",
       inputSchema: {
         taskId: idSchema,
-        payload: z.record(z.string(), z.unknown()),
+        payload: updateTaskPayloadSchema,
         confirm: z.boolean().optional(),
       },
       handler(context, input) {

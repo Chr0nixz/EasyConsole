@@ -97,6 +97,59 @@ describe("easy-console MCP tools", () => {
     await expect(invokeMcpToolDefinition(getTool("easyconsole_task_log"), createFakeContext(), {})).rejects.toThrow();
   });
 
+  it("rejects task create payloads without a name and keeps unknown fields", async () => {
+    await expect(
+      invokeMcpToolDefinition(getTool("easyconsole_task_create"), createFakeContext(), {
+        payload: { cpu: 8, typo_field: "x" },
+      }),
+    ).rejects.toThrow();
+
+    let createCount = 0;
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [], raw: [] }),
+        taskLog: async () => "",
+        createTask: async (payload: Record<string, unknown>) => {
+          createCount += 1;
+          return { payload };
+        },
+      },
+    });
+    const result = await invokeMcpToolDefinition(getTool("easyconsole_task_create"), context, {
+      payload: { name: "train", cpu: 8, custom_backend_field: true },
+      confirm: true,
+    });
+    expect(createCount).toBe(1);
+    expect(JSON.stringify(result)).toContain("custom_backend_field");
+  });
+
+  it("gets a single task with an SSH summary that omits credentials", async () => {
+    const result = (await invokeMcpToolDefinition(getTool("easyconsole_task_get"), createFakeContext(), {
+      taskId: 7,
+    })) as { task: Record<string, unknown>; ssh: Record<string, unknown>; monitorUrl: string };
+
+    expect(result.task).toMatchObject({ id: 7, description: "pod-7" });
+    expect(result.ssh).not.toHaveProperty("password");
+    expect(result.ssh).not.toHaveProperty("command");
+    expect(typeof result.monitorUrl).toBe("string");
+  });
+
+  it("waits for a target status and returns early on failure statuses", async () => {
+    const target = await invokeMcpToolDefinition(
+      getTool("easyconsole_task_wait"),
+      createFakeContext({ instanceApi: { tasks: async () => ({ items: [{ id: 7, status: 2 }], raw: [] }) } }),
+      { taskId: 7 },
+    );
+    expect(target).toMatchObject({ outcome: "target", status: 2 });
+
+    const failed = await invokeMcpToolDefinition(
+      getTool("easyconsole_task_wait"),
+      createFakeContext({ instanceApi: { tasks: async () => ({ items: [{ id: 7, status: 8 }], raw: [] }) } }),
+      { taskId: 7, timeoutSeconds: 30 },
+    );
+    expect(failed).toMatchObject({ outcome: "failed", status: 8 });
+  });
+
   it("does not call mutation APIs without confirm=true", async () => {
     let releaseCount = 0;
     const context = createFakeContext({

@@ -8,12 +8,15 @@ import { buildMonitorDashboardUrl, DEFAULT_MONITOR_DASHBOARD_URL } from "../../s
 import type { EasyConsoleApi } from "../../src/lib/api-factory";
 import { runBatch, type BatchItemOutcome } from "../../src/lib/batch-runner";
 import { fetchAllTasks } from "../../src/lib/fetch-all-tasks";
+import { getStatusText } from "../../src/lib/format";
 import { i18nText } from "../../src/lib/i18n-text";
 import { exportLocalDataBackup, importLocalDataBackup, parseLocalDataBackup, type LocalDataBackupSection } from "../../src/lib/local-data-backup";
 import { normalizeStoragePath } from "../../src/lib/remote-storage";
 import { appendRunLog, type RunLogChannel } from "../../src/lib/run-logs";
 import { createScheduledTask, loadScheduledTasks, pauseScheduledTask, resumeScheduledTask, saveScheduledTasks, updateScheduledTask } from "../../src/lib/scheduled-tasks";
 import { executeScheduledTask } from "../../src/lib/schedule-execution";
+import { buildTaskSshInfo } from "../../src/lib/ssh-info";
+import { FAILURE_STATUSES } from "../../src/lib/task-status-notifications";
 import { withStorageTransaction } from "../../src/lib/storage-mutex";
 import {
   createTaskTemplate,
@@ -285,6 +288,80 @@ export function buildCreateTaskPayload(input: UnknownRecord): CreateTaskPayload 
 
 export async function listTasks(api: EasyConsoleApi, query: TaskQuery) {
   return api.instanceApi.tasks(query);
+}
+
+/** Backend task status for a running instance. */
+const RUNNING_TASK_STATUS = 2;
+
+async function findTaskById(api: EasyConsoleApi, taskId: string | number): Promise<Task> {
+  const tasks = await api.instanceApi.tasks({ page: 1, page_size: 500 });
+  const task = tasks.items.find((item) => taskIdMatches(item, taskId));
+  if (!task) {
+    throw new Error(i18nText(`未找到任务 ${taskId}`, `Task ${taskId} not found`));
+  }
+  return task;
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+/**
+ * One task by id (or `task_id`) enriched for agents: where to SSH and where to
+ * monitor. SSH credentials are deliberately omitted — agents learn where to
+ * connect, not the secret.
+ */
+export async function getTask(api: EasyConsoleApi, taskId: string | number) {
+  const task = await findTaskById(api, taskId);
+  const ssh = buildTaskSshInfo(task);
+  return {
+    task,
+    statusText: getStatusText(task.status),
+    ssh: { host: ssh.host, port: ssh.port, username: ssh.username, passwordKind: ssh.passwordKind },
+    monitorUrl: buildMonitorDashboardUrl(task, getMonitorDashboardBaseUrl()),
+  };
+}
+
+export type WaitForTaskOutcome = "target" | "failed" | "timeout";
+
+export type WaitForTaskResult = {
+  task: Task;
+  outcome: WaitForTaskOutcome;
+  status: number;
+  statusText: string;
+  elapsedMs: number;
+};
+
+/**
+ * Poll a task until it reaches a target status, enters a failure state, or the
+ * timeout elapses. Failure statuses (7 failed / 8 abnormal) return early with
+ * `outcome: "failed"` instead of burning the whole timeout.
+ */
+export async function waitForTask(
+  api: EasyConsoleApi,
+  taskId: string | number,
+  options: { targetStatuses?: number[]; timeoutMs?: number; intervalMs?: number; signal?: AbortSignal } = {},
+): Promise<WaitForTaskResult> {
+  const targetStatuses = options.targetStatuses ?? [RUNNING_TASK_STATUS];
+  const timeoutMs = options.timeoutMs ?? 300_000;
+  const intervalMs = options.intervalMs ?? 10_000;
+  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  for (;;) {
+    options.signal?.throwIfAborted();
+    const task = await findTaskById(api, taskId);
+    const status = Number(task.status);
+    if (targetStatuses.includes(status)) {
+      return { task, outcome: "target", status, statusText: getStatusText(task.status), elapsedMs: Date.now() - startedAt };
+    }
+    if (FAILURE_STATUSES.has(status)) {
+      return { task, outcome: "failed", status, statusText: getStatusText(task.status), elapsedMs: Date.now() - startedAt };
+    }
+    if (Date.now() >= deadline) {
+      return { task, outcome: "timeout", status, statusText: getStatusText(task.status), elapsedMs: Date.now() - startedAt };
+    }
+    await sleep(Math.max(0, Math.min(intervalMs, deadline - Date.now())));
+  }
 }
 
 export async function getTaskLog(api: EasyConsoleApi, taskId: string | number, limitBytes = DEFAULT_TEXT_LIMIT_BYTES) {

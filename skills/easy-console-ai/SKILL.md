@@ -58,9 +58,9 @@ easy-console.exe
 easy-console-mcp.exe
 ```
 
-Use these tools by intent (all 50 registered tools):
+Use these tools by intent (all 52 registered tools):
 
-- Tasks: `easyconsole_task_list`, `easyconsole_task_log`, `easyconsole_task_create`, `easyconsole_task_update`, `easyconsole_task_release`, `easyconsole_task_release_batch`, `easyconsole_task_delete`, `easyconsole_task_delete_batch`, `easyconsole_task_check_name`, `easyconsole_task_download`.
+- Tasks: `easyconsole_task_list`, `easyconsole_task_log`, `easyconsole_task_get`, `easyconsole_task_wait`, `easyconsole_task_create`, `easyconsole_task_update`, `easyconsole_task_release`, `easyconsole_task_release_batch`, `easyconsole_task_delete`, `easyconsole_task_delete_batch`, `easyconsole_task_check_name`, `easyconsole_task_download`.
 - Storage: `easyconsole_storage_list`, `easyconsole_storage_read_text`, `easyconsole_storage_download`, `easyconsole_storage_upload`, `easyconsole_storage_mkdir`, `easyconsole_storage_delete`, `easyconsole_storage_info`.
 - Images: `easyconsole_image_list`, `easyconsole_image_system`, `easyconsole_image_detail`, `easyconsole_image_set_default`, `easyconsole_image_download`, `easyconsole_image_commit`.
 - Account: `easyconsole_user_info`, `easyconsole_account_change_password`, `easyconsole_account_refresh_token`.
@@ -83,6 +83,8 @@ Use PowerShell-friendly `npm.cmd` while working from the repo:
 npm.cmd run ec -- --json whoami
 npm.cmd run ec -- --json task list
 npm.cmd run ec -- --json task log 123
+npm.cmd run ec -- --json task get 123
+npm.cmd run ec -- --json task wait 123 --for 2 --timeout 300
 npm.cmd run ec -- --json storage ls /
 npm.cmd run ec -- --json storage cat /path/to/file.txt
 npm.cmd run ec -- --json image list
@@ -90,6 +92,8 @@ npm.cmd run ec -- --json resource list
 npm.cmd run ec -- --json price list
 npm.cmd run ec -- --json monitor-url 123
 ```
+
+Task status codes: 0 initializing, 1 queued, 2 running, 3 paused, 4 released, 5 exhausted, 6 succeeded, 7 failed, 8 abnormal. `task get` / `easyconsole_task_get` return the SSH endpoint without credentials; `task wait` polls until the target status, a failure status (early return), or the timeout — useful for create-then-connect flows.
 
 Mutating CLI commands are dry-run by default. Add `--yes` only when executing an intentional change:
 

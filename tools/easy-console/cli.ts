@@ -32,6 +32,7 @@ import {
   getImageDetail,
   getMonitorIndex,
   getStorageInfo,
+  getTask,
   getTaskLog,
   importBackup,
   listImages,
@@ -57,6 +58,7 @@ import {
   updateTask,
   updateTaskTemplateRecord,
   userInfo,
+  waitForTask,
 } from "./operations";
 import type { EditableTaskTemplate } from "../../src/lib/task-templates";
 
@@ -430,6 +432,32 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     run(taskLog, (context) => {
       const options = taskLog.opts<{ limitBytes: string }>();
       return getTaskLog(context.api, parseId(taskId), parseInteger(options.limitBytes));
+    })(),
+  );
+
+  const taskGet = task.command("get").description("Get one task with its SSH endpoint (no credentials) and monitor URL");
+  taskGet.argument("<taskId>", "Task id");
+  taskGet.action((taskId: string) =>
+    run(taskGet, (context) => getTask(context.api, parseId(taskId)))(),
+  );
+
+  const taskWait = task.command("wait").description("Wait until a task reaches a status (default 2 = running), fails, or times out");
+  taskWait.argument("<taskId>", "Task id");
+  taskWait.option("--for <statuses>", "Comma-separated target status codes (default 2 = running)");
+  taskWait.option("--timeout <seconds>", "Overall timeout in seconds (default 300, max 900)", "300");
+  taskWait.option("--interval <seconds>", "Poll interval in seconds (default 10, min 5)", "10");
+  taskWait.action((taskId: string) =>
+    run(taskWait, (context) => {
+      const options = taskWait.opts<{ for?: string; timeout: string; interval: string }>();
+      const statuses = options.for
+        ? options.for.split(",").map((value) => Number(value.trim())).filter((value) => Number.isInteger(value))
+        : undefined;
+      if (statuses && statuses.length === 0) throw new Error("Provide at least one status code for --for.");
+      return waitForTask(context.api, parseId(taskId), {
+        targetStatuses: statuses,
+        timeoutMs: Math.min(900, parseInteger(options.timeout) ?? 300) * 1000,
+        intervalMs: Math.max(5, parseInteger(options.interval) ?? 10) * 1000,
+      });
     })(),
   );
 

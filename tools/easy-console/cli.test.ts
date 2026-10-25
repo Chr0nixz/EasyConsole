@@ -101,6 +101,23 @@ describe("easy-console cli", () => {
     });
   });
 
+  it("gets a single task with an SSH summary and waits for a status", async () => {
+    const get = await runCli(["--json", "task", "get", "1"], {
+      createContext: async () => createFakeContext(),
+    });
+    expect(get.exitCode).toBe(0);
+    const getData = JSON.parse(get.stdout).data;
+    expect(getData.task).toMatchObject({ id: 1, name: "task-1" });
+    expect(getData.ssh).not.toHaveProperty("password");
+
+    const wait = await runCli(["--json", "task", "wait", "1", "--for", "2", "--interval", "5"], {
+      createContext: async () =>
+        createFakeContext({ instanceApi: { tasks: async () => ({ items: [{ id: 1, status: 2 }], raw: [] }) } }),
+    });
+    expect(wait.exitCode).toBe(0);
+    expect(JSON.parse(wait.stdout).data).toMatchObject({ outcome: "target", status: 2 });
+  });
+
   it("returns dry-run data for mutations without --yes", async () => {
     let releaseCount = 0;
     const result = await runCli(["--json", "task", "release", "42"], {
