@@ -119,13 +119,15 @@ export function formatNumber(value: unknown, digits = 0, locale: Locale = "zh-CN
   }).format(number);
 }
 
+/** A billed amount with its unit: the backend bills in 元 (the original console labels every cost so). */
 export function formatCost(value: unknown, locale: Locale = "zh-CN") {
   const number = Number(value);
   if (!Number.isFinite(number)) return "-";
-  return number.toLocaleString(locale, {
+  const amount = number.toLocaleString(locale, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+  return locale === "en-US" ? `CNY ${amount}` : `${amount} 元`;
 }
 
 export function formatHours(value: unknown, locale: Locale = "zh-CN") {

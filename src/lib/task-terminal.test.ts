@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveTaskTerminalAction, willOpenAppSshSession } from "./task-terminal";
+import { getTaskAccess, resolveTaskTerminalAction, willOpenAppSshSession } from "./task-terminal";
 import type { Task } from "./types";
 
 const connectedTask = {
@@ -60,5 +60,21 @@ describe("willOpenAppSshSession", () => {
       willOpenAppSshSession(connectedTask, { loginUsername: "alice", supportsInAppSsh: false }),
     ).toBe(false);
     expect(willOpenAppSshSession(disconnectedTask, { supportsInAppSsh: true })).toBe(false);
+  });
+});
+
+describe("getTaskAccess", () => {
+  it("offers the terminal only while running and the log once started", () => {
+    expect(getTaskAccess({ status: 2 })).toEqual({ terminal: true, terminalReason: undefined, log: true, logReason: undefined });
+
+    const queued = getTaskAccess({ status: 1 });
+    expect(queued.terminal).toBe(false);
+    expect(queued.log).toBe(false);
+    expect(queued.terminalReason).toBe(queued.logReason);
+
+    const failed = getTaskAccess({ status: 7 });
+    expect(failed).toMatchObject({ terminal: false, log: true });
+    expect(failed.terminalReason).toBeTruthy();
+    expect(getTaskAccess({ status: 3 }).terminalReason).not.toBe(failed.terminalReason);
   });
 });

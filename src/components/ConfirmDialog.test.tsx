@@ -21,6 +21,19 @@ describe("ProgressBar", () => {
 });
 
 describe("ConfirmDialog", () => {
+  it("reads the consequence with the title while focus sits on cancel", () => {
+    render(
+      <ConfirmDialog
+        options={{ title: "确认释放实例", description: "容器内的本地数据会被清理", confirmLabel: "释放", tone: "danger", run: vi.fn() }}
+        pending={false}
+        onCancel={vi.fn()}
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("dialog", { name: "确认释放实例" })).toHaveAccessibleDescription("容器内的本地数据会被清理");
+  });
+
   it("runs confirm action and exposes cancel", () => {
     const onCancel = vi.fn();
     const onConfirm = vi.fn();
@@ -262,5 +275,25 @@ describe("Dialog", () => {
         Reflect.deleteProperty(window, "visualViewport");
       }
     }
+  });
+});
+
+describe("Button disabledReason", () => {
+  it("stays focusable, explains itself and ignores clicks", () => {
+    const onClick = vi.fn();
+    render(
+      <Button aria-label="打开终端" disabled disabledReason="实例已结束，无法连接" onClick={onClick}>
+        终端
+      </Button>,
+    );
+
+    const button = screen.getByRole("button", { name: "打开终端" });
+    expect(button).not.toHaveAttribute("disabled");
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).toHaveAccessibleDescription("实例已结束，无法连接");
+    button.focus();
+    expect(button).toHaveFocus();
+    fireEvent.click(button);
+    expect(onClick).not.toHaveBeenCalled();
   });
 });

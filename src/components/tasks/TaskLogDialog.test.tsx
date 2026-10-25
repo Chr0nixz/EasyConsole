@@ -37,7 +37,7 @@ describe("TaskLogDialog", () => {
     vi.mocked(instanceApi.taskLog).mockResolvedValue("alpha line\nbeta line\ngamma line");
   });
 
-  it("debounces filter and announces match count", async () => {
+  it("debounces find, announces the match position, and keeps surrounding lines visible", async () => {
     renderDialog();
 
     await screen.findByText(/alpha line/);
@@ -45,17 +45,42 @@ describe("TaskLogDialog", () => {
     const search = screen.getByRole("textbox", { name: /查找日志|Search logs/ });
     fireEvent.change(search, { target: { value: "beta" } });
 
-    expect(screen.queryByText(/行匹配|matching lines/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/第 1 \/ 1 处|1 of 1/)).not.toBeInTheDocument();
 
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 220));
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/1 行匹配|1 matching lines/)).toBeInTheDocument();
+      expect(screen.getByText(/第 1 \/ 1 处|1 of 1/)).toBeInTheDocument();
     });
     expect(screen.getByText("beta line")).toBeInTheDocument();
+    // Context stays: find highlights, it does not filter, until "matching lines only" is on.
+    expect(screen.getByText("alpha line")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /只显示匹配行|Show matching lines only/ }));
     expect(screen.queryByText("alpha line")).not.toBeInTheDocument();
+    expect(screen.getByText("beta line")).toBeInTheDocument();
+  });
+
+  it("summarizes a failed task's log with the exception line and exit code", async () => {
+    vi.mocked(instanceApi.taskLog).mockResolvedValue(
+      "step 1 loss=2.1\nTraceback (most recent call last):\n  File \"train.py\", line 9\ntorch.OutOfMemoryError: CUDA out of memory\n[launcher] process exited with code 1",
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <I18nProvider>
+        <ToastProvider>
+          <QueryClientProvider client={client}>
+            <TaskLogDialog task={{ ...task, status: 7 }} onClose={vi.fn()} />
+          </QueryClientProvider>
+        </ToastProvider>
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByText(/失败原因|Failure/)).toBeInTheDocument();
+    expect(screen.getByTitle("torch.OutOfMemoryError: CUDA out of memory")).toBeInTheDocument();
+    expect(screen.getByText(/退出码 1|exit code 1/)).toBeInTheDocument();
   });
 
   it("truncates oversized logs for display while keeping the tail", async () => {

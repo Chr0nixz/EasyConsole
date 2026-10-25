@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { EmptyState, ErrorState, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { ImageDetailDialog } from "../components/images/ImageDetailDialog";
-import { Button, Input, Panel, Select, TableRegion } from "../components/ui";
+import { Button, Input, Panel, Select, SettingTag, TableRegion } from "../components/ui";
 import { imageApi } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { useDownloadQueue } from "../lib/use-download-queue";
@@ -164,13 +164,13 @@ export function ImagesPage() {
     <div className="space-y-4">
       <Panel className="overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-app-border bg-app-panel/50 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-          <p className="text-sm text-app-muted">
+          <p className="app-numeric shrink-0 whitespace-nowrap text-sm text-app-muted">
             {text(
               `自定义 ${customCount} · 系统 ${systemCount} · 默认 ${defaultCount}`,
               `Custom ${customCount} · system ${systemCount} · default ${defaultCount}`,
             )}
           </p>
-          <div className="grid gap-2 sm:grid-cols-[minmax(220px,360px)_160px_auto]">
+          <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(180px,360px)_150px_auto]">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
               <Input
@@ -226,10 +226,7 @@ export function ImagesPage() {
                       <div className="flex items-center gap-2">
                         <span id={cardId} className="truncate text-sm font-semibold text-app-text">{imageName(image)}</span>
                         {isDefaultImage(image) ? (
-                          <span className="inline-flex shrink-0 items-center gap-1 rounded-[5px] bg-app-neutralSoft px-2 py-0.5 text-xs font-medium text-app-text">
-                            <BadgeCheck className="h-3 w-3 text-app-muted" aria-hidden="true" />
-                            {text("默认", "Default")}
-                          </span>
+                          <SettingTag className="shrink-0" icon={BadgeCheck}>{text("默认", "Default")}</SettingTag>
                         ) : null}
                       </div>
                       <div className="mt-0.5 text-xs text-app-muted">ID: {String(image.id)}</div>
@@ -254,7 +251,8 @@ export function ImagesPage() {
                   </dl>
                   <div className="flex flex-wrap gap-1.5">
                     <Button
-                      aria-label={favorites.includes(String(image.id)) ? text(`取消收藏 ${imageName(image)}`, `Unfavorite ${imageName(image)}`) : text(`收藏 ${imageName(image)}`, `Favorite ${imageName(image)}`)}
+                      aria-label={text(`收藏 ${imageName(image)}`, `Favorite ${imageName(image)}`)}
+                      aria-pressed={favorites.includes(String(image.id))}
                       variant="ghost"
                       title={favorites.includes(String(image.id)) ? text("取消收藏", "Unfavorite") : text("收藏", "Favorite")}
                       onClick={() => void handleToggleFavorite(image)}
@@ -273,6 +271,8 @@ export function ImagesPage() {
                     </Button>
                     <Button
                       aria-label={text(`将 ${imageName(image)} 设为默认镜像`, `Set ${imageName(image)} as default image`)}
+                      disabled={isDefaultImage(image)}
+                      disabledReason={text("已是默认镜像", "Already the default image")}
                       variant="ghost"
                       title={text("设为默认", "Set default")}
                       onClick={() => setDefaultImage(image)}
@@ -314,10 +314,7 @@ export function ImagesPage() {
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="truncate font-medium text-app-text">{imageName(image)}</span>
                         {isDefaultImage(image) ? (
-                          <span className="inline-flex shrink-0 items-center gap-1 rounded-[5px] bg-app-neutralSoft px-2 py-0.5 text-xs font-medium text-app-text">
-                            <BadgeCheck className="h-3 w-3 text-app-muted" aria-hidden="true" />
-                            {text("默认", "Default")}
-                          </span>
+                          <SettingTag className="shrink-0" icon={BadgeCheck}>{text("默认", "Default")}</SettingTag>
                         ) : null}
                       </div>
                       <div className="mt-0.5 text-xs text-app-text">ID: {String(image.id)}</div>
@@ -337,7 +334,8 @@ export function ImagesPage() {
                     <td className="sticky right-0 bg-app-surface px-3 py-2 align-middle shadow-stickyColumnSubtle">
                       <div className="flex justify-end gap-1">
                         <Button
-                          aria-label={favorites.includes(String(image.id)) ? text(`取消收藏 ${imageName(image)}`, `Unfavorite ${imageName(image)}`) : text(`收藏 ${imageName(image)}`, `Favorite ${imageName(image)}`)}
+                          aria-label={text(`收藏 ${imageName(image)}`, `Favorite ${imageName(image)}`)}
+                          aria-pressed={favorites.includes(String(image.id))}
                           variant="ghost"
                           title={favorites.includes(String(image.id)) ? text("取消收藏", "Unfavorite") : text("收藏", "Favorite")}
                           onClick={() => void handleToggleFavorite(image)}
@@ -352,7 +350,7 @@ export function ImagesPage() {
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
-                        <Button aria-label={text(`将 ${imageName(image)} 设为默认镜像`, `Set ${imageName(image)} as default image`)} variant="ghost" title={text("设为默认", "Set default")} onClick={() => setDefaultImage(image)}>
+                        <Button aria-label={text(`将 ${imageName(image)} 设为默认镜像`, `Set ${imageName(image)} as default image`)} disabled={isDefaultImage(image)} disabledReason={text("已是默认镜像", "Already the default image")} variant="ghost" title={text("设为默认", "Set default")} onClick={() => setDefaultImage(image)}>
                           <BadgeCheck className="h-4 w-4" />
                         </Button>
                         <Button aria-label={text(`下载镜像 ${imageName(image)}`, `Download image ${imageName(image)}`)} variant="ghost" title={text("下载", "Download")} onClick={() => downloadImage(image)}>

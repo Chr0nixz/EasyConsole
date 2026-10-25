@@ -29,6 +29,7 @@ import { requestCreateTask } from "../lib/task-create-request";
 import { useTheme } from "../lib/use-theme";
 import { needsLogAttention } from "../lib/task-status-notifications";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
+import { getTaskAccess } from "../lib/task-terminal";
 import type { Task } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
@@ -99,7 +100,11 @@ function buildTaskPaletteCommands(
       }
     : null;
 
-  const ordered = needsLogAttention(task) ? [log, open, terminal] : [open, log, terminal];
+  // Same availability rule as the task table: no log before start, no terminal unless running.
+  const access = getTaskAccess(task);
+  const ordered = (needsLogAttention(task) ? [log, open, terminal] : [open, log, terminal]).filter(
+    (command) => (command !== log || access.log) && (command !== terminal || access.terminal),
+  );
   return release ? [...ordered, release] : ordered;
 }
 
@@ -116,6 +121,26 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const [query, setQuery] = useState("");
   const [debouncedTaskQuery, setDebouncedTaskQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
+  const [prevOpen, setPrevOpen] = useState(open);
+  const [prevNormalizedQuery, setPrevNormalizedQuery] = useState("");
+
+  // Reset palette-local state when the palette opens or the query changes.
+  // Done during render (React's documented prop/state-change adjustment
+  // pattern) instead of an effect, so the reset lands before the first paint.
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (open) {
+      setQuery("");
+      setDebouncedTaskQuery("");
+      setActiveIndex(0);
+    }
+  }
+
+  const normalizedQuery = query.trim().toLowerCase();
+  if (normalizedQuery !== prevNormalizedQuery) {
+    setPrevNormalizedQuery(normalizedQuery);
+    setActiveIndex(0);
+  }
 
   const releaseMutation = useMutation({
     mutationFn: (task: Task) => instanceApi.operateTask(task.id),
@@ -199,12 +224,14 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     [locale, navigate, resolvedTheme, setLocale, setPreference, t, text],
   );
 
-  const normalizedQuery = query.trim().toLowerCase();
+  // Stale remote results clear immediately, before paint; the debounce timer
+  // below handles the delayed update when the query is long enough.
+  if (!open || normalizedQuery.length < 2) {
+    if (debouncedTaskQuery !== "") setDebouncedTaskQuery("");
+  }
+
   useEffect(() => {
-    if (!open || normalizedQuery.length < 2) {
-      setDebouncedTaskQuery("");
-      return undefined;
-    }
+    if (!open || normalizedQuery.length < 2) return undefined;
 
     const timer = window.setTimeout(() => setDebouncedTaskQuery(normalizedQuery), REMOTE_SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
@@ -241,17 +268,6 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   }, [navigate, normalizedQuery, onRelease, staticCommands, taskQuery.data?.items, text]);
 
   useEffect(() => {
-    if (!open) return;
-    setQuery("");
-    setDebouncedTaskQuery("");
-    setActiveIndex(0);
-  }, [open]);
-
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [normalizedQuery]);
-
-  useEffect(() => {
     setActiveIndex((index) => (commands.length === 0 ? 0 : Math.min(index, commands.length - 1)));
   }, [commands.length]);
 
@@ -273,6 +289,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   }
 
   const activeOptionId = commands[activeIndex] ? `${listboxId}-option-${activeIndex}` : undefined;
+  const remoteSearchPending = normalizedQuery.length >= 2 && (debouncedTaskQuery !== normalizedQuery || taskQuery.isFetching);
 
   return (
     <>
@@ -329,7 +346,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           >
             {commands.length === 0 ? (
               <div className="px-3 py-8 text-center text-sm text-app-muted" role="status">
-                {text("没有匹配的命令", "No matching commands")}
+                {/* "No match" only once the remote task search has answered for this exact query. */}
+                {remoteSearchPending ? text("正在搜索实例…", "Searching instances…") : text("没有匹配的命令", "No matching commands")}
               </div>
             ) : (
               commands.map((command, index) => (
@@ -357,6 +375,12 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
               ))
             )}
           </div>
+          {/* The palette is the shell's one visible keyboard entry point, so it names the rest. */}
+          <p className="mt-2 flex items-center gap-1.5 border-t border-app-border px-1 pt-2 text-xs text-app-muted">
+            {text("在任意页面按", "Press")}
+            <kbd className="rounded border border-app-border bg-app-panel px-1.5 font-mono text-[0.6875rem] leading-5 text-app-muted">?</kbd>
+            {text("查看全部快捷键", "on any page for all shortcuts")}
+          </p>
         </div>
       </Dialog>
       {confirmDialog}

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, FileText, Folder, FolderOpen, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { EmptyState, ErrorState, FolderOpenIcon, LoadingState } from "../DataState";
 import { Button, Dialog, Select, TableRegion } from "../ui";
@@ -78,11 +78,17 @@ export function RemoteStoragePicker({
     });
   }, [entries, locale, path, sortDirection, sortField]);
 
-  useEffect(() => {
-    if (!open) return;
-    setPath(normalizeStoragePath(initialPath));
-    setSelectedFile(null);
-  }, [initialPath, open]);
+  // Re-target the picker when it is (re)opened with a new initial path; done
+  // during render (React's documented state-adjustment pattern) so the first
+  // open frame already shows the requested path.
+  const [prevResetKey, setPrevResetKey] = useState({ initialPath, open });
+  if (initialPath !== prevResetKey.initialPath || open !== prevResetKey.open) {
+    setPrevResetKey({ initialPath, open });
+    if (open) {
+      setPath(normalizeStoragePath(initialPath));
+      setSelectedFile(null);
+    }
+  }
 
   function openDirectory(entry: StorageEntry) {
     setPath(getStorageEntryPath(entry, path));

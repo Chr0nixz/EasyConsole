@@ -1,8 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { RefreshCw } from "lucide-react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
@@ -12,13 +11,13 @@ import { formatCost, formatHours, formatNumber, formatRelativeUpdatedAt, formatS
 import { useI18n } from "../lib/i18n";
 import type { Locale } from "../lib/i18n-text";
 import { useCompactLayout } from "../lib/use-compact-layout";
+import { EXECUTION_LEDGER_ROUTE, useExecutionReviewCount } from "../lib/use-execution-review";
 import { browserRuntime } from "../lib/runtime";
 import { cn } from "../lib/utils";
 import { DEFAULT_TASK_PAGE, DEFAULT_TASK_PAGE_SIZE, serializeTaskListQuery, taskTimestamp } from "../lib/task-list-query";
 import type { ConsoleSummary, Task } from "../lib/types";
 
 type TimeRange = "day" | "week" | "month";
-type ChartMetric = "runtime" | "cost";
 
 const TIME_RANGES: TimeRange[] = ["day", "week", "month"];
 const AUTO_REFRESH_STORAGE_KEY = "easy-console.dashboard.autoRefreshMs";
@@ -75,8 +74,8 @@ function taskMetaLine(task: Task, now: number, locale: Locale, text: (zh: string
   if (updatedAt > 0 && now > 0) {
     segments.push(
       text(
-        `更新于 ${formatRelativeUpdatedAt(updatedAt, now, locale)}`,
-        `updated ${formatRelativeUpdatedAt(updatedAt, now, locale)}`,
+        `最近变化 ${formatRelativeUpdatedAt(updatedAt, now, locale)}`,
+        `changed ${formatRelativeUpdatedAt(updatedAt, now, locale)}`,
       ),
     );
   }
@@ -141,9 +140,11 @@ function AttentionGroup({
             return (
               <li key={String(task.id)} className="px-3 py-2.5 transition-colors duration-150 hover:bg-app-panel/60">
                 <div className="flex items-center justify-between gap-3">
+                  {/* Two lines before clipping: run names share long prefixes and differ at the end. */}
                   <Link
                     to={`/tasks/${task.id}`}
-                    className="min-w-0 truncate text-sm font-medium text-app-accent hover:underline [@media(pointer:coarse)]:leading-[44px]"
+                    className="line-clamp-2 min-w-0 break-words text-sm font-medium text-app-accent hover:underline [@media(pointer:coarse)]:py-3"
+                    title={getTaskName(task)}
                     aria-label={text(`查看实例 ${getTaskName(task)} 详情`, `View details for ${getTaskName(task)}`)}
                   >
                     {getTaskName(task)}
@@ -166,7 +167,7 @@ function SummaryLine({ running, queued, runtime, cost, rangeName }: { running: n
   const { locale, text } = useI18n();
   const segments = [
     { key: "running", label: text("运行中", "Running"), value: formatNumber(running, 0, locale), live: running > 0 },
-    { key: "queued", label: text("排队", "Queued"), value: formatNumber(queued, 0, locale), live: false },
+    { key: "queued", label: text("队列中", "Queued"), value: formatNumber(queued, 0, locale), live: false },
     { key: "runtime", label: text(`${rangeName}时长`, rangeName), value: formatSecondsDuration(runtime, locale), live: false },
     { key: "cost", label: text("费用", "Cost"), value: formatCost(cost, locale), live: false },
   ];
@@ -175,7 +176,7 @@ function SummaryLine({ running, queued, runtime, cost, rangeName }: { running: n
     <p className="min-w-0 text-sm text-app-text">
       <span className="sr-only">
         {text(
-          `运行中 ${formatNumber(running, 0, locale)} · 排队 ${formatNumber(queued, 0, locale)} · ${rangeName}时长 ${formatSecondsDuration(runtime, locale)} · 费用 ${formatCost(cost, locale)}`,
+          `运行中 ${formatNumber(running, 0, locale)} · 队列中 ${formatNumber(queued, 0, locale)} · ${rangeName}时长 ${formatSecondsDuration(runtime, locale)} · 费用 ${formatCost(cost, locale)}`,
           `Running ${formatNumber(running, 0, locale)} · queued ${formatNumber(queued, 0, locale)} · ${rangeName} ${formatSecondsDuration(runtime, locale)} · cost ${formatCost(cost, locale)}`,
         )}
       </span>
@@ -225,7 +226,6 @@ function DashboardSkeleton({ label }: { label: string }) {
         <div className="h-8 w-72 max-w-full animate-pulse rounded-md bg-app-neutralSoft" />
       </div>
       <AttentionColumnsSkeleton />
-      <div className="h-64 animate-pulse rounded-lg border border-app-border bg-app-surface shadow-shell" aria-hidden="true" />
     </div>
   );
 }
@@ -234,7 +234,7 @@ export function DashboardPage() {
   const { locale, t, text } = useI18n();
   const compactLayout = useCompactLayout();
   const [timeRange, setTimeRange] = useState<TimeRange>("week");
-  const [chartMetric, setChartMetric] = useState<ChartMetric>("runtime");
+  const executionReviewCount = useExecutionReviewCount();
   const [autoRefreshMs, setAutoRefreshMs] = useState(DEFAULT_AUTO_REFRESH_MS);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -271,36 +271,19 @@ export function DashboardPage() {
     ? Math.min(consoleQuery.dataUpdatedAt, staticsQuery.dataUpdatedAt)
     : consoleQuery.dataUpdatedAt || staticsQuery.dataUpdatedAt;
   const taskDataAvailable = staticsQuery.data !== undefined;
-  const recentTasks = allTasks.slice(0, 8);
   const failedTasks = byRecency(allTasks.filter((task) => Number(task.status) === 7 || Number(task.status) === 8));
   const runningTasks = byRecency(allTasks.filter((task) => Number(task.status) === 2));
-  const queuedTasks = byRecency(allTasks.filter((task) => Number(task.status) === 1));
+  // Initializing (0) has not started either; the backend's pending count includes it, so the column does too.
+  const queuedTasks = byRecency(allTasks.filter((task) => Number(task.status) === 0 || Number(task.status) === 1));
+  // The attention columns already list failed, running and queued instances; this panel carries
+  // the rest (finished, released, paused) so nothing appears twice. With tasks but nothing else
+  // to show, the panel is left out rather than shown empty.
+  const inColumns = new Set([...failedTasks, ...runningTasks, ...queuedTasks]);
+  const recentTasks = byRecency(allTasks.filter((task) => !inColumns.has(task))).slice(0, 8);
+  const showRecentPanel = allTasks.length === 0 || recentTasks.length > 0 || staticsQuery.isError;
 
   const runtimeValue = Number(summary.run_time?.[timeRange] ?? 0);
   const costValue = Number(summary.cost_map?.[timeRange] ?? 0);
-
-  const chartData = TIME_RANGES.map((range) => ({
-    range,
-    label: rangeLabel(range, text),
-    runtime: Number(summary.run_time?.[range] ?? 0),
-    cost: Number(summary.cost_map?.[range] ?? 0),
-  }));
-
-  const selectedRangeIndex = TIME_RANGES.indexOf(timeRange);
-  const maxRuntime = Math.max(...chartData.map((entry) => entry.runtime), 0);
-  const runtimeAxisDivisor = maxRuntime >= 86_400 ? 86_400 : maxRuntime >= 3_600 ? 3_600 : 60;
-  const runtimeAxisUnit = maxRuntime >= 86_400 ? text("天", "d") : maxRuntime >= 3_600 ? text("时", "h") : text("分", "min");
-  const axisNumber = new Intl.NumberFormat(locale, { maximumFractionDigits: 1, notation: "compact" });
-  const chartSummary =
-    chartMetric === "runtime"
-      ? text(
-          `运行时长对比：共 ${chartData.length} 个时间范围，当前选中 ${rangeLabel(timeRange, text)}，值为 ${formatSecondsDuration(runtimeValue, locale)}。极值约 ${formatSecondsDuration(Math.max(...chartData.map((d) => d.runtime), 0), locale)}。`,
-          `Runtime comparison: ${chartData.length} ranges; selected ${rangeLabel(timeRange, text)} is ${formatSecondsDuration(runtimeValue, locale)}. Peak about ${formatSecondsDuration(Math.max(...chartData.map((d) => d.runtime), 0), locale)}.`,
-        )
-      : text(
-          `费用对比：共 ${chartData.length} 个时间范围，当前选中 ${rangeLabel(timeRange, text)}，值为 ${formatCost(costValue, locale)}。极值约 ${formatCost(Math.max(...chartData.map((d) => d.cost), 0), locale)}。`,
-          `Cost comparison: ${chartData.length} ranges; selected ${rangeLabel(timeRange, text)} is ${formatCost(costValue, locale)}. Peak about ${formatCost(Math.max(...chartData.map((d) => d.cost), 0), locale)}.`,
-        );
 
   if (consoleQuery.isLoading) return <DashboardSkeleton label={t("common.loading")} />;
   if (consoleQuery.isError) return <ErrorState error={consoleQuery.error} action={<Button variant="secondary" onClick={() => consoleQuery.refetch()}>{text("重试", "Retry")}</Button>} />;
@@ -361,6 +344,18 @@ export function DashboardPage() {
         </div>
       </div>
 
+      {executionReviewCount > 0 ? (
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warningText">
+          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+          {text(
+            `${executionReviewCount} 次定时执行的远程结果不确定，实例可能已创建并在计费。`,
+            `${executionReviewCount} scheduled ${executionReviewCount === 1 ? "run has" : "runs have"} an uncertain remote result; an instance may exist and be billing.`,
+          )}
+          <Link className="font-medium underline underline-offset-2" to={EXECUTION_LEDGER_ROUTE}>
+            {text("去核对", "Review")}
+          </Link>
+        </p>
+      ) : null}
       {staticsQuery.isError && taskDataAvailable ? (
         <p className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warningText" role="alert">
           {text("实例状态刷新失败，以下为上次成功读取的数据，状态可能已变化。", "Instance status could not be refreshed. The last successful data is shown below and may be out of date.")}
@@ -394,70 +389,17 @@ export function DashboardPage() {
           now={tasksFetchedAt}
         />
         <AttentionGroup
-          title={text("排队中", "Queued")}
+          title={text("队列中", "Queued")}
           href={tasksHref("1")}
           tasks={queuedTasks}
-          emptyLabel={text("没有排队中的实例", "No queued instances")}
+          emptyLabel={text("没有队列中的实例", "No queued instances")}
           now={tasksFetchedAt}
         />
       </div>}
 
-      <Panel className="p-4">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="text-sm font-semibold text-app-text">
-            {chartMetric === "runtime" ? text("运行时长对比", "Runtime comparison") : text("费用对比", "Cost comparison")}
-          </div>
-          <SegmentedControl<ChartMetric>
-            label={text("对比指标", "Comparison metric")}
-            value={chartMetric}
-            options={[
-              { value: "runtime", label: text("时长", "Runtime") },
-              { value: "cost", label: text("费用", "Cost") },
-            ]}
-            optionClassName="px-3"
-            onChange={setChartMetric}
-          />
-        </div>
-        <div className="h-48" role="img" aria-label={chartSummary}>
-          <span className="sr-only">{chartSummary}</span>
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-              <XAxis dataKey="label" tick={{ fontSize: 12 }} stroke="currentColor" className="text-app-muted" />
-              <YAxis
-                tick={{ fontSize: 11 }}
-                stroke="currentColor"
-                className="text-app-muted"
-                width={64}
-                tickCount={4}
-                minTickGap={8}
-                tickFormatter={(value) =>
-                  chartMetric === "runtime"
-                    ? `${axisNumber.format(Number(value) / runtimeAxisDivisor)}${runtimeAxisUnit}`
-                    : axisNumber.format(Number(value))
-                }
-              />
-              <Tooltip
-                cursor={{ fill: "currentColor", fillOpacity: 0.08 }}
-                contentStyle={{ background: "var(--color-app-elevated)", border: "1px solid var(--color-app-border)", borderRadius: 8, boxShadow: "var(--app-shadow-popover)", color: "var(--color-app-text)", fontSize: 12 }}
-                formatter={(value: number) =>
-                  chartMetric === "runtime"
-                    ? [formatSecondsDuration(value, locale), text("时长", "Runtime")]
-                    : [formatCost(value, locale), text("费用", "Cost")]
-                }
-              />
-              <Bar dataKey={chartMetric} radius={[6, 6, 0, 0]} maxBarSize={88} animationDuration={240} animationEasing="ease-out">
-                {chartData.map((entry, index) => (
-                  <Cell key={entry.range} fill={index === selectedRangeIndex ? "var(--color-app-accent)" : "var(--color-app-muted)"} fillOpacity={index === selectedRangeIndex ? 1 : 0.28} style={{ transition: "fill-opacity 180ms ease-out" }} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </Panel>
-
-      {taskDataAvailable ? <Panel>
+      {taskDataAvailable && showRecentPanel ? <Panel>
         <div className="flex items-center justify-between border-b border-app-border px-4 py-3">
-          <div className="text-sm font-semibold">{text("最近任务", "Recent tasks")}</div>
+          <div className="text-sm font-semibold">{text("其他最近实例", "Other recent instances")}</div>
           {staticsQuery.isError ? (
             <Button className="h-8" variant="secondary" onClick={() => staticsQuery.refetch()}>
               {text("重试", "Retry")}

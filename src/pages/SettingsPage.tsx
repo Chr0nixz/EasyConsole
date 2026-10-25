@@ -460,9 +460,14 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       return t("settings.websshPending");
     }
   }, [normalized.apiBaseUrl, t]);
-  const showInsecureTransportWarning =
-    !shouldEnforceSecureRemoteTransport() &&
-    (isInsecureRemoteTransportUrl(normalized.apiBaseUrl) || isInsecureRemoteTransportUrl(normalized.monitorDashboardUrl));
+  // Name the offending URLs: the API and the monitor dashboard can differ.
+  const insecureTransportTargets = shouldEnforceSecureRemoteTransport()
+    ? []
+    : [
+        isInsecureRemoteTransportUrl(normalized.apiBaseUrl) ? text("API 地址", "API URL") : null,
+        isInsecureRemoteTransportUrl(normalized.monitorDashboardUrl) ? text("监控面板地址", "Monitor dashboard URL") : null,
+      ].filter((label): label is string => Boolean(label));
+  const showInsecureTransportWarning = insecureTransportTargets.length > 0;
   const transportBlockedReason = getTransportBlockReason();
   const validationError = settingsDirty ? validate(normalized, t) : null;
   const visibleError = validationError ?? error;
@@ -1238,7 +1243,10 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             </label>
 
             {showInsecureTransportWarning ? (
-              <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">{t("settings.transportInsecureWarning")}</div>
+              <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warningText">
+                <span className="font-medium">{text(`${insecureTransportTargets.join("、")}使用明文 HTTP。`, `${insecureTransportTargets.join(" and ")} ${insecureTransportTargets.length > 1 ? "use" : "uses"} cleartext HTTP. `)}</span>
+                {t("settings.transportInsecureWarning")}
+              </div>
             ) : null}
             {transportBlockedReason ? (
               <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{t("settings.transportBlocked")}</div>
@@ -1438,7 +1446,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               </div>
             </div>
             {!browserRuntime.supportsUpdater ? (
-              <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">
+              <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warningText">
                 {text("当前运行时不支持安装桌面更新。", "This runtime cannot install desktop updates.")}
               </div>
             ) : null}
@@ -2226,8 +2234,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 {(() => {
                   const summary = summarizeBackup(importBackup);
                   return text(
-                    `模板 ${summary.taskTemplates}，计划任务 ${summary.scheduledTasks}，运行日志 ${summary.runLogs}，账号 ${summary.savedAccounts}`,
-                    `Templates ${summary.taskTemplates}, scheduled tasks ${summary.scheduledTasks}, run logs ${summary.runLogs}, accounts ${summary.savedAccounts}`,
+                    `模板 ${summary.taskTemplates}，资源预设 ${summary.resourcePresets}，计划任务 ${summary.scheduledTasks}，运行日志 ${summary.runLogs}，账号 ${summary.savedAccounts}`,
+                    `Templates ${summary.taskTemplates}, resource presets ${summary.resourcePresets}, scheduled tasks ${summary.scheduledTasks}, run logs ${summary.runLogs}, accounts ${summary.savedAccounts}`,
                   );
                 })()}
               </div>

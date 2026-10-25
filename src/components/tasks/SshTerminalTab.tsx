@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getRuntimeSettings, portForwardRuleAppliesToHost, type SshTerminalTheme } from "../../lib/app-settings";
 import { browserRuntime } from "../../lib/runtime";
+import { resolveBuiltinTerminalTheme, SSH_SEARCH_DECORATIONS } from "../../lib/ssh-terminal-colors";
 import { saveBlob } from "../../lib/download";
 import { useI18n } from "../../lib/i18n";
 import { useMobileBackLayer } from "../../lib/use-mobile-back-stack";
@@ -43,18 +44,6 @@ const HOST_KEY_PROMPT_TIMEOUT_SECS = 120;
 /** Replay chunk size (rows) for preserved scrollback, so large histories do not block one write. */
 const RECONNECT_REPLAY_CHUNK_ROWS = 500;
 
-/**
- * Overview-ruler-only search decorations: enabling decorations is what makes
- * the search addon report match counts, and scrollbar stripes stay visually
- * restrained where in-terminal match highlighting would not.
- */
-const SEARCH_DECORATIONS = {
-  decorations: {
-    matchOverviewRuler: "oklch(0.62 0.1 250 / 0.7)",
-    activeMatchColorOverviewRuler: "oklch(0.5 0.145 250)",
-  },
-} as const;
-
 function formatClock(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
@@ -75,17 +64,9 @@ function statusKindFromPhase(phase: SshSessionPhase | undefined): StatusKind {
 function resolveTerminalTheme(theme: SshTerminalTheme) {
   switch (theme) {
     case "light":
-      return {
-        background: "oklch(0.98 0.005 255)",
-        foreground: "oklch(0.2 0.02 255)",
-        cursor: "oklch(0.3 0.15 235)",
-      };
+      return resolveBuiltinTerminalTheme("light");
     case "hacker":
-      return {
-        background: "oklch(0.05 0.01 145)",
-        foreground: "oklch(0.85 0.2 145)",
-        cursor: "oklch(0.9 0.25 145)",
-      };
+      return resolveBuiltinTerminalTheme("hacker");
     case "custom": {
       const colors = getRuntimeSettings().ssh.terminal.customColors;
       return {
@@ -113,11 +94,7 @@ function resolveTerminalTheme(theme: SshTerminalTheme) {
     }
     case "dark":
     default:
-      return {
-        background: "oklch(0.18 0.028 255)",
-        foreground: "oklch(0.9 0.018 255)",
-        cursor: "oklch(0.78 0.12 235)",
-      };
+      return resolveBuiltinTerminalTheme("dark");
   }
 }
 
@@ -564,9 +541,9 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     const addon = searchAddonRef.current;
     if (!addon || !searchQuery) return;
     if (direction === "next") {
-      addon.findNext(searchQuery, SEARCH_DECORATIONS);
+      addon.findNext(searchQuery, SSH_SEARCH_DECORATIONS);
     } else {
-      addon.findPrevious(searchQuery, SEARCH_DECORATIONS);
+      addon.findPrevious(searchQuery, SSH_SEARCH_DECORATIONS);
     }
   }, [searchQuery]);
 
@@ -673,6 +650,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             type="button"
             title={text("搜索 (Ctrl+F)", "Search (Ctrl+F)")}
             aria-label={text("搜索 (Ctrl+F)", "Search (Ctrl+F)")}
+            aria-pressed={showSearch}
             onClick={toggleSearch}
           >
             <Search className="h-3.5 w-3.5" />
@@ -684,7 +662,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             )}
             type="button"
             title={isRecording ? text("停止录制", "Stop recording") : text("录制", "Record")}
-            aria-label={isRecording ? text("停止录制", "Stop recording") : text("录制", "Record")}
+            aria-label={text("录制", "Record")}
+            aria-pressed={isRecording}
             onClick={toggleRecording}
           >
             {isRecording ? <Square className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}

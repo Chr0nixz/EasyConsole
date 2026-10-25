@@ -574,13 +574,13 @@ export function StoragePage() {
                       </>
                     ) : (
                       <>
-                        <Button className="h-9 px-2" variant="ghost" title={text("下载远程文件到本地", "Download remote file locally")} onClick={() => downloadEntry(entry, entryPath)}>
-                          <Download className="h-4 w-4" />
-                          {text("下载", "Download")}
-                        </Button>
                         <Button className="h-9 px-2" variant="ghost" title={text("读取远程文件内容", "Read remote file content")} onClick={() => previewMutation.mutate(entry)}>
                           <Eye className="h-4 w-4" />
                           {text("读取", "Read")}
+                        </Button>
+                        <Button className="h-9 px-2" variant="ghost" title={text("下载远程文件到本地", "Download remote file locally")} onClick={() => downloadEntry(entry, entryPath)}>
+                          <Download className="h-4 w-4" />
+                          {text("下载", "Download")}
                         </Button>
                       </>
                     )}
@@ -642,8 +642,8 @@ export function StoragePage() {
                         <span className="sr-only">{text("复制远程路径", "Copy remote path")}</span>
                       </button>
                     </td>
-                    <td className="px-3 py-2 text-app-text">{directory ? text("目录", "Directory") : text("文件", "File")}</td>
-                    <td className="px-3 py-2 text-app-text">
+                    <td className="whitespace-nowrap px-3 py-2 text-app-text">{directory ? text("目录", "Directory") : text("文件", "File")}</td>
+                    <td className="whitespace-nowrap px-3 py-2 text-app-text">
                       <div className="flex items-center gap-2">
                         <span className="app-numeric">{entrySizeText}</span>
                         {directory ? (
@@ -659,14 +659,14 @@ export function StoragePage() {
                         ) : null}
                       </div>
                     </td>
-                    <td className="app-numeric px-3 py-2 text-app-text">{getStorageEntryModified(entry)}</td>
+                    <td className="app-numeric whitespace-nowrap px-3 py-2 text-app-text">{getStorageEntryModified(entry)}</td>
                     <td className="px-3 py-2">
-                      <div className="flex flex-wrap gap-1">
+                      <div className="flex flex-nowrap gap-1">
                         {directory ? (
                           <>
                             <Button className="h-8 px-2" variant="ghost" title={text("打开远程目录", "Open remote directory")} onClick={() => setPath(entryPath)}>
                               <FolderOpen className="h-4 w-4" />
-                              {text("打开", "Open")}
+                              <span className="max-xl:sr-only">{text("打开", "Open")}</span>
                             </Button>
                             <Button
                               className="h-8 px-2"
@@ -675,11 +675,17 @@ export function StoragePage() {
                               onClick={() => downloadEntry(entry, entryPath)}
                             >
                               <Download className="h-4 w-4" />
-                              {text("下载", "Download")}
+                              <span className="max-xl:sr-only">{text("下载", "Download")}</span>
                             </Button>
                           </>
                         ) : (
+                          // Same slots as a directory row (look inside, download, delete), so
+                          // 下载 never moves between rows.
                           <>
+                            <Button className="h-8 px-2" variant="ghost" title={text("读取远程文件内容", "Read remote file content")} onClick={() => previewMutation.mutate(entry)}>
+                              <Eye className="h-4 w-4" />
+                              <span className="max-xl:sr-only">{text("读取", "Read")}</span>
+                            </Button>
                             <Button
                               className="h-8 px-2"
                               variant="ghost"
@@ -687,17 +693,13 @@ export function StoragePage() {
                               onClick={() => downloadEntry(entry, entryPath)}
                             >
                               <Download className="h-4 w-4" />
-                              {text("下载", "Download")}
-                            </Button>
-                            <Button className="h-8 px-2" variant="ghost" title={text("读取远程文件内容", "Read remote file content")} onClick={() => previewMutation.mutate(entry)}>
-                              <Eye className="h-4 w-4" />
-                              {text("读取", "Read")}
+                              <span className="max-xl:sr-only">{text("下载", "Download")}</span>
                             </Button>
                           </>
                         )}
                         <Button className="h-8 px-2 hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger" variant="ghost" title={text("删除远程文件或目录", "Delete remote file or directory")} onClick={() => confirmDeleteEntry(entry)}>
                           <Trash2 className="h-4 w-4" />
-                          {text("删除", "Delete")}
+                          <span className="max-xl:sr-only">{text("删除", "Delete")}</span>
                         </Button>
                       </div>
                     </td>
@@ -714,8 +716,8 @@ export function StoragePage() {
 
       <Dialog open={Boolean(preview)} title={text(`远程文件 ${preview?.title ?? ""}`, `Remote File ${preview?.title ?? ""}`)} onClose={() => setPreview(null)} width="max-w-5xl">
         <div className="space-y-3 p-3">
-          {preview?.truncated ? <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">{text(`文件较大，仅显示前 1 MiB。大小：${formatBytes(preview.size)}`, `Large file. Showing the first 1 MiB only. Size: ${formatBytes(preview.size)}`)}</div> : null}
-          {preview?.binary ? <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">{text("二进制文件不支持文本预览，请下载后打开。", "Binary files cannot be previewed as text. Download to open locally.")}</div> : null}
+          {preview?.truncated ? <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warningText">{text(`文件较大，仅显示前 1 MiB。大小：${formatBytes(preview.size)}`, `Large file. Showing the first 1 MiB only. Size: ${formatBytes(preview.size)}`)}</div> : null}
+          {preview?.binary ? <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warningText">{text("二进制文件不支持文本预览，请下载后打开。", "Binary files cannot be previewed as text. Download to open locally.")}</div> : null}
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-app-muted">
             <span className="font-mono">{preview?.path}</span>
             <Button type="button" variant="secondary" onClick={() => preview?.path && copyPath(preview.path)}>

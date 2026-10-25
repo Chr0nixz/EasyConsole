@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDownToLine, Copy, RefreshCw, WrapText } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowDownToLine, ChevronDown, ChevronUp, Copy, Crosshair, ListFilter, RefreshCw, WrapText } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 
 import { ErrorState, LoadingState } from "../DataState";
 import { Button, Input } from "../ui";
@@ -8,6 +8,7 @@ import { instanceApi } from "../../lib/api";
 import { formatRelativeUpdatedAt } from "../../lib/format";
 import { useI18n } from "../../lib/i18n";
 import { browserRuntime } from "../../lib/runtime";
+import { FAILURE_STATUSES } from "../../lib/task-status-notifications";
 import type { Task } from "../../lib/types";
 import { useToast } from "../../lib/use-toast";
 import { cn } from "../../lib/utils";
@@ -18,6 +19,12 @@ const FOLLOW_BOTTOM_THRESHOLD_PX = 48;
 const FILTER_DEBOUNCE_MS = 200;
 /** While following a running task the log re-reads on this cadence; paused when the window is hidden. */
 const LIVE_LOG_POLL_MS = 6_000;
+
+/** Lines that read as a failure: tracebacks, exceptions, fatal signals, OOM, non-zero exits. */
+const ERROR_LINE_PATTERN = /traceback \(most recent call last\)|\b(?:error|exception|fatal|panic|killed|segmentation fault)\b|out of memory|exit(?:ed)? (?:with )?(?:code|status) [1-9]/i;
+/** The line that names the failure, e.g. `torch.OutOfMemoryError: CUDA out of memory`. */
+const EXCEPTION_LINE_PATTERN = /^\s*[\w.]*(?:Error|Exception|Interrupt)\b:?/;
+const EXIT_CODE_PATTERN = /exit(?:ed)? (?:with )?(?:code|status) (\d+)/i;
 
 function truncateLogForDisplay(value: string, maxChars: number) {
   if (value.length <= maxChars) {
@@ -31,20 +38,41 @@ function truncateLogForDisplay(value: string, maxChars: number) {
   };
 }
 
+/** The failure a reader wants first: the last exception line (else the last error-looking line) and any exit code. */
+function findFailureSummary(lines: string[], errorLines: Set<number>) {
+  let exceptionIndex = -1;
+  let lastErrorIndex = -1;
+  let exitCode: string | null = null;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!errorLines.has(index)) continue;
+    if (lastErrorIndex < 0) lastErrorIndex = index;
+    if (exitCode === null) exitCode = EXIT_CODE_PATTERN.exec(lines[index])?.[1] ?? null;
+    if (exceptionIndex < 0 && EXCEPTION_LINE_PATTERN.test(lines[index])) exceptionIndex = index;
+    if (exceptionIndex >= 0 && exitCode !== null) break;
+  }
+  const index = exceptionIndex >= 0 ? exceptionIndex : lastErrorIndex;
+  return index >= 0 ? { index, line: lines[index].trim(), exitCode } : null;
+}
+
 /** `toolbarEnd` sits at the right end of the toolbar, e.g. the detail page's expand action. */
 export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: ReactNode }) {
   const { locale, text } = useI18n();
   const toast = useToast();
   const [wrapLines, setWrapLines] = useState(() => browserRuntime.isMobile);
   const [followBottom, setFollowBottom] = useState(true);
-  const [filter, setFilter] = useState("");
-  const [debouncedFilter, setDebouncedFilter] = useState("");
+  const [findInput, setFindInput] = useState("");
+  const [debouncedFind, setDebouncedFind] = useState("");
+  // Find highlights matches in place by default, so the traceback around a hit stays readable.
+  const [onlyMatches, setOnlyMatches] = useState(false);
+  const [matchCursor, setMatchCursor] = useState(0);
+  const [focusedLine, setFocusedLine] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const programmaticScrollRef = useRef(false);
   const [manualRefreshing, setManualRefreshing] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   // Only a running task still writes to its log; following one turns the panel into a feed.
   const live = followBottom && Number(task.status) === 2;
+  const failedTask = FAILURE_STATUSES.has(Number(task.status));
   const query = useQuery({
     queryKey: ["task-log", task.task_id ?? task.id],
     queryFn: () => instanceApi.taskLog(task),
@@ -62,34 +90,62 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
   };
 
   const rawLog = query.data ?? "";
-  const emptyLabel = text("暂无日志输出", "No log output");
   const canCopy = Boolean(query.data) && !query.isLoading && !query.isError;
-  const normalizedFilter = debouncedFilter.trim().toLowerCase();
+  const normalizedFind = debouncedFind.trim().toLowerCase();
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedFilter(filter), FILTER_DEBOUNCE_MS);
+    const timer = window.setTimeout(() => {
+      setDebouncedFind(findInput);
+      setMatchCursor(0);
+    }, FILTER_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [filter]);
+  }, [findInput]);
 
-  const filtered = useMemo(() => {
-    if (!rawLog) return { text: emptyLabel, matchCount: 0, filtered: false };
-    if (!normalizedFilter) return { text: rawLog, matchCount: 0, filtered: false };
-    const lines = rawLog.split("\n").filter((line) => line.toLowerCase().includes(normalizedFilter));
-    if (lines.length === 0) {
-      return { text: text("无匹配日志行", "No matching log lines"), matchCount: 0, filtered: true };
-    }
-    return { text: lines.join("\n"), matchCount: lines.length, filtered: true };
-  }, [emptyLabel, normalizedFilter, rawLog, text]);
+  const display = useMemo(() => truncateLogForDisplay(rawLog, MAX_LOG_DISPLAY_CHARS), [rawLog]);
 
-  const display = useMemo(() => truncateLogForDisplay(filtered.text, MAX_LOG_DISPLAY_CHARS), [filtered.text]);
-  const displayText = display.text;
+  const analysis = useMemo(() => {
+    const lines = display.text ? display.text.split("\n") : [];
+    const errorLines = new Set<number>();
+    const matchLines: number[] = [];
+    lines.forEach((line, index) => {
+      if (ERROR_LINE_PATTERN.test(line)) errorLines.add(index);
+      if (normalizedFind && line.toLowerCase().includes(normalizedFind)) matchLines.push(index);
+    });
+    return { lines, errorLines, matchLines, failure: findFailureSummary(lines, errorLines) };
+  }, [display.text, normalizedFind]);
 
-  const filterStatus = useMemo(() => {
-    if (!normalizedFilter) return "";
-    if (!rawLog) return "";
-    if (filtered.matchCount === 0) return text("无匹配日志行", "No matching log lines");
-    return text(`${filtered.matchCount} 行匹配`, `${filtered.matchCount} matching lines`);
-  }, [filtered.matchCount, normalizedFilter, rawLog, text]);
+  const { lines, errorLines, matchLines, failure } = analysis;
+  const matchSet = useMemo(() => new Set(matchLines), [matchLines]);
+  const currentMatch = matchLines.length > 0 ? matchLines[Math.min(matchCursor, matchLines.length - 1)] : null;
+  const filtering = onlyMatches && Boolean(normalizedFind);
+  const visibleLineIndexes = filtering ? matchLines : null;
+
+  const scrollToLine = (index: number) => {
+    setFollowBottom(false);
+    setFocusedLine(index);
+    window.requestAnimationFrame(() => {
+      scrollRef.current?.querySelector(`[data-log-line="${index}"]`)?.scrollIntoView({ block: "center" });
+    });
+  };
+
+  const stepMatch = (delta: 1 | -1) => {
+    if (matchLines.length === 0) return;
+    const next = (Math.min(matchCursor, matchLines.length - 1) + delta + matchLines.length) % matchLines.length;
+    setMatchCursor(next);
+    scrollToLine(matchLines[next]);
+  };
+
+  const onFindKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    stepMatch(event.shiftKey ? -1 : 1);
+  };
+
+  const findStatus = !normalizedFind || !rawLog
+    ? ""
+    : matchLines.length === 0
+      ? text("无匹配", "No matches")
+      : text(`第 ${Math.min(matchCursor, matchLines.length - 1) + 1} / ${matchLines.length} 处`, `${Math.min(matchCursor, matchLines.length - 1) + 1} of ${matchLines.length}`);
 
   useEffect(() => {
     if (!followBottom || !scrollRef.current) return;
@@ -99,7 +155,7 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
       programmaticScrollRef.current = false;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [displayText, followBottom, query.dataUpdatedAt]);
+  }, [display.text, followBottom, query.dataUpdatedAt]);
 
   const handleScroll = () => {
     const element = scrollRef.current;
@@ -138,6 +194,25 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
         `Long log (~${charCount.toLocaleString()} characters), fully loaded`,
       );
 
+  const renderLine = (index: number) => {
+    const line = lines[index];
+    const isError = errorLines.has(index);
+    return (
+      <span
+        key={index}
+        data-log-line={index}
+        className={cn(
+          "block",
+          isError && "bg-app-danger/25",
+          matchSet.has(index) && "bg-app-terminalAccent/20",
+          (index === currentMatch || index === focusedLine) && "bg-app-terminalAccent/35 outline outline-1 -outline-offset-1 outline-app-terminalAccent",
+        )}
+      >
+        {line || " "}
+      </span>
+    );
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-app-border px-3 py-2">
@@ -173,21 +248,44 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
           title={Number(task.status) === 2
             ? text("跟随底部时每 6 秒自动读取新日志", "While following, new log output is read every 6 seconds")
             : text("实例未在运行，日志不再更新", "The instance is not running, so its log no longer changes")}
-          onClick={() => setFollowBottom((value) => !value)}
+          onClick={() => {
+            setFocusedLine(null);
+            setFollowBottom((value) => !value);
+          }}
         >
           <ArrowDownToLine className="h-4 w-4" aria-hidden="true" />
           <span className="max-sm:sr-only">{text("跟随底部", "Follow bottom")}</span>
         </Button>
-        <Input
-          aria-label={text("查找日志", "Search logs")}
-          className="h-8 min-w-[8rem] flex-1 sm:max-w-xs"
-          placeholder={text("查找…", "Find…")}
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-        />
-        {filterStatus ? (
-          <span className="text-xs text-app-muted" aria-live="polite">
-            {filterStatus}
+        <div className="flex min-w-[12rem] flex-1 items-center gap-1 sm:max-w-sm">
+          <Input
+            aria-label={text("查找日志", "Search logs")}
+            className="h-8 min-w-0 flex-1"
+            placeholder={text("查找…（Enter 下一处）", "Find… (Enter for next)")}
+            value={findInput}
+            onChange={(event) => setFindInput(event.target.value)}
+            onKeyDown={onFindKeyDown}
+          />
+          <Button aria-label={text("上一处", "Previous match")} className="h-8 w-8 px-0" disabled={matchLines.length === 0} title={text("上一处（Shift+Enter）", "Previous (Shift+Enter)")} type="button" variant="ghost" onClick={() => stepMatch(-1)}>
+            <ChevronUp className="h-4 w-4" aria-hidden="true" />
+          </Button>
+          <Button aria-label={text("下一处", "Next match")} className="h-8 w-8 px-0" disabled={matchLines.length === 0} title={text("下一处（Enter）", "Next (Enter)")} type="button" variant="ghost" onClick={() => stepMatch(1)}>
+            <ChevronDown className="h-4 w-4" aria-hidden="true" />
+          </Button>
+          <Button
+            aria-label={text("只显示匹配行", "Show matching lines only")}
+            aria-pressed={onlyMatches}
+            className={cn("h-8 w-8 px-0", onlyMatches && "text-app-accent")}
+            title={text("只显示匹配行", "Show matching lines only")}
+            type="button"
+            variant="ghost"
+            onClick={() => setOnlyMatches((value) => !value)}
+          >
+            <ListFilter className="h-4 w-4" aria-hidden="true" />
+          </Button>
+        </div>
+        {findStatus ? (
+          <span className="app-numeric whitespace-nowrap text-xs text-app-muted" aria-live="polite">
+            {findStatus}
           </span>
         ) : null}
         {updatedLabel || toolbarEnd ? (
@@ -202,6 +300,17 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
           </div>
         ) : null}
       </div>
+      {failedTask && failure ? (
+        <div className="flex min-w-0 items-center gap-2 border-b border-app-border bg-app-dangerSoft px-3 py-1.5 text-xs text-app-danger">
+          <span className="shrink-0 font-medium">{text("失败原因", "Failure")}</span>
+          <span className="min-w-0 flex-1 truncate font-mono" title={failure.line}>{failure.line}</span>
+          {failure.exitCode ? <span className="app-numeric shrink-0">{text(`退出码 ${failure.exitCode}`, `exit code ${failure.exitCode}`)}</span> : null}
+          <Button className="h-7 shrink-0 px-2 text-xs" type="button" variant="ghost" onClick={() => scrollToLine(failure.index)}>
+            <Crosshair className="h-3.5 w-3.5" aria-hidden="true" />
+            {text("定位", "Jump to line")}
+          </Button>
+        </div>
+      ) : null}
       {showLongHint ? (
         <div className="border-b border-app-border bg-app-panel px-3 py-1.5 text-xs text-app-muted">
           {longHint}
@@ -226,7 +335,13 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
               wrapLines ? "whitespace-pre-wrap break-words" : "whitespace-pre overflow-x-auto",
             )}
           >
-            {displayText}
+            {!rawLog
+              ? text("暂无日志输出", "No log output")
+              : filtering && matchLines.length === 0
+                ? text("无匹配日志行", "No matching log lines")
+                : visibleLineIndexes
+                  ? visibleLineIndexes.map(renderLine)
+                  : lines.map((_, index) => renderLine(index))}
           </pre>
         )}
       </div>

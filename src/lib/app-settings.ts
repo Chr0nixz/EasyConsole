@@ -1,6 +1,7 @@
 import { API_BASE_URL } from "./api-client";
 import { DEFAULT_MONITOR_DASHBOARD_URL } from "./monitor-dashboard-core";
 import { DEFAULT_RUN_LOG_LIMIT, DEFAULT_RUN_LOG_RETENTION_DAYS } from "./run-logs";
+import { DEFAULT_CUSTOM_COLORS } from "./ssh-terminal-colors";
 import { withStorageLock } from "./storage-mutex";
 import type { PortForwardRule, PortForwardType, SshAuthMode, SshCustomColors } from "./types";
 
@@ -92,28 +93,9 @@ export const TASK_AUTO_REFRESH_OPTIONS = [
 
 export const DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS = 10_000;
 
-export const DEFAULT_CUSTOM_COLORS: SshCustomColors = {
-  background: "#1e1e2e",
-  foreground: "#cdd6f4",
-  cursor: "#f5e0dc",
-  selection: "#585b7066",
-  black: "#45475a",
-  red: "#f38ba8",
-  green: "#a6e3a1",
-  yellow: "#f9e2af",
-  blue: "#89b4fa",
-  magenta: "#f5c2e7",
-  cyan: "#94e2d5",
-  white: "#bac2de",
-  brightBlack: "#585b70",
-  brightRed: "#f38ba8",
-  brightGreen: "#a6e3a1",
-  brightYellow: "#f9e2af",
-  brightBlue: "#89b4fa",
-  brightMagenta: "#f5c2e7",
-  brightCyan: "#94e2d5",
-  brightWhite: "#a6adc8",
-};
+// Re-exported here so existing settings consumers keep one import site; the
+// deliberate terminal color values themselves live in ssh-terminal-colors.ts.
+export { DEFAULT_CUSTOM_COLORS } from "./ssh-terminal-colors";
 
 export const SSH_FONT_PRESETS: Array<{ id: string; zh: string; en: string; value: string }> = [
   { id: "consolas", zh: "Consolas", en: "Consolas", value: 'Consolas, "SFMono-Regular", "Cascadia Mono", monospace' },

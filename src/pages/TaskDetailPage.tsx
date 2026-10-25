@@ -1,6 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ChevronDown, FileJson, FileText, Maximize2, Monitor, Power, TerminalSquare } from "lucide-react";
+import { ArrowLeft, ChevronDown, CopyPlus, ExternalLink, FileJson, FileText, Maximize2, Monitor, Power, TerminalSquare, Trash2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
@@ -11,12 +11,14 @@ import { TaskLogPanel } from "../components/tasks/TaskLogPanel";
 import { TaskSshPanel } from "../components/tasks/TaskSshPanel";
 import { Button, Panel, Select } from "../components/ui";
 import { instanceApi } from "../lib/api";
-import { getTaskName, getTaskNodeName, getTaskReleaseCondition } from "../lib/format";
+import { formatCost, formatSecondsDuration, getTaskName, getTaskNodeName, getTaskReleaseCondition } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { buildMonitorDashboardUrl } from "../lib/monitor-dashboard";
 import { browserRuntime } from "../lib/runtime";
 import { buildTaskSshInfo } from "../lib/ssh-info";
 import { invalidateTaskQueries, taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
+import { getTaskAccess } from "../lib/task-terminal";
+import { FAILURE_STATUSES } from "../lib/task-status-notifications";
 import type { MonitorMetricSeries, Task } from "../lib/types";
 import { cn } from "../lib/utils";
 import { useAuth } from "../lib/use-auth";
@@ -25,6 +27,7 @@ import { useCompactLayout } from "../lib/use-compact-layout";
 import { useSlidingIndicator } from "../lib/use-sliding-indicator";
 import { useToast } from "../lib/use-toast";
 
+const CreateTaskDialog = lazy(() => import("../components/tasks/CreateTaskDialog").then((module) => ({ default: module.CreateTaskDialog })));
 const TaskLogDialog = lazy(() => import("../components/tasks/TaskLogDialog").then((module) => ({ default: module.TaskLogDialog })));
 const TerminalDialog = lazy(() => import("../components/tasks/TerminalDialog").then((module) => ({ default: module.TerminalDialog })));
 
@@ -73,20 +76,26 @@ function renderSparkline(points: number[]): string {
     .join(" ");
 }
 
-function SummaryField({ label, value }: { label: string; value: string }) {
+/** `figure` is for quantities read at a glance (runtime, cost); `code` for paths, hosts and IDs. */
+function SummaryField({ label, value, kind = "code", className }: { label: string; value: string; kind?: "figure" | "code"; className?: string }) {
   return (
-    <div className="min-w-0">
+    <div className={cn("min-w-0", className)}>
       <dt className="text-xs text-app-muted">{label}</dt>
-      <dd className="mt-0.5 truncate font-mono text-xs text-app-text" title={value}>{value}</dd>
+      <dd
+        className={cn("mt-0.5 truncate text-app-text", kind === "figure" ? "app-numeric text-sm font-medium" : "font-mono text-xs")}
+        title={value}
+      >
+        {value}
+      </dd>
     </div>
   );
 }
 
 export function TaskDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { text } = useI18n();
+  const { locale, text } = useI18n();
   const auth = useAuth();
   const compactLayout = useCompactLayout();
   const queryClient = useQueryClient();
@@ -99,14 +108,27 @@ export function TaskDetailPage() {
     if (next === tab) return;
     setTabDirection(TAB_ORDER.indexOf(next) > TAB_ORDER.indexOf(tab) ? "forward" : "back");
     setTab(next);
+    // Kept in the URL (replace, not push) so a refresh or a shared link lands on the same tab.
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      if (next === "log") params.delete("tab");
+      else params.set("tab", next);
+      return params;
+    }, { replace: true });
   };
   const [logOpen, setLogOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [cloneOpen, setCloneOpen] = useState(false);
   const [monitorRange, setMonitorRange] = useState<MonitorRange>("now-1h");
 
-  useEffect(() => {
+  // Follow the URL when it changes (back/forward navigation); done during
+  // render (React's documented state-adjustment pattern). The tab can also be
+  // switched locally via selectTab without touching the URL.
+  const [prevTabSearchParams, setPrevTabSearchParams] = useState(searchParams.toString());
+  if (searchParams.toString() !== prevTabSearchParams) {
+    setPrevTabSearchParams(searchParams.toString());
     setTab(parseDetailTab(searchParams.get("tab")));
-  }, [searchParams]);
+  }
 
   const snapshotQuery = useQuery({
     ...taskSnapshotQueryOptions(instanceApi),
@@ -159,6 +181,21 @@ export function TaskDetailPage() {
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (task: Task) => instanceApi.deleteTask(task.id),
+    onSuccess: (_data, deletedTask) => {
+      toast.success(text("实例删除已提交", "Instance deletion submitted"), getTaskName(deletedTask));
+      invalidateTaskQueries(queryClient);
+      navigate("/tasks");
+    },
+    onError: (error, deletedTask) => {
+      toast.error(
+        text("实例删除失败", "Instance deletion failed"),
+        `${getTaskName(deletedTask)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`,
+      );
+    },
+  });
+
   const monitorIndexQuery = useQuery({
     queryKey: ["task-monitor-index", id],
     queryFn: () => instanceApi.monitorIndex({ task_id: String(task?.task_id ?? task?.id ?? id) }),
@@ -202,6 +239,9 @@ export function TaskDetailPage() {
     ? `${sshSummary.host}${sshSummary.port !== "-" ? `:${sshSummary.port}` : ""}`
     : "-";
   const canRelease = [0, 1, 2].includes(Number(task.status));
+  // Records of ended instances can be deleted; release is the only exit for live ones.
+  const canDelete = !canRelease;
+  const failed = FAILURE_STATUSES.has(Number(task.status));
   const requestRelease = () => {
     confirm({
       title: text("确认释放实例", "Confirm Instance Release"),
@@ -211,52 +251,99 @@ export function TaskDetailPage() {
       run: () => releaseMutation.mutateAsync(task),
     });
   };
+  const requestDelete = () => {
+    confirm({
+      title: text("确认删除实例", "Confirm Instance Deletion"),
+      description: text(
+        `将删除 ${getTaskName(task)} 的记录，从列表中移除。此操作不可从 EasyConsole 撤销。`,
+        `Delete the record of ${getTaskName(task)} and remove it from the list. EasyConsole cannot undo this.`,
+      ),
+      confirmLabel: text("删除记录", "Delete record"),
+      tone: "danger",
+      run: () => deleteMutation.mutateAsync(task),
+    });
+  };
+  const secondaryId = task.task_id !== undefined && String(task.task_id) !== String(task.id) ? String(task.task_id) : null;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" onClick={() => navigate("/tasks")} aria-label={text("返回", "Back")}>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="ghost" onClick={() => navigate("/tasks")} aria-label={text("返回任务列表", "Back to tasks")}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-lg font-semibold tracking-[-0.015em] text-app-text">{getTaskName(task)}</h2>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
-            <span>ID: {String(task.id)}</span>
-            {task.task_id ? <span>Task ID: {String(task.task_id)}</span> : null}
+            <span className="font-mono">#{String(task.id)}</span>
+            {secondaryId ? <span className="font-mono">{text(`任务 ID ${secondaryId}`, `Task ID ${secondaryId}`)}</span> : null}
             <StatusBadge status={task.status} />
             {releaseCondition != null ? <ReleaseConditionBadge condition={releaseCondition} /> : null}
           </div>
         </div>
-        {canRelease ? (
-          // Neutral at rest like the table's release action; danger color only on hover/focus and in the confirm.
-          <Button
-            className="shrink-0 hover:border-app-dangerRing hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger"
-            disabled={releaseMutation.isPending}
-            type="button"
-            variant="secondary"
-            onClick={requestRelease}
-          >
-            <Power className="h-4 w-4" aria-hidden="true" />
-            {text("释放", "Release")}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {/* After a failure the next step is a corrected rerun, so clone leads there. */}
+          <Button type="button" variant={failed ? "primary" : "secondary"} onClick={() => setCloneOpen(true)}>
+            <CopyPlus className="h-4 w-4" aria-hidden="true" />
+            {text("克隆并修改", "Clone and edit")}
           </Button>
-        ) : null}
+          {canRelease ? (
+            // Neutral at rest like the table's release action; danger color only on hover/focus and in the confirm.
+            <Button
+              className="hover:border-app-dangerRing hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger"
+              disabled={releaseMutation.isPending}
+              type="button"
+              variant="secondary"
+              onClick={requestRelease}
+            >
+              <Power className="h-4 w-4" aria-hidden="true" />
+              {text("释放", "Release")}
+            </Button>
+          ) : null}
+          {canDelete ? (
+            <Button
+              className="hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger"
+              disabled={deleteMutation.isPending}
+              type="button"
+              variant="ghost"
+              onClick={requestDelete}
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+              {text("删除记录", "Delete record")}
+            </Button>
+          ) : null}
+        </div>
       </div>
 
-      <dl className="grid gap-3 rounded-lg border border-app-border bg-app-surface px-4 py-3 shadow-shell sm:grid-cols-2 xl:grid-cols-4">
+      {/* What keeping this instance costs leads the strip: release and rerun are decided on
+          runtime and cost, so they are read here rather than first seen in the release confirm. */}
+      <dl className="grid grid-cols-2 gap-3 rounded-lg border border-app-border bg-app-surface px-4 py-3 shadow-shell xl:grid-cols-4">
         <SummaryField
+          kind="figure"
+          label={text("已运行", "Running for")}
+          value={Number(task.use_time) > 0 ? formatSecondsDuration(task.use_time, locale) : "—"}
+        />
+        <SummaryField
+          kind="figure"
+          label={text("已产生费用", "Billed so far")}
+          value={Number(task.cost) > 0 ? formatCost(task.cost, locale) : "—"}
+        />
+        <SummaryField
+          kind="figure"
           label={text("资源", "Resources")}
           value={`${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`}
         />
-        <SummaryField label={text("节点", "Node")} value={getTaskNodeName(task) || "-"} />
-        <div className="col-span-full min-w-0 xl:col-span-2">
+        <SummaryField kind="figure" label={text("创建时间", "Created")} value={String(task.create_time ?? task.created_at ?? "-")} />
+        <div className="col-span-full min-w-0">
           <details className="group" open={!compactLayout}>
             <summary className={cn("flex min-h-11 cursor-pointer list-none items-center justify-between text-sm font-medium text-app-text", !compactLayout && "sm:hidden")}>
               {text("路径与连接", "Paths and connection")}
               <ChevronDown className="h-4 w-4 text-app-muted transition-transform group-open:rotate-180" aria-hidden="true" />
             </summary>
-            <div className={cn("grid gap-3 border-t border-app-border pt-3", !compactLayout && "sm:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] sm:border-t-0 sm:pt-0")}>
-              <SummaryField label={text("存储路径", "Storage path")} value={storagePath} />
+            {/* Same column grid as the figures above, so node and endpoint line up under them. */}
+            <div className="grid grid-cols-2 gap-3 border-t border-app-border pt-3 xl:grid-cols-4">
+              <SummaryField label={text("节点", "Node")} value={getTaskNodeName(task) || "-"} />
               <SummaryField label={text("入口", "Endpoint")} value={endpoint} />
+              <SummaryField className="col-span-2" label={text("存储路径", "Storage path")} value={storagePath} />
             </div>
           </details>
         </div>
@@ -357,41 +444,29 @@ export function TaskDetailPage() {
               </div>
             </Panel>
           ) : null}
-          <Panel className="overflow-hidden p-0">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-app-border px-3 py-2">
-              <span className="text-sm font-medium text-app-text">{text("Grafana 监控面板", "Grafana Monitor Dashboard")}</span>
-              <div className="flex items-center gap-2">
-                <Select
-                  aria-label={text("时间范围", "Time range")}
-                  value={monitorRange}
-                  onChange={(event) => setMonitorRange(event.target.value as MonitorRange)}
-                  className="h-8 text-xs"
-                >
-                  {MONITOR_RANGES.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {text(option.zh, option.en)}
-                    </option>
-                  ))}
-                </Select>
-                <Button onClick={() => browserRuntime.openExternal(monitorUrl)}>
-                  {text("在新窗口打开", "Open in new window")}
-                </Button>
-              </div>
+          {/* Grafana refuses to be embedded, so this is a launcher for the full dashboard. */}
+          <Panel className={cn("flex flex-wrap items-center justify-between gap-2 px-3 py-2", sparklineMetrics.length > 0 && "mt-3")}>
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-app-text">{text("Grafana 监控面板", "Grafana monitor dashboard")}</div>
+              <div className="text-xs text-app-muted">{text("在浏览器中打开完整面板", "Opens the full dashboard in your browser")}</div>
             </div>
-            <div className="px-4 py-10">
-              <EmptyState
-                icon={Monitor}
-                title={text("无法在应用内嵌套显示 Grafana", "Grafana cannot be embedded in-app")}
-                description={text(
-                  "监控服务返回了 X-Frame-Options: deny，浏览器会拦截内嵌页面。请选择时间范围后，在新窗口打开完整 Grafana 面板。",
-                  "The monitor service returns X-Frame-Options: deny, so the browser blocks the embedded page. Choose a time range, then open the full Grafana dashboard in a new window.",
-                )}
-                action={
-                  <Button onClick={() => browserRuntime.openExternal(monitorUrl)}>
-                    {text("打开 Grafana 面板", "Open Grafana dashboard")}
-                  </Button>
-                }
-              />
+            <div className="flex items-center gap-2">
+              <Select
+                aria-label={text("时间范围", "Time range")}
+                value={monitorRange}
+                onChange={(event) => setMonitorRange(event.target.value as MonitorRange)}
+                className="h-8 text-xs"
+              >
+                {MONITOR_RANGES.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {text(option.zh, option.en)}
+                  </option>
+                ))}
+              </Select>
+              <Button className="h-8" onClick={() => browserRuntime.openExternal(monitorUrl)}>
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                {text("打开 Grafana", "Open Grafana")}
+              </Button>
             </div>
           </Panel>
         </div>
@@ -431,14 +506,16 @@ export function TaskDetailPage() {
 
       {tab === "ssh" ? (
         <div role="tabpanel" id="task-detail-panel-ssh" aria-labelledby="task-detail-tab-ssh" className="app-tab-enter space-y-2" data-direction={tabDirection ?? undefined}>
-          <div className="flex justify-end">
-            <Button className="h-8" type="button" variant="secondary" onClick={() => setTerminalOpen(true)}>
-              <Maximize2 className="h-4 w-4" />
-              {text("放大", "Expand")}
-            </Button>
-          </div>
+          {getTaskAccess(task).terminal ? (
+            <div className="flex justify-end">
+              <Button className="h-8" type="button" variant="secondary" onClick={() => setTerminalOpen(true)}>
+                <Maximize2 className="h-4 w-4" />
+                {text("放大", "Expand")}
+              </Button>
+            </div>
+          ) : null}
           <Panel className="overflow-hidden p-0">
-            <TaskSshPanel task={task} />
+            <TaskSshPanel task={task} onClone={() => setCloneOpen(true)} onViewLog={() => selectTab("log")} />
           </Panel>
         </div>
       ) : null}
@@ -446,6 +523,11 @@ export function TaskDetailPage() {
       <Suspense fallback={null}>
         <TaskLogDialog task={logOpen ? task : null} onClose={() => setLogOpen(false)} />
       </Suspense>
+      {cloneOpen ? (
+        <Suspense fallback={null}>
+          <CreateTaskDialog initialTask={task} open onClose={() => setCloneOpen(false)} />
+        </Suspense>
+      ) : null}
       <Suspense fallback={null}>
         <TerminalDialog task={terminalOpen ? task : null} onClose={() => setTerminalOpen(false)} />
       </Suspense>

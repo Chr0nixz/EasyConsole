@@ -61,7 +61,7 @@ describe("DashboardPage", () => {
     expect(screen.queryByText("暂无最近任务")).not.toBeInTheDocument();
     expect(screen.queryByText("没有失败或异常实例")).not.toBeInTheDocument();
     expect(screen.queryByText("没有运行中的实例")).not.toBeInTheDocument();
-    expect(screen.queryByText("没有排队中的实例")).not.toBeInTheDocument();
+    expect(screen.queryByText("没有队列中的实例")).not.toBeInTheDocument();
 
     mocks.statics.mockResolvedValue({ items: [] });
     fireEvent.click(screen.getByRole("button", { name: /重试|Retry/ }));
@@ -75,7 +75,7 @@ describe("DashboardPage", () => {
     expect(await screen.findByRole("status", { name: "正在读取实例状态" })).toBeInTheDocument();
     expect(screen.queryByText("没有失败或异常实例")).not.toBeInTheDocument();
     expect(screen.queryByText("没有运行中的实例")).not.toBeInTheDocument();
-    expect(screen.queryByText("没有排队中的实例")).not.toBeInTheDocument();
+    expect(screen.queryByText("没有队列中的实例")).not.toBeInTheDocument();
   });
 
   it("marks cached instance status as stale after a failed refresh", async () => {
