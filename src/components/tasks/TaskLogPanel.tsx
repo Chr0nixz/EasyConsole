@@ -5,13 +5,13 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboa
 import { ErrorState, LoadingState } from "../DataState";
 import { Button, Input } from "../ui";
 import { instanceApi } from "../../lib/api";
-import { formatRelativeUpdatedAt } from "../../lib/format";
 import { useI18n } from "../../lib/i18n";
 import { browserRuntime } from "../../lib/runtime";
 import { FAILURE_STATUSES } from "../../lib/task-status-notifications";
 import type { Task } from "../../lib/types";
 import { useToast } from "../../lib/use-toast";
 import { cn } from "../../lib/utils";
+import { RelativeUpdatedAt } from "../RelativeUpdatedAt";
 
 const LONG_LOG_CHARS = 200_000;
 const MAX_LOG_DISPLAY_CHARS = 500_000;
@@ -69,7 +69,6 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const programmaticScrollRef = useRef(false);
   const [manualRefreshing, setManualRefreshing] = useState(false);
-  const [nowMs, setNowMs] = useState(() => Date.now());
   // Only a running task still writes to its log; following one turns the panel into a feed.
   const live = followBottom && Number(task.status) === 2;
   const failedTask = FAILURE_STATUSES.has(Number(task.status));
@@ -78,11 +77,6 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
     queryFn: () => instanceApi.taskLog(task),
     refetchInterval: live ? LIVE_LOG_POLL_MS : false,
   });
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), live ? 1_000 : 10_000);
-    return () => window.clearInterval(timer);
-  }, [live]);
 
   const refreshNow = () => {
     setManualRefreshing(true);
@@ -175,12 +169,13 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
   };
 
   const updatedAt = query.dataUpdatedAt;
-  const updatedLabel = updatedAt
-    ? text(
-        `${live ? "实时跟随 · " : ""}更新于 ${formatRelativeUpdatedAt(updatedAt, Math.max(nowMs, updatedAt), locale)}`,
-        `${live ? "Live · " : ""}updated ${formatRelativeUpdatedAt(updatedAt, Math.max(nowMs, updatedAt), locale)}`,
-      )
-    : "";
+  const updatedLabel = updatedAt ? (
+    <>
+      {live ? `${text("实时跟随", "Live")} · ` : ""}
+      {text("更新于 ", "updated ")}
+      <RelativeUpdatedAt updatedAt={updatedAt} intervalMs={live ? 1_000 : 10_000} />
+    </>
+  ) : null;
 
   const charCount = rawLog.length;
   const showLongHint = display.truncated || charCount >= LONG_LOG_CHARS;

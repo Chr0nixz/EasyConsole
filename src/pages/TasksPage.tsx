@@ -48,12 +48,13 @@ import { BatchHistoryPanel } from "../components/batch/BatchHistoryPanel";
 import { BatchResultDialog } from "../components/batch/BatchResultDialog";
 import { batchExportPayload } from "../components/batch/batch-export";
 import { useBatchOperation } from "../components/batch/use-batch-operation";
+import { RelativeUpdatedAt } from "../components/RelativeUpdatedAt";
 import type { BatchRunResult } from "../lib/batch-runner";
 import type { BatchOperationRecord } from "../lib/change-list";
 import { saveBlob } from "../lib/download";
 import { useCommitQueue } from "../lib/commit-queue-context";
 import { useDownloadQueueActions } from "../lib/use-download-queue";
-import { asJson, formatCost, formatRelativeUpdatedAt, formatSecondsDuration, getStatusText, getTaskName, getTaskNodeName, localizedText, taskStatusText } from "../lib/format";
+import { asJson, formatCost, formatSecondsDuration, getStatusText, getTaskName, getTaskNodeName, localizedText, taskStatusText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { useSshWorkspace } from "../lib/use-ssh-workspace";
 import { i18nText } from "../lib/i18n-text";
@@ -955,7 +956,6 @@ export function TasksPage() {
     left: number;
     top: number;
   }>(null);
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const [pageJumpInput, setPageJumpInput] = useState("");
   const viewMenuId = useId();
   const moreActionsMenuId = useId();
@@ -1730,11 +1730,6 @@ export function TasksPage() {
   const selectedReleasableTasks = selectedTasks.filter(isReleasableTask);
   const selectedNonReleasableTasks = selectedTasks.filter((task) => !isReleasableTask(task));
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 5_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
   const isListNavigationTarget = useCallback(() => {
     const active = document.activeElement;
     if (!active) return false;
@@ -1959,12 +1954,6 @@ export function TasksPage() {
     };
   }, [closeViewMenu, viewMenuLayerRef, viewMenuOpen]);
 
-  const listUpdatedLabel = query.isFetching
-    ? text("刷新中", "Refreshing")
-    : query.dataUpdatedAt
-      ? formatRelativeUpdatedAt(query.dataUpdatedAt, nowMs, locale)
-      : null;
-
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2019,9 +2008,12 @@ export function TasksPage() {
               <RefreshCw className={cn("h-4 w-4", query.isFetching && "animate-spin")} aria-hidden="true" />
             </Button>
             {/* Not a live region: it ticks every 5 s and would be announced forever. */}
-            {listUpdatedLabel ? (
+            {query.isFetching ? (
+              <span className="hidden text-xs text-app-muted sm:inline">{text("刷新中", "Refreshing")}</span>
+            ) : query.dataUpdatedAt ? (
               <span className="hidden text-xs text-app-muted sm:inline">
-                {listUpdatedLabel}
+                {text("更新于 ", "Updated ")}
+                <RelativeUpdatedAt updatedAt={query.dataUpdatedAt} />
               </span>
             ) : null}
             {viewMenuOpen ? (
