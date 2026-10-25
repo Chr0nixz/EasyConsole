@@ -24,7 +24,7 @@ import {
   writeAccountSettingsStore,
 } from "./app-settings";
 import { AuthContext, type LoginOptions } from "./auth-state";
-import { TOKEN_STORAGE_KEY, UNAUTHORIZED_EVENT, isNetworkError } from "./api-client";
+import { TOKEN_STORAGE_KEY, UNAUTHORIZED_EVENT, SessionChangedError, isNetworkError } from "./api-client";
 import { i18nText } from "./i18n-text";
 import { encryptPassword, decryptPassword } from "./password-crypto";
 import { browserRuntime } from "./runtime";
@@ -473,16 +473,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const newToken = await authApi.refreshToken(currentToken);
         if (!newToken) return null;
-        await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, newToken);
+        if (apiClient.getToken() !== currentToken) {
+          // The active account changed while the refresh request was in
+          // flight (loginSaved installs the new account's token first).
+          // Applying this result would write the previous account's identity
+          // over the new session; drop it and release the queued requests
+          // without logging the new session out.
+          writeAuthLog({
+            level: "warning",
+            action: "auth.tokenRefresh",
+            result: "failure",
+            title: i18nText("刷新期间账号已切换，已丢弃刷新结果", "Account switched during token refresh; result discarded"),
+          });
+          throw new SessionChangedError();
+        }
         apiClient.setToken(newToken);
         setToken(newToken);
+        await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, newToken);
+        // Keep the matching saved account's token current so one-click login
+        // and startup restore do not reinstall the stale pre-refresh token.
+        // The list read-modify-write below is synchronous up to the ref
+        // update, so it cannot interleave with loginSaved's own persist.
+        const accounts = savedAccountsRef.current;
+        const matchIndex = accounts.findIndex((item) => item.token === currentToken);
+        if (matchIndex >= 0) {
+          const nextAccounts = accounts.slice();
+          nextAccounts[matchIndex] = { ...nextAccounts[matchIndex], token: newToken };
+          await persistSavedAccounts(nextAccounts);
+        }
         try {
           // Bypass the automatic refresh queue: a 401 here would otherwise wait
           // on the refresh cycle this handler is part of and deadlock it.
           const next = await apiClient.get<UserInfo>("/user/userinfo", { _skipRefresh: true });
-          setUser(next);
+          // A switch may have completed while the userinfo request was in
+          // flight; do not overwrite the new account's user object.
+          if (apiClient.getToken() === newToken) setUser(next);
         } catch {
           // User info refresh is best-effort; the token itself was refreshed successfully.
+        }
+        if (apiClient.getToken() !== newToken) {
+          // The account changed after this refresh was applied (e.g. during
+          // the userinfo fetch). Returning the token would make the client
+          // reinstall it over the new session and replay the queued — now
+          // foreign — requests under it.
+          throw new SessionChangedError();
         }
         writeAuthLog({
           level: "info",
@@ -492,6 +526,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
         return newToken;
       } catch (error) {
+        if (error instanceof SessionChangedError) throw error;
         if (isNetworkError(error)) {
           // Transient connectivity failure: let the client release the waiting
           // queue with the original error without emitting unauthorized, so a
@@ -520,7 +555,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       apiClient.setRefreshTokenHandler(null);
     };
-  }, []);
+  }, [persistSavedAccounts]);
 
   useEffect(() => {
     const handler = () => {

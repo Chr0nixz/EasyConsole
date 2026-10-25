@@ -60,6 +60,19 @@ export function isNetworkError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * Thrown by a token refresh handler when the active session changed while the
+ * refresh was in flight (e.g. the user switched accounts). The queued requests
+ * belong to the previous session: they are released with this error, no
+ * unauthorized event is emitted, and the new session stays intact.
+ */
+export class SessionChangedError extends Error {
+  constructor() {
+    super(i18nText("刷新期间账号已切换，已丢弃本次刷新结果", "The account changed while the token was refreshing"));
+    this.name = "SessionChangedError";
+  }
+}
+
 export function unwrapEnvelope<T>(payload: unknown): T {
   if (!payload || typeof payload !== "object" || !("code" in payload)) {
     throw new ApiError(i18nText("响应格式无法识别", "Response format is not recognized"), { kind: "parse" });
@@ -222,11 +235,13 @@ export class ApiClient {
       // The session can no longer be refreshed: release every queued request.
       // Definitive refresh failures (refresh endpoint rejected the token,
       // handler returned null) reject the queue as unauthorized and surface one
-      // unauthorized event so the app logs out. Network-level failures release
-      // the queue with the original error but keep the session: a later retry
-      // may still succeed once connectivity returns.
-      const network = isNetworkError(error);
-      const queueError = network
+      // unauthorized event so the app logs out. Network-level failures and
+      // session changes (the account switched mid-refresh) release the queue
+      // with the original error but keep the session: the queued requests
+      // belong to a session that is no longer active, and the replacement
+      // session must not be logged out for them.
+      const transient = isNetworkError(error) || error instanceof SessionChangedError;
+      const queueError = transient
         ? error
         : new ApiError(i18nText("登录已过期，请重新登录", "Sign-in expired. Please sign in again."), {
             status: 401,
@@ -235,7 +250,7 @@ export class ApiClient {
           });
       const queue = this.retryQueue.splice(0);
       queue.forEach((item) => item.reject(queueError));
-      if (!network) emitUnauthorized();
+      if (!transient) emitUnauthorized();
       return null;
     }
   }
