@@ -7,6 +7,7 @@ import { LanguageSwitch } from "../components/LanguageSwitch";
 import { ThemeSwitch } from "../components/ThemeSwitch";
 import { Button, Input } from "../components/ui";
 import { getTransportBlockReason } from "../lib/api";
+import { getRuntimeSettings } from "../lib/app-settings";
 import { getSavedAccountLabel } from "../lib/saved-accounts";
 import { useI18n } from "../lib/i18n";
 import { useConfirmAction } from "../lib/use-confirm-action";
@@ -43,9 +44,17 @@ function friendlyLoginError(message: string, fallbackZh: string, fallbackEn: str
   return message || (zh ? fallbackZh : fallbackEn);
 }
 
+function readApiHost() {
+  try {
+    return new URL(getRuntimeSettings().apiBaseUrl).host;
+  } catch {
+    return "";
+  }
+}
+
 export function LoginPage() {
   const auth = useAuth();
-  const { t, locale } = useI18n();
+  const { t, text, locale } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
   const confirm = useConfirmAction();
@@ -60,6 +69,7 @@ export function LoginPage() {
   const hasSavedAccounts = auth.savedAccounts.length > 0;
   const showSavedAccounts = hasSavedAccounts && !showPasswordForm;
   const transportBlocked = Boolean(getTransportBlockReason());
+  const apiHost = readApiHost();
 
   if (!auth.ready || auth.restoringSession) return <LoadingState label={t("login.restoreSession")} />;
   if (auth.token) return <Navigate to={resolvePostLoginTarget(location.state)} replace />;
@@ -145,6 +155,13 @@ export function LoginPage() {
             <p className="mt-1 text-sm text-app-muted">
               {showSavedAccounts ? t("login.chooseSavedDescription") : t("login.passwordDescription")}
             </p>
+            {/* Several consoles can be configured; say which one this sign-in goes to. */}
+            {apiHost ? (
+              <p className="mt-1 truncate text-xs text-app-muted" title={apiHost}>
+                {text("登录到 ", "Signing in to ")}
+                <span className="font-mono text-app-text">{apiHost}</span>
+              </p>
+            ) : null}
             {auth.sessionExpired ? (
               <div className="mt-3 rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warningText" role="status">{t("login.sessionExpired")}</div>
             ) : null}

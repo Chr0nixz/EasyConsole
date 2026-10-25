@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { apiClient, authApi, setApiBaseUrl } from "./api";
+import {
+  ANONYMOUS_ACCOUNT_SCOPE,
+  applyAccountQueryScope,
+  makeAccountScope,
+  type AccountScope,
+} from "./account-scope";
 import {
   APP_SETTINGS_STORAGE_KEY,
   GLOBAL_SETTINGS_ACCOUNT_ID,
@@ -17,7 +24,7 @@ import {
   writeAccountSettingsStore,
 } from "./app-settings";
 import { AuthContext, type LoginOptions } from "./auth-state";
-import { TOKEN_STORAGE_KEY, UNAUTHORIZED_EVENT } from "./api-client";
+import { TOKEN_STORAGE_KEY, UNAUTHORIZED_EVENT, isNetworkError } from "./api-client";
 import { i18nText } from "./i18n-text";
 import { encryptPassword, decryptPassword } from "./password-crypto";
 import { browserRuntime } from "./runtime";
@@ -60,6 +67,7 @@ async function applyAccountRuntimeSettings(accountId: string) {
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [ready, setReady] = useState(false);
@@ -149,6 +157,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await browserRuntime.secureStorage.set(SAVED_ACCOUNTS_STORAGE_KEY, stringifySavedAccounts(nextAccounts));
   }, []);
 
+  /**
+   * Bind the query-cache account scope to the session before the new user
+   * state renders. Switching accounts cancels in-flight queries and drops the
+   * previous account's cache so its data can neither flash nor be refilled by
+   * a late response.
+   */
+  const commitAccountScope = useCallback(
+    async (scope: AccountScope) => {
+      await applyAccountQueryScope(queryClient, scope);
+    },
+    [queryClient],
+  );
+
+  const makeScopeFor = useCallback((username: string, displayName: string | undefined) => {
+    return makeAccountScope(username, displayName || username, apiClient.getBaseUrl());
+  }, []);
+
   const login = useCallback(async (username: string, password: string, options?: LoginOptions) => {
     const startedAt = Date.now();
     const rememberPassword = options?.rememberPassword === true;
@@ -167,6 +192,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       await persistSavedAccounts(upsertSavedAccount(savedAccountsRef.current, nextAccount));
       await applyAccountRuntimeSettings(nextAccount.id);
+      await commitAccountScope(makeScopeFor(username, next.username || next.name));
       setToken(result.token);
       setUser(next);
       setRestoringSession(false);
@@ -193,7 +219,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       throw error;
     }
-  }, [persistSavedAccounts]);
+  }, [commitAccountScope, makeScopeFor, persistSavedAccounts]);
 
   const loginSaved = useCallback(async (accountId: string) => {
     reloginInProgressRef.current = true;
@@ -222,6 +248,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!password) {
           apiClient.setToken(null);
           await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
+          await commitAccountScope(ANONYMOUS_ACCOUNT_SCOPE);
           setToken(null);
           setUser(null);
           writeAuthLog({
@@ -253,6 +280,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch (reloginError) {
           apiClient.setToken(null);
           await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
+          await commitAccountScope(ANONYMOUS_ACCOUNT_SCOPE);
           setToken(null);
           setUser(null);
           writeAuthLog({
@@ -302,6 +330,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await writeAccountSettingsStore(browserRuntime.storage, nextStore);
         await applyAccountRuntimeSettings(nextAccount.id);
       }
+      await commitAccountScope(makeScopeFor(account.username, next.username || next.name));
       setToken(activeToken);
       setUser(next);
       setRestoringSession(false);
@@ -317,7 +346,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       reloginInProgressRef.current = false;
     }
-  }, [persistSavedAccounts]);
+  }, [commitAccountScope, makeScopeFor, persistSavedAccounts]);
 
   // Keep loginSavedRef in sync so the startup auto-relogin effect can call the
   // latest loginSaved without adding it to its dependency array.
@@ -345,6 +374,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           try {
             const next = await authApi.userInfo();
             if (cancelled) return;
+            // Scope the cache to the restored account before protected pages
+            // render their first queries. Prefer the saved account that owns
+            // this token; userinfo may lack a username on some backends.
+            const accountByToken = savedAccountsRef.current.find((item) => item.token === token);
+            const restoredName = String(next.username ?? next.name ?? accountByToken?.username ?? "");
+            await commitAccountScope(makeScopeFor(restoredName, restoredName));
             setUser(next);
             return;
           } catch {
@@ -385,7 +420,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [ready, token, user, loginSaved]);
+  }, [ready, token, user, loginSaved, commitAccountScope, makeScopeFor]);
 
   const forgetSavedAccount = useCallback(async (accountId: string) => {
     await persistSavedAccounts(removeSavedAccount(savedAccountsRef.current, accountId));
@@ -409,6 +444,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const userName = user?.username ?? user?.name;
     apiClient.setToken(null);
     await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY);
+    // Cancel in-flight queries and drop the account-scoped cache so the next
+    // account (or the login page) never sees or receives this account's data.
+    await applyAccountQueryScope(queryClient, ANONYMOUS_ACCOUNT_SCOPE);
     setToken(null);
     setUser(null);
     setRestoringSession(false);
@@ -423,7 +461,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       title: i18nText("退出登录", "Signed out"),
       userName,
     });
-  }, [user]);
+  }, [queryClient, user]);
 
   // Inject the token refresh handler into the API client.
   // On 401 for GET requests, the client will call this handler to attempt a token refresh
@@ -439,7 +477,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         apiClient.setToken(newToken);
         setToken(newToken);
         try {
-          const next = await authApi.userInfo();
+          // Bypass the automatic refresh queue: a 401 here would otherwise wait
+          // on the refresh cycle this handler is part of and deadlock it.
+          const next = await apiClient.get<UserInfo>("/user/userinfo", { _skipRefresh: true });
           setUser(next);
         } catch {
           // User info refresh is best-effort; the token itself was refreshed successfully.
@@ -452,6 +492,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
         return newToken;
       } catch (error) {
+        if (isNetworkError(error)) {
+          // Transient connectivity failure: let the client release the waiting
+          // queue with the original error without emitting unauthorized, so a
+          // network blip does not log the session out.
+          writeAuthLog({
+            level: "warning",
+            action: "auth.tokenRefresh",
+            result: "failure",
+            title: i18nText("刷新登录令牌时网络中断", "Network interrupted while refreshing the sign-in token"),
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
         writeAuthLog({
           level: "error",
           action: "auth.tokenRefresh",

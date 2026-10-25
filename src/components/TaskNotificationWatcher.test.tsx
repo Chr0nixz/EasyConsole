@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { I18N_STORAGE_KEY, I18nProvider, useI18n } from "../lib/i18n";
 import { browserRuntime } from "../lib/runtime";
-import { TASK_SNAPSHOT_QUERY_KEY } from "../lib/task-snapshot-query";
+import { taskSnapshotQueryKey } from "../lib/task-snapshot-query";
 import type { Task } from "../lib/types";
 import { ToastProvider } from "./Toast";
 
@@ -87,7 +87,7 @@ describe("TaskNotificationWatcher", () => {
 
     // Wait for the initial snapshot to settle: it must not notify.
     await waitFor(() => expect(screen.getByTestId("locale")).toHaveTextContent("zh-CN"));
-    await waitFor(() => expect(client.getQueryData(TASK_SNAPSHOT_QUERY_KEY)).toBeTruthy());
+    await waitFor(() => expect(client.getQueryData(taskSnapshotQueryKey())).toBeTruthy());
     expect(notifySystem).not.toHaveBeenCalled();
 
     // Switching language re-runs the watcher effect; it must not re-notify.
@@ -97,7 +97,7 @@ describe("TaskNotificationWatcher", () => {
 
     // A real status change notifies once, in the active language.
     mocks.items = [task(6)];
-    client.setQueryData(TASK_SNAPSHOT_QUERY_KEY, { items: mocks.items, total: 1, raw: null });
+    client.setQueryData(taskSnapshotQueryKey(), { items: mocks.items, total: 1, raw: null });
     await waitFor(() => expect(notifySystem).toHaveBeenCalledTimes(1));
     expect(notifySystem).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Instance succeeded", body: "train: Succeeded" }),

@@ -20,6 +20,12 @@ type RequestOptions = {
   onDownloadProgress?: (progress: { loaded: number; total?: number; percent: number }) => void;
   /** Internal: marks a request as already retried after token refresh to prevent infinite loops. */
   _retried?: boolean;
+  /**
+   * Internal: bypass the automatic refresh/retry path entirely. The token
+   * refresh transport must use this: a 401 from the refresh endpoint would
+   * otherwise enqueue behind the refresh cycle it is part of and deadlock.
+   */
+  _skipRefresh?: boolean;
 };
 
 type RetryQueueItem = {
@@ -144,10 +150,13 @@ export class ApiClient {
 
     if (response.status === 401) {
       // Any method may retry once after a successful token refresh (single-flight via queue).
-      if (this.refreshTokenHandler && !options._retried) {
+      const bypassRefresh = options._skipRefresh === true;
+      if (this.refreshTokenHandler && !options._retried && !bypassRefresh) {
         return this.queueForRetry<T>(method, path, { ...options, _retried: true });
       }
-      emitUnauthorized();
+      // The refresh transport itself must not emit unauthorized: the refresh
+      // orchestration in refreshAndRetry owns that event and the queue teardown.
+      if (!bypassRefresh) emitUnauthorized();
       throw new ApiError(i18nText("登录已过期，请重新登录", "Sign-in expired. Please sign in again."), { status: 401, code: 10000, kind: "http" });
     }
     if (response.status < 200 || response.status >= 300) {
@@ -169,9 +178,18 @@ export class ApiClient {
         request: () => this.request<T>(method, path, options),
       });
       if (!this.refreshing) {
-        this.refreshing = this.refreshAndRetry().finally(() => {
-          this.refreshing = null;
-        });
+        this.startRefreshCycle();
+      }
+    });
+  }
+
+  private startRefreshCycle() {
+    this.refreshing = this.refreshAndRetry().finally(() => {
+      this.refreshing = null;
+      // Requests that hit 401 while the previous cycle was replaying must not
+      // wait forever; run another cycle if anything is still queued.
+      if (this.retryQueue.length > 0) {
+        this.startRefreshCycle();
       }
     });
   }
@@ -201,10 +219,23 @@ export class ApiClient {
       );
       return newToken;
     } catch (error) {
-      // Reject all queued requests and emit unauthorized to trigger logout.
+      // The session can no longer be refreshed: release every queued request.
+      // Definitive refresh failures (refresh endpoint rejected the token,
+      // handler returned null) reject the queue as unauthorized and surface one
+      // unauthorized event so the app logs out. Network-level failures release
+      // the queue with the original error but keep the session: a later retry
+      // may still succeed once connectivity returns.
+      const network = isNetworkError(error);
+      const queueError = network
+        ? error
+        : new ApiError(i18nText("登录已过期，请重新登录", "Sign-in expired. Please sign in again."), {
+            status: 401,
+            code: 10000,
+            kind: "http",
+          });
       const queue = this.retryQueue.splice(0);
-      queue.forEach((item) => item.reject(error));
-      emitUnauthorized();
+      queue.forEach((item) => item.reject(queueError));
+      if (!network) emitUnauthorized();
       return null;
     }
   }

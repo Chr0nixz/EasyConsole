@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiClient, extractToken, joinUrl, normalizeToken, unwrapEnvelope } from "./api-client";
+import { ApiClient, UNAUTHORIZED_EVENT, extractToken, isAuthError, joinUrl, normalizeToken, unwrapEnvelope } from "./api-client";
 import { ApiError, type RuntimeHttpRequest, type RuntimeTransport } from "./types";
 import * as transportSecurity from "./transport-security";
 
@@ -234,5 +234,148 @@ describe("api client", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it("replays all queued 401s after a single (single-flight) refresh", async () => {
+    const { runtime, calls } = createRuntime();
+    let refreshCalls = 0;
+    runtime.request = async <T = unknown>(request: RuntimeHttpRequest) => {
+      calls.push(request);
+      if (request.url.endsWith("/user/refresh_token")) {
+        refreshCalls += 1;
+        return { status: 200, headers: new Headers(), data: { code: 0, msg: "ok", data: { token: "Bearer fresh" } } as T };
+      }
+      if (request.headers?.Authorization === "Bearer fresh") {
+        return { status: 200, headers: new Headers(), data: { code: 0, msg: "ok", data: { ok: true } } as T };
+      }
+      return { status: 401, headers: new Headers(), data: null as T };
+    };
+
+    const client = new ApiClient(runtime, "http://host/api");
+    client.setToken("Bearer old");
+    // Mirrors the auth-context handler: the refresh request reuses this client
+    // and must bypass the refresh queue itself.
+    client.setRefreshTokenHandler(async (token) => {
+      const data = await client.post<unknown>("/user/refresh_token", { token }, { auth: false, _skipRefresh: true });
+      return extractToken(data);
+    });
+
+    const results = await Promise.all([client.get("/a"), client.get("/b"), client.post("/c", { value: 1 })]);
+
+    expect(results.map((item) => (item as { ok: boolean }).ok)).toEqual([true, true, true]);
+    expect(refreshCalls).toBe(1);
+    expect(client.getToken()).toBe("Bearer fresh");
+  });
+
+  it("rejects the whole queue without hanging when the refresh endpoint itself returns 401", async () => {
+    const { runtime } = createRuntime();
+    runtime.request = async <T = unknown>() => ({ status: 401, headers: new Headers(), data: null as T });
+
+    const client = new ApiClient(runtime, "http://host/api");
+    client.setToken("Bearer old");
+    client.setRefreshTokenHandler(async (token) => {
+      try {
+        await client.post<unknown>("/user/refresh_token", { token }, { auth: false, _skipRefresh: true });
+        return "Bearer fresh";
+      } catch {
+        return null;
+      }
+    });
+
+    const unauthorized = vi.fn();
+    window.addEventListener(UNAUTHORIZED_EVENT, unauthorized);
+    let settled: PromiseSettledResult<unknown>[];
+    try {
+      // Under the pre-fix deadlock both requests stayed pending forever.
+      settled = await Promise.allSettled([client.get("/a"), client.get("/b")]);
+    } finally {
+      window.removeEventListener(UNAUTHORIZED_EVENT, unauthorized);
+    }
+
+    expect(settled.every((item) => item.status === "rejected")).toBe(true);
+    for (const item of settled) {
+      if (item.status !== "rejected") continue;
+      expect(item.reason).toBeInstanceOf(ApiError);
+      expect(isAuthError(item.reason)).toBe(true);
+    }
+    expect(unauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the queue with the original error and keeps the session when refresh hits a network failure", async () => {
+    const { runtime } = createRuntime();
+    runtime.request = async <T = unknown>() => ({ status: 401, headers: new Headers(), data: null as T });
+
+    const client = new ApiClient(runtime, "http://host/api");
+    client.setToken("Bearer old");
+    const networkError = new ApiError("socket hang up", { kind: "network" });
+    // Mirrors the auth-context handler: transient network errors are rethrown.
+    client.setRefreshTokenHandler(async () => {
+      throw networkError;
+    });
+
+    const unauthorized = vi.fn();
+    window.addEventListener(UNAUTHORIZED_EVENT, unauthorized);
+    let settled: PromiseSettledResult<unknown>[];
+    try {
+      settled = await Promise.allSettled([client.get("/a"), client.post("/b", { value: 1 })]);
+    } finally {
+      window.removeEventListener(UNAUTHORIZED_EVENT, unauthorized);
+    }
+
+    expect(settled.every((item) => item.status === "rejected")).toBe(true);
+    for (const item of settled) {
+      if (item.status === "rejected") expect(item.reason).toBe(networkError);
+    }
+    expect(unauthorized).not.toHaveBeenCalled();
+  });
+
+  it("drains a first-time 401 that arrives while the previous cycle is replaying", async () => {
+    const { runtime } = createRuntime();
+    let refreshCalls = 0;
+    let clientRef: ApiClient | null = null;
+    let lateRequest: Promise<{ source: string }> | null = null;
+    runtime.request = async <T = unknown>(request: RuntimeHttpRequest) => {
+      if (request.url.endsWith("/user/refresh_token")) {
+        refreshCalls += 1;
+        return {
+          status: 200,
+          headers: new Headers(),
+          data: { code: 0, msg: "ok", data: { token: `Bearer fresh-${refreshCalls}` } } as T,
+        };
+      }
+      const authorization = request.headers?.Authorization ?? "";
+      if (request.url.endsWith("/a") && authorization === "Bearer fresh-1") {
+        // The replayed request succeeds and, like a refetch triggered by fresh
+        // data, kicks off a brand-new request that also hits 401 — while the
+        // first refresh cycle is still replaying.
+        lateRequest = clientRef!.get<{ source: string }>("/c");
+        return { status: 200, headers: new Headers(), data: { code: 0, msg: "ok", data: { source: "a" } } as T };
+      }
+      if (request.url.endsWith("/c") && authorization === "Bearer fresh-2") {
+        return { status: 200, headers: new Headers(), data: { code: 0, msg: "ok", data: { source: "c" } } as T };
+      }
+      return { status: 401, headers: new Headers(), data: null as T };
+    };
+
+    const client = new ApiClient(runtime, "http://host/api");
+    clientRef = client;
+    client.setToken("Bearer old");
+    client.setRefreshTokenHandler(async (token) => {
+      const data = await client.post<unknown>("/user/refresh_token", { token }, { auth: false, _skipRefresh: true });
+      return extractToken(data);
+    });
+
+    const a = await client.get<{ source: string }>("/a");
+
+    expect(a.source).toBe("a");
+    // Without the follow-up drain cycle this late 401 would hang forever.
+    const c = await Promise.race([
+      lateRequest!,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("late 401 was never drained by a follow-up refresh cycle")), 2_000);
+      }),
+    ]);
+    expect(c.source).toBe("c");
+    expect(refreshCalls).toBe(2);
   });
 });

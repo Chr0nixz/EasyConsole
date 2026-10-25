@@ -157,6 +157,17 @@ export type ResourceSpec = UnknownRecord & {
   gpu?: number;
 };
 
+/** Locally saved CPU/GPU/memory combination for one-click reuse in task forms. */
+export type ResourcePreset = {
+  id: string;
+  name: string;
+  cpu: number;
+  gpu: number;
+  memory: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ListResult<T> = {
   items: T[];
   total?: number;
@@ -196,6 +207,15 @@ export type CreateTaskPayload = UnknownRecord & {
 
 export type ScheduledTaskStatus = "pending" | "running" | "done" | "failed" | "paused" | "needs_review";
 
+/**
+ * Identity of the account that created (or last adopted) a scheduled task.
+ * `key` is the account scope key (see account-scope.ts); never contains secrets.
+ */
+export type ScheduledTaskOwner = {
+  key: string;
+  displayName: string;
+};
+
 export type TaskRecurrenceType = "once" | "daily" | "weekly" | "interval" | "cron";
 
 export type TaskRecurrence = {
@@ -228,6 +248,8 @@ export type ScheduledTask = {
   leaseStartedAt?: string;
   /** Remote task id created for the current/last successful execution key. */
   lastRemoteTaskId?: string;
+  /** Account that created (or last adopted) this schedule; legacy records carry a legacy marker. */
+  owner?: ScheduledTaskOwner;
 };
 
 export type TaskTemplateVariable = {
@@ -328,6 +350,14 @@ export type RuntimeStorage = {
    * same store, and those must not try to re-acquire a non-reentrant lock.
    */
   withTransaction?<T>(fn: () => Promise<T>): Promise<T>;
+  /**
+   * Atomic read-modify-write for one key, safe against concurrent writers in
+   * other windows/processes (native compare-and-swap loop on desktop).
+   * `updateStorageValue` prefers it over the get→updater→set sequence when
+   * present. The updater may run more than once on cross-window conflicts and
+   * must be a pure function of its input.
+   */
+  update?(key: string, updater: (current: string | null) => string | null | Promise<string | null>): Promise<string | null>;
 };
 
 export type RuntimeHttpRequest = {

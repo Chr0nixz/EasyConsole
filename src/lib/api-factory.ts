@@ -145,8 +145,10 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
     },
     async refreshToken(currentToken: string) {
       // Attempt to refresh the token. If the endpoint does not exist (404/405),
-      // callers should catch and fall back to a re-login flow.
-      const data = await apiClient.post<unknown>("/user/refresh_token", { token: currentToken }, { auth: false });
+      // callers should catch and fall back to a re-login flow. The request must
+      // bypass the automatic refresh queue: a 401 from the refresh endpoint
+      // itself would otherwise wait on the refresh cycle it belongs to.
+      const data = await apiClient.post<unknown>("/user/refresh_token", { token: currentToken }, { auth: false, _skipRefresh: true });
       const token = extractToken(data);
       return token ? normalizeToken(token) : null;
     },

@@ -5,7 +5,7 @@ export const DEFAULT_TASK_PAGE = 1;
 export const DEFAULT_TASK_PAGE_SIZE = 50;
 export const TASK_PAGE_SIZE_OPTIONS = [20, 50, 100, 200] as const;
 
-export type TaskListSortBy = "" | "name" | "status" | "created" | "updated";
+export type TaskListSortBy = "" | "name" | "status" | "created" | "updated" | "duration" | "cost";
 export type TaskListSortDir = "asc" | "desc";
 
 export type TaskListQueryState = {
@@ -27,7 +27,7 @@ function pageSize(value: string | null) {
   return TASK_PAGE_SIZE_OPTIONS.includes(number as (typeof TASK_PAGE_SIZE_OPTIONS)[number]) ? number : DEFAULT_TASK_PAGE_SIZE;
 }
 
-const SORT_BY_VALUES = ["name", "status", "created", "updated"] as const satisfies readonly Exclude<TaskListSortBy, "">[];
+const SORT_BY_VALUES = ["name", "status", "created", "updated", "duration", "cost"] as const satisfies readonly Exclude<TaskListSortBy, "">[];
 
 function parseSortBy(value: string | null): TaskListSortBy {
   if (value && (SORT_BY_VALUES as readonly string[]).includes(value)) return value as TaskListSortBy;
@@ -76,6 +76,12 @@ export function taskMatchesQuery(task: Task, state: TaskListQueryState) {
   return true;
 }
 
+/** Runtime seconds or billed amount; a missing value sorts as zero, so not-yet-started tasks group together. */
+function taskAmount(task: Task, field: "duration" | "cost") {
+  const value = Number(field === "duration" ? task.use_time : task.cost);
+  return Number.isFinite(value) ? value : 0;
+}
+
 export function taskTimestamp(task: Task, field: "created" | "updated") {
   const raw =
     field === "created"
@@ -103,6 +109,8 @@ export function sortTasksClientSide(tasks: Task[], sortBy: TaskListSortBy, sortD
       cmp = taskTimestamp(left, "created") - taskTimestamp(right, "created");
     } else if (sortBy === "updated") {
       cmp = taskTimestamp(left, "updated") - taskTimestamp(right, "updated");
+    } else if (sortBy === "duration" || sortBy === "cost") {
+      cmp = taskAmount(left, sortBy) - taskAmount(right, sortBy);
     }
     return cmp * direction;
   });
