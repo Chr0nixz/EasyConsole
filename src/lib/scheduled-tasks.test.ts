@@ -17,6 +17,7 @@ import {
   resumeScheduledTask,
   saveScheduledTasks,
   scheduledTaskOwnerMismatch,
+  skipMissedScheduleInList,
   skipMissedScheduledRun,
   sortScheduledTasks,
   updateScheduledTask,
@@ -210,6 +211,50 @@ describe("missed schedule runs", () => {
     const note = missedScheduleSkipNote(makeTask({ scheduleTime: "2026-05-24T10:00:00.000Z" }));
     expect(note).toContain("2026-05-24 10:00");
     expect(note).toContain("跳过");
+  });
+
+  it("skips a missed pending row through the guarded list helper", () => {
+    const missed = makeTask({ id: "missed", scheduleTime: "2026-05-24T10:00" });
+    const other = makeTask({ id: "other", scheduleTime: "2026-05-25T10:00" });
+
+    const { items, skipped } = skipMissedScheduleInList([missed, other], "missed", now, graceMs);
+
+    expect(skipped).toMatchObject({ id: "missed", status: "done" });
+    expect(skipped?.lastError).toContain("跳过");
+    expect(items.find((item) => item.id === "missed")).toMatchObject({ status: "done" });
+    expect(items.find((item) => item.id === "other")).toEqual(other);
+  });
+
+  it("leaves the list untouched when the latest row was executed elsewhere", () => {
+    // Another window ran the task between the caller's snapshot and the
+    // storage lock; skipping from the stale snapshot would lose the remote id.
+    const executed = makeTask({
+      id: "ran",
+      scheduleTime: "2026-05-24T10:00",
+      status: "done",
+      lastRemoteTaskId: "remote-9",
+      lastRunAt: "2026-05-24T10:00:05.000Z",
+    });
+
+    const { items, skipped } = skipMissedScheduleInList([executed], "ran", now, graceMs);
+
+    expect(skipped).toBeNull();
+    expect(items).toEqual([executed]);
+  });
+
+  it("leaves the list untouched when the latest row was rescheduled into the future", () => {
+    const rescheduled = makeTask({ id: "moved", scheduleTime: "2026-05-24T18:00" });
+
+    const { items, skipped } = skipMissedScheduleInList([rescheduled], "moved", now, graceMs);
+
+    expect(skipped).toBeNull();
+    expect(items).toEqual([rescheduled]);
+  });
+
+  it("leaves the list untouched for an unknown id", () => {
+    const { items, skipped } = skipMissedScheduleInList([], "ghost", now, graceMs);
+    expect(skipped).toBeNull();
+    expect(items).toEqual([]);
   });
 });
 

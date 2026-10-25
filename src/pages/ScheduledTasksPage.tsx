@@ -41,11 +41,10 @@ import {
   isMissedScheduleRun,
   isScheduleDue,
   loadScheduledTasks,
-  missedScheduleSkipNote,
   mutateScheduledTasks,
   pauseScheduledTask,
   resumeScheduledTask,
-  skipMissedScheduledRun,
+  skipMissedScheduleInList,
   sortScheduledTasks,
   updateScheduledTask,
 } from "../lib/scheduled-tasks";
@@ -688,7 +687,12 @@ export function ScheduledTasksPage() {
       ),
       confirmLabel: text("跳过", "Skip"),
       run: async () => {
-        await persistOne(skipMissedScheduledRun(item, missedScheduleSkipNote(item)));
+        // The re-check inside the storage lock discards the skip when another
+        // window executed or rescheduled the row since this page loaded it —
+        // overwriting that would lose lastRemoteTaskId and the idempotency key.
+        await persistWith((current) =>
+          skipMissedScheduleInList(current, item.id, new Date(), missedGraceMs).items,
+        );
         logPlanChange(item, "scheduledTask.skipMissed", text("已跳过错过的执行", "Missed run skipped"));
       },
     });
@@ -773,7 +777,9 @@ export function ScheduledTasksPage() {
 
   const dueCount = items.filter((item) => isScheduleDue(item)).length;
   // Missed-run marker/action follow the grace window from settings; re-read per
-  // render so a settings save is reflected on the next page focus.
+  // render so a settings save is reflected on the next page focus. The marker
+  // refreshes with the list (focus/reload), not on a timer — the background
+  // runner remains the authority for what actually runs.
   const missedGraceMs = getRuntimeSettings().missedScheduleGraceMs;
   const isMissedRow = (item: ScheduledTask) =>
     item.status === "pending" && isMissedScheduleRun(item, new Date(), missedGraceMs);

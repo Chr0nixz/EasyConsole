@@ -13,11 +13,10 @@ import {
   holdScheduledTaskForReview,
   isMissedScheduleRun,
   isScheduleDue,
-  missedScheduleSkipNote,
   mutateScheduledTasks,
   resetStaleRunningTasks,
   scheduledTaskOwnerMismatch,
-  skipMissedScheduledRun,
+  skipMissedScheduleInList,
   sortScheduledTasks,
   updateScheduledTask,
 } from "../lib/scheduled-tasks";
@@ -102,10 +101,21 @@ export function BackgroundScheduledTaskRunner() {
       runningRef.current = true;
       try {
         const settings = getRuntimeSettings();
-        const items = await persistUpdate((current) => resetStaleRunningTasks(current));
+        let items: ScheduledTask[];
+        try {
+          items = await persistUpdate((current) => resetStaleRunningTasks(current));
+        } catch (error) {
+          // Storage is broken: nothing below can proceed safely.
+          console.warn("Failed to load scheduled tasks for the background runner.", error);
+          return;
+        }
         const due = items.filter((item) => isScheduleDue(item));
         for (const task of due) {
           if (disposed) return;
+          // One row's infrastructure failure (storage error, corrupt recurrence)
+          // must neither abort the remaining due rows nor surface as an
+          // unhandled rejection from the void-callers below.
+          try {
           // Never submit a remote create under an account that does not own the
           // schedule. Mismatched or legacy-owner rows are held for the user to
           // pick the original account or migrate the task. Re-check against the
@@ -159,14 +169,14 @@ export function BackgroundScheduledTaskRunner() {
             isMissedScheduleRun(task, new Date(), settings.missedScheduleGraceMs)
           ) {
             if (settings.missedSchedulePolicy === "skip") {
-              let skipped = false;
+              let skipped: ScheduledTask | null = null;
               await persistUpdate((current) => {
-                const latest = current.find((item) => item.id === task.id);
-                // Re-check inside the storage lock: another window may have run,
-                // edited, or rescheduled this row since the list was loaded.
-                if (!latest || !isMissedScheduleRun(latest, new Date(), settings.missedScheduleGraceMs)) return current;
-                skipped = true;
-                return updateScheduledTask(current, skipMissedScheduledRun(latest, missedScheduleSkipNote(latest)));
+                // Re-checks the latest row inside the storage lock: another
+                // window may have run, edited, or rescheduled it since this
+                // list was loaded.
+                const result = skipMissedScheduleInList(current, task.id, new Date(), settings.missedScheduleGraceMs);
+                skipped = result.skipped;
+                return result.items;
               });
               if (skipped) {
                 toast.info(tt("已跳过错过的定时任务", "Missed scheduled task skipped"), task.name);
@@ -281,6 +291,12 @@ export function BackgroundScheduledTaskRunner() {
               targetId: task.id,
               error: errorMessage(error, tt("定时任务执行失败", "Scheduled task execution failed")),
             });
+          }
+          } catch (error) {
+            // Infrastructure failure (storage write, corrupt recurrence) while
+            // holding/skipping this row. The remote create path above handles
+            // its own errors; anything landing here never reached the API.
+            console.warn("Failed to process a due scheduled task.", task.id, error);
           }
         }
       } finally {

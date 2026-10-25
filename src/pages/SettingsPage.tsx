@@ -501,6 +501,28 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     setLastSavedAt(null);
   }, [settingsAccountId]);
 
+  // The OS-level autostart entry can be flipped outside the app (Task Manager
+  // on Windows, Login Items on macOS). Adopt its actual state on mount so the
+  // checkbox reflects reality and later saves do not silently re-enable an
+  // entry the user disabled there. Baseline moves with the form, so adopting
+  // the OS state never marks the settings dirty.
+  useEffect(() => {
+    if (!browserRuntime.supportsAutostart) return;
+    let cancelled = false;
+    void browserRuntime
+      .getDesktopAutostart()
+      .then((enabled) => {
+        if (cancelled || enabled === getRuntimeSettings().desktopAutostart) return;
+        setForm((value) => ({ ...value, desktopAutostart: enabled }));
+        setSavedBaseline((value) => ({ ...value, desktopAutostart: enabled }));
+        setRuntimeSettings({ ...getRuntimeSettings(), desktopAutostart: enabled });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function onChangePassword() {
     setPasswordError(null);
     if (!oldPassword || !newPassword) {

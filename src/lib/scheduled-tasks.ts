@@ -251,6 +251,25 @@ export function skipMissedScheduledRun(task: ScheduledTask, reason: string, now 
   return { ...next, lastError: reason, leaseStartedAt: undefined };
 }
 
+/**
+ * Skip a missed run inside a storage mutation. Re-checks the *latest* row:
+ * another window may have executed, edited, or rescheduled it since the caller
+ * loaded its snapshot, and skipping over that would discard lastRemoteTaskId
+ * and defeat the idempotency check. Returns the untouched list when the row is
+ * no longer a missed pending run.
+ */
+export function skipMissedScheduleInList(
+  items: ScheduledTask[],
+  taskId: string,
+  now = new Date(),
+  graceMs = DEFAULT_MISSED_SCHEDULE_GRACE_MS,
+): { items: ScheduledTask[]; skipped: ScheduledTask | null } {
+  const latest = items.find((item) => item.id === taskId);
+  if (!latest || !isMissedScheduleRun(latest, now, graceMs)) return { items, skipped: null };
+  const next = skipMissedScheduledRun(latest, missedScheduleSkipNote(latest), now);
+  return { items: updateScheduledTask(items, next), skipped: next };
+}
+
 export function sortScheduledTasks(items: ScheduledTask[]) {
   return [...items].sort((left, right) => {
     const statusScore = (status: ScheduledTask["status"]) =>
