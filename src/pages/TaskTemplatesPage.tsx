@@ -801,15 +801,21 @@ export function TaskTemplatesPage() {
   const handleTemplateSettled = useCallback(
     (template: TaskTemplate, result: BatchRunResult<PreviewItem>, record: BatchOperationRecord) => {
       const failed = result.summary.failed > 0;
+      // Unknown outcomes are undecided creates: verify before retrying.
+      const unknown = result.summary.unknown > 0;
       const firstName = result.outcomes[0]?.item.name ?? "";
       const title = text(`已按模板创建：${template.name}`, `Created from template: ${template.name}`);
-      if (failed) {
-        toast.error(
-          text(`模板创建部分失败：${template.name}`, `Template creation partially failed: ${template.name}`),
+      if (failed || unknown) {
+        const detail =
           text(
-            `${result.summary.succeeded}/${result.summary.total} 成功，${result.summary.failed} 失败，可在结果中重试。`,
-            `${result.summary.succeeded}/${result.summary.total} succeeded, ${result.summary.failed} failed; retry them from the result dialog.`,
-          ),
+            `${result.summary.succeeded}/${result.summary.total} 成功，${result.summary.failed} 失败，${result.summary.unknown} 结果未知`,
+            `${result.summary.succeeded}/${result.summary.total} succeeded, ${result.summary.failed} failed, ${result.summary.unknown} unknown`,
+          ) + (unknown ? text("请先核对未知项再重试。", " Verify the unknown items before retrying.") : "");
+        toast.error(
+          failed
+            ? text(`模板创建部分失败：${template.name}`, `Template creation partially failed: ${template.name}`)
+            : text(`模板创建有结果未知的项：${template.name}`, `Template creation has unknown outcomes: ${template.name}`),
+          detail,
         );
       } else {
         toast.success(
@@ -821,10 +827,10 @@ export function TaskTemplatesPage() {
       }
       void runLogger.log({
         source: "task-template",
-        level: failed ? "error" : "info",
+        level: failed ? "error" : unknown ? "warning" : "info",
         action: "taskTemplate.execute",
-        result: failed ? "failure" : "success",
-        title: failed ? text(`模板创建部分失败：${template.name}`, `Template creation partially failed: ${template.name}`) : title,
+        result: failed || unknown ? "failure" : "success",
+        title: failed || unknown ? text(`模板创建未全部成功：${template.name}`, `Template creation not fully successful: ${template.name}`) : title,
         targetName: template.name,
         targetId: template.id,
         metadata: {
@@ -832,6 +838,7 @@ export function TaskTemplatesPage() {
           succeeded: result.summary.succeeded,
           failed: result.summary.failed,
           skipped: result.summary.skipped,
+          unknown: result.summary.unknown,
           recordId: record.id,
           retryOf: record.retryOf,
         },

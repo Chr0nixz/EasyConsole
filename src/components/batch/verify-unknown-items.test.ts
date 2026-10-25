@@ -76,4 +76,31 @@ describe("verifyUnknownCreateItems", () => {
     expect(resolutions).toEqual([]);
     expect(listTasks).not.toHaveBeenCalled();
   });
+
+  it("refuses to decide anything without a batch start time to anchor the window", async () => {
+    const listTasks = vi.fn(async () => ({ items: [task(1, "train-a", "2026-10-25T10:00:05Z")] }));
+    const resolutions = await verifyUnknownCreateItems([unknownOutcome("0", "train-a")], { listTasks });
+
+    expect(resolutions).toEqual([]);
+    expect(listTasks).not.toHaveBeenCalled();
+  });
+
+  it("scans follow-up pages before declaring a create as not created", async () => {
+    const filler = Array.from({ length: 100 }, (_, index) => task(index + 1, `filler-${index}`, "2026-09-01T00:00:00Z"));
+    const pages = [
+      { items: filler },
+      { items: [task(101, "train-a", "2026-10-25T10:00:05Z")] },
+    ];
+    const requestedPages: number[] = [];
+    const resolutions = await verifyUnknownCreateItems([unknownOutcome("0", "train-a")], {
+      startedAt: STARTED_AT,
+      listTasks: async (query) => {
+        requestedPages.push(query.page);
+        return pages[query.page - 1] ?? { items: [] };
+      },
+    });
+
+    expect(requestedPages).toEqual([1, 2]);
+    expect(resolutions).toEqual([{ key: "0", status: "confirmed-created", remoteTaskId: "task-101" }]);
+  });
 });

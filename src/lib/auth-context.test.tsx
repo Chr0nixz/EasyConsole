@@ -196,6 +196,56 @@ describe("AuthProvider token refresh", () => {
     expect(alice?.token).toBe("Bearer old-A");
   });
 
+  it("repairs the stored token when the account switches after the refresh already applied", async () => {
+    seedSession("Bearer old-A", [
+      makeAccount("alice", "alice", "Bearer old-A"),
+      makeAccount("bob", "bob", "Bearer token-B"),
+    ]);
+    // The refreshed token applies cleanly, then the userinfo fetch hangs —
+    // the switch happens while that request is in flight, so the drop path
+    // runs after the new token was already applied and persisted.
+    const userinfoGate = deferred<"release">();
+    let refreshApplied = false;
+    handleRequest = async (url, auth) => {
+      if (url.pathname.endsWith("/user/refresh_token")) return envelope("Bearer new-A");
+      if (url.pathname.endsWith("/user/userinfo")) {
+        if (auth === "Bearer new-A") {
+          refreshApplied = true;
+          await userinfoGate.promise;
+        }
+        return envelope(USERS_BY_TOKEN[auth ?? ""] ?? USERS_BY_TOKEN["Bearer old-A"]);
+      }
+      if (url.pathname.endsWith("/instance/task")) return auth === "Bearer old-A" ? unauthorized() : envelope({ items: [] });
+      return envelope(null);
+    };
+    renderAuthProvider();
+    await waitFor(() => expect(stateRef.current?.ready).toBe(true));
+
+    const taskPromise = apiClient.get("/instance/task");
+    await waitFor(() => expect(refreshApplied).toBe(true));
+
+    await act(async () => {
+      await stateRef.current?.loginSaved("bob");
+    });
+
+    const rejection = expect(taskPromise).rejects.toThrow(/账号已切换|account changed/i);
+    await act(async () => {
+      userinfoGate.resolve("release");
+    });
+    await rejection;
+
+    // The applied-then-dropped token must not survive anywhere: the active
+    // session's token is what storage and state end with.
+    expect(apiClient.getToken()).toBe("Bearer token-B");
+    expect(window.localStorage.getItem(TOKEN_STORAGE_KEY)).toBe("Bearer token-B");
+    await waitFor(() => {
+      expect(stateRef.current?.token).toBe("Bearer token-B");
+      expect(stateRef.current?.user?.username).toBe("bob");
+    });
+    expect(stateRef.current?.sessionExpired).toBe(false);
+    expect(unauthorizedEvents).toBe(0);
+  });
+
   it("keeps the session when the refresh request fails at the network level", async () => {
     seedSession("Bearer old-A", [makeAccount("alice", "alice", "Bearer old-A")]);
     handleRequest = (url, auth) => {

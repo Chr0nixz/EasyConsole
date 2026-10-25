@@ -531,12 +531,14 @@ fn broadcast_runtime_storage_change(app: &AppHandle, source: &str, key: &str) {
     );
 }
 
-/// Lock-acquisition error shared by the storage commands below.
-fn storage_lock_error<E: std::fmt::Display>(e: E) -> String {
-    trf!(
-        "本地数据锁获取失败：{e}",
-        "Failed to acquire the local data lock: {e}"
-    )
+/// Acquire the global storage lock, recovering from poisoning: the state it
+/// guards is fully re-derived from disk on every call, so a panicked previous
+/// holder leaves nothing inconsistent behind — failing every later storage
+/// command until restart would be strictly worse.
+fn lock_runtime_storage() -> std::sync::MutexGuard<'static, ()> {
+    runtime_storage_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Sync Tauri commands run on the main thread, so every storage command moves
@@ -546,7 +548,7 @@ fn storage_lock_error<E: std::fmt::Display>(e: E) -> String {
 #[tauri::command]
 async fn runtime_storage_get(app: AppHandle, key: String) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = runtime_storage_lock().lock().map_err(storage_lock_error)?;
+        let _guard = lock_runtime_storage();
         let path = runtime_storage_path(&app)?;
         let data = load_string_map(&path)?;
         Ok(data.get(&key).cloned())
@@ -570,7 +572,7 @@ async fn runtime_storage_set(
     let task_app = app.clone();
     let task_key = key.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = runtime_storage_lock().lock().map_err(storage_lock_error)?;
+        let _guard = lock_runtime_storage();
         let path = runtime_storage_path(&task_app)?;
         let mut data = load_string_map(&path)?;
         data.insert(task_key, value);
@@ -597,7 +599,7 @@ async fn runtime_storage_remove(
     let task_app = app.clone();
     let task_key = key.clone();
     let existed = tauri::async_runtime::spawn_blocking(move || {
-        let _guard = runtime_storage_lock().lock().map_err(storage_lock_error)?;
+        let _guard = lock_runtime_storage();
         let path = runtime_storage_path(&task_app)?;
         let mut data = load_string_map(&path)?;
         let existed = data.remove(&task_key).is_some();
@@ -666,7 +668,7 @@ async fn runtime_storage_compare_and_swap(
     let task_app = app.clone();
     let task_key = key.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let _guard = runtime_storage_lock().lock().map_err(storage_lock_error)?;
+        let _guard = lock_runtime_storage();
         let path = runtime_storage_path(&task_app)?;
         let mut data = load_string_map(&path)?;
         let (updated, current) =

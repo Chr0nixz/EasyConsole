@@ -587,16 +587,23 @@ export function CreateTaskDialog({
     (result: BatchRunResult<PreviewItem>, record: BatchOperationRecord) => {
       const firstName = result.outcomes[0]?.item.name ?? "";
       const failed = result.summary.failed > 0;
+      // Unknown outcomes keep the result dialog open: they are undecided
+      // creates that must be verified before anything is retried or closed.
+      const unknown = result.summary.unknown > 0;
       const title = initialTask
         ? text("复制创建已完成", "Clone creation finished")
         : text("批量创建已完成", "Batch creation finished");
-      if (failed) {
-        toast.error(
-          text("批量创建部分失败", "Batch creation partially failed"),
+      if (failed || unknown) {
+        const detail =
           text(
-            `${result.summary.succeeded}/${result.summary.total} 成功，${result.summary.failed} 失败，可在结果中重试。`,
-            `${result.summary.succeeded}/${result.summary.total} succeeded, ${result.summary.failed} failed; retry them from the result dialog.`,
-          ),
+            `${result.summary.succeeded}/${result.summary.total} 成功，${result.summary.failed} 失败，${result.summary.unknown} 结果未知`,
+            `${result.summary.succeeded}/${result.summary.total} succeeded, ${result.summary.failed} failed, ${result.summary.unknown} unknown`,
+          ) + (unknown ? text("请先核对未知项再重试。", " Verify the unknown items before retrying.") : "");
+        toast.error(
+          failed
+            ? text("批量创建部分失败", "Batch creation partially failed")
+            : text("批量创建有结果未知的项", "Batch creation has unknown outcomes"),
+          detail,
         );
       } else {
         toast.success(
@@ -612,9 +619,9 @@ export function CreateTaskDialog({
       }
       void runLogger.log({
         source: "task",
-        level: failed ? "error" : "info",
+        level: failed ? "error" : unknown ? "warning" : "info",
         action: initialTask ? "task.cloneCreate" : "task.create",
-        result: failed ? "failure" : "success",
+        result: failed || unknown ? "failure" : "success",
         title,
         targetName: firstName,
         metadata: {

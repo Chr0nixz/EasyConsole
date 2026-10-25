@@ -515,7 +515,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // The account changed after this refresh was applied (e.g. during
           // the userinfo fetch). Returning the token would make the client
           // reinstall it over the new session and replay the queued — now
-          // foreign — requests under it.
+          // foreign — requests under it. The secureStorage write above may
+          // also have landed after the new session's own write (or after a
+          // logout cleared the key): restore whatever the active session
+          // holds so the next boot starts from the right account.
+          const activeToken = apiClient.getToken();
+          if (activeToken) {
+            await browserRuntime.secureStorage.set(TOKEN_STORAGE_KEY, activeToken).catch((error) => {
+              console.warn("Failed to restore the active session token after a refresh race.", error);
+            });
+          } else {
+            await browserRuntime.secureStorage.remove(TOKEN_STORAGE_KEY).catch((error) => {
+              console.warn("Failed to clear the session token after a refresh race.", error);
+            });
+          }
           throw new SessionChangedError();
         }
         writeAuthLog({

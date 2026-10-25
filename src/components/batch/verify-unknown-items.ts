@@ -15,11 +15,13 @@ import type { PreviewItem } from "./BatchResultDialog";
 
 const MATCH_WINDOW_MS = 30 * 60 * 1000;
 const SCAN_PAGE_SIZE = 100;
+/** "Not created" verdicts scan a few pages so an item on page 2+ cannot flip a live create to retryable. */
+const SCAN_MAX_PAGES = 3;
 
 export type VerifyUnknownItemsOptions = {
   /** ISO timestamp of the original batch start; the match window anchors here. */
   startedAt?: string;
-  /** Fetch one task-list page; injected so tests stay offline. */
+  /** Fetch task-list pages; injected so tests stay offline. */
   listTasks: (query: { page: number; page_size: number }) => Promise<{ items: Task[] }>;
 };
 
@@ -34,11 +36,25 @@ function remoteTaskId(task: Task) {
   return id === undefined || id === null ? undefined : String(id);
 }
 
+async function scanTasks(options: VerifyUnknownItemsOptions): Promise<Task[]> {
+  const items: Task[] = [];
+  for (let page = 1; page <= SCAN_MAX_PAGES; page += 1) {
+    const result = await options.listTasks({ page, page_size: SCAN_PAGE_SIZE });
+    items.push(...result.items);
+    if (result.items.length < SCAN_PAGE_SIZE) break;
+  }
+  return items;
+}
+
 /**
  * Resolutions for every decidable `unknown` outcome:
  * - exactly one in-window name match → `confirmed-created` (with the remote id);
- * - no name match anywhere in the scanned page → `confirmed-not-created`;
+ * - no name match anywhere in the scanned pages → `confirmed-not-created`;
  * - ambiguous matches (several, or an unreadable creation time) → omitted.
+ *
+ * Returns nothing when the batch start time is unavailable: without that
+ * anchor an old same-named task cannot be told apart from a fresh create, so
+ * no "not created" verdict would be trustworthy.
  */
 export async function verifyUnknownCreateItems(
   outcomes: BatchItemOutcome<PreviewItem>[],
@@ -47,9 +63,10 @@ export async function verifyUnknownCreateItems(
   const unknownOutcomes = outcomes.filter((outcome) => outcome.status === "unknown");
   if (unknownOutcomes.length === 0) return [];
 
-  const { items } = await options.listTasks({ page: 1, page_size: SCAN_PAGE_SIZE });
   const started = options.startedAt ? Date.parse(options.startedAt) : Number.NaN;
+  if (!Number.isFinite(started)) return [];
 
+  const items = await scanTasks(options);
   const resolutions: BatchItemResolution[] = [];
   for (const outcome of unknownOutcomes) {
     const expectedName = outcome.item.name.trim();
