@@ -169,7 +169,10 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_task_release_batch",
-      description: "Release multiple EasyConsole tasks. Requires confirm=true to execute.",
+      description:
+        "Release multiple EasyConsole tasks. Requires confirm=true to execute. " +
+        "Without confirm, read the returned `impact` array (id + name of every task the batch would release) and verify it before confirming. " +
+        "With confirm=true the batch runs item by item — a failing task does not abort the rest — and returns `batchId` plus per-item `results` ({id, name, ok, error}) to review afterwards.",
       inputSchema: {
         taskIds: z.array(idSchema),
         confirm: z.boolean().optional(),
@@ -177,7 +180,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       handler(context, input) {
         const ids = input.taskIds;
         if (!Array.isArray(ids)) throw new Error("taskIds must be an array.");
-        return releaseTasks(context.api, ids as JsonId[], asConfirm(input.confirm));
+        return releaseTasks(context.api, ids as JsonId[], asConfirm(input.confirm), { storage: context.runLogStorage, channel: "mcp" });
       },
     },
     {
@@ -324,7 +327,10 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_task_delete_batch",
-      description: "Delete multiple EasyConsole tasks. Requires confirm=true to execute.",
+      description:
+        "Delete multiple EasyConsole tasks. Requires confirm=true to execute; deletion is irreversible. " +
+        "Without confirm, read the returned `impact` array (id + name of every task the batch would delete) and verify it before confirming. " +
+        "With confirm=true the batch runs item by item — a failing task does not abort the rest — and returns `batchId` plus per-item `results` ({id, name, ok, error}) to review afterwards.",
       inputSchema: {
         taskIds: z.array(idSchema),
         confirm: z.boolean().optional(),
@@ -332,7 +338,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       handler(context, input) {
         const ids = input.taskIds;
         if (!Array.isArray(ids)) throw new Error("taskIds must be an array.");
-        return deleteTasks(context.api, ids as JsonId[], asConfirm(input.confirm));
+        return deleteTasks(context.api, ids as JsonId[], asConfirm(input.confirm), { storage: context.runLogStorage, channel: "mcp" });
       },
     },
     {
@@ -539,7 +545,10 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_template_apply",
-      description: "Apply a task template to create tasks. Requires confirm=true to execute.",
+      description:
+        "Apply a task template to create tasks. Requires confirm=true to execute. " +
+        "Without confirm, read the returned `impact` array — one entry per generated payload (ordinal id + generated task name) — and review the final names and count before confirming. " +
+        "With confirm=true the batch creates tasks one by one — a failing payload does not abort the rest — and returns `batchId` plus per-item `results` ({id, name, ok, error}) to review afterwards.",
       inputSchema: {
         templateId: z.string(),
         variableValues: z.record(z.string(), z.string()).optional(),
@@ -549,7 +558,10 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
         const variableValues = input.variableValues
           ? (asRecord(input.variableValues) as Record<string, string>)
           : undefined;
-        return applyTaskTemplate(context.storage, context.api, String(input.templateId), asConfirm(input.confirm), variableValues);
+        return applyTaskTemplate(context.storage, context.api, String(input.templateId), asConfirm(input.confirm), variableValues, {
+          storage: context.runLogStorage,
+          channel: "mcp",
+        });
       },
     },
     {

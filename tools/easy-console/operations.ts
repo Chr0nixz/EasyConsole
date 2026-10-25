@@ -1,11 +1,17 @@
+import { lstatSync, realpathSync } from "node:fs";
+import type { Stats } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 import { buildMonitorDashboardUrl, DEFAULT_MONITOR_DASHBOARD_URL } from "../../src/lib/monitor-dashboard-core";
 import type { EasyConsoleApi } from "../../src/lib/api-factory";
+import { runBatch, type BatchItemOutcome } from "../../src/lib/batch-runner";
+import { fetchAllTasks } from "../../src/lib/fetch-all-tasks";
+import { i18nText } from "../../src/lib/i18n-text";
 import { exportLocalDataBackup, importLocalDataBackup, parseLocalDataBackup, type LocalDataBackupSection } from "../../src/lib/local-data-backup";
 import { normalizeStoragePath } from "../../src/lib/remote-storage";
+import { appendRunLog, type RunLogChannel } from "../../src/lib/run-logs";
 import { createScheduledTask, loadScheduledTasks, pauseScheduledTask, resumeScheduledTask, saveScheduledTasks, updateScheduledTask } from "../../src/lib/scheduled-tasks";
 import { executeScheduledTask } from "../../src/lib/schedule-execution";
 import { withStorageTransaction } from "../../src/lib/storage-mutex";
@@ -50,9 +56,35 @@ export type DryRunMutationResult = {
   action: string;
   payload: unknown;
   message: string;
+  /** Structured preview of what the mutation would touch, when the operation supports one. */
+  impact?: BatchImpactItem[];
 };
 
 export type MutationResult = ConfirmedMutationResult | DryRunMutationResult;
+
+/** One entry of a batch dry-run preview: which object the batch would touch. */
+export type BatchImpactItem = {
+  id: string | number;
+  name: string;
+};
+
+/** Per-item receipt of an executed batch: one entry per input item, failures included. */
+export type BatchItemReceipt = {
+  id: string | number;
+  name: string;
+  ok: boolean;
+  error?: string;
+};
+
+/** Where per-item batch run logs are written; the channel distinguishes CLI from MCP callers. */
+export type BatchRunLogSink = {
+  storage: RuntimeStorage;
+  channel: RunLogChannel;
+};
+
+export type MaybeMutateOptions = {
+  impact?: BatchImpactItem[];
+};
 
 function taskIdMatches(task: Task, taskId: string | number) {
   const expected = String(taskId);
@@ -106,6 +138,79 @@ export type WriteBlobOptions = {
   allowOutsideRoot?: boolean;
 };
 
+function assertInsideDirectory(root: string, candidate: string) {
+  if (candidate !== root && !candidate.startsWith(root + sep)) {
+    throw new Error(`Refusing to write outside the download directory (${root}). Got: ${candidate}`);
+  }
+}
+
+/**
+ * Rejects symlink/junction segments below the download root, including the
+ * final path component. On Windows a junction reports `isSymbolicLink()` from
+ * `lstat` just like a symlink does on POSIX, and either kind can point outside
+ * the root, so the lexical prefix check alone is not enough. Segments that do
+ * not exist yet are fine: `writeBlobToFile` creates them fresh.
+ */
+function assertNoLinkSegmentsBelowRoot(root: string, target: string) {
+  let cursor = root;
+  for (const segment of target.slice(root.length).split(sep)) {
+    if (!segment) continue;
+    cursor = join(cursor, segment);
+    let info: Stats;
+    try {
+      info = lstatSync(cursor);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // The segment does not exist (ENOENT, or ENOTDIR when a parent is a
+      // plain file): it cannot be a link, and `writeBlobToFile` creates what
+      // is missing fresh. Anything else is unreadable, so the write is
+      // refused rather than proceeding unverified.
+      if (code === "ENOENT" || code === "ENOTDIR") return;
+      throw error;
+    }
+    if (info.isSymbolicLink()) {
+      throw new Error(`Refusing to write through a symlink or junction below the download directory: ${cursor}`);
+    }
+  }
+}
+
+/**
+ * Compares canonical filesystem paths so aliases the lexical check cannot see
+ * (pre-existing junctions, 8.3 short names, casing) still cannot escape the
+ * download root. When the target does not exist, the deepest existing ancestor
+ * is checked instead. Unexpected filesystem errors fail closed: if the real
+ * location cannot be determined, the write is refused.
+ */
+function assertRealPathInsideRoot(root: string, target: string) {
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+    // The root does not exist yet; it gets created fresh below segments the
+    // link walk above already vetted, so the lexical root is canonical.
+    return;
+  }
+  let probe = target;
+  for (;;) {
+    let real: string;
+    try {
+      real = realpathSync(probe);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code === "ENOENT" || code === "ENOTDIR") && probe !== root) {
+        probe = dirname(probe);
+        continue;
+      }
+      throw error;
+    }
+    assertInsideDirectory(realRoot, real);
+    return;
+  }
+}
+
 function resolveDownloadPath(outputPath: string, allowOutsideRoot: boolean) {
   if (allowOutsideRoot) return resolve(outputPath);
 
@@ -113,9 +218,9 @@ function resolveDownloadPath(outputPath: string, allowOutsideRoot: boolean) {
   // Relative paths resolve against the root rather than the process cwd, so a
   // bare `report.json` stays inside it.
   const resolvedPath = isAbsolute(outputPath) ? resolve(outputPath) : resolve(root, outputPath);
-  if (resolvedPath !== root && !resolvedPath.startsWith(root + sep)) {
-    throw new Error(`Refusing to write outside the download directory (${root}). Got: ${resolvedPath}`);
-  }
+  assertInsideDirectory(root, resolvedPath);
+  assertNoLinkSegmentsBelowRoot(root, resolvedPath);
+  assertRealPathInsideRoot(root, resolvedPath);
   return resolvedPath;
 }
 
@@ -138,13 +243,20 @@ export async function writeBlobToFile(blob: Blob, outputPath: string, options: W
   };
 }
 
-export async function maybeMutate(action: string, payload: unknown, confirm: boolean | undefined, run: () => Promise<unknown>): Promise<MutationResult> {
+export async function maybeMutate(
+  action: string,
+  payload: unknown,
+  confirm: boolean | undefined,
+  run: () => Promise<unknown>,
+  options: MaybeMutateOptions = {},
+): Promise<MutationResult> {
   if (!confirm) {
     return {
       dryRun: true,
       action,
       payload,
       message: "Pass confirm=true or --yes to execute this mutation.",
+      ...(options.impact ? { impact: options.impact } : {}),
     };
   }
   return {
@@ -181,23 +293,105 @@ export function createTask(api: EasyConsoleApi, payload: CreateTaskPayload, conf
   return maybeMutate("task.create", payload, confirm, () => api.instanceApi.createTask(payload));
 }
 
+const BATCH_OPERATION_DELAY_MS = 350;
+
+function createBatchId() {
+  return globalThis.crypto?.randomUUID?.() ?? `batch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function taskDisplayFallback(task: Task | undefined, id: string | number) {
+  const name = task?.name ?? task?.task_name ?? task?.description;
+  return typeof name === "string" && name.trim() ? name.trim() : `#${id}`;
+}
+
+/**
+ * Map task ids to display names for batch previews by scanning the task list.
+ * Ids the list does not contain (already released, deleted, or paginated out)
+ * fall back to an explicit `#id` placeholder, and a failed listing degrades
+ * the same way — a preview must never fail or mutate anything.
+ */
+async function resolveTaskBatchImpact(api: EasyConsoleApi, taskIds: Array<string | number>): Promise<BatchImpactItem[]> {
+  let items: Task[] = [];
+  try {
+    items = (await fetchAllTasks(api.instanceApi)).items;
+  } catch {
+    items = [];
+  }
+  return taskIds.map((id) => {
+    const task = items.find((item) => taskIdMatches(item, id));
+    return { id, name: taskDisplayFallback(task, id) };
+  });
+}
+
+function toBatchItemReceipts(outcomes: BatchItemOutcome<string | number>[], impact: BatchImpactItem[]): BatchItemReceipt[] {
+  const names = new Map(impact.map((item) => [String(item.id), item.name]));
+  return outcomes.map((outcome) => ({
+    id: outcome.item,
+    name: names.get(String(outcome.item)) ?? `#${outcome.item}`,
+    ok: outcome.status === "succeeded",
+    error: outcome.error,
+  }));
+}
+
+/**
+ * Write one run-log entry per batch item so mixed batches stay auditable at
+ * item granularity. Best-effort by design: the remote calls have already
+ * happened, so a broken run-log store must not fail the receipt.
+ */
+async function appendBatchItemRunLogs(
+  sink: BatchRunLogSink | undefined,
+  input: { action: string; batchId: string; items: BatchItemReceipt[] },
+): Promise<void> {
+  if (!sink) return;
+  for (const item of input.items) {
+    try {
+      await appendRunLog(sink.storage, {
+        channel: sink.channel,
+        source: "task",
+        level: item.ok ? "info" : "error",
+        action: input.action,
+        result: item.ok ? "success" : "failure",
+        title: item.ok
+          ? i18nText(`批量操作成功：${item.name}`, `Batch operation succeeded: ${item.name}`)
+          : i18nText(`批量操作失败：${item.name}`, `Batch operation failed: ${item.name}`),
+        targetId: item.id,
+        targetName: item.name,
+        error: item.error,
+        metadata: { batchId: input.batchId },
+      });
+    } catch {
+      // Intentional best-effort degradation; the receipts carry the truth.
+    }
+  }
+}
+
 export function releaseTask(api: EasyConsoleApi, taskId: string | number, confirm?: boolean) {
   return maybeMutate("task.release", { id: taskId }, confirm, () => api.instanceApi.operateTask(taskId));
 }
 
-const BATCH_RELEASE_DELAY_MS = 350;
-
-export function releaseTasks(api: EasyConsoleApi, taskIds: Array<string | number>, confirm?: boolean) {
-  return maybeMutate("task.releaseBatch", { ids: taskIds }, confirm, async () => {
-    const results: unknown[] = [];
-    for (let index = 0; index < taskIds.length; index += 1) {
-      if (index > 0) {
-        await new Promise<void>((resolve) => setTimeout(resolve, BATCH_RELEASE_DELAY_MS));
-      }
-      results.push(await api.instanceApi.operateTask(taskIds[index]));
-    }
-    return { count: taskIds.length, results };
-  });
+export async function releaseTasks(
+  api: EasyConsoleApi,
+  taskIds: Array<string | number>,
+  confirm?: boolean,
+  runLog?: BatchRunLogSink,
+) {
+  const impact = await resolveTaskBatchImpact(api, taskIds);
+  return maybeMutate(
+    "task.releaseBatch",
+    { ids: taskIds },
+    confirm,
+    async () => {
+      const batchId = createBatchId();
+      const batch = await runBatch(taskIds, {
+        delayMs: BATCH_OPERATION_DELAY_MS,
+        run: (taskId) => api.instanceApi.operateTask(taskId),
+      });
+      const results = toBatchItemReceipts(batch.outcomes, impact);
+      await appendBatchItemRunLogs(runLog, { action: "task.releaseBatch", batchId, items: results });
+      return { batchId, count: taskIds.length, results };
+    },
+    { impact },
+  );
 }
 
 export function deleteTask(api: EasyConsoleApi, taskId: string | number, confirm?: boolean) {
@@ -289,8 +483,31 @@ export function updateTask(api: EasyConsoleApi, taskId: string | number, payload
   return maybeMutate("task.update", { id: taskId, payload }, confirm, () => api.instanceApi.updateTask(taskId, payload));
 }
 
-export function deleteTasks(api: EasyConsoleApi, taskIds: Array<string | number>, confirm?: boolean) {
-  return maybeMutate("task.deleteBatch", { ids: taskIds }, confirm, () => api.instanceApi.deleteTasks(taskIds));
+export async function deleteTasks(
+  api: EasyConsoleApi,
+  taskIds: Array<string | number>,
+  confirm?: boolean,
+  runLog?: BatchRunLogSink,
+) {
+  const impact = await resolveTaskBatchImpact(api, taskIds);
+  return maybeMutate(
+    "task.deleteBatch",
+    { ids: taskIds },
+    confirm,
+    async () => {
+      const batchId = createBatchId();
+      // Per-item deletes (not the batch endpoint) so one rejected id cannot
+      // take the whole batch down with no receipt for the rest.
+      const batch = await runBatch(taskIds, {
+        delayMs: BATCH_OPERATION_DELAY_MS,
+        run: (taskId) => api.instanceApi.deleteTask(taskId),
+      });
+      const results = toBatchItemReceipts(batch.outcomes, impact);
+      await appendBatchItemRunLogs(runLog, { action: "task.deleteBatch", batchId, items: results });
+      return { batchId, count: taskIds.length, results };
+    },
+    { impact },
+  );
 }
 
 export function checkTaskName(api: EasyConsoleApi, name: string) {
@@ -421,32 +638,49 @@ export async function applyTaskTemplate(
   templateId: string,
   confirm?: boolean,
   variableValues?: Record<string, string>,
+  runLog?: BatchRunLogSink,
 ) {
   const templates = await loadTaskTemplates(storage);
   const template = templates.find((item) => item.id === templateId);
   if (!template) throw new Error(`Task template not found: ${templateId}`);
   const payloads = taskTemplateToPayloads(template, undefined, variableValues);
+  // Created tasks have no remote id until the batch runs, so the preview keys
+  // payloads by their 1-based ordinal and shows the generated task name.
+  const impact: BatchImpactItem[] = payloads.map((payload, index) => ({ id: index + 1, name: payload.name }));
   return maybeMutate(
     "template.apply",
     { templateId, templateName: template.name, count: payloads.length, variableValues },
     confirm,
     async () => {
-      const results: unknown[] = [];
-      for (const payload of payloads) {
-        results.push(await api.instanceApi.createTask(payload));
-      }
+      const batchId = createBatchId();
+      const batch = await runBatch(payloads, {
+        delayMs: BATCH_OPERATION_DELAY_MS,
+        run: (payload) => api.instanceApi.createTask(payload),
+      });
+      const results: BatchItemReceipt[] = batch.outcomes.map((outcome, index) => ({
+        id: impact[index]!.id,
+        name: impact[index]!.name,
+        ok: outcome.status === "succeeded",
+        error: outcome.error,
+      }));
+      await appendBatchItemRunLogs(runLog, { action: "template.apply", batchId, items: results });
+      const created = results.filter((item) => item.ok).length;
       // Remote calls are kept outside the lock so a slow API cannot block other
       // processes. Re-read inside the transaction because `templates` is now a
-      // stale snapshot from before those calls.
-      await withStorageTransaction(storage, async () => {
-        const current = await loadTaskTemplates(storage);
-        await saveTaskTemplates(
-          storage,
-          current.map((item) => (item.id === templateId ? recordTaskTemplateUsage(item) : item)),
-        );
-      });
-      return { created: results.length, results };
+      // stale snapshot from before those calls. Usage counts only when at
+      // least one task was actually created.
+      if (created > 0) {
+        await withStorageTransaction(storage, async () => {
+          const current = await loadTaskTemplates(storage);
+          await saveTaskTemplates(
+            storage,
+            current.map((item) => (item.id === templateId ? recordTaskTemplateUsage(item) : item)),
+          );
+        });
+      }
+      return { batchId, created, results };
     },
+    { impact },
   );
 }
 
@@ -552,6 +786,7 @@ export async function runScheduledTask(storage: RuntimeStorage, api: EasyConsole
   return maybeMutate("schedule.run", { taskId, taskName: task.name, executionKey: `${task.id}@${task.scheduleTime}` }, confirm, async () => {
     const executed = await executeScheduledTask(storage, taskId, {
       createTask: (payload) => api.instanceApi.createTask(payload),
+      trigger: "cli",
       force: true,
     });
     if (executed.skipped) {

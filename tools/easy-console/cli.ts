@@ -467,7 +467,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
-  const taskReleaseBatch = task.command("release-batch").description("Release multiple tasks");
+  const taskReleaseBatch = task.command("release-batch").description("Release multiple tasks; dry-run lists impact, execution returns per-item results and batchId");
   taskReleaseBatch.argument("<ids>", "Comma-separated task ids");
   taskReleaseBatch.option("--yes", "Execute instead of dry-run");
   taskReleaseBatch.action((ids: string) =>
@@ -475,7 +475,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       const options = taskReleaseBatch.opts<{ yes?: boolean }>();
       const taskIds = ids.split(",").map((id) => parseId(id.trim())).filter(Boolean);
       if (taskIds.length === 0) throw new Error("Provide at least one task id.");
-      return releaseTasks(context.api, taskIds, options.yes);
+      return releaseTasks(context.api, taskIds, options.yes, { storage: context.runLogStorage, channel: "cli" });
     })(),
   );
 
@@ -532,7 +532,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
-  const taskDeleteBatch = task.command("delete-batch").description("Delete multiple tasks");
+  const taskDeleteBatch = task.command("delete-batch").description("Delete multiple tasks; dry-run lists impact, execution returns per-item results and batchId");
   taskDeleteBatch.argument("<ids>", "Comma-separated task ids");
   taskDeleteBatch.option("--yes", "Execute instead of dry-run");
   taskDeleteBatch.action((ids: string) =>
@@ -540,7 +540,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       const options = taskDeleteBatch.opts<{ yes?: boolean }>();
       const taskIds = ids.split(",").map((id) => parseId(id.trim())).filter(Boolean);
       if (taskIds.length === 0) throw new Error("Provide at least one task id.");
-      return deleteTasks(context.api, taskIds, options.yes);
+      return deleteTasks(context.api, taskIds, options.yes, { storage: context.runLogStorage, channel: "cli" });
     })(),
   );
 
@@ -789,7 +789,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
-  const templateApply = template.command("apply").description("Apply a task template to create tasks");
+  const templateApply = template.command("apply").description("Apply a task template to create tasks; dry-run lists payload impact, execution returns per-item results and batchId");
   templateApply.argument("<templateId>", "Template id");
   templateApply.option("--variables-json <json>", "Template variable values JSON object");
   templateApply.option("--yes", "Execute instead of dry-run");
@@ -799,7 +799,10 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       const variableValues = options.variablesJson
         ? (parseJsonRecord(options.variablesJson) as Record<string, string>)
         : undefined;
-      return applyTaskTemplate(context.storage, context.api, templateId, options.yes, variableValues);
+      return applyTaskTemplate(context.storage, context.api, templateId, options.yes, variableValues, {
+        storage: context.runLogStorage,
+        channel: "cli",
+      });
     })(),
   );
 
