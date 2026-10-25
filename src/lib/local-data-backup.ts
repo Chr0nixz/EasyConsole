@@ -8,6 +8,7 @@ import {
   stringifyAccountSettingsStore,
 } from "./app-settings";
 import { RUN_LOGS_STORAGE_KEY, parseRunLogs } from "./run-logs";
+import { loadResourcePresets, saveResourcePresets } from "./resource-presets";
 import { SAVED_ACCOUNTS_STORAGE_KEY, parseSavedAccounts, stringifySavedAccounts } from "./saved-accounts";
 import { loadScheduledTasks, saveScheduledTasks } from "./scheduled-tasks";
 import { loadTaskTemplates, saveTaskTemplates } from "./task-templates";
@@ -25,6 +26,7 @@ export type LocalDataBackup = {
     settings?: unknown;
     language?: string;
     taskTemplates?: unknown[];
+    resourcePresets?: unknown[];
     scheduledTasks?: unknown[];
     runLogs?: unknown[];
     token?: string;
@@ -45,6 +47,7 @@ export const nonSecretBackupSections: LocalDataBackupSection[] = [
   "settings",
   "language",
   "taskTemplates",
+  "resourcePresets",
   "scheduledTasks",
   "runLogs",
 ];
@@ -91,6 +94,7 @@ export async function exportLocalDataBackup(
       settings: parseAccountSettingsStore(settingsRaw),
       language: languageRaw ?? undefined,
       taskTemplates: await loadTaskTemplates(storage),
+      resourcePresets: await loadResourcePresets(storage),
       scheduledTasks: await loadScheduledTasks(storage),
       runLogs: parseRunLogs(await storage.get(RUN_LOGS_STORAGE_KEY)),
       ...(includeSecrets
@@ -116,6 +120,7 @@ export function summarizeBackup(backup: LocalDataBackup) {
     hasSettings: Boolean(backup.items.settings),
     hasLanguage: typeof backup.items.language === "string",
     taskTemplates: Array.isArray(backup.items.taskTemplates) ? backup.items.taskTemplates.length : 0,
+    resourcePresets: Array.isArray(backup.items.resourcePresets) ? backup.items.resourcePresets.length : 0,
     scheduledTasks: Array.isArray(backup.items.scheduledTasks) ? backup.items.scheduledTasks.length : 0,
     runLogs: Array.isArray(backup.items.runLogs) ? backup.items.runLogs.length : 0,
     hasToken: typeof backup.items.token === "string" && backup.items.token.length > 0,
@@ -139,6 +144,9 @@ export async function importLocalDataBackup(
   }
   if (selected.has("taskTemplates")) {
     await saveTaskTemplates(storage, parseJsonArray(JSON.stringify(backup.items.taskTemplates ?? [])) as never);
+  }
+  if (selected.has("resourcePresets")) {
+    await saveResourcePresets(storage, parseJsonArray(JSON.stringify(backup.items.resourcePresets ?? [])) as never);
   }
   if (selected.has("scheduledTasks")) {
     await saveScheduledTasks(storage, parseJsonArray(JSON.stringify(backup.items.scheduledTasks ?? [])) as never);
