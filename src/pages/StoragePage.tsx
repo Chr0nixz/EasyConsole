@@ -20,7 +20,7 @@ import {
   remoteStorage,
 } from "../lib/remote-storage";
 import { createUploadQueueItems, finalizeUploadQueueResult, summarizeUploadQueue } from "../lib/upload-queue";
-import { clearUploadResume, loadUploadResume, makeFileKey, saveUploadResume } from "../lib/upload-resume";
+import { clearUploadResume, createThrottledCheckpointSaver, loadUploadResume, makeFileKey } from "../lib/upload-resume";
 import type { StorageEntry, UploadQueueItem } from "../lib/types";
 import { browserRuntime } from "../lib/runtime";
 import { useCompactLayout } from "../lib/use-compact-layout";
@@ -213,7 +213,9 @@ export function StoragePage() {
             }
           : undefined;
         let capturedUploadId: string | null = resumeUploadId ?? null;
-        let capturedChunks: number[] = resume?.completedChunks ?? [];
+        // Checkpoints throttle the resume-store rewrites (one per window, first
+        // one immediate); failure below flushes the latest state unconditionally.
+        const checkpointSaver = createThrottledCheckpointSaver(browserRuntime.storage, { fileKey });
 
         try {
           const abortController = new AbortController();
@@ -231,15 +233,9 @@ export function StoragePage() {
             (uploadId) => {
               capturedUploadId = uploadId;
             },
-            async (checkpoint) => {
+            (checkpoint) => {
               capturedUploadId = checkpoint.uploadId;
-              capturedChunks = checkpoint.completedIndices;
-              await saveUploadResume(browserRuntime.storage, {
-                fileKey,
-                uploadId: checkpoint.uploadId,
-                uploadedChunks: checkpoint.completedIndices,
-                createdAt: new Date().toISOString(),
-              });
+              checkpointSaver.save(checkpoint);
             },
           );
           await clearUploadResume(browserRuntime.storage, fileKey);
@@ -249,12 +245,7 @@ export function StoragePage() {
         } catch (error) {
           const message = error instanceof Error ? error.message : text("上传失败", "Upload failed");
           if (capturedUploadId) {
-            await saveUploadResume(browserRuntime.storage, {
-              fileKey,
-              uploadId: capturedUploadId,
-              uploadedChunks: capturedChunks,
-              createdAt: new Date().toISOString(),
-            }).catch(() => undefined);
+            await checkpointSaver.flush().catch(() => undefined);
           }
           patchQueue((current) =>
             current.map((queueItem) =>

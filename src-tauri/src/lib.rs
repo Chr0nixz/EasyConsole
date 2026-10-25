@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -122,8 +123,19 @@ pub fn app_data_file<R: tauri::Runtime>(
     Ok(dir.join(filename))
 }
 
-#[doc(hidden)]
-pub fn load_string_map(path: &Path) -> Result<HashMap<String, String>, String> {
+/// Sidecar paths for the atomic write: `<name>.tmp` stages the new content,
+/// `<name>.bak` snapshots the previous good content.
+fn storage_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("runtime-storage.json");
+    path.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{file_name}{suffix}"))
+}
+
+fn read_string_map_file(path: &Path) -> Result<HashMap<String, String>, String> {
     if !path.exists() {
         return Ok(HashMap::new());
     }
@@ -145,6 +157,31 @@ pub fn load_string_map(path: &Path) -> Result<HashMap<String, String>, String> {
 }
 
 #[doc(hidden)]
+pub fn load_string_map(path: &Path) -> Result<HashMap<String, String>, String> {
+    // A missing primary with an existing backup is the crash window of the
+    // previous (rename-based) write algorithm: recover the last good state
+    // from the backup instead of starting from an empty map.
+    if !path.exists() {
+        let bak_path = storage_sidecar_path(path, ".bak");
+        if bak_path.exists() {
+            return read_string_map_file(&bak_path);
+        }
+        return Ok(HashMap::new());
+    }
+    match read_string_map_file(path) {
+        Ok(map) => Ok(map),
+        Err(primary_error) => {
+            let bak_path = storage_sidecar_path(path, ".bak");
+            if !bak_path.exists() {
+                return Err(primary_error);
+            }
+            // Surface the primary error when the backup is unusable too.
+            read_string_map_file(&bak_path).map_err(|_| primary_error)
+        }
+    }
+}
+
+#[doc(hidden)]
 pub fn write_string_map(path: &Path, data: &HashMap<String, String>) -> Result<(), String> {
     let text = serde_json::to_string_pretty(data).map_err(|error| {
         trf!(
@@ -152,34 +189,38 @@ pub fn write_string_map(path: &Path, data: &HashMap<String, String>) -> Result<(
             "Failed to serialize local data: {error}"
         )
     })?;
-    let parent = path.parent().ok_or_else(|| {
-        trf!(
-            "无法定位本地数据目录",
-            "Failed to locate the local data directory"
-        )
-    })?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            trf!(
-                "无法定位本地数据文件名",
-                "Failed to locate the local data file name"
-            )
-        })?;
-    let tmp_path = parent.join(format!("{file_name}.tmp"));
-    let bak_path = parent.join(format!("{file_name}.bak"));
+    let tmp_path = storage_sidecar_path(path, ".tmp");
+    let bak_path = storage_sidecar_path(path, ".bak");
 
-    fs::write(&tmp_path, &text).map_err(|error| {
+    // Stage and fsync the new content first: after a successful rename the
+    // bytes are already on disk, so a later crash never leaves a truncated or
+    // empty store behind.
+    let mut file = fs::File::create(&tmp_path).map_err(|error| {
         trf!(
             "无法写入本地数据临时文件：{error}",
             "Failed to write the local data temp file: {error}"
         )
     })?;
+    file.write_all(text.as_bytes()).map_err(|error| {
+        trf!(
+            "无法写入本地数据临时文件：{error}",
+            "Failed to write the local data temp file: {error}"
+        )
+    })?;
+    file.sync_all().map_err(|error| {
+        trf!(
+            "无法同步本地数据临时文件：{error}",
+            "Failed to sync the local data temp file: {error}"
+        )
+    })?;
+    drop(file);
 
+    // Snapshot the previous good content by copy, never by renaming the live
+    // file away: the live file is replaced atomically below, so a crash at any
+    // point leaves either the old or the new complete content in place.
     if path.exists() {
         let _ = fs::remove_file(&bak_path);
-        fs::rename(path, &bak_path).map_err(|error| {
+        fs::copy(path, &bak_path).map_err(|error| {
             trf!(
                 "无法备份本地数据：{error}",
                 "Failed to back up local data: {error}"
@@ -187,12 +228,12 @@ pub fn write_string_map(path: &Path, data: &HashMap<String, String>) -> Result<(
         })?;
     }
 
+    // On Windows std::fs::rename replaces an existing destination atomically.
     match fs::rename(&tmp_path, path) {
         Ok(()) => Ok(()),
         Err(error) => {
-            if bak_path.exists() {
-                let _ = fs::rename(&bak_path, path);
-            }
+            // The live file was never touched; dropping the staged temp file
+            // restores the pre-write state exactly.
             let _ = fs::remove_file(&tmp_path);
             Err(trf!(
                 "无法提交本地数据写入：{error}",
@@ -490,56 +531,86 @@ fn broadcast_runtime_storage_change(app: &AppHandle, source: &str, key: &str) {
     );
 }
 
+/// Lock-acquisition error shared by the storage commands below.
+fn storage_lock_error<E: std::fmt::Display>(e: E) -> String {
+    trf!(
+        "本地数据锁获取失败：{e}",
+        "Failed to acquire the local data lock: {e}"
+    )
+}
+
+/// Sync Tauri commands run on the main thread, so every storage command moves
+/// its full file I/O (lock, read, write) onto the blocking pool. Each map is
+/// still parsed and rewritten wholesale per call; async keeps those cycles off
+/// the UI thread instead.
 #[tauri::command]
-fn runtime_storage_get(app: AppHandle, key: String) -> Result<Option<String>, String> {
-    let _guard = runtime_storage_lock().lock().map_err(|e| {
+async fn runtime_storage_get(app: AppHandle, key: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = runtime_storage_lock().lock().map_err(storage_lock_error)?;
+        let path = runtime_storage_path(&app)?;
+        let data = load_string_map(&path)?;
+        Ok(data.get(&key).cloned())
+    })
+    .await
+    .map_err(|e| {
         trf!(
-            "本地数据锁获取失败：{e}",
-            "Failed to acquire the local data lock: {e}"
+            "本地数据读取任务失败：{e}",
+            "Local data read task failed: {e}"
         )
-    })?;
-    let path = runtime_storage_path(&app)?;
-    let data = load_string_map(&path)?;
-    Ok(data.get(&key).cloned())
+    })?
 }
 
 #[tauri::command]
-fn runtime_storage_set(
+async fn runtime_storage_set(
     app: AppHandle,
     window: tauri::WebviewWindow,
     key: String,
     value: String,
 ) -> Result<(), String> {
-    let _guard = runtime_storage_lock().lock().map_err(|e| {
+    let task_app = app.clone();
+    let task_key = key.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = runtime_storage_lock().lock().map_err(storage_lock_error)?;
+        let path = runtime_storage_path(&task_app)?;
+        let mut data = load_string_map(&path)?;
+        data.insert(task_key, value);
+        write_string_map(&path, &data)?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| {
         trf!(
-            "本地数据锁获取失败：{e}",
-            "Failed to acquire the local data lock: {e}"
+            "本地数据写入任务失败：{e}",
+            "Local data write task failed: {e}"
         )
-    })?;
-    let path = runtime_storage_path(&app)?;
-    let mut data = load_string_map(&path)?;
-    data.insert(key.clone(), value);
-    write_string_map(&path, &data)?;
+    })??;
     broadcast_runtime_storage_change(&app, window.label(), &key);
     Ok(())
 }
 
 #[tauri::command]
-fn runtime_storage_remove(
+async fn runtime_storage_remove(
     app: AppHandle,
     window: tauri::WebviewWindow,
     key: String,
 ) -> Result<(), String> {
-    let _guard = runtime_storage_lock().lock().map_err(|e| {
+    let task_app = app.clone();
+    let task_key = key.clone();
+    let existed = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = runtime_storage_lock().lock().map_err(storage_lock_error)?;
+        let path = runtime_storage_path(&task_app)?;
+        let mut data = load_string_map(&path)?;
+        let existed = data.remove(&task_key).is_some();
+        write_string_map(&path, &data)?;
+        Ok::<bool, String>(existed)
+    })
+    .await
+    .map_err(|e| {
         trf!(
-            "本地数据锁获取失败：{e}",
-            "Failed to acquire the local data lock: {e}"
+            "本地数据写入任务失败：{e}",
+            "Local data write task failed: {e}"
         )
-    })?;
-    let path = runtime_storage_path(&app)?;
-    let mut data = load_string_map(&path)?;
-    let existed = data.remove(&key).is_some();
-    write_string_map(&path, &data)?;
+    })??;
     if existed {
         broadcast_runtime_storage_change(&app, window.label(), &key);
     }
@@ -585,28 +656,37 @@ struct StorageCasOutcome {
 /// relied on here because webview lock scopes are not guaranteed to be shared
 /// across windows on every platform backend.
 #[tauri::command]
-fn runtime_storage_compare_and_swap(
+async fn runtime_storage_compare_and_swap(
     app: AppHandle,
     window: tauri::WebviewWindow,
     key: String,
     expected: Option<String>,
     next: Option<String>,
 ) -> Result<StorageCasOutcome, String> {
-    let _guard = runtime_storage_lock().lock().map_err(|e| {
+    let task_app = app.clone();
+    let task_key = key.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = runtime_storage_lock().lock().map_err(storage_lock_error)?;
+        let path = runtime_storage_path(&task_app)?;
+        let mut data = load_string_map(&path)?;
+        let (updated, current) =
+            apply_storage_cas(&mut data, &task_key, expected.as_deref(), next.as_deref());
+        if updated {
+            write_string_map(&path, &data)?;
+        }
+        Ok::<StorageCasOutcome, String>(StorageCasOutcome { updated, current })
+    })
+    .await
+    .map_err(|e| {
         trf!(
-            "本地数据锁获取失败：{e}",
-            "Failed to acquire the local data lock: {e}"
+            "本地数据写入任务失败：{e}",
+            "Local data write task failed: {e}"
         )
-    })?;
-    let path = runtime_storage_path(&app)?;
-    let mut data = load_string_map(&path)?;
-    let (updated, current) =
-        apply_storage_cas(&mut data, &key, expected.as_deref(), next.as_deref());
-    if updated {
-        write_string_map(&path, &data)?;
+    })??;
+    if outcome.updated {
         broadcast_runtime_storage_change(&app, window.label(), &key);
     }
-    Ok(StorageCasOutcome { updated, current })
+    Ok(outcome)
 }
 
 #[cfg(desktop)]
@@ -1498,6 +1578,81 @@ mod tests {
     /// The active locale is process-global, so tests that touch it must not
     /// run concurrently; tests within a binary run in parallel by default.
     static LOCALE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn storage_roundtrips_and_leaves_a_backup_snapshot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        let mut data = HashMap::new();
+        data.insert("alpha".to_string(), "1".to_string());
+        write_string_map(&path, &data).expect("first write");
+
+        data.insert("beta".to_string(), "2".to_string());
+        write_string_map(&path, &data).expect("second write");
+
+        assert_eq!(load_string_map(&path).expect("reload"), data);
+        // The backup still holds the previous good content, not the new one.
+        let bak = load_string_map(&storage_sidecar_path(&path, ".bak")).expect("backup");
+        assert_eq!(bak.get("beta"), None);
+        assert_eq!(bak.get("alpha").map(String::as_str), Some("1"));
+        // The staged temp file never lingers after a committed write.
+        assert!(!storage_sidecar_path(&path, ".tmp").exists());
+    }
+
+    #[test]
+    fn storage_recovers_from_a_corrupt_primary_via_the_backup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        let mut data = HashMap::new();
+        data.insert("alpha".to_string(), "1".to_string());
+        write_string_map(&path, &data).expect("write");
+        data.insert("beta".to_string(), "2".to_string());
+        write_string_map(&path, &data).expect("write");
+
+        // Simulate a torn write: the primary is damaged, the backup holds the
+        // previous good state.
+        fs::write(&path, "{\"alpha\": \"trunc").expect("damage");
+        assert_eq!(
+            load_string_map(&path)
+                .expect("backup recovery")
+                .get("alpha")
+                .map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn storage_recovers_from_a_missing_primary_via_the_backup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        let mut data = HashMap::new();
+        data.insert("alpha".to_string(), "1".to_string());
+        write_string_map(&path, &data).expect("write");
+        data.insert("beta".to_string(), "2".to_string());
+        write_string_map(&path, &data).expect("write");
+
+        // The crash window of the old rename-based algorithm: the primary was
+        // renamed away and never replaced.
+        fs::remove_file(&path).expect("remove primary");
+        let recovered = load_string_map(&path).expect("backup recovery");
+        assert_eq!(recovered.get("alpha").map(String::as_str), Some("1"));
+        assert_eq!(recovered.get("beta"), None);
+    }
+
+    #[test]
+    fn storage_reports_corruption_when_no_backup_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        fs::write(&path, "not json").expect("damage");
+        assert!(load_string_map(&path).is_err());
+    }
+
+    #[test]
+    fn storage_treats_a_missing_store_as_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        assert!(load_string_map(&path).expect("fresh start").is_empty());
+    }
 
     #[test]
     fn storage_cas_applies_expected_writes_and_reports_conflicts() {

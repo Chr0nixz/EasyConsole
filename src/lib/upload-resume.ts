@@ -77,3 +77,59 @@ export async function clearUploadResume(storage: RuntimeStorage, fileKey: string
     return stringifyRecords(records);
   });
 }
+
+/** Chunk-level progress state reported while a chunked upload runs. */
+export type UploadResumeCheckpoint = {
+  uploadId: string;
+  completedIndices: number[];
+};
+
+export type ThrottledCheckpointSaver = {
+  /** Persist the checkpoint when the throttle window has elapsed; the first one always lands. */
+  save: (checkpoint: UploadResumeCheckpoint) => void;
+  /** Persist the latest checkpoint unconditionally (finish / failure paths). */
+  flush: () => Promise<void>;
+};
+
+/**
+ * Throttle upload-resume checkpoint persistence. Every completed chunk used to
+ * rewrite the whole resume store; on desktop each write rewrites the
+ * runtime-storage file, so a multi-GB upload hammered it thousands of times.
+ * The first checkpoint lands immediately (it captures the fresh uploadId);
+ * later ones persist at most once per window, always with the newest state;
+ * flush() forces the latest state out before the upload ends.
+ */
+export function createThrottledCheckpointSaver(
+  storage: RuntimeStorage,
+  options: { fileKey: string; minIntervalMs?: number; now?: () => number },
+): ThrottledCheckpointSaver {
+  const minIntervalMs = options.minIntervalMs ?? 2000;
+  const now = options.now ?? Date.now;
+  let latest: UploadResumeCheckpoint | null = null;
+  let lastSavedAt = Number.NEGATIVE_INFINITY;
+
+  const persist = async (checkpoint: UploadResumeCheckpoint) => {
+    await saveUploadResume(storage, {
+      fileKey: options.fileKey,
+      uploadId: checkpoint.uploadId,
+      uploadedChunks: checkpoint.completedIndices,
+      createdAt: new Date().toISOString(),
+    });
+  };
+
+  return {
+    save(checkpoint) {
+      latest = checkpoint;
+      // Claim the window synchronously: checkpoint callbacks arrive in tight
+      // bursts, and a gate armed only after the async write finishes would let
+      // the whole burst through.
+      if (now() - lastSavedAt < minIntervalMs) return;
+      lastSavedAt = now();
+      void persist(checkpoint).catch((error) => console.warn("Failed to save the upload checkpoint.", error));
+    },
+    async flush() {
+      if (!latest) return;
+      await persist(latest);
+    },
+  };
+}
