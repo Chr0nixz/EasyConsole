@@ -38,15 +38,22 @@ import { FAILURE_STATUSES, needsLogAttention } from "../lib/task-status-notifica
 import { EmptyState, ErrorState, LoadingState, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
-import { ReleaseConfirmDescription } from "../components/tasks/ReleaseConfirmDescription";
+import { BatchReleaseImpact, ReleaseConfirmDescription } from "../components/tasks/ReleaseConfirmDescription";
 import { TaskInstanceName } from "../components/tasks/TaskInstanceName";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
 import { instanceApi } from "../lib/api";
 import { getTaskEditableState } from "../lib/api-factory";
-import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
+import { BatchPreviewDialog, type BatchPreviewItem } from "../components/batch/BatchPreviewDialog";
+import { BatchHistoryPanel } from "../components/batch/BatchHistoryPanel";
+import { BatchResultDialog } from "../components/batch/BatchResultDialog";
+import { batchExportPayload } from "../components/batch/batch-export";
+import { useBatchOperation } from "../components/batch/use-batch-operation";
+import type { BatchRunResult } from "../lib/batch-runner";
+import type { BatchOperationRecord } from "../lib/change-list";
+import { saveBlob } from "../lib/download";
 import { useCommitQueue } from "../lib/commit-queue-context";
 import { useDownloadQueueActions } from "../lib/use-download-queue";
-import { asJson, formatRelativeUpdatedAt, formatSecondsDuration, getStatusText, getTaskName, getTaskNodeName, localizedText, taskStatusText } from "../lib/format";
+import { asJson, formatCost, formatRelativeUpdatedAt, formatSecondsDuration, getStatusText, getTaskName, getTaskNodeName, localizedText, taskStatusText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { useSshWorkspace } from "../lib/use-ssh-workspace";
 import { i18nText } from "../lib/i18n-text";
@@ -67,6 +74,7 @@ import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import { queryKeys } from "../lib/query-keys";
 import type { Task } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
+import { getTaskAccess } from "../lib/task-terminal";
 import { useCompactLayout } from "../lib/use-compact-layout";
 import { useAuth } from "../lib/use-auth";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
@@ -90,6 +98,7 @@ const defaultColumnVisibility: VisibilityState = {
   owner: false,
   group: false,
   duration: false,
+  billed: false,
   release: false,
   deleted: false,
 };
@@ -102,12 +111,17 @@ const columnLabels: Record<string, { zh: string; en: string }> = {
   owner: { zh: "用户", en: "User" },
   group: { zh: "用户组", en: "User group" },
   duration: { zh: "时长", en: "Duration" },
+  // Not "cost": that id once named the duration column and is migrated to it on load.
+  billed: { zh: "费用", en: "Cost" },
   created: { zh: "创建时间", en: "Created" },
   release: { zh: "释放时间", en: "Release time" },
   releaseCondition: { zh: "释放条件", en: "Release condition" },
   deleted: { zh: "删除状态", en: "Delete status" },
 };
 const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_2rem_4rem_2rem] items-center gap-1";
+const COMPACT_ACTION_GRID_CLASS = "grid grid-cols-[4rem_2rem] items-center gap-1";
+/** Table regions narrower than this fold the row's terminal / log / clone buttons into More. */
+const COMPACT_ACTIONS_MAX_WIDTH = 1040;
 const MENU_ITEM_CLASS =
   "flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel disabled:cursor-not-allowed disabled:opacity-50 [@media(pointer:coarse)]:min-h-11";
 const MENU_ITEM_DANGER_CLASS =
@@ -118,6 +132,21 @@ const commitPodFields = ["description", "pod_name", "podName", "pod", "k8s_pod_n
 
 function resourceText(task: Task) {
   return `${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`;
+}
+
+/**
+ * Batch item summary: what the item costs and where its results live. No status here, since
+ * the result dialog shows the item's outcome beside it and a pre-run status would read as stale.
+ */
+function batchItemMeta(task: Task, locale: "zh-CN" | "en-US", text: (zh: string, en: string) => string) {
+  const parts = [resourceText(task)];
+  const runtime = Number(task.use_time);
+  if (Number.isFinite(runtime) && runtime > 0) parts.push(text(`运行 ${formatSecondsDuration(runtime, locale)}`, `ran ${formatSecondsDuration(runtime, locale)}`));
+  const cost = Number(task.cost);
+  if (Number.isFinite(cost) && cost > 0) parts.push(formatCost(cost, locale));
+  const storagePath = typeof task.storage_path === "string" ? task.storage_path.trim() : "";
+  if (storagePath) parts.push(storagePath);
+  return parts.join(" · ");
 }
 
 function endpointText(task: Task) {
@@ -218,13 +247,46 @@ async function loadColumnVisibility(): Promise<VisibilityState> {
         release: false,
       };
     }
-    return parsed;
+    // Columns added after the preference was saved start at their default (hidden) state.
+    return { ...defaultColumnVisibility, ...parsed };
   } catch {
     return defaultColumnVisibility;
   }
 }
 
 type MoreMenuPosition = { left: number; top: number };
+
+type TaskAction = (task: Task) => void;
+
+/**
+ * Per-render state the table cells read through `table.options.meta`. The column
+ * definitions depend only on the language, so each cell function keeps one identity
+ * and `flexRender` re-renders a row's controls instead of remounting them. Remounts
+ * dropped keyboard focus and swallowed first clicks every time the page re-rendered.
+ */
+type TaskTableMeta = {
+  pinnedTaskIds: string[];
+  moreMenuTaskId: string | null;
+  releasePending: boolean;
+  compactActions: boolean;
+  onTerminal: TaskAction;
+  onLog: TaskAction;
+  onClone: TaskAction;
+  onRelease: TaskAction;
+  onCommit: TaskAction;
+  onDelete: TaskAction;
+  onDownload: TaskAction;
+  onEdit: TaskAction;
+  onRaw: TaskAction;
+  onSaveTemplate: TaskAction;
+  onSshInfo: TaskAction;
+  onTogglePin: TaskAction;
+  onMoreMenuOpenChange: (taskId: string, open: boolean, position?: MoreMenuPosition, trigger?: HTMLElement | null) => void;
+};
+
+function taskTableMeta(table: { options: { meta?: unknown } }) {
+  return table.options.meta as TaskTableMeta;
+}
 
 type MoreMenuItem = {
   key: string;
@@ -292,10 +354,14 @@ function buildMoreMenuSections({
   onDelete?: (task: Task) => void;
 }): MoreMenuSection[] {
   const running = isRunningTask(task);
+  const access = getTaskAccess(task);
   const logItem: MoreMenuItem = {
     key: "log",
     label: text("日志", "Logs"),
     icon: <FileText className="h-4 w-4 text-app-muted" />,
+    disabled: !access.log,
+    title: access.logReason,
+    hint: access.log ? undefined : text("未启动", "Not started"),
     onSelect: () => onLog(task),
   };
   const monitorItem: MoreMenuItem | null =
@@ -312,6 +378,9 @@ function buildMoreMenuSections({
         key: "ssh-info",
         label: text("终端", "Terminal"),
         icon: <TerminalSquare className="h-4 w-4 text-app-muted" />,
+        disabled: !access.terminal,
+        title: access.terminalReason,
+        hint: access.terminal ? undefined : text("仅运行中", "Running only"),
         onSelect: () => onSshInfo(task),
       }
     : null;
@@ -898,6 +967,21 @@ export function TasksPage() {
   // measures against <main> and offsets by where the list starts inside it. The offset moves
   // when anything above the list changes size, so it is re-read on every resize.
   const [cardScroll, setCardScroll] = useState<{ element: HTMLElement; margin: number } | null>(null);
+  // When the table region itself is narrow (the 1024px minimum window, a wide sidebar, browser
+  // zoom), the sticky action column folds terminal, log and clone into More, so status and
+  // resources stay in view instead of sliding under a 232px action strip.
+  const [compactActions, setCompactActions] = useState(false);
+  const tableRegionCallbackRef = useCallback((node: HTMLDivElement | null) => {
+    tableScrollRef.current = node;
+    if (!node || typeof ResizeObserver === "undefined") return undefined;
+    // The first callback fires as observation starts, so the initial width is covered too.
+    const observer = new ResizeObserver(([entry]) => setCompactActions(entry.contentRect.width < COMPACT_ACTIONS_MAX_WIDTH));
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      tableScrollRef.current = null;
+    };
+  }, []);
   const mobileCardsCallbackRef = useCallback((node: HTMLDivElement | null) => {
     mobileCardsRef.current = node;
     const scroller = node?.closest<HTMLElement>("#main-content");
@@ -1036,67 +1120,35 @@ export function TasksPage() {
     },
   });
 
-  const batchDeleteMutation = useMutation({
-    mutationFn: async (tasks: Task[]) => {
-      await runSequentiallyWithDelay(tasks, (task) => instanceApi.deleteTask(task.id));
-    },
-    onSuccess: (_data, tasks) => {
-      toast.success(text("批量删除已提交", "Batch deletion submitted"), text(`${tasks.length} 个不可释放实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `${tasks.length} non-releasable instances, ${BATCH_REQUEST_DELAY_MS}ms apart`));
-      void runLogger.log({
-        source: "task",
-        level: "info",
-        action: "task.batchDelete",
-        result: "success",
-        title: text("批量删除已提交", "Batch deletion submitted"),
-        metadata: { count: tasks.length, ids: tasks.map((task) => task.id) },
-      });
-      setRowSelection({});
-      invalidateTaskQueries(queryClient);
-    },
-    onError: (error) => {
-      toast.error(text("批量删除失败", "Batch deletion failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
-      void runLogger.log({
-        source: "task",
-        level: "error",
-        action: "task.batchDelete",
-        result: "failure",
-        title: text("批量删除失败", "Batch deletion failed"),
-        error: errorMessage(error, text("批量删除失败", "Batch deletion failed")),
-      });
-    },
-  });
+  // Destructured so callbacks can depend on the stable `mutate` / `mutateAsync`
+  // functions instead of the per-render mutation result objects.
+  const { mutate: saveTemplateMutate } = saveTemplateMutation;
+  const { mutateAsync: releaseTaskAsync } = releaseMutation;
+  const { mutateAsync: deleteTaskAsync } = deleteMutation;
 
-  const batchReleaseMutation = useMutation({
-    mutationFn: async (tasks: Task[]) => {
-      await runSequentiallyWithDelay(tasks, (task) => instanceApi.operateTask(task.id));
-    },
-    onSuccess: (_data, tasks) => {
-      toast.success(text("批量释放已提交", "Batch release submitted"), text(`${tasks.length} 个可释放实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `${tasks.length} releasable instances, ${BATCH_REQUEST_DELAY_MS}ms apart`));
-      void runLogger.log({
-        source: "task",
-        level: "info",
-        action: "task.batchRelease",
-        result: "success",
-        title: text("批量释放已提交", "Batch release submitted"),
-        metadata: { count: tasks.length, ids: tasks.map((task) => task.id) },
-      });
-      setRowSelection({});
-      invalidateTaskQueries(queryClient);
-    },
-    onError: (error) => {
-      toast.error(text("批量释放失败", "Batch release failed"), error instanceof Error ? error.message : text("请稍后重试", "Try again later"));
-      void runLogger.log({
-        source: "task",
-        level: "error",
-        action: "task.batchRelease",
-        result: "failure",
-        title: text("批量释放失败", "Batch release failed"),
-        error: errorMessage(error, text("批量释放失败", "Batch release failed")),
-      });
-    },
-  });
+  // Batch delete/release (review 6.3): the confirm step is the BatchPreviewDialog
+  // impact list; the run itself goes through the shared batch engine so one
+  // failed request never cancels the rest, and every finished run lands a
+  // change-list record for later review and retries.
+  const [batchPreview, setBatchPreview] = useState<{ action: "release" | "delete"; tasks: Task[]; retryOf?: string } | null>(null);
+  const { state: batchState, start: startBatch, retryFailed: retryBatchFailed, clear: clearBatch, stop: stopBatch } = useBatchOperation();
+  // "后台运行" hides the result dialog without stopping the run; how the run ends
+  // decides whether the dialog comes back (failures) or a toast reports it (clean run).
+  const [batchBackgrounded, setBatchBackgroundedState] = useState(false);
+  const batchBackgroundedRef = useRef(false);
+  const setBatchBackgrounded = useCallback((value: boolean) => {
+    batchBackgroundedRef.current = value;
+    setBatchBackgroundedState(value);
+  }, []);
+  const pageMountedRef = useRef(false);
+  useEffect(() => {
+    pageMountedRef.current = true;
+    return () => {
+      pageMountedRef.current = false;
+    };
+  }, []);
 
-  const batchPending = batchDeleteMutation.isPending || batchReleaseMutation.isPending;
+  const batchPending = Boolean(batchPreview) || Boolean(batchState?.pending);
   const taskAutoRefresh = getRuntimeSettings().taskAutoRefresh;
   const taskAutoRefreshIntervalMs = getRuntimeSettings().taskAutoRefreshIntervalMs;
   const autoRefreshPaused =
@@ -1130,6 +1182,83 @@ export function TasksPage() {
     autoRefreshInterval: taskAutoRefreshIntervalMs,
     autoRefreshPaused,
   });
+
+  const batchPreviewItems = useCallback(
+    (action: "release" | "delete", tasks: Task[]): BatchPreviewItem[] =>
+      tasks.map((task) => ({
+        key: String(task.id),
+        name: getTaskName(task),
+        meta: batchItemMeta(task, locale, text),
+        // Release destroys container-local data and delete removes the record: neither comes back.
+        irreversible: true,
+      })),
+    [locale, text],
+  );
+
+  const handleBatchSettled = useCallback(
+    (result: BatchRunResult<BatchPreviewItem>, record: BatchOperationRecord) => {
+      const deleteFlow = record.action === "delete";
+      const failed = result.summary.failed > 0;
+      const title = deleteFlow
+        ? text("批量删除完成", "Batch deletion finished")
+        : text("批量释放完成", "Batch release finished");
+      // The open result dialog already reports the outcome; only a run the user sent to the
+      // background (or left the page during) needs a toast.
+      const mounted = pageMountedRef.current;
+      if (!mounted || batchBackgroundedRef.current) {
+        if (failed && mounted) {
+          setBatchBackgrounded(false);
+        } else if (failed) {
+          toast.error(
+            text("批量操作部分失败", "Batch operation partially failed"),
+            text(
+              `${result.summary.succeeded}/${result.summary.total} 成功，${result.summary.failed} 失败；可在任务实例页的「最近批量操作」中查看。`,
+              `${result.summary.succeeded}/${result.summary.total} succeeded, ${result.summary.failed} failed; see Recent batch operations on the task list.`,
+            ),
+          );
+        } else {
+          toast.success(title, text(`${result.summary.succeeded} 个实例`, `${result.summary.succeeded} instances`));
+          if (mounted) {
+            clearBatch();
+            setBatchBackgrounded(false);
+          }
+        }
+      }
+      void runLogger.log({
+        source: "task",
+        level: failed ? "error" : "info",
+        action: deleteFlow ? "task.batchDelete" : "task.batchRelease",
+        result: failed ? "failure" : "success",
+        title,
+        metadata: {
+          count: result.summary.total,
+          succeeded: result.summary.succeeded,
+          failed: result.summary.failed,
+          skipped: result.summary.skipped,
+          recordId: record.id,
+          retryOf: record.retryOf,
+        },
+      });
+      setRowSelection({});
+      invalidateTaskQueries(queryClient);
+    },
+    [clearBatch, queryClient, runLogger, setBatchBackgrounded, setRowSelection, text, toast],
+  );
+
+  const runTaskBatch = useCallback(
+    (action: "release" | "delete", tasks: Task[], retryOf?: string) => {
+      setBatchBackgrounded(false);
+      void startBatch({
+        action,
+        items: batchPreviewItems(action, tasks),
+        remoteTaskIdFromItem: (item) => item.key,
+        retryOf,
+        run: (item) => (action === "delete" ? instanceApi.deleteTask(item.key) : instanceApi.operateTask(item.key)),
+        onSettled: handleBatchSettled,
+      });
+    },
+    [batchPreviewItems, handleBatchSettled, setBatchBackgrounded, startBatch],
+  );
 
   const moreMenuTask = useMemo(() => {
     if (!moreMenu) return null;
@@ -1192,17 +1321,20 @@ export function TasksPage() {
 
   const openCreateTask = () => {
     setCloneTask(null);
+    setEditTask(null);
     setCreateOpen(true);
   };
 
   // "新建任务" from the command palette while this page is already open.
   useEffect(() => subscribeCreateTaskRequests(() => {
     setCloneTask(null);
+    setEditTask(null);
     setCreateOpen(true);
   }), []);
 
   const openCloneTask = (task: Task) => {
     setCloneTask(task);
+    setEditTask(null);
     setCreateOpen(true);
   };
 
@@ -1221,6 +1353,10 @@ export function TasksPage() {
   };
 
   const openEditTask = (task: Task) => {
+    // The two forms render exclusively (each registers a router blocker while
+    // open), so opening one must clear the other's pending state.
+    setCreateOpen(false);
+    setCloneTask(null);
     setEditTask(task);
   };
 
@@ -1234,9 +1370,9 @@ export function TasksPage() {
       description: <ReleaseConfirmDescription task={task} />,
       confirmLabel: text("释放", "Release"),
       tone: "danger",
-      run: () => releaseMutation.mutateAsync(task),
+      run: () => releaseTaskAsync(task),
     });
-  }, [confirm, releaseMutation, text]);
+  }, [confirm, releaseTaskAsync, text]);
 
   const confirmDeleteTask = useCallback((task: Task) => {
     confirm({
@@ -1247,9 +1383,9 @@ export function TasksPage() {
       ),
       confirmLabel: text("删除", "Delete"),
       tone: "danger",
-      run: () => deleteMutation.mutateAsync(task),
+      run: () => deleteTaskAsync(task),
     });
-  }, [confirm, deleteMutation, text]);
+  }, [confirm, deleteTaskAsync, text]);
 
   const confirmCommitTask = useCallback((task: Task) => {
     let payload: ReturnType<typeof buildTaskCommitPayload>;
@@ -1275,24 +1411,32 @@ export function TasksPage() {
   }, [commitQueue, confirm, text, toast]);
 
   const confirmBatchRelease = useCallback((tasks: Task[]) => {
-    confirm({
-      title: text("确认批量释放", "Confirm Batch Release"),
-      description: text(`将按顺序释放 ${tasks.length} 个实例（间隔 ${BATCH_REQUEST_DELAY_MS}ms）。释放后将停止计费，容器本地临时数据将被清理。`, `Release ${tasks.length} instances sequentially (${BATCH_REQUEST_DELAY_MS}ms delay). Billing will stop and ephemeral container data will be destroyed.`),
-      confirmLabel: text("批量释放", "Batch release"),
-      tone: "danger",
-      run: () => batchReleaseMutation.mutateAsync(tasks),
-    });
-  }, [batchReleaseMutation, confirm, text]);
+    setBatchPreview({ action: "release", tasks });
+  }, []);
 
   const confirmBatchDelete = useCallback((tasks: Task[]) => {
-    confirm({
-      title: text("确认批量删除", "Confirm Batch Deletion"),
-      description: text(`将按顺序删除 ${tasks.length} 个不可释放实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms。`, `Delete ${tasks.length} non-releasable instances in order, ${BATCH_REQUEST_DELAY_MS}ms apart.`),
-      confirmLabel: text("批量删除", "Batch delete"),
-      tone: "danger",
-      run: () => batchDeleteMutation.mutateAsync(tasks),
-    });
-  }, [batchDeleteMutation, confirm, text]);
+    setBatchPreview({ action: "delete", tasks });
+  }, []);
+
+  /** History "retry failed": rebuild the subset from the loaded list, then confirm like any batch. */
+  const retryHistoryRecord = useCallback((record: BatchOperationRecord) => {
+    if (record.action !== "release" && record.action !== "delete") return;
+    const failedIds = new Set(record.items.filter((item) => item.status === "failed").map((item) => item.remoteTaskId ?? item.key));
+    const loaded = (query.data?.items ?? []).filter((task) => failedIds.has(String(task.id)));
+    // A failed release may have gone through since; only still-releasable tasks are offered again.
+    const tasks = record.action === "release" ? loaded.filter(isReleasableTask) : loaded.filter((task) => !isReleasableTask(task));
+    if (tasks.length === 0) {
+      toast.info(
+        text("没有可重试的实例", "Nothing to retry"),
+        text(
+          "失败的实例不在当前列表页，或状态已变化。切换页码或刷新后再试。",
+          "The failed instances are not on the current page or their status changed. Change page or refresh, then try again.",
+        ),
+      );
+      return;
+    }
+    setBatchPreview({ action: record.action, tasks, retryOf: record.id });
+  }, [query.data?.items, text, toast]);
 
   const columns = useMemo(
     () => [
@@ -1324,10 +1468,12 @@ export function TasksPage() {
       columnHelper.accessor((row) => getTaskName(row), {
         id: "name",
         header: text("实例名称", "Instance name"),
-        cell: ({ row, getValue }) => {
-          const pinned = isTaskPinned(pinnedTaskIds, row.original);
+        cell: ({ row, getValue, table }) => {
+          const pinned = isTaskPinned(taskTableMeta(table).pinnedTaskIds, row.original);
           return (
-            <div className="w-max min-w-40 max-w-[26rem] whitespace-normal">
+            // 18rem keeps one long experiment name from pushing status under the action column;
+            // the name wraps (at any character if it has to) instead of widening the table.
+            <div className="w-max min-w-40 max-w-72 whitespace-normal [overflow-wrap:anywhere]">
               <div className="flex items-start gap-1.5">
                 {pinned ? <Pin className="mt-1 h-3.5 w-3.5 shrink-0 text-app-accent" aria-label={text("已置顶", "Pinned")} /> : null}
                 <div className="min-w-0">
@@ -1373,6 +1519,13 @@ export function TasksPage() {
         header: text("时长", "Duration"),
         cell: (info) => <span className="app-numeric whitespace-nowrap text-app-text">{formatSecondsDuration(info.getValue(), locale)}</span>,
       }),
+      columnHelper.accessor((row) => row.cost, {
+        id: "billed",
+        header: text("费用", "Cost"),
+        cell: (info) => (
+          <span className="app-numeric whitespace-nowrap text-app-text">{Number(info.getValue()) > 0 ? formatCost(info.getValue(), locale) : "—"}</span>
+        ),
+      }),
       columnHelper.accessor((row) => row.create_time ?? row.created_at ?? "-", {
         id: "created",
         header: text("创建时间", "Created"),
@@ -1398,87 +1551,121 @@ export function TasksPage() {
       columnHelper.display({
         id: "actions",
         header: () => <ActionHeader />,
-        cell: ({ row }) => {
+        cell: ({ row, table }) => {
           const task = row.original;
+          const meta = taskTableMeta(table);
           const release = isReleasableTask(task);
-          const terminalLabel = text("终端", "Terminal");
+          const access = getTaskAccess(task);
+          // Narrow regions keep only the release slot and More; terminal, log and clone move
+          // into the menu (its connect and lifecycle sections) rather than off the screen.
+          const compact = meta.compactActions;
           return (
-            <div className={ACTION_GRID_CLASS}>
-              <Button
-                aria-label={text(`打开 ${getTaskName(task)} 的终端`, `Open terminal for ${getTaskName(task)}`)}
-                className="h-8 w-8 px-0"
-                variant="ghost"
-                title={terminalLabel}
-                onClick={() => openTerminal(task)}
-              >
-                <TerminalSquare className="h-4 w-4" />
-              </Button>
-              <Button
-                aria-label={text(`打开 ${getTaskName(task)} 的日志`, `Open logs for ${getTaskName(task)}`)}
-                className="h-8 w-8 px-0"
-                title={text("日志", "Logs")}
-                variant="ghost"
-                onClick={() => setLogTask(task)}
-              >
-                <FileText className="h-4 w-4" />
-              </Button>
-              <Button
-                aria-label={text(`克隆实例 ${getTaskName(task)}`, `Clone instance ${getTaskName(task)}`)}
-                className="h-8 w-8 px-0"
-                title={text("克隆实例", "Clone instance")}
-                variant="ghost"
-                onClick={() => openCloneTask(task)}
-              >
-                <CopyPlus className="h-4 w-4" />
-              </Button>
+            <div className={compact ? COMPACT_ACTION_GRID_CLASS : ACTION_GRID_CLASS}>
+              {compact ? null : (
+                <>
+                  <Button
+                    aria-label={text(`打开 ${getTaskName(task)} 的终端`, `Open terminal for ${getTaskName(task)}`)}
+                    className="h-8 w-8 px-0"
+                    disabled={!access.terminal}
+                    disabledReason={access.terminalReason}
+                    variant="ghost"
+                    title={text("终端", "Terminal")}
+                    onClick={() => meta.onTerminal(task)}
+                  >
+                    <TerminalSquare className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    aria-label={text(`打开 ${getTaskName(task)} 的日志`, `Open logs for ${getTaskName(task)}`)}
+                    className="h-8 w-8 px-0"
+                    disabled={!access.log}
+                    disabledReason={access.logReason}
+                    title={text("日志", "Logs")}
+                    variant="ghost"
+                    onClick={() => meta.onLog(task)}
+                  >
+                    <FileText className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    aria-label={text(`克隆实例 ${getTaskName(task)}`, `Clone instance ${getTaskName(task)}`)}
+                    className="h-8 w-8 px-0"
+                    title={text("克隆实例", "Clone instance")}
+                    variant="ghost"
+                    onClick={() => meta.onClone(task)}
+                  >
+                    <CopyPlus className="h-4 w-4" />
+                  </Button>
+                </>
+              )}
               {/* This slot only ever means release; deleting an ended task's record is in More. */}
               <Button
-                aria-label={release
-                  ? text(`释放实例 ${getTaskName(task)}`, `Release instance ${getTaskName(task)}`)
-                  : text(`${getTaskName(task)} 已结束，无需释放`, `${getTaskName(task)} has ended; nothing to release`)}
-                className="h-8 w-16 justify-center px-1.5 hover:bg-app-warningSoft hover:text-app-warningText focus-visible:text-app-warningText"
-                disabled={!release || releaseMutation.isPending}
-                title={release
-                  ? text("释放：停止实例并回收资源", "Release: stop instance and reclaim resources")
-                  : text("已结束，无需释放；删除记录在「更多」中", "Ended, nothing to release; delete the record from More")}
+                aria-label={text(`释放实例 ${getTaskName(task)}`, `Release instance ${getTaskName(task)}`)}
+                className="h-8 w-16 justify-center px-1.5 hover:bg-app-warningSoft hover:text-app-warningText focus-visible:text-app-warningText aria-disabled:hover:bg-transparent aria-disabled:hover:text-app-muted"
+                disabled={!release || meta.releasePending}
+                disabledReason={release
+                  ? undefined
+                  : Number(task.status) === 3
+                    ? text("已暂停的实例不可释放", "Paused instances cannot be released")
+                    : text("已结束，无需释放；删除记录在「更多」中", "Ended, nothing to release; delete the record from More")}
+                title={text("释放：停止实例并回收资源", "Release: stop instance and reclaim resources")}
                 variant="ghost"
-                onClick={() => confirmReleaseTask(task)}
+                onClick={() => meta.onRelease(task)}
               >
                 <Power className="h-4 w-4" />
                 {text("释放", "Release")}
               </Button>
               <MoreActionsMenu
                 canEdit={getTaskEditableState() !== false}
-                isPinned={isTaskPinned(pinnedTaskIds, task)}
-                open={moreMenu?.taskId === taskRowId(task)}
-                promoteClone
-                promoteLog
-                showSshInfo={false}
+                isPinned={isTaskPinned(meta.pinnedTaskIds, task)}
+                open={meta.moreMenuTaskId === taskRowId(task)}
+                promoteClone={!compact}
+                promoteLog={!compact}
+                showSshInfo={compact}
                 task={task}
-                onClone={openCloneTask}
-                onCommit={confirmCommitTask}
-                onDelete={confirmDeleteTask}
-                onDownload={handleDownloadTask}
-                onEdit={openEditTask}
-                onLog={setLogTask}
+                onClone={meta.onClone}
+                onCommit={meta.onCommit}
+                onDelete={meta.onDelete}
+                onDownload={meta.onDownload}
+                onEdit={meta.onEdit}
+                onLog={meta.onLog}
                 onMonitor={openMonitorDashboard}
-                onOpenChange={handleMoreMenuOpenChange}
-                onRaw={setRawTask}
-                onSaveTemplate={(selectedTask) => saveTemplateMutation.mutate(selectedTask)}
-                onSshInfo={openSshInfo}
-                onTogglePin={handleTogglePin}
+                onOpenChange={meta.onMoreMenuOpenChange}
+                onRaw={meta.onRaw}
+                onSaveTemplate={meta.onSaveTemplate}
+                onSshInfo={meta.onSshInfo}
+                onTogglePin={meta.onTogglePin}
               />
             </div>
           );
         },
       }),
     ],
-    [confirmCommitTask, confirmDeleteTask, confirmReleaseTask, handleDownloadTask, handleMoreMenuOpenChange, handleTogglePin, locale, moreMenu?.taskId, openSshInfo, openTerminal, pinnedTaskIds, releaseMutation.isPending, saveTemplateMutation.mutate, text],
+    [locale, text],
   );
+
+  const tableMeta: TaskTableMeta = {
+    pinnedTaskIds,
+    moreMenuTaskId: moreMenu?.taskId ?? null,
+    releasePending: releaseMutation.isPending,
+    compactActions,
+    onTerminal: openTerminal,
+    onLog: setLogTask,
+    onClone: openCloneTask,
+    onRelease: confirmReleaseTask,
+    onCommit: confirmCommitTask,
+    onDelete: confirmDeleteTask,
+    onDownload: handleDownloadTask,
+    onEdit: openEditTask,
+    onRaw: setRawTask,
+    onSaveTemplate: saveTemplateMutate,
+    onSshInfo: openSshInfo,
+    onTogglePin: handleTogglePin,
+    onMoreMenuOpenChange: handleMoreMenuOpenChange,
+  };
 
   const table = useReactTable({
     data: filteredTasks,
     columns,
+    meta: tableMeta,
     getCoreRowModel: getCoreRowModel(),
     getRowId: taskRowId,
     enableRowSelection: true,
@@ -1658,11 +1845,10 @@ export function TasksPage() {
       if (filteredTasks.length === 0) return;
 
       if (!isListNavigationTarget()) {
-        // j / k from the page itself enter the list, so the shortcut works without clicking
-        // into the table first. Other keys (and arrows, which scroll the page) stay untouched.
-        const active = document.activeElement;
-        const fromPage = !active || active === document.body || active === document.documentElement;
-        if (!fromPage || (key !== "j" && key !== "k")) return;
+        // j / k from anywhere on the page enter the list, including from a toolbar button a
+        // closed dialog handed focus back to, as the shortcuts dialog promises. Text fields
+        // returned above; other keys (and arrows, which scroll the page) stay untouched.
+        if (key !== "j" && key !== "k") return;
         event.preventDefault();
         (compactLayout ? mobileCardsRef.current : tableScrollRef.current)?.focus();
         moveActiveRow(Math.min(Math.max(activeRowIndex, 0), filteredTasks.length - 1));
@@ -1688,14 +1874,31 @@ export function TasksPage() {
         navigate(`/tasks/${task.id}`);
         return;
       }
-      if (key === "l") {
+      if (key === "l" && getTaskAccess(task).log) {
         event.preventDefault();
         setLogTask(task);
         return;
       }
-      if (key === "t") {
+      if (key === "t" && getTaskAccess(task).terminal) {
         event.preventDefault();
         openTerminal(task);
+        return;
+      }
+      if (key === "x") {
+        event.preventDefault();
+        const id = taskRowId(task);
+        const wasSelected = Boolean(rowSelection[id]);
+        setRowSelection((current) => {
+          const next = { ...current };
+          if (next[id]) delete next[id];
+          else next[id] = true;
+          return next;
+        });
+        setRowAnnouncement(
+          wasSelected
+            ? text(`已取消选择 ${getTaskName(task)}`, `Deselected ${getTaskName(task)}`)
+            : text(`已选择 ${getTaskName(task)}`, `Selected ${getTaskName(task)}`),
+        );
         return;
       }
       if (key === "r" && isReleasableTask(task)) {
@@ -1722,7 +1925,9 @@ export function TasksPage() {
     navigate,
     openTerminal,
     rawTask,
+    rowSelection,
     setActiveRowIndex,
+    setRowSelection,
     sshInfoTask,
     text,
     viewMenuOpen,
@@ -1802,8 +2007,20 @@ export function TasksPage() {
               <Settings2 className="h-4 w-4" aria-hidden="true" />
               {text("视图", "View")}
             </Button>
+            <Button
+              aria-label={text("刷新列表", "Refresh list")}
+              className="h-9 w-9 px-0"
+              disabled={query.isFetching}
+              title={text("刷新列表", "Refresh list")}
+              type="button"
+              variant="ghost"
+              onClick={() => void query.refetch()}
+            >
+              <RefreshCw className={cn("h-4 w-4", query.isFetching && "animate-spin")} aria-hidden="true" />
+            </Button>
+            {/* Not a live region: it ticks every 5 s and would be announced forever. */}
             {listUpdatedLabel ? (
-              <span className="hidden text-xs text-app-muted sm:inline" aria-live="polite">
+              <span className="hidden text-xs text-app-muted sm:inline">
                 {listUpdatedLabel}
               </span>
             ) : null}
@@ -1830,6 +2047,8 @@ export function TasksPage() {
                       <option value="status">{text("状态", "Status")}</option>
                       <option value="created">{text("创建时间", "Created")}</option>
                       <option value="updated">{text("更新时间", "Updated")}</option>
+                      <option value="duration">{text("运行时长", "Runtime")}</option>
+                      <option value="cost">{text("费用", "Cost")}</option>
                     </Select>
                   </label>
                   <Button
@@ -1843,16 +2062,6 @@ export function TasksPage() {
                   >
                     {queryState.sortDir === "asc" ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
                     {queryState.sortDir === "asc" ? text("升序", "Ascending") : text("降序", "Descending")}
-                  </Button>
-                  <Button
-                    className="w-full justify-start"
-                    disabled={query.isFetching}
-                    type="button"
-                    variant="secondary"
-                    onClick={() => void query.refetch()}
-                  >
-                    <RefreshCw className={["h-4 w-4", query.isFetching ? "animate-spin" : ""].join(" ")} aria-hidden="true" />
-                    {text("刷新", "Refresh")}
                   </Button>
                 </div>
                 <div className="border-t border-app-border p-1">
@@ -1877,50 +2086,6 @@ export function TasksPage() {
           {text("新建任务", "New task")}
         </Button>
       </div>
-
-      {selectedTasks.length > 0 ? (
-        <Panel className="app-mobile-batch-bar flex flex-wrap items-center justify-between gap-3 px-3 py-2">
-          <div className="min-w-0 space-y-0.5 text-sm text-app-muted">
-            <div>
-              {text("已选", "Selected")} <span className="font-medium text-app-text">{selectedTasks.length}</span> {text("个实例", "instances")}
-              {selectedReleasableTasks.length > 0 ? text(`，可释放 ${selectedReleasableTasks.length} 个`, `, releasable ${selectedReleasableTasks.length}`) : ""}
-              {selectedNonReleasableTasks.length > 0 ? text(`，不可释放 ${selectedNonReleasableTasks.length} 个`, `, non-releasable ${selectedNonReleasableTasks.length}`) : ""}
-            </div>
-            <p className="text-xs text-app-muted">
-              {text(
-                "释放：停止并回收可释放实例。删除：移除不可释放（通常已结束）实例，不可撤销。",
-                "Release: stop and reclaim releasable instances. Delete: remove non-releasable (usually finished) instances; cannot undo.",
-              )}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {selectedReleasableTasks.length > 0 ? (
-              <Button
-                disabled={batchPending}
-                variant="secondary"
-                onClick={() => confirmBatchRelease(selectedReleasableTasks)}
-              >
-                <Power className="h-4 w-4 text-app-warning" />
-                {text("批量释放", "Batch release")} {selectedReleasableTasks.length}
-              </Button>
-            ) : null}
-            {selectedNonReleasableTasks.length > 0 ? (
-              <Button
-                className="border-app-danger text-app-danger hover:text-app-danger"
-                disabled={batchPending}
-                variant="secondary"
-                onClick={() => confirmBatchDelete(selectedNonReleasableTasks)}
-              >
-                <Trash2 className="h-4 w-4" />
-                {text("批量删除", "Batch delete")} {selectedNonReleasableTasks.length}
-              </Button>
-            ) : null}
-            <Button disabled={batchPending} variant="ghost" onClick={() => setRowSelection({})}>
-              {text("取消选择", "Clear selection")}
-            </Button>
-          </div>
-        </Panel>
-      ) : null}
 
       <Panel className="overflow-hidden">
         {!query.data && query.isLoading ? (
@@ -1996,17 +2161,20 @@ export function TasksPage() {
                       <dt className="text-app-muted">{text("资源", "Resources")}</dt>
                       <dd className="mt-0.5 text-app-text">{resourceText(task)}</dd>
                     </div>
-                    <div>
-                      <dt className="text-app-muted">{text("入口", "Endpoint")}</dt>
-                      <dd className="mt-0.5 truncate font-mono text-app-text">{endpointText(task)}</dd>
+                    {/* Only running instances have an endpoint; the others show their duration in that slot. */}
+                    {endpointText(task) !== "-" ? (
+                      <div>
+                        <dt className="text-app-muted">{text("入口", "Endpoint")}</dt>
+                        <dd className="mt-0.5 truncate font-mono text-app-text">{endpointText(task)}</dd>
+                      </div>
+                    ) : null}
+                    <div className={endpointText(task) !== "-" ? "hidden sm:block" : undefined}>
+                      <dt className="text-app-muted">{text("时长", "Duration")}</dt>
+                      <dd className="app-numeric mt-0.5 text-app-text">{formatSecondsDuration(task.use_time, locale)}</dd>
                     </div>
                     <div className="hidden sm:block">
                       <dt className="text-app-muted">{text("用户", "User")}</dt>
                       <dd className="mt-0.5 truncate text-app-text">{ownerText(task)}</dd>
-                    </div>
-                    <div className="hidden sm:block">
-                      <dt className="text-app-muted">{text("时长", "Duration")}</dt>
-                      <dd className="mt-0.5 text-app-text">{formatSecondsDuration(task.use_time, locale)}</dd>
                     </div>
                     <div className="col-span-2">
                       <dt className="text-app-muted">{text("释放条件", "Release condition")}</dt>
@@ -2017,11 +2185,14 @@ export function TasksPage() {
                     {(() => {
                       const terminalLabel = text("终端", "Terminal");
                       const logAttention = needsLogAttention(task);
+                      const access = getTaskAccess(task);
                       return (
                         <>
                         <Button
                           aria-label={text(`打开 ${taskName} 的终端`, `Open terminal for ${taskName}`)}
                           className={cn("h-9 px-2", logAttention && "hidden sm:inline-flex")}
+                          disabled={!access.terminal}
+                          disabledReason={access.terminalReason}
                           variant="ghost"
                           title={terminalLabel}
                           onClick={() => openTerminal(task)}
@@ -2031,6 +2202,8 @@ export function TasksPage() {
                         </Button>
                         <Button
                           className={cn("h-9 px-2", !logAttention && "hidden sm:inline-flex")}
+                          disabled={!access.log}
+                          disabledReason={access.logReason}
                           title={text("日志", "Logs")}
                           variant="ghost"
                           onClick={() => setLogTask(task)}
@@ -2090,7 +2263,7 @@ export function TasksPage() {
           </div>
           ) : (
           <TableRegion
-            ref={tableScrollRef}
+            ref={tableRegionCallbackRef}
             label={text("任务实例表格", "Task instances table")}
           >
             <table className="w-max min-w-full table-auto border-collapse text-sm">
@@ -2245,9 +2418,74 @@ export function TasksPage() {
         </div>
       </div>
 
+      {/* Below the list, so selecting rows never shifts the table under the pointer.
+          It floats over the bottom edge on desktop and above the tab bar on phones;
+          z-40 keeps it above the table's sticky action cells (z-30). */}
+      {selectedTasks.length > 0 || (batchBackgrounded && batchState?.pending) ? (
+        <Panel className="app-mobile-batch-bar flex flex-wrap items-center justify-between gap-3 px-3 py-2 md:sticky md:bottom-3 md:z-40 md:bg-app-elevated md:shadow-popover">
+          {batchBackgrounded && batchState?.pending ? (
+            <div className="flex min-w-0 items-center gap-2 text-sm text-app-muted" role="status">
+              <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
+              <span className="app-numeric">
+                {batchState.action === "delete"
+                  ? text(`后台删除中 ${batchState.result.outcomes.length}/${batchState.result.summary.total}`, `Deleting in background ${batchState.result.outcomes.length}/${batchState.result.summary.total}`)
+                  : text(`后台释放中 ${batchState.result.outcomes.length}/${batchState.result.summary.total}`, `Releasing in background ${batchState.result.outcomes.length}/${batchState.result.summary.total}`)}
+              </span>
+              <Button className="h-8" variant="ghost" onClick={() => setBatchBackgrounded(false)}>
+                {text("查看进度", "Show progress")}
+              </Button>
+            </div>
+          ) : null}
+          {selectedTasks.length > 0 ? (
+          <>
+          <p className="min-w-0 text-sm text-app-muted">
+            {text("已选", "Selected")} <span className="app-numeric font-medium text-app-text">{selectedTasks.length}</span> {text("个实例", "instances")}
+            {selectedReleasableTasks.length > 0 ? text(` · 运行中可释放 ${selectedReleasableTasks.length}`, ` · ${selectedReleasableTasks.length} releasable`) : ""}
+            {selectedNonReleasableTasks.length > 0 ? text(` · 已结束 ${selectedNonReleasableTasks.length}`, ` · ${selectedNonReleasableTasks.length} ended`) : ""}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {selectedReleasableTasks.length > 0 ? (
+              <Button
+                className="hover:bg-app-warningSoft hover:text-app-warningText focus-visible:text-app-warningText"
+                disabled={batchPending}
+                title={text("停止这些实例并回收资源", "Stop these instances and reclaim their resources")}
+                variant="secondary"
+                onClick={() => confirmBatchRelease(selectedReleasableTasks)}
+              >
+                <Power className="h-4 w-4" aria-hidden="true" />
+                {text(`释放 ${selectedReleasableTasks.length} 个`, `Release ${selectedReleasableTasks.length}`)}
+              </Button>
+            ) : null}
+            {selectedNonReleasableTasks.length > 0 ? (
+              <Button
+                className="hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger"
+                disabled={batchPending}
+                title={text("从列表移除已结束实例的记录，不可撤销", "Remove the records of ended instances; cannot be undone")}
+                variant="secondary"
+                onClick={() => confirmBatchDelete(selectedNonReleasableTasks)}
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+                {text(`删除 ${selectedNonReleasableTasks.length} 条记录`, `Delete ${selectedNonReleasableTasks.length} records`)}
+              </Button>
+            ) : null}
+            <Button disabled={batchPending} variant="ghost" onClick={() => setRowSelection({})}>
+              {text("取消选择", "Clear selection")}
+            </Button>
+          </div>
+          </>
+          ) : null}
+        </Panel>
+      ) : null}
+
       <Suspense fallback={<LoadingState />}>
-        <CreateTaskDialog initialTask={cloneTask} open={createOpen} onClose={closeCreateTask} />
-        <CreateTaskDialog mode="edit" editTaskId={editTask?.id} initialTask={editTask} open={Boolean(editTask)} onClose={closeEditTask} />
+        {/* Only the active form is mounted: CreateTaskDialog registers a router
+            blocker while open, and a router supports only one blocker — two
+            mounted forms would disable one form's unsaved-changes guard. */}
+        {createOpen ? (
+          <CreateTaskDialog initialTask={cloneTask} open onClose={closeCreateTask} />
+        ) : editTask ? (
+          <CreateTaskDialog mode="edit" editTaskId={editTask.id} initialTask={editTask} open onClose={closeEditTask} />
+        ) : null}
         <TaskLogDialog task={logTask} onClose={() => setLogTask(null)} />
         <TerminalDialog
           task={sshInfoTask}
@@ -2265,9 +2503,12 @@ export function TasksPage() {
           menuId={moreActionsMenuId}
           initialFocusIndex={0}
           triggerRef={moreMenuTriggerRef}
-          promoteLog
-          promoteClone
-          showSshInfo={false}
+          // One panel serves every row, so it carries what that row's surface leaves out:
+          // the narrow table moves terminal, log and clone in here; a phone card keeps only
+          // the log (failed tasks) or the terminal (the rest) as a button.
+          promoteLog={compactLayout ? needsLogAttention(moreMenuTask) : !compactActions}
+          promoteClone={!compactLayout && !compactActions}
+          showSshInfo={compactLayout ? needsLogAttention(moreMenuTask) : compactActions}
           isPinned={isTaskPinned(pinnedTaskIds, moreMenuTask)}
           canEdit={getTaskEditableState() !== false}
           onClose={closeMoreMenu}
@@ -2315,6 +2556,54 @@ export function TasksPage() {
           </div>
         </div>
       </Dialog>
+      {/* Recent batch operations (review 6.3); refreshes when a batch lands its record. */}
+      <BatchHistoryPanel refreshSignal={batchState?.record?.id} retryableActions={["release", "delete"]} onRetryFailed={retryHistoryRecord} />
+      {batchPreview ? (
+        <BatchPreviewDialog
+          open
+          title={batchPreview.action === "delete" ? text("确认批量删除", "Confirm Batch Deletion") : text("确认批量释放", "Confirm Batch Release")}
+          tone="danger"
+          items={batchPreviewItems(batchPreview.action, batchPreview.tasks)}
+          account={{ displayName: auth.user?.username ?? "" }}
+          summary={batchPreview.action === "release" ? <BatchReleaseImpact tasks={batchPreview.tasks} /> : undefined}
+          confirmLabel={batchPreview.action === "delete"
+            ? text(`删除 ${batchPreview.tasks.length} 条记录`, `Delete ${batchPreview.tasks.length} records`)
+            : text(`释放 ${batchPreview.tasks.length} 个实例`, `Release ${batchPreview.tasks.length} instances`)}
+          onConfirm={() => {
+            const { action, tasks, retryOf } = batchPreview;
+            setBatchPreview(null);
+            runTaskBatch(action, tasks, retryOf);
+          }}
+          onClose={() => setBatchPreview(null)}
+        />
+      ) : null}
+      {batchState && !batchBackgrounded ? (
+        <BatchResultDialog
+          open
+          title={batchState.action === "delete" ? text("批量删除结果", "Batch deletion results") : text("批量释放结果", "Batch release results")}
+          result={batchState.result}
+          pending={batchState.pending}
+          onStop={stopBatch}
+          onRetryFailed={batchState.pending ? undefined : () => retryBatchFailed({ onSettled: handleBatchSettled })}
+          onExport={(format) => {
+            const records = batchState.records;
+            if (records.length === 0) return;
+            const payload = batchExportPayload(records, format);
+            void saveBlob(new Blob([payload.content], { type: payload.type }), payload.filename);
+          }}
+          onClose={() => {
+            if (batchState.pending) {
+              setBatchBackgrounded(true);
+              return;
+            }
+            clearBatch();
+            // The batch bar that opened the run is gone once its selection clears; land on the list.
+            window.setTimeout(() => {
+              if (document.activeElement === document.body) (compactLayout ? mobileCardsRef.current : tableScrollRef.current)?.focus();
+            }, 0);
+          }}
+        />
+      ) : null}
       {confirmDialog}
     </div>
   );

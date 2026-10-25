@@ -1,0 +1,113 @@
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { listBatchOperations } from "../../lib/change-list";
+import { I18nProvider } from "../../lib/i18n";
+import type { PreviewItem } from "./BatchResultDialog";
+import { useBatchOperation } from "./use-batch-operation";
+
+const { memoryStorage, store } = vi.hoisted(() => {
+  const store = new Map<string, string>();
+  const memoryStorage = {
+    get: async (key: string) => store.get(key) ?? null,
+    set: async (key: string, value: string) => {
+      store.set(key, value);
+    },
+    remove: async (key: string) => {
+      store.delete(key);
+    },
+  };
+  return { memoryStorage, store };
+});
+
+vi.mock("../../lib/runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/runtime")>();
+  return { ...actual, browserRuntime: { ...actual.browserRuntime, storage: memoryStorage } };
+});
+
+const items: PreviewItem[] = [
+  { key: "1", name: "alpha-01" },
+  { key: "2", name: "alpha-02" },
+  { key: "3", name: "alpha-03" },
+];
+
+function renderOperation() {
+  return renderHook(() => useBatchOperation(), { wrapper: I18nProvider });
+}
+
+describe("useBatchOperation", () => {
+  beforeEach(() => {
+    store.clear();
+  });
+
+  it("keeps going after a failed item, reports live progress, and lands the change-list record", async () => {
+    const { result } = renderOperation();
+    const run = vi.fn().mockResolvedValueOnce({ id: "11" }).mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce({ id: "33" });
+    const settled = vi.fn();
+
+    await act(async () => {
+      void result.current.start({ action: "create", items, run, onSettled: settled });
+    });
+    // The first item has settled while the rest are still running.
+    await waitFor(() => expect(result.current.state?.result.outcomes).toHaveLength(2));
+    expect(result.current.state?.pending).toBe(true);
+    expect(result.current.state?.result.outcomes[0]).toMatchObject({ status: "succeeded" });
+    expect(result.current.state?.result.outcomes[1]).toMatchObject({ status: "failed", error: "boom" });
+
+    await waitFor(() => expect(result.current.state?.pending).toBe(false));
+    expect(run).toHaveBeenCalledTimes(3);
+    const finalState = result.current.state!;
+    expect(finalState.result.summary).toEqual({ total: 3, succeeded: 2, failed: 1, skipped: 0 });
+    expect(settled).toHaveBeenCalledWith(finalState.result, finalState.record);
+
+    const records = await listBatchOperations(memoryStorage);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ action: "create", trigger: "ui" });
+    expect(records[0].items[1]).toMatchObject({ key: "2", status: "failed", error: "boom" });
+    expect(records[0].items[0].remoteTaskId).toBe("11");
+    expect(records[0].summary).toEqual({ total: 3, succeeded: 2, failed: 1, skipped: 0 });
+    expect(result.current.state?.records).toHaveLength(1);
+  });
+
+  it("retries only the failed subset, merges outcomes back, and links the retry record", async () => {
+    const { result } = renderOperation();
+    const firstRun = vi.fn().mockResolvedValueOnce({ id: "11" }).mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce({ id: "33" });
+    await act(async () => {
+      await result.current.start({ action: "create", items, run: firstRun });
+    });
+    const firstRecordId = result.current.state?.record?.id;
+
+    // Retry re-runs through the original run function, only for the failed item.
+    firstRun.mockResolvedValueOnce({ id: "22" });
+    const retried = await act(async () => result.current.retryFailed());
+    expect(firstRun).toHaveBeenCalledTimes(4);
+    expect(firstRun.mock.calls[3][0]).toMatchObject({ key: "2", name: "alpha-02" });
+
+    expect(result.current.state?.result.summary).toEqual({ total: 3, succeeded: 3, failed: 0, skipped: 0 });
+    expect(result.current.state?.result.outcomes.every((outcome) => outcome.status === "succeeded")).toBe(true);
+
+    const records = await listBatchOperations(memoryStorage);
+    expect(records).toHaveLength(2);
+    expect(records[0].items).toHaveLength(1);
+    expect(records[0].items[0]).toMatchObject({ key: "2", status: "succeeded", remoteTaskId: "22" });
+    expect(records[0].retryOf).toBe(firstRecordId);
+    expect(retried?.record.retryOf).toBe(firstRecordId);
+    expect(result.current.state?.records).toEqual([records[1], records[0]]);
+  });
+
+  it("refuses a retry while the run is pending or nothing failed, and clear() resets the state", async () => {
+    const { result } = renderOperation();
+    const run = vi.fn().mockResolvedValue({});
+    await act(async () => {
+      await result.current.start({ action: "delete", items: items.slice(0, 1), run, remoteTaskIdFromItem: (item) => item.key });
+    });
+    expect(result.current.state?.record?.items[0].remoteTaskId).toBe("1");
+
+    const retriedNothing = await act(async () => result.current.retryFailed());
+    expect(retriedNothing).toBeUndefined();
+    expect(run).toHaveBeenCalledTimes(1);
+
+    act(() => result.current.clear());
+    expect(result.current.state).toBeNull();
+  });
+});

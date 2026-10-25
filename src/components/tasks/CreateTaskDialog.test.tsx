@@ -59,6 +59,7 @@ vi.mock("../storage/RemoteStoragePicker", () => ({
 
 import { CreateTaskDialog } from "./CreateTaskDialog";
 import { CREATE_TASK_UI_PREFS_STORAGE_KEY } from "../../lib/create-task-ui-prefs";
+import { RESOURCE_PRESETS_STORAGE_KEY } from "../../lib/resource-presets";
 
 function renderDialog(props?: Partial<React.ComponentProps<typeof CreateTaskDialog>>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -328,5 +329,52 @@ describe("CreateTaskDialog", () => {
   it("renders edit title in edit mode", async () => {
     renderDialog({ mode: "edit", editTaskId: "123" });
     await waitFor(() => expect(screen.getByText("编辑任务")).toBeInTheDocument());
+  });
+
+  it("applies a saved resource preset to the resource fields", async () => {
+    const storedPresets = localStorage.getItem(RESOURCE_PRESETS_STORAGE_KEY);
+    localStorage.setItem(
+      RESOURCE_PRESETS_STORAGE_KEY,
+      JSON.stringify([
+        { id: "p1", name: "开发机", cpu: 8, gpu: 2, memory: 32, createdAt: "2026-05-23T00:00:00.000Z", updatedAt: "2026-05-23T00:00:00.000Z" },
+      ]),
+    );
+    try {
+      renderDialog();
+
+      fireEvent.click(await screen.findByRole("button", { name: "应用预设 开发机（8C / 2GPU / 32G）" }));
+
+      expect(screen.getByLabelText("CPU")).toHaveValue(8);
+      expect(screen.getByLabelText("GPU")).toHaveValue(2);
+      expect(screen.getByLabelText("内存 (GiB)")).toHaveValue(32);
+    } finally {
+      if (storedPresets === null) localStorage.removeItem(RESOURCE_PRESETS_STORAGE_KEY);
+      else localStorage.setItem(RESOURCE_PRESETS_STORAGE_KEY, storedPresets);
+    }
+  });
+
+  it("saves the current resource values as a named preset", async () => {
+    const storedPresets = localStorage.getItem(RESOURCE_PRESETS_STORAGE_KEY);
+    localStorage.removeItem(RESOURCE_PRESETS_STORAGE_KEY);
+    try {
+      renderDialog();
+      await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
+
+      fireEvent.change(screen.getByLabelText("CPU"), { target: { value: "12" } });
+      fireEvent.click(screen.getByRole("button", { name: "存为预设" }));
+
+      const nameInput = screen.getByRole("textbox", { name: "预设名称" });
+      expect(nameInput).toHaveValue("12C / 0GPU / 16G");
+      fireEvent.change(nameInput, { target: { value: "编译机" } });
+      fireEvent.click(screen.getByRole("button", { name: "保存预设" }));
+
+      expect(await screen.findByRole("button", { name: "应用预设 编译机（12C / 0GPU / 16G）" })).toBeInTheDocument();
+      const stored = JSON.parse(localStorage.getItem(RESOURCE_PRESETS_STORAGE_KEY) ?? "[]") as Array<Record<string, unknown>>;
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject({ name: "编译机", cpu: 12, gpu: 0, memory: 16 });
+    } finally {
+      if (storedPresets === null) localStorage.removeItem(RESOURCE_PRESETS_STORAGE_KEY);
+      else localStorage.setItem(RESOURCE_PRESETS_STORAGE_KEY, storedPresets);
+    }
   });
 });
