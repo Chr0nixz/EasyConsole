@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
 #[cfg(desktop)]
-use tauri::{Emitter, State};
+use tauri::State;
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 #[cfg(desktop)]
@@ -471,6 +471,25 @@ fn runtime_storage_lock() -> &'static Mutex<()> {
     RUNTIME_STORAGE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Broadcast to every window after a runtime-storage write lands, so other
+/// windows can drop their in-memory cache copy of the written key. `source` is
+/// the originating window's label; each window ignores its own broadcasts
+/// because its cache was already updated synchronously by the write itself.
+const RUNTIME_STORAGE_CHANGED_EVENT: &str = "runtime-storage-changed";
+
+#[derive(Clone, serde::Serialize)]
+struct RuntimeStorageChange<'a> {
+    key: &'a str,
+    source: &'a str,
+}
+
+fn broadcast_runtime_storage_change(app: &AppHandle, source: &str, key: &str) {
+    let _ = app.emit(
+        RUNTIME_STORAGE_CHANGED_EVENT,
+        RuntimeStorageChange { key, source },
+    );
+}
+
 #[tauri::command]
 fn runtime_storage_get(app: AppHandle, key: String) -> Result<Option<String>, String> {
     let _guard = runtime_storage_lock().lock().map_err(|e| {
@@ -485,7 +504,12 @@ fn runtime_storage_get(app: AppHandle, key: String) -> Result<Option<String>, St
 }
 
 #[tauri::command]
-fn runtime_storage_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
+fn runtime_storage_set(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    key: String,
+    value: String,
+) -> Result<(), String> {
     let _guard = runtime_storage_lock().lock().map_err(|e| {
         trf!(
             "本地数据锁获取失败：{e}",
@@ -494,12 +518,18 @@ fn runtime_storage_set(app: AppHandle, key: String, value: String) -> Result<(),
     })?;
     let path = runtime_storage_path(&app)?;
     let mut data = load_string_map(&path)?;
-    data.insert(key, value);
-    write_string_map(&path, &data)
+    data.insert(key.clone(), value);
+    write_string_map(&path, &data)?;
+    broadcast_runtime_storage_change(&app, window.label(), &key);
+    Ok(())
 }
 
 #[tauri::command]
-fn runtime_storage_remove(app: AppHandle, key: String) -> Result<(), String> {
+fn runtime_storage_remove(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    key: String,
+) -> Result<(), String> {
     let _guard = runtime_storage_lock().lock().map_err(|e| {
         trf!(
             "本地数据锁获取失败：{e}",
@@ -508,8 +538,75 @@ fn runtime_storage_remove(app: AppHandle, key: String) -> Result<(), String> {
     })?;
     let path = runtime_storage_path(&app)?;
     let mut data = load_string_map(&path)?;
-    data.remove(&key);
-    write_string_map(&path, &data)
+    let existed = data.remove(&key).is_some();
+    write_string_map(&path, &data)?;
+    if existed {
+        broadcast_runtime_storage_change(&app, window.label(), &key);
+    }
+    Ok(())
+}
+
+/// Compare-and-swap over the runtime-storage map: applies `next` (insert or
+/// remove) only when the stored value equals `expected`. Returns `(true, None)`
+/// on success and `(false, Some(current))` on mismatch so the caller can retry
+/// against the authoritative value without a second read.
+#[doc(hidden)]
+pub fn apply_storage_cas(
+    data: &mut HashMap<String, String>,
+    key: &str,
+    expected: Option<&str>,
+    next: Option<&str>,
+) -> (bool, Option<String>) {
+    let current = data.get(key).map(String::as_str);
+    if current != expected {
+        return (false, current.map(ToOwned::to_owned));
+    }
+    match next {
+        Some(value) => {
+            data.insert(key.to_owned(), value.to_owned());
+        }
+        None => {
+            data.remove(key);
+        }
+    }
+    (true, None)
+}
+
+#[derive(serde::Serialize)]
+struct StorageCasOutcome {
+    updated: bool,
+    current: Option<String>,
+}
+
+/// Cross-window-safe read-modify-write primitive. The whole compare-and-swap
+/// runs under the global storage lock, so two windows transforming the same
+/// key cannot silently overwrite each other: the loser gets the fresh value
+/// back (`updated: false`) and retries in JS. `navigator.locks` cannot be
+/// relied on here because webview lock scopes are not guaranteed to be shared
+/// across windows on every platform backend.
+#[tauri::command]
+fn runtime_storage_compare_and_swap(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    key: String,
+    expected: Option<String>,
+    next: Option<String>,
+) -> Result<StorageCasOutcome, String> {
+    let _guard = runtime_storage_lock().lock().map_err(|e| {
+        trf!(
+            "本地数据锁获取失败：{e}",
+            "Failed to acquire the local data lock: {e}"
+        )
+    })?;
+    let path = runtime_storage_path(&app)?;
+    let mut data = load_string_map(&path)?;
+    let (updated, current) =
+        apply_storage_cas(&mut data, &key, expected.as_deref(), next.as_deref());
+    if updated {
+        write_string_map(&path, &data)?;
+        broadcast_runtime_storage_change(&app, window.label(), &key);
+    }
+    Ok(StorageCasOutcome { updated, current })
 }
 
 #[cfg(desktop)]
@@ -1231,6 +1328,7 @@ pub fn run() {
         runtime_storage_get,
         runtime_storage_set,
         runtime_storage_remove,
+        runtime_storage_compare_and_swap,
         #[cfg(desktop)]
         keychain_get,
         #[cfg(desktop)]
@@ -1397,10 +1495,61 @@ fn handle_desktop_event(
 mod tests {
     use super::*;
 
+    /// The active locale is process-global, so tests that touch it must not
+    /// run concurrently; tests within a binary run in parallel by default.
+    static LOCALE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn storage_cas_applies_expected_writes_and_reports_conflicts() {
+        let mut data = HashMap::new();
+        data.insert("k".to_string(), "v1".to_string());
+
+        // Mismatch: report the authoritative value, change nothing.
+        let (updated, current) = apply_storage_cas(&mut data, "k", Some("stale"), Some("v2"));
+        assert!(!updated);
+        assert_eq!(current.as_deref(), Some("v1"));
+        assert_eq!(data.get("k").map(String::as_str), Some("v1"));
+
+        // Match: insert the new value.
+        let (updated, current) = apply_storage_cas(&mut data, "k", Some("v1"), Some("v2"));
+        assert!(updated);
+        assert_eq!(current, None);
+        assert_eq!(data.get("k").map(String::as_str), Some("v2"));
+
+        // Remove via a `None` next when the expectation matches.
+        let (updated, _) = apply_storage_cas(&mut data, "k", Some("v2"), None);
+        assert!(updated);
+        assert!(!data.contains_key("k"));
+
+        // Insert into a missing key with a `None` expectation.
+        let (updated, current) = apply_storage_cas(&mut data, "k", None, Some("fresh"));
+        assert!(updated);
+        assert_eq!(current, None);
+        assert_eq!(data.get("k").map(String::as_str), Some("fresh"));
+
+        // A `Some` expectation against a missing key must conflict, not insert.
+        let (updated, current) = apply_storage_cas(&mut data, "other", Some("x"), Some("y"));
+        assert!(!updated);
+        assert_eq!(current, None);
+        assert!(!data.contains_key("other"));
+    }
+
+    #[test]
+    fn storage_change_broadcast_payload_carries_key_and_source() {
+        let payload = RuntimeStorageChange {
+            key: "easy-console.runLogs",
+            source: "main",
+        };
+        let json = serde_json::to_value(&payload).expect("serialize failed");
+        assert_eq!(json["key"], "easy-console.runLogs");
+        assert_eq!(json["source"], "main");
+    }
+
     /// Kept as a single test because the active locale is process-global and
     /// tests within a binary run concurrently.
     #[test]
     fn locale_selects_the_expected_dictionary() {
+        let _guard = LOCALE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         i18n::set_locale("en-US");
         assert!(i18n::is_english());
         assert_eq!(trf!("结果：{}", "Result: {}", 7), "Result: 7");
@@ -1428,6 +1577,7 @@ mod tests {
     /// round-trip needs a window and is covered by `npm run tauri:dev`.
     #[test]
     fn set_locale_command_updates_the_native_locale() {
+        let _guard = LOCALE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         i18n::set_locale("zh-CN");
         assert!(!i18n::is_english());
 
@@ -1436,5 +1586,48 @@ mod tests {
 
         set_locale("zh-CN".to_string());
         assert!(!i18n::is_english());
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn keychain_roundtrip_uses_persistent_platform_store() {
+        let key = format!("easy-console-selftest-{}", uuid::Uuid::new_v4());
+
+        // The entry must come from a real OS keystore, not the in-memory mock
+        // keyring falls back to when no platform feature is enabled.
+        let probe =
+            keyring::Entry::new(KEYCHAIN_SERVICE, &key).expect("keyring entry creation failed");
+        if probe.get_credential().is::<keyring::mock::MockCredential>() {
+            panic!("keyring fell back to its in-memory mock keystore; platform keystore features are not enabled");
+        }
+
+        // Headless Linux machines may lack a Secret Service daemon; treat that
+        // as a skip instead of a failure there.
+        match probe.set_password("selftest-probe") {
+            Ok(()) => {
+                probe
+                    .delete_credential()
+                    .expect("keychain probe cleanup failed");
+            }
+            Err(keyring::Error::NoStorageAccess(_) | keyring::Error::PlatformFailure(_))
+                if cfg!(target_os = "linux") =>
+            {
+                eprintln!("skipping keychain roundtrip: no platform keystore available");
+                return;
+            }
+            Err(e) => panic!("keychain probe write failed: {e}"),
+        }
+
+        // Every command call constructs a fresh keyring Entry, so reading back
+        // through the commands exercises the same code path as a restart.
+        // Clean up before asserting so a failing assertion never leaves the
+        // selftest credential behind in the OS keystore.
+        keychain_set(key.clone(), "selftest-secret".to_string()).expect("keychain set failed");
+        let stored = keychain_get(key.clone()).expect("keychain get failed");
+        keychain_remove(key.clone()).expect("keychain remove failed");
+        let after_remove = keychain_get(key.clone()).expect("keychain get failed");
+
+        assert_eq!(stored.as_deref(), Some("selftest-secret"));
+        assert_eq!(after_remove, None);
     }
 }

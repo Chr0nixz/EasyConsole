@@ -40,6 +40,13 @@ export async function updateStorageValue(
   key: string,
   updater: (current: string | null) => string | null | Promise<string | null>,
 ): Promise<string | null> {
+  // Backends with a native compare-and-swap handle cross-window conflicts
+  // themselves; the per-key lock still serializes callers within this window.
+  const atomicUpdate = storage.update;
+  if (atomicUpdate) {
+    return withStorageLock(key, () => atomicUpdate(key, updater));
+  }
+
   const apply = async () => {
     const current = await storage.get(key);
     const next = await updater(current);

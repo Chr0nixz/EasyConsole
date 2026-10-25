@@ -82,67 +82,222 @@ const localStorageAdapter: RuntimeStorage = {
   },
 };
 
-// Front-end in-memory cache mirror for Tauri storage. Reduces IPC round-trips
-// for hot paths like appendRunLog and scheduled-task persist. The Rust-side
-// Mutex (RUNTIME_STORAGE_LOCK) guarantees correctness; this cache is purely a
-// read optimization.
-const tauriStorageCache = new Map<string, string | null>();
+/**
+ * Native storage operations the cached window adapter is built on. The real
+ * bindings invoke Tauri commands; tests supply a shared fake backend to
+ * simulate two windows against one store.
+ */
+export type NativeStorageBackend = {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  remove(key: string): Promise<void>;
+  /**
+   * Apply `next` (insert or remove when null) only when the stored value still
+   * equals `expected`. On conflict, resolve `{ updated: false, current }` with
+   * the authoritative value so the caller can retry without a second read.
+   */
+  compareAndSwap(
+    key: string,
+    expected: string | null,
+    next: string | null,
+  ): Promise<{ updated: boolean; current: string | null }>;
+};
 
-const tauriStorageAdapter: RuntimeStorage = {
-  async get(key) {
-    if (tauriStorageCache.has(key)) {
-      const cached = tauriStorageCache.get(key) ?? null;
+/** Payload of the native cross-window storage-change broadcast. */
+export type StorageChangeBroadcast = { key: string; source: string };
+
+export type CachedWindowStorageOptions = {
+  backend: NativeStorageBackend;
+  /** Subscribe to native storage-change broadcasts; returns an unlisten function. */
+  subscribeChanges(handler: (event: StorageChangeBroadcast) => void): Promise<() => void>;
+  /** This window's label; broadcasts originating here are self-writes. */
+  selfLabel(): Promise<string>;
+  /** Store used when native commands fail (and for one-time migration reads). */
+  fallback: RuntimeStorage;
+};
+
+/** Give up the CAS retry loop after this many cross-window conflicts. */
+export const MAX_STORAGE_CAS_ATTEMPTS = 8;
+
+/**
+ * Window-local storage adapter over a native backend.
+ *
+ * Reduces IPC round-trips via an in-memory cache. Correctness across windows:
+ * every native write broadcasts a change event, and foreign broadcasts
+ * invalidate the matching cache entry (self-writes are ignored — the cache was
+ * already updated synchronously). A per-key epoch counter keeps a late,
+ * stale `get` response from repopulating the cache after an invalidation.
+ *
+ * `update` performs a compare-and-swap loop so two windows running
+ * read-modify-write on the same key cannot silently drop each other's changes:
+ * the native CAS runs under the global storage lock and the losing window
+ * retries its transform against the fresh value.
+ */
+export function createCachedWindowStorage(options: CachedWindowStorageOptions): RuntimeStorage {
+  const cache = new Map<string, string | null>();
+  const epochs = new Map<string, number>();
+  let subscription: Promise<void> | null = null;
+
+  // Lazy so merely importing the module never touches IPC; the first storage
+  // operation registers the listener. Fire-and-forget on purpose: storage must
+  // never block on the subscription, and a broadcast racing the registration
+  // only costs one stale cache read until the next invalidation.
+  const ensureSubscription = () => {
+    if (subscription) return;
+    subscription = (async () => {
+      let selfLabel: string | null = null;
+      try {
+        selfLabel = await options.selfLabel();
+      } catch (error) {
+        // Without our own label every broadcast counts as foreign: correctness
+        // (dropping a stale cache entry) over avoiding churn.
+        console.warn("Failed to resolve this window's label for storage invalidation.", error);
+      }
+      try {
+        await options.subscribeChanges((event) => {
+          if (selfLabel !== null && event.source === selfLabel) return;
+          epochs.set(event.key, (epochs.get(event.key) ?? 0) + 1);
+          cache.delete(event.key);
+        });
+      } catch (error) {
+        console.warn("Failed to subscribe to storage change broadcasts.", error);
+      }
+    })();
+  };
+
+  const get = async (key: string): Promise<string | null> => {
+    ensureSubscription();
+    if (cache.has(key)) {
+      const cached = cache.get(key) ?? null;
       if (cached !== null) return cached;
       // Cached null may be from a prior IPC miss while fallback still holds data.
     }
+    const epochAtStart = epochs.get(key) ?? 0;
+    const cacheIfUnchanged = (value: string | null) => {
+      if ((epochs.get(key) ?? 0) === epochAtStart) cache.set(key, value);
+    };
     try {
-      const value = await invokeTauriCommand<string | null>("runtime_storage_get", { key });
+      const value = await options.backend.get(key);
       if (value !== null && value !== undefined) {
-        tauriStorageCache.set(key, value);
+        cacheIfUnchanged(value);
         return value;
       }
-      // IPC succeeded with null — check browser fallback and migrate back to native.
-      const fallback = await localStorageAdapter.get(key);
+      // Native miss — check the fallback store and migrate any copy back to native.
+      const fallback = await options.fallback.get(key);
       if (fallback !== null) {
         try {
-          await invokeTauriCommand("runtime_storage_set", { key, value: fallback });
-          await localStorageAdapter.remove(key);
+          await options.backend.set(key, fallback);
+          await options.fallback.remove(key);
         } catch (migrateError) {
           console.warn("Tauri storage migrate-from-fallback failed.", migrateError);
         }
-        tauriStorageCache.set(key, fallback);
+        cacheIfUnchanged(fallback);
         return fallback;
       }
-      tauriStorageCache.set(key, null);
+      cacheIfUnchanged(null);
       return null;
     } catch (error) {
       console.warn("Tauri storage get failed, falling back to localStorage.", error);
-      return localStorageAdapter.get(key);
+      return options.fallback.get(key);
     }
-  },
-  async set(key, value) {
-    tauriStorageCache.set(key, value);
+  };
+
+  const set = async (key: string, value: string): Promise<void> => {
+    ensureSubscription();
+    cache.set(key, value);
     try {
-      await invokeTauriCommand("runtime_storage_set", { key, value });
+      await options.backend.set(key, value);
       // Clear stale fallback copy after successful native write.
-      await localStorageAdapter.remove(key).catch(() => undefined);
+      await options.fallback.remove(key).catch(() => undefined);
     } catch (error) {
       console.warn("Tauri storage set failed, falling back to localStorage.", error);
-      await localStorageAdapter.set(key, value);
+      await options.fallback.set(key, value);
     }
-  },
-  async remove(key) {
+  };
+
+  const remove = async (key: string): Promise<void> => {
+    ensureSubscription();
     // Tombstone in cache so a later get does not revive stale fallback before native delete lands.
-    tauriStorageCache.set(key, null);
+    cache.set(key, null);
     try {
-      await invokeTauriCommand("runtime_storage_remove", { key });
-      await localStorageAdapter.remove(key);
+      await options.backend.remove(key);
+      await options.fallback.remove(key);
     } catch (error) {
       console.warn("Tauri storage remove failed, falling back to localStorage.", error);
-      await localStorageAdapter.remove(key);
+      await options.fallback.remove(key);
     }
+  };
+
+  const update = async (
+    key: string,
+    updater: (current: string | null) => string | null | Promise<string | null>,
+  ): Promise<string | null> => {
+    ensureSubscription();
+    let expected = await get(key);
+    for (let attempt = 0; attempt < MAX_STORAGE_CAS_ATTEMPTS; attempt += 1) {
+      const next = await updater(expected);
+      if (next === expected) return next; // unchanged: skip the write entirely
+      let outcome: { updated: boolean; current: string | null };
+      const epochAtCasStart = epochs.get(key) ?? 0;
+      try {
+        outcome = await options.backend.compareAndSwap(key, expected, next);
+      } catch (error) {
+        // Native CAS unavailable (stale shell build / IPC failure): degrade to
+        // the previous plain write rather than failing the whole operation.
+        console.warn("Tauri storage compare-and-swap failed; writing without cross-window protection.", error);
+        if (next === null) {
+          await remove(key);
+          return null;
+        }
+        await set(key, next);
+        return next;
+      }
+      if (outcome.updated) {
+        // A foreign broadcast may have landed between our CAS commit and this
+        // line; only cache when nothing invalidated the key in between.
+        if ((epochs.get(key) ?? 0) === epochAtCasStart) cache.set(key, next);
+        else cache.delete(key);
+        await options.fallback.remove(key).catch(() => undefined);
+        return next;
+      }
+      // Another window won the race; re-apply the transform on the fresh value.
+      expected = outcome.current;
+    }
+    throw new Error(
+      i18nText(
+        `本地数据保存连续 ${MAX_STORAGE_CAS_ATTEMPTS} 次与其他窗口冲突：${key}`,
+        `Local data for "${key}" could not be saved after ${MAX_STORAGE_CAS_ATTEMPTS} cross-window conflicts`,
+      ),
+    );
+  };
+
+  return { get, set, remove, update };
+}
+
+const STORAGE_CHANGED_EVENT = "runtime-storage-changed";
+
+const tauriStorageAdapter: RuntimeStorage = createCachedWindowStorage({
+  backend: {
+    get: (key) => invokeTauriCommand<string | null>("runtime_storage_get", { key }),
+    set: (key, value) => invokeTauriCommand("runtime_storage_set", { key, value }),
+    remove: (key) => invokeTauriCommand("runtime_storage_remove", { key }),
+    compareAndSwap: (key, expected, next) =>
+      invokeTauriCommand<{ updated: boolean; current: string | null }>("runtime_storage_compare_and_swap", {
+        key,
+        expected,
+        next,
+      }),
   },
-};
+  subscribeChanges: async (handler) => {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<StorageChangeBroadcast>(STORAGE_CHANGED_EVENT, (event) => handler(event.payload));
+  },
+  selfLabel: async () => {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    return getCurrentWindow().label;
+  },
+  fallback: localStorageAdapter,
+});
 
 // Secure storage uses the OS keychain on desktop (macOS Keychain, Windows
 // Credential Manager, Linux Secret Service) and falls back to tauriStorage when

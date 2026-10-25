@@ -61,7 +61,9 @@ struct TestSessionEvent {
 }
 
 /// Safety net only; a healthy run finishes each test in well under a second.
-const TEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Kept generous because the SFTP round-trip has historically timed out on its
+/// first run on a cold/loaded machine.
+const TEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
     init_test_logging();
