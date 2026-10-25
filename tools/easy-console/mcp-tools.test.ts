@@ -415,6 +415,7 @@ describe("easy-console MCP tools", () => {
       payload: { name: "scheduled-task" },
     });
     expect(result).toMatchObject({ dryRun: true, action: "schedule.create" });
+    expect(result).not.toHaveProperty("note");
   });
 
   it("creates a local scheduled task when confirm=true", async () => {
@@ -427,6 +428,15 @@ describe("easy-console MCP tools", () => {
     });
     expect(result).toMatchObject({ dryRun: false, action: "schedule.create" });
     expect(result).toMatchObject({ result: { name: "my-schedule", status: "pending" } });
+    // The store has no runner: the note must tell the agent it will not fire automatically.
+    expect(result).toMatchObject({ note: expect.stringContaining("NOT run automatically") });
+  });
+
+  it("documents that local scheduled tasks never execute automatically", () => {
+    for (const name of ["easyconsole_schedule_create", "easyconsole_schedule_update", "easyconsole_schedule_resume"]) {
+      const tool = getTool(name);
+      expect(tool.description).toContain("never executed automatically");
+    }
   });
 
   it("returns dry-run for backup_import without confirm", async () => {

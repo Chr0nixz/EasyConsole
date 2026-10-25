@@ -816,11 +816,15 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
-  const schedule = program.command("schedule").description("Local scheduled task operations");
+  const schedule = program
+    .command("schedule")
+    .description("Local scheduled task operations (tasks are never executed automatically; run them with `schedule run`)");
   const scheduleList = schedule.command("list").description("List local scheduled tasks");
   scheduleList.action(run(scheduleList, (context) => listScheduledTasks(context.storage)));
 
-  const scheduleCreate = schedule.command("create").description("Create a local scheduled task");
+  const scheduleCreate = schedule
+    .command("create")
+    .description("Create a local scheduled task (it will not run automatically; use `schedule run`)");
   scheduleCreate.requiredOption("--name <name>", "Scheduled task name");
   scheduleCreate.requiredOption("--schedule-time <datetime>", "ISO schedule time");
   scheduleCreate.requiredOption("--payload-json <json>", "Create task JSON payload");

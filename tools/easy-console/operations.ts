@@ -49,6 +49,12 @@ export type ConfirmedMutationResult = {
   action: string;
   payload: unknown;
   result: unknown;
+  /**
+   * Caveat the caller must know about, e.g. that a persisted local scheduled
+   * task is never executed automatically. Optional so existing results are
+   * unaffected.
+   */
+  note?: string;
 };
 
 export type DryRunMutationResult = {

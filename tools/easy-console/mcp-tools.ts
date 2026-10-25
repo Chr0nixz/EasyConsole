@@ -100,6 +100,19 @@ function asRecord(value: unknown) {
   return value as UnknownRecord;
 }
 
+/**
+ * Stamp the confirmed schedule.create outcome: the CLI/MCP store has no
+ * runner, so without this note agents assume the task will fire automatically
+ * (the desktop app's runner reads a different store entirely).
+ */
+function withScheduleAutoRunNote(result: Awaited<ReturnType<typeof createScheduledTaskRecord>>) {
+  if (result.dryRun) return result;
+  return {
+    ...result,
+    note: "Local scheduled task persisted. It will NOT run automatically — trigger it with easyconsole_schedule_run (or manage it in the desktop app).",
+  };
+}
+
 function sourceForTool(name: string): RunLogSource {
   if (name.includes("_task_") || name.includes("_template_") || name.includes("_schedule_")) return "task";
   if (name.includes("_storage_") || name.includes("_backup_")) return "storage";
@@ -585,7 +598,9 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_schedule_create",
-      description: "Create a local scheduled task. Requires confirm=true to persist; otherwise returns a dry-run preview.",
+      description:
+        "Create a local scheduled task. Requires confirm=true to persist; otherwise returns a dry-run preview. " +
+        "Local scheduled tasks are never executed automatically — run them with easyconsole_schedule_run (or the desktop app).",
       inputSchema: {
         name: z.string(),
         scheduleTime: z.string(),
@@ -605,12 +620,14 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
             recurrence: input.recurrence as unknown as Parameters<typeof createScheduledTaskRecord>[1]["recurrence"],
           },
           asConfirm(input.confirm),
-        );
+        ).then(withScheduleAutoRunNote);
       },
     },
     {
       name: "easyconsole_schedule_update",
-      description: "Update a local scheduled task. Requires confirm=true to execute.",
+      description:
+        "Update a local scheduled task. Requires confirm=true to execute. " +
+        "Local scheduled tasks are never executed automatically — run them with easyconsole_schedule_run (or the desktop app).",
       inputSchema: {
         taskId: z.string(),
         patch: z.record(z.string(), z.unknown()),
@@ -642,7 +659,9 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_schedule_resume",
-      description: "Resume a paused or failed scheduled task. Requires confirm=true to execute.",
+      description:
+        "Resume a paused or failed scheduled task. Requires confirm=true to execute. " +
+        "Local scheduled tasks are never executed automatically — run them with easyconsole_schedule_run (or the desktop app).",
       inputSchema: {
         taskId: z.string(),
         confirm: z.boolean().optional(),
