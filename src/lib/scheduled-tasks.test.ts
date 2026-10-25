@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, afterEach, expect, it } from "vitest";
 
+import { resetAccountScope, setActiveAccountScope } from "./account-scope";
 import {
+  LEGACY_SCHEDULED_TASK_OWNER,
+  SCHEDULED_TASKS_STORAGE_KEY,
   createScheduledTask,
+  holdScheduledTaskForReview,
   isScheduleDue,
   loadScheduledTasks,
   mutateScheduledTasks,
@@ -9,6 +13,7 @@ import {
   pauseScheduledTask,
   resumeScheduledTask,
   saveScheduledTasks,
+  scheduledTaskOwnerMismatch,
   sortScheduledTasks,
   updateScheduledTask,
 } from "./scheduled-tasks";
@@ -161,5 +166,102 @@ describe("scheduled tasks", () => {
     });
     expect(() => isScheduleDue(task, new Date("2026-05-24T12:00:00"))).not.toThrow();
     expect(isScheduleDue(task, new Date("2026-05-24T12:00:00"))).toBe(false);
+  });
+});
+
+describe("scheduled task owner", () => {
+  afterEach(() => {
+    resetAccountScope();
+  });
+
+  it("migrates ownerless legacy records to the legacy/unknown marker on load", async () => {
+    const storage = createMemoryStorage();
+    const legacy = makeTask({ id: "legacy-1" });
+    expect(legacy.owner).toBeUndefined();
+    await storage.set(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify([legacy]));
+
+    const loaded = await loadScheduledTasks(storage);
+
+    expect(loaded[0]?.owner).toEqual(LEGACY_SCHEDULED_TASK_OWNER);
+    expect(loaded[0]?.owner?.key).toBe("legacy");
+  });
+
+  it("round-trips a recorded owner", async () => {
+    const storage = createMemoryStorage();
+    const owner = { key: "alice@console.example/api", displayName: "Alice" };
+    await saveScheduledTasks(storage, [makeTask({ owner })]);
+
+    const loaded = await loadScheduledTasks(storage);
+
+    expect(loaded[0]?.owner).toEqual(owner);
+  });
+
+  it("stamps the active account on newly created schedules", () => {
+    setActiveAccountScope({ key: "alice@console", displayName: "Alice" });
+    const task = createScheduledTask({ name: "train", scheduleTime: "2026-05-24T10:00", payload: { name: "train" } });
+    expect(task.owner).toEqual({ key: "alice@console", displayName: "Alice" });
+  });
+
+  it("falls back to the legacy owner when created without a signed-in account", () => {
+    const task = createScheduledTask({ name: "train", scheduleTime: "2026-05-24T10:00", payload: { name: "train" } });
+    expect(task.owner).toEqual(LEGACY_SCHEDULED_TASK_OWNER);
+  });
+
+  it("accepts an explicit owner override", () => {
+    setActiveAccountScope({ key: "bob@console", displayName: "Bob" });
+    const task = createScheduledTask({
+      name: "train",
+      scheduleTime: "2026-05-24T10:00",
+      payload: { name: "train" },
+      owner: { key: "alice@console", displayName: "Alice" },
+    });
+    expect(task.owner).toEqual({ key: "alice@console", displayName: "Alice" });
+  });
+
+  it("flags mismatched and legacy owners with a migration reason", () => {
+    setActiveAccountScope({ key: "bob@console", displayName: "Bob" });
+
+    const mismatch = scheduledTaskOwnerMismatch(makeTask({ owner: { key: "alice@console", displayName: "Alice" } }));
+    expect(mismatch?.reason).toContain("Alice");
+    expect(mismatch?.reason).toContain("Bob");
+
+    const legacy = scheduledTaskOwnerMismatch(makeTask({}));
+    expect(legacy?.reason).toBeTruthy();
+
+    expect(scheduledTaskOwnerMismatch(makeTask({ owner: { key: "bob@console", displayName: "Bob" } }))).toBeNull();
+  });
+
+  it("flags every task when nobody is signed in", () => {
+    const reason = scheduledTaskOwnerMismatch(makeTask({ owner: { key: "alice@console", displayName: "Alice" } }));
+    expect(reason?.reason).toBeTruthy();
+  });
+
+  it("adopts the current account when resuming a held task (migration path)", () => {
+    setActiveAccountScope({ key: "bob@console", displayName: "Bob" });
+    const held = makeTask({
+      status: "needs_review",
+      owner: { key: "alice@console", displayName: "Alice" },
+      lastError: "held for review",
+    });
+
+    const resumed = resumeScheduledTask(held);
+
+    expect(resumed.status).toBe("pending");
+    expect(resumed.owner).toEqual({ key: "bob@console", displayName: "Bob" });
+    expect(resumed.lastError).toBeUndefined();
+    expect(scheduledTaskOwnerMismatch(resumed)).toBeNull();
+  });
+
+  it("keeps the stored owner when resuming outside a signed-in session (CLI/MCP)", () => {
+    const owner = { key: "alice@console", displayName: "Alice" };
+    const resumed = resumeScheduledTask(makeTask({ status: "paused", owner }));
+    expect(resumed.owner).toEqual(owner);
+  });
+
+  it("holds a mismatched task for review without executing it", () => {
+    const held = holdScheduledTaskForReview(makeTask({ status: "pending" }), "owner mismatch", new Date("2026-05-24T12:00:00Z"));
+    expect(held.status).toBe("needs_review");
+    expect(held.lastError).toBe("owner mismatch");
+    expect(isScheduleDue(held, new Date("2026-05-24T13:00:00"))).toBe(false);
   });
 });

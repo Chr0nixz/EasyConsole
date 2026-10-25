@@ -1,10 +1,21 @@
 import { mutateScheduledTasks, scheduleNextRun, STALE_LEASE_MS, resetStaleRunningTasks, updateScheduledTask } from "./scheduled-tasks";
 import { applyScheduledReleasePolicy } from "./scheduled-release";
+import { isNetworkError } from "./api-client";
+import {
+  activeExecutionAccount,
+  appendExecutionLedgerEntry,
+  createExecutionLedgerEntry,
+  type ExecutionLedgerEntry,
+  type ExecutionTrigger,
+} from "./execution-ledger";
 import { i18nText } from "./i18n-text";
 import { RecurrenceValidationError } from "./task-recurrence";
 import type { CreateTaskPayload, RuntimeStorage, ScheduledTask } from "./types";
 
 export { STALE_LEASE_MS, resetStaleRunningTasks as reconcileStaleRunningTasks };
+
+const DEFAULT_PERSIST_RETRY_ATTEMPTS = 2;
+const DEFAULT_PERSIST_RETRY_DELAY_MS = 150;
 
 export function makeExecutionKey(task: Pick<ScheduledTask, "id" | "scheduleTime">) {
   return `${task.id}@${task.scheduleTime}`;
@@ -12,6 +23,48 @@ export function makeExecutionKey(task: Pick<ScheduledTask, "id" | "scheduleTime"
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function errorMessageOf(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Remote create confirmed but the local completion write kept failing. Keep
+ * the remote task id and park the row in needs_review; replaying would create
+ * a duplicate remote instance.
+ */
+function persistFailureReview(withRemote: ScheduledTask, error: unknown, now: Date): ScheduledTask {
+  const remoteId = withRemote.lastRemoteTaskId;
+  return {
+    ...withRemote,
+    status: "needs_review",
+    lastError: i18nText(
+      `远程任务已创建${remoteId ? `（${remoteId}）` : ""}，但本地保存失败：${errorMessageOf(error)}。请先在控制台核对远端任务，切勿重复执行。`,
+      `Remote task was created${remoteId ? ` (${remoteId})` : ""} but saving it locally failed: ${errorMessageOf(error)}. Verify the remote task on the console before replaying.`,
+    ),
+    leaseStartedAt: undefined,
+    updatedAt: now.toISOString(),
+  };
+}
+
+/**
+ * The create request failed at the network level: it may still have reached
+ * the server. The outcome is unknown, so park in needs_review instead of
+ * failed — an automatic retry could create a duplicate remote instance.
+ */
+function unknownOutcomeReview(task: ScheduledTask, error: unknown, now: Date): ScheduledTask {
+  return {
+    ...task,
+    status: "needs_review",
+    lastRunAt: now.toISOString(),
+    lastError: i18nText(
+      `远程创建结果未知（网络错误）：${errorMessageOf(error)}。请先在控制台核对是否已创建，再决定是否重放。`,
+      `Remote create outcome unknown (network error): ${errorMessageOf(error)}. Verify on the console whether the task was created before replaying.`,
+    ),
+    leaseStartedAt: undefined,
+    updatedAt: now.toISOString(),
+  };
 }
 
 /** Mark a due task as running with a lease before calling the remote API. */
@@ -93,15 +146,144 @@ export type ExecuteScheduledTaskDeps = {
    * never replayed.
    */
   force?: boolean;
+  /**
+   * How the execution ledger classifies this run: the background schedule
+   * (default), a manual "Run now" ("manual"), or the CLI/MCP wrapper ("cli").
+   */
+  trigger?: ExecutionTrigger;
   now?: Date;
   staleMs?: number;
+  /** Extra attempts for the local completion write after a confirmed remote create. */
+  persistRetryAttempts?: number;
+  /** Base delay between local persistence retries (scaled by attempt). */
+  persistRetryDelayMs?: number;
 };
 
 export type ExecuteScheduledTaskSkipReason = "already-completed" | "in-flight" | "not-runnable";
 
+/** How a non-skipped execution ended: fully recorded, or remote-created but unpersistable locally. */
+export type ExecuteScheduledTaskOutcome = "completed" | "local-persist-failed";
+
 export type ExecuteScheduledTaskResult =
   | { skipped: true; reason: ExecuteScheduledTaskSkipReason; task: ScheduledTask }
-  | { skipped: false; task: ScheduledTask; remoteTaskId?: string; result: unknown };
+  | { skipped: false; outcome: ExecuteScheduledTaskOutcome; task: ScheduledTask; remoteTaskId?: string; result: unknown };
+
+/** Write the completion record, retrying transient local storage failures. */
+async function persistCompletionWithRetry(
+  storage: RuntimeStorage,
+  withRemote: ScheduledTask,
+  now: Date,
+  deps: ExecuteScheduledTaskDeps,
+): Promise<ScheduledTask> {
+  const attempts = Math.max(0, deps.persistRetryAttempts ?? DEFAULT_PERSIST_RETRY_ATTEMPTS);
+  const delayMs = deps.persistRetryDelayMs ?? DEFAULT_PERSIST_RETRY_DELAY_MS;
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= attempts; attempt += 1) {
+    if (attempt > 0 && delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+    }
+    let saved: ScheduledTask | undefined;
+    try {
+      await mutateScheduledTasks(storage, (current) => {
+        try {
+          saved = completeScheduledExecution(withRemote, withRemote.lastRemoteTaskId, now);
+        } catch (error) {
+          const message =
+            error instanceof RecurrenceValidationError ? error.message : error instanceof Error ? error.message : String(error);
+          saved = {
+            ...withRemote,
+            status: "needs_review",
+            lastError: message,
+            leaseStartedAt: undefined,
+            updatedAt: now.toISOString(),
+          };
+        }
+        // Merge onto the latest row: concurrent user edits (rename, payload
+        // change) survive, while the scheduling transition (status, next
+        // scheduleTime, recurrence advance) from the completion wins.
+        return current.map((item) =>
+          item.id === saved!.id
+            ? { ...applyExecutionOutcome(item, saved!), scheduleTime: saved!.scheduleTime, recurrence: saved!.recurrence }
+            : item,
+        );
+      });
+      return saved ?? withRemote;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError ?? new Error("Scheduled task completion could not be persisted.");
+}
+
+/**
+ * Overlay an execution outcome onto the latest stored row. Only execution
+ * bookkeeping (status, lease, remote id, errors) is overwritten, so edits made
+ * from another window while this execution was in flight (rename, schedule
+ * change) survive; the outcome never wholesale-replaces the row.
+ */
+export function applyExecutionOutcome(latest: ScheduledTask, outcome: ScheduledTask): ScheduledTask {
+  return {
+    ...latest,
+    status: outcome.status,
+    lastError: outcome.lastError,
+    lastRunAt: outcome.lastRunAt ?? latest.lastRunAt,
+    lastRemoteTaskId: outcome.lastRemoteTaskId ?? latest.lastRemoteTaskId,
+    executionKey: outcome.executionKey ?? latest.executionKey,
+    leaseStartedAt: outcome.leaseStartedAt,
+    owner: outcome.owner ?? latest.owner,
+    updatedAt: outcome.updatedAt,
+  };
+}
+
+/**
+ * Best-effort final write for failure/review markers. Storage may be exactly
+ * what is broken; a leftover "running" row is reconciled to needs_review by
+ * resetStaleRunningTasks once storage recovers.
+ */
+async function tryPersistTaskState(storage: RuntimeStorage, outcome: ScheduledTask): Promise<void> {
+  try {
+    await mutateScheduledTasks(storage, (current) =>
+      current.map((item) => (item.id === outcome.id ? applyExecutionOutcome(item, outcome) : item)),
+    );
+  } catch {
+    // Intentionally swallowed: the original remote outcome is the error that
+    // matters to the caller, and re-creating the remote task is never an option.
+  }
+}
+
+/**
+ * Land one execution-ledger entry for a finished run. The ledger is an audit
+ * trail, never a participant in the execution flow: append failures are
+ * swallowed on purpose so a broken ledger can neither fail nor retry a remote
+ * create.
+ */
+async function recordExecutionOutcome(
+  storage: RuntimeStorage,
+  leased: ScheduledTask,
+  trigger: ExecutionTrigger,
+  startedAt: string,
+  outcome: ExecutionLedgerEntry["outcome"],
+  extra: { remoteTaskId?: string; error?: string } = {},
+): Promise<void> {
+  try {
+    await appendExecutionLedgerEntry(
+      storage,
+      createExecutionLedgerEntry({
+        scheduledTaskId: leased.id,
+        scheduledTaskName: leased.name,
+        trigger,
+        ...activeExecutionAccount(),
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        outcome,
+        remoteTaskId: extra.remoteTaskId,
+        error: extra.error,
+      }),
+    );
+  } catch {
+    // Intentional best-effort degradation; see the doc comment above.
+  }
+}
 
 /**
  * Claim a lease, create the remote instance, then record the outcome.
@@ -170,38 +352,49 @@ export async function executeScheduledTask(
   }
 
   const leased = claim.task;
+  const trigger: ExecutionTrigger = deps.trigger ?? "schedule";
+  // Ledger timestamps use the real wall clock, not `deps.now`: `deps.now` is a
+  // test seam for the scheduling domain (lease staleness, recurrence math) and
+  // a backdated value would make the entry look older than the retention window.
+  const startedAt = new Date().toISOString();
   try {
     const releaseAdjustedPayload = applyScheduledReleasePolicy(leased.payload, leased.scheduleTime);
     const prepared = deps.preparePayload ? await deps.preparePayload(releaseAdjustedPayload) : releaseAdjustedPayload;
     const result = await deps.createTask(prepared);
     const remoteTaskId = extractRemoteTaskId(result);
 
-    let completed: ScheduledTask | undefined;
-    await mutateScheduledTasks(storage, (current) => {
-      const withRemote: ScheduledTask = {
-        ...leased,
-        lastRemoteTaskId: remoteTaskId,
-        lastRunAt: now.toISOString(),
-      };
-      try {
-        completed = completeScheduledExecution(withRemote, remoteTaskId, now);
-      } catch (error) {
-        const message = error instanceof RecurrenceValidationError ? error.message : error instanceof Error ? error.message : String(error);
-        completed = {
-          ...withRemote,
-          status: "needs_review",
-          lastError: message,
-          leaseStartedAt: undefined,
-          updatedAt: now.toISOString(),
-        };
-      }
-      return updateScheduledTask(current, completed);
-    });
-
-    return { skipped: false, task: completed ?? leased, remoteTaskId, result };
+    // The remote task now exists. Everything below is local bookkeeping; a
+    // failure here must never lead to another remote create.
+    const withRemote: ScheduledTask = {
+      ...leased,
+      lastRemoteTaskId: remoteTaskId,
+      lastRunAt: now.toISOString(),
+    };
+    try {
+      const completed = await persistCompletionWithRetry(storage, withRemote, now, deps);
+      await recordExecutionOutcome(storage, leased, trigger, startedAt, "completed", { remoteTaskId });
+      return { skipped: false, outcome: "completed", task: completed, remoteTaskId, result };
+    } catch (persistError) {
+      const review = persistFailureReview(withRemote, persistError, now);
+      await tryPersistTaskState(storage, review);
+      await recordExecutionOutcome(storage, leased, trigger, startedAt, "local-persist-failed", {
+        remoteTaskId,
+        error: errorMessageOf(persistError),
+      });
+      return { skipped: false, outcome: "local-persist-failed", task: review, remoteTaskId, result };
+    }
   } catch (error) {
-    const failed = failScheduledExecution(leased, error instanceof Error ? error.message : String(error), now);
-    await mutateScheduledTasks(storage, (current) => updateScheduledTask(current, failed));
+    // createTask itself failed. Network-level failures may have reached the
+    // server (outcome unknown): park in needs_review instead of failed so no
+    // automatic replay can duplicate a remote create.
+    const networkFailed = isNetworkError(error);
+    const failed = networkFailed
+      ? unknownOutcomeReview(leased, error, now)
+      : failScheduledExecution(leased, error instanceof Error ? error.message : String(error), now);
+    await tryPersistTaskState(storage, failed);
+    await recordExecutionOutcome(storage, leased, trigger, startedAt, networkFailed ? "unknown" : "failed", {
+      error: errorMessageOf(error),
+    });
     throw error;
   }
 }

@@ -1,16 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, FolderOpen, Pause, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { CalendarCheck, CalendarClock, FolderOpen, Pause, Pencil, Play, Plus, Trash2, X, Zap } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 
+import { BatchPreviewDialog } from "../components/batch/BatchPreviewDialog";
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
-import { FieldError, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
+import { FieldError, FormSection, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
 import { MobileLongText } from "../components/MobileLongText";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
+import { CreateImpactSummary } from "../components/tasks/CreateImpactSummary";
+import { ResourcePresetPicker } from "../components/tasks/ResourcePresetPicker";
 import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
 import { ScriptEnvFields } from "../components/tasks/ScriptEnvFields";
-import { Button, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
+import { ExecutionLedgerPanel } from "../components/scheduled/ExecutionLedgerPanel";
+import { WorkspaceAccountBanner } from "../components/scheduled/WorkspaceAccountBanner";
+import { Button, Input, Panel, SegmentedControl, Select, StatePill, TableRegion, Textarea, type StateTone } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
+import { runBatch } from "../lib/batch-runner";
 import { queryKeys } from "../lib/query-keys";
 import { addHours, formatDateTimeLocalInput, formatTaskDefaultName, localizedText, releaseConditionText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
@@ -18,6 +25,9 @@ import { i18nText } from "../lib/i18n-text";
 import { parsePositivePrice } from "../lib/resource-price";
 import { normalizeStoragePath } from "../lib/remote-storage";
 import { browserRuntime } from "../lib/runtime";
+import { useExecutionReviewCount } from "../lib/use-execution-review";
+import { formatPayloadResources, formatResourcePresetSummary, parseResourcePresetValues } from "../lib/resource-presets";
+import { useResourcePresets } from "../lib/use-resource-presets";
 import { applyScheduledReleasePolicy, getScheduledReleaseTime } from "../lib/scheduled-release";
 import {
   applyEnvToScriptCommand,
@@ -37,7 +47,7 @@ import {
   updateScheduledTask,
 } from "../lib/scheduled-tasks";
 import { executeScheduledTask } from "../lib/schedule-execution";
-import { describeRecurrence, RecurrenceValidationError, validateRecurrence } from "../lib/task-recurrence";
+import { describeRecurrence, previewNextRuns, RecurrenceValidationError, validateRecurrence } from "../lib/task-recurrence";
 import { maybeAllocateUniqueCreateTaskNames } from "../lib/task-name-unique";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, ScheduledTask, ScheduledTaskStatus, TaskRecurrence, TaskRecurrenceType } from "../lib/types";
@@ -86,13 +96,68 @@ function parsePositiveInteger(value: string) {
   return Number.isInteger(number) && number > 0 ? number : null;
 }
 
-function statusClass(status: ScheduledTaskStatus) {
-  if (status === "done") return "bg-app-successSoft text-app-success ring-app-successRing";
-  if (status === "failed") return "bg-app-dangerSoft text-app-danger ring-app-dangerRing";
-  if (status === "running") return "bg-app-warningSoft text-app-warning ring-app-warningRing";
-  if (status === "needs_review") return "bg-app-warningSoft text-app-warning ring-app-warningRing";
-  if (status === "paused") return "bg-app-panel text-app-muted ring-app-border";
-  return "bg-app-accentSoft text-app-accent ring-app-accent/20";
+function statusTone(status: ScheduledTaskStatus): StateTone {
+  if (status === "done") return "success";
+  if (status === "failed") return "danger";
+  if (status === "needs_review") return "warning";
+  if (status === "running") return "info";
+  return "neutral";
+}
+
+function buildFormRecurrence(type: TaskRecurrenceType, intervalMinutes: string, cron: string, weekdays: number[]): TaskRecurrence | undefined {
+  if (type === "interval") {
+    const minutes = Number(intervalMinutes);
+    return Number.isFinite(minutes) && minutes > 0 ? { type: "interval", intervalSec: Math.round(minutes * 60) } : undefined;
+  }
+  if (type === "cron") return cron.trim() ? { type: "cron", cron: cron.trim() } : undefined;
+  if (type === "weekly") return { type: "weekly", weekdays: [...weekdays].sort() };
+  if (type === "daily") return { type: "daily" };
+  return undefined;
+}
+
+const PREVIEW_RUN_COUNT = 3;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * What a recurring rule will actually do: the next runs and how many instances a day
+ * that adds up to. Every run creates a GPU instance, so the rate matters more than the syntax.
+ */
+function RecurrencePreview({ scheduleTime, recurrence }: { scheduleTime: string; recurrence: TaskRecurrence | undefined }) {
+  const { locale, text } = useI18n();
+  const preview = useMemo(() => {
+    if (!recurrence) return null;
+    const first = new Date(scheduleTime);
+    if (Number.isNaN(first.getTime())) return null;
+    try {
+      validateRecurrence(recurrence);
+      const seed = { scheduleTime: first.toISOString(), lastRunAt: first.toISOString(), recurrence } as ScheduledTask;
+      const runs = [first, ...previewNextRuns(seed, PREVIEW_RUN_COUNT - 1, first)];
+      // Runs inside the first 24 hours, capped so a per-minute cron stays cheap to count.
+      const dayRuns = [first, ...previewNextRuns(seed, 300, first)].filter((run) => run.getTime() - first.getTime() < DAY_MS).length;
+      return { runs, dayRuns };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : text("重复规则无效", "Invalid recurrence rule") };
+    }
+  }, [recurrence, scheduleTime, text]);
+
+  if (!preview) return null;
+  const formatRun = (date: Date) => date.toLocaleString(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+  return (
+    <div className="text-xs md:col-span-3" role="status">
+      {"error" in preview ? (
+        <span className="text-app-danger">{preview.error}</span>
+      ) : (
+        <span className="text-app-muted">
+          {text("接下来：", "Next runs: ")}
+          <span className="app-numeric text-app-text">{preview.runs.map(formatRun).join(" · ")}</span>
+          {text(
+            ` · 首日约 ${preview.dayRuns >= 300 ? "300+" : preview.dayRuns} 次，每次创建 1 个实例`,
+            ` · about ${preview.dayRuns >= 300 ? "300+" : preview.dayRuns} in the first day, each creating one instance`,
+          )}
+        </span>
+      )}
+    </div>
+  );
 }
 
 function formatScheduleTime(value: string) {
@@ -117,9 +182,26 @@ export function ScheduledTasksPage() {
   const [loadError, setLoadError] = useState<Error | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
+  // Every manual run creates billable instances, so it opens the same impact preview as a
+  // batch create before anything is submitted. `force` runs a plan that is not due yet.
+  const [runPreview, setRunPreview] = useState<{ targets: ScheduledTask[]; force: boolean } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   // The list leads; the 14-field form opens on demand (new plan, edit, or the empty state).
   const [formOpen, setFormOpen] = useState(false);
+  // `?view=ledger` (from review toasts, the nav badge, the dashboard) opens the ledger directly.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const view: "plans" | "ledger" = searchParams.get("view") === "ledger" ? "ledger" : "plans";
+  const setView = (next: "plans" | "ledger") => {
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      if (next === "ledger") params.set("view", "ledger");
+      else params.delete("view");
+      return params;
+    }, { replace: true });
+  };
+  const executionReviewCount = useExecutionReviewCount();
+  const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
+  const focusTimerRef = useRef<number | null>(null);
   const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
   const [storagePickerTarget, setStoragePickerTarget] = useState<StoragePickerTarget | null>(null);
   const [name, setName] = useState(formatTaskDefaultName());
@@ -130,6 +212,10 @@ export function ScheduledTasksPage() {
   const [cpu, setCpu] = useState(DEFAULT_CPU);
   const [gpu, setGpu] = useState(DEFAULT_GPU);
   const [memory, setMemory] = useState(DEFAULT_MEMORY);
+  // Same local presets as the create dialog and templates, so one saved shape works everywhere.
+  const { presets: resourcePresets, savePreset, deletePreset } = useResourcePresets(browserRuntime.storage, formOpen);
+  const currentResourcePresetValues = parseResourcePresetValues(cpu, gpu, memory);
+  const resourcePresetSummary = currentResourcePresetValues ? formatResourcePresetSummary(currentResourcePresetValues) : undefined;
   const [releaseCondition, setReleaseCondition] = useState("1");
   const [storagePath, setStoragePath] = useState("");
   const [mountPath, setMountPath] = useState("");
@@ -137,10 +223,33 @@ export function ScheduledTasksPage() {
   const [scriptPath, setScriptPath] = useState("");
   const [scriptEnv, setScriptEnv] = useState<ScriptEnvVar[]>([]);
   const [recurrenceType, setRecurrenceType] = useState<TaskRecurrenceType>("once");
-  const [recurrenceIntervalSec, setRecurrenceIntervalSec] = useState("3600");
+  // Entered in minutes (stored as seconds): nobody schedules GPU jobs by the second.
+  const [recurrenceIntervalMin, setRecurrenceIntervalMin] = useState("60");
   const [recurrenceCron, setRecurrenceCron] = useState("");
   const [recurrenceWeekdays, setRecurrenceWeekdays] = useState<number[]>([1]);
   const releaseTime = useMemo(() => getScheduledReleaseTime(scheduleTime), [scheduleTime]);
+
+  /**
+   * Jump from the workspace banner to a task row without changing execution
+   * state: scroll the visible (desktop row or mobile card) element into view
+   * and mark it with the neutral row-hover fill for a moment.
+   */
+  const focusScheduledTask = useCallback((id: string) => {
+    const row = document.getElementById(`scheduled-task-row-${id}`);
+    const card = document.getElementById(`scheduled-task-card-${id}`);
+    const target = [row, card].find((el) => el && el.offsetParent !== null) ?? row ?? card;
+    target?.scrollIntoView({ block: "center" });
+    setFocusedTaskId(id);
+    if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = window.setTimeout(() => setFocusedTaskId(null), 2400);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
+    },
+    [],
+  );
 
   const images = useQuery({
     queryKey: queryKeys.images.list(),
@@ -253,7 +362,7 @@ export function ScheduledTasksPage() {
     setScriptPath("");
     setScriptEnv([]);
     setRecurrenceType("once");
-    setRecurrenceIntervalSec("3600");
+    setRecurrenceIntervalMin("60");
     setRecurrenceCron("");
     setRecurrenceWeekdays([1]);
     setFormError(null);
@@ -285,7 +394,7 @@ export function ScheduledTasksPage() {
     setScriptEnv(parsedScript.env);
     const recurrence = item.recurrence;
     setRecurrenceType(recurrence?.type ?? "once");
-    setRecurrenceIntervalSec(String(recurrence?.intervalSec ?? 3600));
+    setRecurrenceIntervalMin(String(Math.max(1, Math.round((recurrence?.intervalSec ?? 3600) / 60))));
     setRecurrenceCron(recurrence?.cron ?? "");
     setRecurrenceWeekdays(recurrence?.weekdays?.length ? [...recurrence.weekdays] : [1]);
     setFormError(null);
@@ -371,21 +480,11 @@ export function ScheduledTasksPage() {
       setFormError(null);
       const payload = buildPayload();
       if (!payload) return null;
-      let recurrence: TaskRecurrence | undefined;
-      if (recurrenceType === "interval") {
-        const sec = parseInt(recurrenceIntervalSec, 10);
-        if (Number.isFinite(sec) && sec > 0) recurrence = { type: "interval", intervalSec: sec };
-      } else if (recurrenceType === "cron") {
-        if (!recurrenceCron.trim()) {
-          setFormError(text("请填写 Cron 表达式", "Enter a cron expression"));
-          return null;
-        }
-        recurrence = { type: "cron", cron: recurrenceCron.trim() };
-      } else if (recurrenceType === "weekly") {
-        recurrence = { type: "weekly", weekdays: [...recurrenceWeekdays].sort() };
-      } else if (recurrenceType === "daily") {
-        recurrence = { type: "daily" };
+      if (recurrenceType === "cron" && !recurrenceCron.trim()) {
+        setFormError(text("请填写 Cron 表达式", "Enter a cron expression"));
+        return null;
       }
+      const recurrence = buildFormRecurrence(recurrenceType, recurrenceIntervalMin, recurrenceCron, recurrenceWeekdays);
 
       try {
         validateRecurrence(recurrence);
@@ -464,53 +563,61 @@ export function ScheduledTasksPage() {
     if (targets.length === 0 || isExecuting) return;
     setIsExecuting(true);
     try {
-      for (const target of targets) {
-        try {
-          const result = await executeScheduledTask(browserRuntime.storage, target.id, {
-            createTask: (payload) => instanceApi.createTask(payload),
-            preparePayload: async (payload) => {
-              const [next] = await maybeAllocateUniqueCreateTaskNames([payload], {
-                enabled: getRuntimeSettings().autoNumberDuplicateTaskNames,
-                checkTaskName: (name) => instanceApi.checkTaskName(name),
-              });
-              return next!;
-            },
-            force,
-          });
-          await reload();
-          if (result.skipped) {
-            if (result.reason === "in-flight") {
-              toast.info(text("定时任务正在执行", "Scheduled task is already running"), target.name);
+      // The original loop ran targets back-to-back, so no inter-item delay is added.
+      await runBatch(targets, {
+        delayMs: 0,
+        run: async (target) => {
+          try {
+            const result = await executeScheduledTask(browserRuntime.storage, target.id, {
+              createTask: (payload) => instanceApi.createTask(payload),
+              preparePayload: async (payload) => {
+                const [next] = await maybeAllocateUniqueCreateTaskNames([payload], {
+                  enabled: getRuntimeSettings().autoNumberDuplicateTaskNames,
+                  checkTaskName: (name) => instanceApi.checkTaskName(name),
+                });
+                return next!;
+              },
+              trigger: "manual",
+              force,
+            });
+            await reload();
+            if (result.skipped) {
+              if (result.reason === "in-flight") {
+                toast.info(text("定时任务正在执行", "Scheduled task is already running"), target.name);
+              }
+              return result;
             }
-            continue;
+            invalidateTaskQueries(queryClient);
+            toast.success(text("定时任务已执行", "Scheduled task executed"), target.name);
+            void runLogger.log({
+              source: "scheduled-task",
+              level: "info",
+              action: "scheduledTask.execute",
+              result: "success",
+              title: text("定时任务已执行", "Scheduled task executed"),
+              targetName: target.name,
+              targetId: target.id,
+              metadata: { remoteTaskId: result.remoteTaskId },
+            });
+            return result;
+          } catch (error) {
+            await reload();
+            toast.error(text("定时任务执行失败", "Scheduled task execution failed"), `${target.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
+            void runLogger.log({
+              source: "scheduled-task",
+              level: "error",
+              action: "scheduledTask.execute",
+              result: "failure",
+              title: text("定时任务执行失败", "Scheduled task execution failed"),
+              targetName: target.name,
+              targetId: target.id,
+              error: errorMessage(error, text("定时任务执行失败", "Scheduled task execution failed")),
+            });
+            // Already toasted and logged; rethrow so runBatch records the item as failed.
+            throw error;
           }
-          invalidateTaskQueries(queryClient);
-          toast.success(text("定时任务已执行", "Scheduled task executed"), target.name);
-          void runLogger.log({
-            source: "scheduled-task",
-            level: "info",
-            action: "scheduledTask.execute",
-            result: "success",
-            title: text("定时任务已执行", "Scheduled task executed"),
-            targetName: target.name,
-            targetId: target.id,
-            metadata: { remoteTaskId: result.remoteTaskId },
-          });
-        } catch (error) {
-          await reload();
-          toast.error(text("定时任务执行失败", "Scheduled task execution failed"), `${target.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
-          void runLogger.log({
-            source: "scheduled-task",
-            level: "error",
-            action: "scheduledTask.execute",
-            result: "failure",
-            title: text("定时任务执行失败", "Scheduled task execution failed"),
-            targetName: target.name,
-            targetId: target.id,
-            error: errorMessage(error, text("定时任务执行失败", "Scheduled task execution failed")),
-          });
-        }
-      }
+        },
+      });
     } finally {
       setIsExecuting(false);
     }
@@ -525,12 +632,31 @@ export function ScheduledTasksPage() {
       run: async () => {
         if (editingId === item.id) resetForm();
         await persistRemove(item.id);
+        logPlanChange(item, "scheduledTask.delete", text("定时任务已删除", "Scheduled task deleted"));
       },
     });
   }
 
+  /** Delete, pause and resume change what will run later, so they belong in the audit trail with save and run. */
+  function logPlanChange(item: ScheduledTask, action: string, title: string) {
+    void runLogger.log({
+      source: "scheduled-task",
+      level: "info",
+      action,
+      result: "success",
+      title,
+      targetName: item.name,
+      targetId: item.id,
+    });
+  }
+
   function retryItem(item: ScheduledTask) {
-    void executeTargets([item], true);
+    setRunPreview({ targets: [item], force: true });
+  }
+
+  function runPreviewMeta(item: ScheduledTask) {
+    const repeat = item.recurrence ? describeRecurrence(item.recurrence, locale) : text("单次", "Once");
+    return `${formatPayloadResources(item.payload)} · ${repeat}`;
   }
 
   async function pauseItem(item: ScheduledTask) {
@@ -538,6 +664,7 @@ export function ScheduledTasksPage() {
     if (next === item) return;
     await persistOne(next);
     toast.success(text("定时任务已暂停", "Scheduled task paused"), item.name);
+    logPlanChange(item, "scheduledTask.pause", text("定时任务已暂停", "Scheduled task paused"));
   }
 
   async function resumeItem(item: ScheduledTask) {
@@ -545,6 +672,7 @@ export function ScheduledTasksPage() {
     if (next === item) return;
     await persistOne(next);
     toast.success(text("定时任务已恢复", "Scheduled task resumed"), item.name);
+    logPlanChange(item, "scheduledTask.resume", text("定时任务已恢复", "Scheduled task resumed"));
   }
 
   function renderItemActions(item: ScheduledTask) {
@@ -593,12 +721,13 @@ export function ScheduledTasksPage() {
           variant="ghost"
           onClick={() => retryItem(item)}
         >
-          <Play className="h-4 w-4" />
+          <Zap className="h-4 w-4" />
           {text("执行", "Run")}
         </Button>
         <Button
           aria-label={text(`删除定时任务 ${item.name}`, `Delete scheduled task ${item.name}`)}
-          className="h-8 w-8 px-0 text-app-danger hover:text-app-danger"
+          // Neutral at rest like every row action; danger color only on hover or focus.
+          className="h-8 w-8 px-0 hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger"
           title={text("删除", "Delete")}
           type="button"
           variant="ghost"
@@ -625,13 +754,13 @@ export function ScheduledTasksPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        {/* The shell header already names the page; this lead explains how it behaves. */}
+        {/* The shell header already says plans run locally; this lead only adds what that means for missed runs. */}
         <div className="min-w-0 max-w-2xl">
-          <p className="text-sm leading-6 text-app-muted">{text("定时任务由本机客户端调度执行；客户端关闭或休眠期间错过的任务将在恢复后提示确认。", "Scheduled tasks are executed by the local client. Tasks missed while the app is closed or sleeping will prompt for confirmation upon resumption.")}</p>
+          <p className="text-sm leading-6 text-app-muted">{text("客户端关闭或休眠期间错过的计划，恢复后会先请你确认。", "Plans missed while the app was closed or asleep ask for your confirmation when it resumes.")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => executeTargets(items.filter((item) => isScheduleDue(item)), false)}>
-            <RefreshCw className="h-4 w-4" />
+          <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => setRunPreview({ targets: items.filter((item) => isScheduleDue(item)), force: false })}>
+            <CalendarCheck className="h-4 w-4" />
             {text("执行到期", "Run due")} {dueCount > 0 ? dueCount : ""}
           </Button>
           {formOpen ? null : (
@@ -643,6 +772,25 @@ export function ScheduledTasksPage() {
         </div>
       </div>
 
+      <WorkspaceAccountBanner tasks={items} onFocusTask={focusScheduledTask} />
+
+      <SegmentedControl
+        label={text("定时任务视图", "Scheduled tasks view")}
+        options={[
+          { value: "plans", label: text("计划列表", "Plans") },
+          {
+            value: "ledger",
+            label: executionReviewCount > 0
+              ? text(`执行台账 · ${executionReviewCount} 待核对`, `Execution ledger · ${executionReviewCount} to review`)
+              : text("执行台账", "Execution ledger"),
+          },
+        ]}
+        value={view}
+        onChange={(next) => setView(next)}
+      />
+
+      {view === "plans" ? (
+        <>
       {loadError ? <ErrorState error={loadError} action={<Button variant="secondary" onClick={() => window.location.reload()}>{text("重新加载", "Reload")}</Button>} /> : null}
       {images.isError ? <ErrorState error={images.error} /> : null}
       {systemImages.isError ? <ErrorState error={systemImages.error} /> : null}
@@ -660,187 +808,224 @@ export function ScheduledTasksPage() {
               {editingId ? text("取消编辑", "Cancel edit") : text("收起", "Close")}
             </Button>
           </div>
-          <div className="grid gap-4 md:grid-cols-3">
+          <FormSection title={text("基础", "Basic")}>
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block text-sm">
+                <span className="mb-1 block text-app-muted">{text("任务名称", "Task name")}</span>
+                <Input className={cn("w-full", fieldBorderClass(touchedFields.has("name") && Boolean(fieldErrors.name)))} value={name} onChange={(event) => setName(event.target.value)} onBlur={() => markTouched("name")} required />
+                <FieldError message={touchedFields.has("name") ? fieldErrors.name : undefined} />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-app-muted">{text("镜像", "Image")}</span>
+                <Select className={cn("w-full", fieldBorderClass(touchedFields.has("image") && Boolean(fieldErrors.image)))} value={imageId} onChange={(event) => setImageId(event.target.value)} onBlur={() => markTouched("image")} required>
+                  <option value="">{text("请选择镜像", "Select an image")}</option>
+                  {imageOptions.map((image) => (
+                    <option key={String(image.id)} value={String(image.id)}>
+                      {getImageOptionLabel(image)}
+                    </option>
+                  ))}
+                </Select>
+                <FieldError message={touchedFields.has("image") ? fieldErrors.image : undefined} />
+              </label>
+            </div>
             <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">{text("任务名称", "Task name")}</span>
-              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("name") && Boolean(fieldErrors.name)))} value={name} onChange={(event) => setName(event.target.value)} onBlur={() => markTouched("name")} required />
-              <FieldError message={touchedFields.has("name") ? fieldErrors.name : undefined} />
+              <span className="mb-1 block text-app-muted">{text("备注", "Notes")}</span>
+              <Textarea className="min-h-16 w-full" value={description} onChange={(event) => setDescription(event.target.value)} />
             </label>
-            <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">{text("计划执行时间", "Scheduled time")}</span>
-              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("scheduleTime") && Boolean(fieldErrors.scheduleTime)))} type="datetime-local" value={scheduleTime} onChange={(event) => setScheduleTime(event.target.value)} onBlur={() => markTouched("scheduleTime")} required />
-              <FieldError message={touchedFields.has("scheduleTime") ? fieldErrors.scheduleTime : undefined} />
-            </label>
-            <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">{text("重复", "Repeat")}</span>
-              <Select className="w-full" value={recurrenceType} onChange={(event) => setRecurrenceType(event.target.value as TaskRecurrenceType)}>
-                <option value="once">{text("单次", "Once")}</option>
-                <option value="daily">{text("每天", "Daily")}</option>
-                <option value="weekly">{text("每周", "Weekly")}</option>
-                <option value="interval">{text("间隔", "Interval")}</option>
-                <option value="cron">{text("Cron 表达式", "Cron expression")}</option>
-              </Select>
-            </label>
-            {recurrenceType === "weekly" && (
-              <div className="block text-sm md:col-span-3">
-                <span className="mb-1 block text-app-muted">{text("重复星期", "Weekdays")}</span>
-                <div className="flex flex-wrap gap-2">
-                  {(
-                    [
-                      [0, text("日", "Sun")],
-                      [1, text("一", "Mon")],
-                      [2, text("二", "Tue")],
-                      [3, text("三", "Wed")],
-                      [4, text("四", "Thu")],
-                      [5, text("五", "Fri")],
-                      [6, text("六", "Sat")],
-                    ] as const
-                  ).map(([day, label]) => {
-                    const checked = recurrenceWeekdays.includes(day);
-                    return (
-                      <label key={day} className="inline-flex items-center gap-1.5 rounded-md border border-app-border bg-app-panel px-2.5 py-1.5 text-xs">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => {
-                            setRecurrenceWeekdays((current) =>
-                              checked ? current.filter((value) => value !== day) : [...current, day].sort(),
-                            );
-                          }}
-                        />
-                        {label}
-                      </label>
-                    );
-                  })}
+          </FormSection>
+          <FormSection divided title={text("计划", "Schedule")}>
+            <div className="grid gap-4 md:grid-cols-3">
+              <label className="block text-sm">
+                <span className="mb-1 block text-app-muted">{text("计划执行时间", "Scheduled time")}</span>
+                <Input className={cn("w-full", fieldBorderClass(touchedFields.has("scheduleTime") && Boolean(fieldErrors.scheduleTime)))} type="datetime-local" value={scheduleTime} onChange={(event) => setScheduleTime(event.target.value)} onBlur={() => markTouched("scheduleTime")} required />
+                <FieldError message={touchedFields.has("scheduleTime") ? fieldErrors.scheduleTime : undefined} />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-app-muted">{text("重复", "Repeat")}</span>
+                <Select className="w-full" value={recurrenceType} onChange={(event) => setRecurrenceType(event.target.value as TaskRecurrenceType)}>
+                  <option value="once">{text("单次", "Once")}</option>
+                  <option value="daily">{text("每天", "Daily")}</option>
+                  <option value="weekly">{text("每周", "Weekly")}</option>
+                  <option value="interval">{text("间隔", "Interval")}</option>
+                  <option value="cron">{text("Cron 表达式", "Cron expression")}</option>
+                </Select>
+              </label>
+              {recurrenceType === "weekly" && (
+                <div className="block text-sm md:col-span-3">
+                  <span className="mb-1 block text-app-muted">{text("重复星期", "Weekdays")}</span>
+                  <div className="flex flex-wrap gap-2">
+                    {(
+                      [
+                        [0, text("日", "Sun")],
+                        [1, text("一", "Mon")],
+                        [2, text("二", "Tue")],
+                        [3, text("三", "Wed")],
+                        [4, text("四", "Thu")],
+                        [5, text("五", "Fri")],
+                        [6, text("六", "Sat")],
+                      ] as const
+                    ).map(([day, label]) => {
+                      const checked = recurrenceWeekdays.includes(day);
+                      return (
+                        <label key={day} className="inline-flex items-center gap-1.5 rounded-md border border-app-border bg-app-panel px-2.5 py-1.5 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              setRecurrenceWeekdays((current) =>
+                                checked ? current.filter((value) => value !== day) : [...current, day].sort(),
+                              );
+                            }}
+                          />
+                          {label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {recurrenceType === "interval" && (
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{text("间隔（分钟）", "Interval (minutes)")}</span>
+                  <Input className="w-full" type="number" min="1" step="1" value={recurrenceIntervalMin} onChange={(event) => setRecurrenceIntervalMin(event.target.value)} />
+                </label>
+              )}
+              {recurrenceType === "cron" && (
+                <label className="block text-sm md:col-span-2">
+                  <span className="mb-1 block text-app-muted">{text("Cron 表达式", "Cron expression")}</span>
+                  <Input className="w-full font-mono" placeholder="*/30 * * * *" value={recurrenceCron} onChange={(event) => setRecurrenceCron(event.target.value)} />
+                  <span className="mt-1 block text-xs text-app-muted">{text("分 时 日 月 周，支持步长、范围和列表，例如 */30 * * * * 表示每 30 分钟", "minute hour day month weekday; steps, ranges and lists, e.g. */30 * * * * runs every 30 minutes")}</span>
+                </label>
+              )}
+              {recurrenceType !== "once" ? (
+                <RecurrencePreview
+                  scheduleTime={scheduleTime}
+                  recurrence={buildFormRecurrence(recurrenceType, recurrenceIntervalMin, recurrenceCron, recurrenceWeekdays)}
+                />
+              ) : null}
+            </div>
+          </FormSection>
+          <FormSection divided title={text("资源配置", "Resources")}>
+            <ResourcePresetPicker
+              activeSummary={resourcePresetSummary}
+              defaultName={resourcePresetSummary ?? ""}
+              onDelete={(id) => void deletePreset(id)}
+              onSaveCurrent={(presetName) => {
+                if (currentResourcePresetValues) void savePreset({ ...currentResourcePresetValues, name: presetName });
+              }}
+              onApply={({ cpu: nextCpu, gpu: nextGpu, memory: nextMemory }) => {
+                setCpu(nextCpu);
+                handleGpuChange(nextGpu);
+                setMemory(nextMemory);
+              }}
+              presets={resourcePresets}
+              saveDisabled={!currentResourcePresetValues}
+              saveDisabledReason={text("请先填写有效的 CPU/GPU/内存", "Enter valid CPU/GPU/memory values first")}
+            />
+            <ResourcePriceFields
+              allowDefaultPrice={!editingId && !touchedFields.has("price")}
+              price={price}
+              resources={{ cpu, gpu, memory }}
+              priceError={fieldErrors.price}
+              priceTouched={touchedFields.has("price")}
+              onPriceBlur={() => markTouched("price")}
+              onPriceChange={(next) => { markTouched("price"); setPrice(next); }}
+              onDefaultPriceChange={setPrice}
+              onApplySpec={({ cpu: nextCpu, gpu: nextGpu, memory: nextMemory }) => {
+                setCpu(nextCpu);
+                handleGpuChange(nextGpu);
+                setMemory(nextMemory);
+              }}
+            />
+            <div className="grid gap-4 md:grid-cols-3">
+              <label className="block text-sm">
+                <span className="mb-1 block text-app-muted">CPU</span>
+                <Input className={cn("w-full", fieldBorderClass(touchedFields.has("cpu") && Boolean(fieldErrors.cpu)))} min="0.1" step="0.1" type="number" value={cpu} onChange={(event) => setCpu(event.target.value)} onBlur={() => markTouched("cpu")} required />
+                <FieldError message={touchedFields.has("cpu") ? fieldErrors.cpu : undefined} />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-app-muted">GPU</span>
+                <Input className={cn("w-full", fieldBorderClass(touchedFields.has("gpu") && Boolean(fieldErrors.gpu)))} min="0" step="1" type="number" value={gpu} onChange={(event) => handleGpuChange(event.target.value)} onBlur={() => markTouched("gpu")} required />
+                <FieldError message={touchedFields.has("gpu") ? fieldErrors.gpu : undefined} />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-app-muted">{text("内存 (GiB)", "Memory (GiB)")}</span>
+                <Input className={cn("w-full", fieldBorderClass(touchedFields.has("memory") && Boolean(fieldErrors.memory)))} min="1" step="1" type="number" value={memory} onChange={(event) => setMemory(event.target.value)} onBlur={() => markTouched("memory")} required />
+                <FieldError message={touchedFields.has("memory") ? fieldErrors.memory : undefined} />
+              </label>
+            </div>
+          </FormSection>
+          <FormSection divided title={text("存储", "Storage")}>
+            <div className="grid gap-4 text-sm md:grid-cols-2">
+              <div>
+                <span className="mb-1 block text-app-muted">{text("存储路径", "Storage path")}</span>
+                <div className="flex gap-2">
+                  <Input className="w-full font-mono text-xs" value={storagePath} onChange={(event) => setStoragePath(event.target.value)} />
+                  <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
+                    <FolderOpen className="h-4 w-4" />
+                    {text("选择", "Select")}
+                  </Button>
                 </div>
               </div>
-            )}
-            {recurrenceType === "interval" && (
-              <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("间隔秒数", "Interval (seconds)")}</span>
-                <Input className="w-full" type="number" min="60" value={recurrenceIntervalSec} onChange={(event) => setRecurrenceIntervalSec(event.target.value)} />
+              <label className="block">
+                <span className="mb-1 block text-app-muted">{text("挂载路径", "Mount path")}</span>
+                <Input className="w-full font-mono text-xs" value={mountPath} onChange={(event) => setMountPath(event.target.value)} />
               </label>
-            )}
-            {recurrenceType === "cron" && (
-              <label className="block text-sm md:col-span-2">
-                <span className="mb-1 block text-app-muted">{text("Cron 表达式", "Cron expression")}</span>
-                <Input className="w-full" placeholder="*/30 * * * *" value={recurrenceCron} onChange={(event) => setRecurrenceCron(event.target.value)} />
-                <span className="mt-1 block text-xs text-app-muted">{text("支持 step/范围/列表，例如 */30 * * * *", "Supports step/range/list, e.g. */30 * * * *")}</span>
-              </label>
-            )}
-            <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">{text("镜像", "Image")}</span>
-              <Select className={cn("w-full", fieldBorderClass(touchedFields.has("image") && Boolean(fieldErrors.image)))} value={imageId} onChange={(event) => setImageId(event.target.value)} onBlur={() => markTouched("image")} required>
-                <option value="">{text("请选择镜像", "Select an image")}</option>
-                {imageOptions.map((image) => (
-                  <option key={String(image.id)} value={String(image.id)}>
-                    {getImageOptionLabel(image)}
-                  </option>
-                ))}
-              </Select>
-              <FieldError message={touchedFields.has("image") ? fieldErrors.image : undefined} />
-            </label>
-          </div>
-          <label className="block text-sm">
-            <span className="mb-1 block text-app-muted">{text("备注", "Notes")}</span>
-            <Textarea className="min-h-16 w-full" value={description} onChange={(event) => setDescription(event.target.value)} />
-          </label>
-          <ResourcePriceFields
-            price={price}
-            priceError={fieldErrors.price}
-            priceTouched={touchedFields.has("price")}
-            onPriceBlur={() => markTouched("price")}
-            onPriceChange={setPrice}
-            onApplySpec={({ cpu: nextCpu, gpu: nextGpu, memory: nextMemory }) => {
-              setCpu(nextCpu);
-              handleGpuChange(nextGpu);
-              setMemory(nextMemory);
-            }}
-          />
-          <div className="grid gap-4 md:grid-cols-3">
-            <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">CPU</span>
-              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("cpu") && Boolean(fieldErrors.cpu)))} min="0.1" step="0.1" type="number" value={cpu} onChange={(event) => setCpu(event.target.value)} onBlur={() => markTouched("cpu")} required />
-              <FieldError message={touchedFields.has("cpu") ? fieldErrors.cpu : undefined} />
-            </label>
-            <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">GPU</span>
-              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("gpu") && Boolean(fieldErrors.gpu)))} min="0" step="1" type="number" value={gpu} onChange={(event) => handleGpuChange(event.target.value)} onBlur={() => markTouched("gpu")} required />
-              <FieldError message={touchedFields.has("gpu") ? fieldErrors.gpu : undefined} />
-            </label>
-            <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">{text("内存 (GiB)", "Memory (GiB)")}</span>
-              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("memory") && Boolean(fieldErrors.memory)))} min="1" step="1" type="number" value={memory} onChange={(event) => setMemory(event.target.value)} onBlur={() => markTouched("memory")} required />
-              <FieldError message={touchedFields.has("memory") ? fieldErrors.memory : undefined} />
-            </label>
-          </div>
-          <div className="grid gap-4 text-sm md:grid-cols-2">
-            <div>
-              <span className="mb-1 block text-app-muted">{text("存储路径", "Storage path")}</span>
-              <div className="flex gap-2">
-                <Input className="w-full font-mono text-xs" value={storagePath} onChange={(event) => setStoragePath(event.target.value)} />
-                <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
-                  <FolderOpen className="h-4 w-4" />
-                  {text("选择", "Select")}
-                </Button>
-              </div>
             </div>
-            <label className="block">
-              <span className="mb-1 block text-app-muted">{text("挂载路径", "Mount path")}</span>
-              <Input className="w-full font-mono text-xs" value={mountPath} onChange={(event) => setMountPath(event.target.value)} />
-            </label>
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">{text("释放条件", "Release condition")}</span>
-              <Select className="w-full" value={releaseCondition} onChange={(event) => handleReleaseConditionChange(event.target.value)}>
-                {Object.entries(releaseConditionText).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {localizedText(label, locale)}
-                  </option>
-                ))}
-              </Select>
-            </label>
-            {releaseCondition === "2" ? (
+          </FormSection>
+          <FormSection divided title={text("释放策略", "Release")}>
+            <div className="grid gap-4 md:grid-cols-2">
               <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("释放时间（执行后 24 小时）", "Release time (24 hours after execution)")}</span>
-                <Input className={cn("w-full bg-app-panel text-app-muted", fieldBorderClass(Boolean(fieldErrors.releaseTime)))} type="datetime-local" value={releaseTime} readOnly aria-readonly="true" required />
-                <FieldError message={touchedFields.has("releaseTime") ? fieldErrors.releaseTime : undefined} />
+                <span className="mb-1 block text-app-muted">{text("释放条件", "Release condition")}</span>
+                <Select className="w-full" value={releaseCondition} onChange={(event) => handleReleaseConditionChange(event.target.value)}>
+                  {Object.entries(releaseConditionText).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {localizedText(label, locale)}
+                    </option>
+                  ))}
+                </Select>
               </label>
+              {releaseCondition === "2" ? (
+                <label className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{text("释放时间（执行后 24 小时）", "Release time (24 hours after execution)")}</span>
+                  <Input className={cn("w-full bg-app-panel text-app-muted", fieldBorderClass(Boolean(fieldErrors.releaseTime)))} type="datetime-local" value={releaseTime} readOnly aria-readonly="true" required />
+                  <FieldError message={touchedFields.has("releaseTime") ? fieldErrors.releaseTime : undefined} />
+                </label>
+              ) : null}
+            </div>
+            {releaseCondition === "3" ? (
+              <div className="space-y-4">
+                <div className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
+                  <div className="flex gap-2">
+                    <Input className={cn("w-full font-mono text-xs", fieldBorderClass(touchedFields.has("workDirectory") && Boolean(fieldErrors.workDirectory)))} value={workDirectory} onChange={(event) => setWorkDirectory(event.target.value)} onBlur={() => markTouched("workDirectory")} required />
+                    <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("workDirectory")}>
+                      <FolderOpen className="h-4 w-4" />
+                      {text("选择", "Select")}
+                    </Button>
+                  </div>
+                  <FieldError message={touchedFields.has("workDirectory") ? fieldErrors.workDirectory : undefined} />
+                </div>
+                <div className="block text-sm">
+                  <span className="mb-1 block text-app-muted">{text("脚本路径", "Script path")}</span>
+                  <div className="flex gap-2">
+                    <Input className={cn("w-full font-mono text-xs", fieldBorderClass(touchedFields.has("scriptPath") && Boolean(fieldErrors.scriptPath)))} value={scriptPath} onChange={(event) => setScriptPath(event.target.value)} onBlur={() => markTouched("scriptPath")} required />
+                    <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("scriptPath")}>
+                      <FolderOpen className="h-4 w-4" />
+                      {text("选择", "Select")}
+                    </Button>
+                  </div>
+                  <FieldError message={touchedFields.has("scriptPath") ? fieldErrors.scriptPath : undefined} />
+                </div>
+                <ScriptEnvFields
+                  envVars={scriptEnv}
+                  scriptPath={scriptPath}
+                  onChange={setScriptEnv}
+                  error={touchedFields.has("scriptEnv") ? fieldErrors.scriptEnv : undefined}
+                />
+              </div>
             ) : null}
-          </div>
-          {releaseCondition === "3" ? (
-            <div className="space-y-4">
-              <div className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
-                <div className="flex gap-2">
-                  <Input className={cn("w-full font-mono text-xs", fieldBorderClass(touchedFields.has("workDirectory") && Boolean(fieldErrors.workDirectory)))} value={workDirectory} onChange={(event) => setWorkDirectory(event.target.value)} onBlur={() => markTouched("workDirectory")} required />
-                  <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("workDirectory")}>
-                    <FolderOpen className="h-4 w-4" />
-                    {text("选择", "Select")}
-                  </Button>
-                </div>
-                <FieldError message={touchedFields.has("workDirectory") ? fieldErrors.workDirectory : undefined} />
-              </div>
-              <div className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("脚本路径", "Script path")}</span>
-                <div className="flex gap-2">
-                  <Input className={cn("w-full font-mono text-xs", fieldBorderClass(touchedFields.has("scriptPath") && Boolean(fieldErrors.scriptPath)))} value={scriptPath} onChange={(event) => setScriptPath(event.target.value)} onBlur={() => markTouched("scriptPath")} required />
-                  <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("scriptPath")}>
-                    <FolderOpen className="h-4 w-4" />
-                    {text("选择", "Select")}
-                  </Button>
-                </div>
-                <FieldError message={touchedFields.has("scriptPath") ? fieldErrors.scriptPath : undefined} />
-              </div>
-              <ScriptEnvFields
-                envVars={scriptEnv}
-                scriptPath={scriptPath}
-                onChange={setScriptEnv}
-                error={touchedFields.has("scriptEnv") ? fieldErrors.scriptEnv : undefined}
-              />
-            </div>
-          ) : null}
+          </FormSection>
           {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={resetForm}>
@@ -855,6 +1040,8 @@ export function ScheduledTasksPage() {
       </Panel>
       ) : null}
 
+      {/* With the form open on an empty list, the form is the next step; the empty state would repeat it. */}
+      {items.length === 0 && formOpen ? null : (
       <Panel className="overflow-hidden">
         {items.length === 0 ? (
           <EmptyState
@@ -872,15 +1059,15 @@ export function ScheduledTasksPage() {
               {/* Mobile card view */}
               <div className="divide-y divide-app-border sm:hidden">
                 {items.map((item) => (
-                  <article key={item.id} className="space-y-3 px-3 py-3">
+                  <article key={item.id} id={`scheduled-task-card-${item.id}`} className={`space-y-3 px-3 py-3 ${focusedTaskId === item.id ? "bg-app-panel" : ""}`}>
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0 flex-1">
                         <div className="truncate font-medium">{item.name}</div>
                         <MobileLongText className="mt-0.5 text-xs" tone="muted" value={item.description || "-"} />
                       </div>
-                      <span className={`inline-flex h-6 shrink-0 items-center rounded-md px-2 text-xs font-medium ring-1 ${statusClass(item.status)}`}>
+                      <StatePill tone={statusTone(item.status)} className="shrink-0">
                         {locale === "en-US" ? statusText[item.status].en : statusText[item.status].zh}
-                      </span>
+                      </StatePill>
                     </div>
                     <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
                       <div>
@@ -931,7 +1118,7 @@ export function ScheduledTasksPage() {
                   </thead>
                   <tbody>
                     {items.map((item) => (
-                      <tr key={item.id} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
+                      <tr key={item.id} id={`scheduled-task-row-${item.id}`} className={`border-b border-app-border last:border-0 hover:bg-app-panel/60 ${focusedTaskId === item.id ? "bg-app-panel" : ""}`}>
                         <td className="whitespace-nowrap px-3 py-2 align-middle">
                           <div className="font-medium">{item.name}</div>
                           <div className="mt-0.5 max-w-72 truncate text-xs text-app-muted">{item.description || item.payload.storage_path || "-"}</div>
@@ -941,9 +1128,9 @@ export function ScheduledTasksPage() {
                           {item.payload.cpu ?? "-"}C / {item.payload.gpu ?? 0}GPU / {item.payload.memory ?? "-"}G
                         </td>
                         <td className="whitespace-nowrap px-3 py-2 align-middle">
-                          <span className={`inline-flex h-6 items-center rounded-md px-2 text-xs font-medium ring-1 ${statusClass(item.status)}`}>
+                          <StatePill tone={statusTone(item.status)}>
                             {locale === "en-US" ? statusText[item.status].en : statusText[item.status].zh}
-                          </span>
+                          </StatePill>
                         </td>
                         <td className="max-w-96 px-3 py-2 align-middle text-app-muted">
                           {item.lastError ? <span className="text-app-danger">{item.lastError}</span> : item.lastRunAt ? formatScheduleTime(item.lastRunAt) : "-"}
@@ -961,6 +1148,12 @@ export function ScheduledTasksPage() {
             </>
         )}
       </Panel>
+      )}
+        </>
+      ) : (
+        <ExecutionLedgerPanel />
+      )}
+
       <RemoteStoragePicker
         initialPath={pickerInitialPath}
         mode={pickerMode}
@@ -974,6 +1167,25 @@ export function ScheduledTasksPage() {
           setStoragePickerTarget(null);
         }}
       />
+      {runPreview ? (
+        <BatchPreviewDialog
+          open
+          title={runPreview.force && runPreview.targets.length === 1
+            ? text(`确认立即执行：${runPreview.targets[0].name}`, `Run Now: ${runPreview.targets[0].name}`)
+            : text("确认执行到期计划", "Run Due Plans")}
+          tone="default"
+          items={runPreview.targets.map((item) => ({ key: item.id, name: item.name, meta: runPreviewMeta(item) }))}
+          account={{ displayName: username }}
+          summary={<CreateImpactSummary payloads={runPreview.targets.map((item) => item.payload)} />}
+          confirmLabel={text(`创建 ${runPreview.targets.length} 个实例`, `Create ${runPreview.targets.length} instance${runPreview.targets.length === 1 ? "" : "s"}`)}
+          onConfirm={() => {
+            const { targets, force } = runPreview;
+            setRunPreview(null);
+            void executeTargets(targets, force);
+          }}
+          onClose={() => setRunPreview(null)}
+        />
+      ) : null}
       {confirmDialog}
     </div>
   );

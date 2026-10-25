@@ -1,9 +1,18 @@
+import { ANONYMOUS_ACCOUNT_SCOPE_KEY, getActiveAccountScope } from "./account-scope";
+import { i18nText } from "./i18n-text";
 import { computeNextRunTime, isRecurring, validateRecurrence } from "./task-recurrence";
 import { updateStorageValue } from "./storage-mutex";
-import type { CreateTaskPayload, RuntimeStorage, ScheduledTask, TaskRecurrence } from "./types";
+import type { CreateTaskPayload, RuntimeStorage, ScheduledTask, ScheduledTaskOwner, TaskRecurrence } from "./types";
 
 export const SCHEDULED_TASKS_STORAGE_KEY = "easy-console.scheduledTasks";
 export const STALE_LEASE_MS = 15 * 60 * 1000;
+export const LEGACY_SCHEDULED_TASK_OWNER_KEY = "legacy";
+
+/** Owner marker for records created before account tracking existed. */
+export const LEGACY_SCHEDULED_TASK_OWNER: ScheduledTaskOwner = {
+  key: LEGACY_SCHEDULED_TASK_OWNER_KEY,
+  displayName: "legacy/unknown",
+};
 
 function makeId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -18,6 +27,26 @@ function nowIso() {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
+}
+
+/**
+ * Parse a stored owner. Records from before account tracking have no owner
+ * and are explicitly migrated to the legacy/unknown marker so the runner can
+ * tell "unverifiable" apart from "belongs to the current account".
+ */
+function parseOwner(raw: unknown): ScheduledTaskOwner {
+  if (isRecord(raw) && typeof raw.key === "string" && raw.key.trim()) {
+    const displayName = typeof raw.displayName === "string" && raw.displayName.trim() ? raw.displayName : raw.key;
+    return { key: raw.key.trim(), displayName };
+  }
+  return LEGACY_SCHEDULED_TASK_OWNER;
+}
+
+/** Owner stamped on newly created schedules: the active account, or legacy when nobody is signed in. */
+export function activeScheduleOwner(): ScheduledTaskOwner {
+  const scope = getActiveAccountScope();
+  if (scope.key === ANONYMOUS_ACCOUNT_SCOPE_KEY) return LEGACY_SCHEDULED_TASK_OWNER;
+  return { key: scope.key, displayName: scope.displayName || scope.key };
 }
 
 function parseRecurrence(raw: unknown): TaskRecurrence | undefined {
@@ -95,6 +124,7 @@ function normalizeSchedule(raw: unknown): ScheduledTask | null {
     executionKey: typeof raw.executionKey === "string" ? raw.executionKey : undefined,
     leaseStartedAt: typeof raw.leaseStartedAt === "string" ? raw.leaseStartedAt : undefined,
     lastRemoteTaskId: typeof raw.lastRemoteTaskId === "string" ? raw.lastRemoteTaskId : undefined,
+    owner: parseOwner(raw.owner),
   };
 }
 
@@ -144,6 +174,7 @@ export function createScheduledTask(input: {
   scheduleTime: string;
   payload: CreateTaskPayload;
   recurrence?: TaskRecurrence;
+  owner?: ScheduledTaskOwner;
 }): ScheduledTask {
   const timestamp = nowIso();
   return {
@@ -156,6 +187,7 @@ export function createScheduledTask(input: {
     createdAt: timestamp,
     updatedAt: timestamp,
     recurrence: input.recurrence,
+    owner: input.owner ?? activeScheduleOwner(),
   };
 }
 
@@ -198,13 +230,63 @@ export function pauseScheduledTask(task: ScheduledTask): ScheduledTask {
 
 export function resumeScheduledTask(task: ScheduledTask): ScheduledTask {
   if (task.status !== "paused" && task.status !== "failed" && task.status !== "needs_review") return task;
+  // Resuming is the user's explicit decision to run the task under the current
+  // account: adopt it as owner. This is also the migration path for legacy or
+  // other-account tasks that were held for review (scheduledTaskOwnerMismatch).
+  const scope = getActiveAccountScope();
+  const owner =
+    scope.key === ANONYMOUS_ACCOUNT_SCOPE_KEY ? task.owner ?? LEGACY_SCHEDULED_TASK_OWNER : activeScheduleOwner();
   return {
     ...task,
     status: "pending",
     lastError: undefined,
     executionKey: undefined,
     leaseStartedAt: undefined,
+    owner,
     updatedAt: nowIso(),
+  };
+}
+
+/**
+ * Whether the task may run under the current account. Returns a
+ * human-readable reason when the owner cannot be verified; null when it can.
+ */
+export function scheduledTaskOwnerMismatch(
+  task: ScheduledTask,
+  scope = getActiveAccountScope(),
+): { reason: string } | null {
+  if (scope.key === ANONYMOUS_ACCOUNT_SCOPE_KEY) {
+    return {
+      reason: i18nText(
+        "当前未登录，无法确认定时任务归属。请先登录创建该任务的账号，或在登录后恢复该任务以完成迁移。",
+        "Not signed in, so this scheduled task's owner cannot be verified. Sign in with the creating account, or resume the task after signing in to migrate it.",
+      ),
+    };
+  }
+  const owner = task.owner ?? LEGACY_SCHEDULED_TASK_OWNER;
+  if (owner.key === scope.key) return null;
+  return {
+    reason:
+      owner.key === LEGACY_SCHEDULED_TASK_OWNER_KEY
+        ? i18nText(
+            "该定时任务由旧版本数据创建（创建账号未知），已暂停自动执行。请登录原账号，或在当前账号下点击“恢复”将其迁移后执行。",
+            "This scheduled task predates account tracking (unknown creating account) and will not run automatically. Sign in with the original account, or resume it under the current account to migrate it.",
+          )
+        : i18nText(
+            `该定时任务属于账号「${owner.displayName}」，与当前账号「${scope.displayName || scope.key}」不一致，已暂停自动执行。请切换到原账号，或在当前账号下点击“恢复”将其迁移后执行。`,
+            `This scheduled task belongs to "${owner.displayName}" but the current account is "${scope.displayName || scope.key}"; it will not run automatically. Switch to the original account, or resume it under the current account to migrate it.`,
+          ),
+  };
+}
+
+/** Hold a task for user review without executing it remotely. */
+export function holdScheduledTaskForReview(task: ScheduledTask, reason: string, now = new Date()): ScheduledTask {
+  return {
+    ...task,
+    status: "needs_review",
+    lastError: reason,
+    leaseStartedAt: undefined,
+    updatedAt: now.toISOString(),
   };
 }
 
