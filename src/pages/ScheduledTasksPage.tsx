@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarCheck, CalendarClock, FolderOpen, Pause, Pencil, Play, Plus, Trash2, X, Zap } from "lucide-react";
+import { CalendarCheck, CalendarClock, FolderOpen, Pause, Pencil, Play, Plus, SkipForward, Trash2, X, Zap } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -38,11 +38,14 @@ import {
 import { cn } from "../lib/utils";
 import {
   createScheduledTask,
+  isMissedScheduleRun,
   isScheduleDue,
   loadScheduledTasks,
+  missedScheduleSkipNote,
   mutateScheduledTasks,
   pauseScheduledTask,
   resumeScheduledTask,
+  skipMissedScheduledRun,
   sortScheduledTasks,
   updateScheduledTask,
 } from "../lib/scheduled-tasks";
@@ -675,6 +678,22 @@ export function ScheduledTasksPage() {
     logPlanChange(item, "scheduledTask.resume", text("定时任务已恢复", "Scheduled task resumed"));
   }
 
+  /** Skipping ends a one-shot plan for good, so it asks first; recurring plans just advance. */
+  function skipMissedItem(item: ScheduledTask) {
+    confirm({
+      title: text("跳过错过的执行", "Skip Missed Run"),
+      description: text(
+        `将跳过 ${item.name} 错过的这次执行（原定 ${formatScheduleTime(item.scheduleTime)}）。单次计划会标记为已完成，重复计划从下一次继续。`,
+        `Skip the missed run of ${item.name} (scheduled ${formatScheduleTime(item.scheduleTime)}). One-shot plans are marked done; recurring plans continue with the next occurrence.`,
+      ),
+      confirmLabel: text("跳过", "Skip"),
+      run: async () => {
+        await persistOne(skipMissedScheduledRun(item, missedScheduleSkipNote(item)));
+        logPlanChange(item, "scheduledTask.skipMissed", text("已跳过错过的执行", "Missed run skipped"));
+      },
+    });
+  }
+
   function renderItemActions(item: ScheduledTask) {
     return (
       <>
@@ -724,6 +743,18 @@ export function ScheduledTasksPage() {
           <Zap className="h-4 w-4" />
           {text("执行", "Run")}
         </Button>
+        {isMissedRow(item) ? (
+          <Button
+            className="h-8 px-2"
+            title={text("跳过这次错过的执行时间", "Skip this missed run")}
+            type="button"
+            variant="ghost"
+            onClick={() => skipMissedItem(item)}
+          >
+            <SkipForward className="h-4 w-4" />
+            {text("跳过本次", "Skip this run")}
+          </Button>
+        ) : null}
         <Button
           aria-label={text(`删除定时任务 ${item.name}`, `Delete scheduled task ${item.name}`)}
           // Neutral at rest like every row action; danger color only on hover or focus.
@@ -741,6 +772,11 @@ export function ScheduledTasksPage() {
   }
 
   const dueCount = items.filter((item) => isScheduleDue(item)).length;
+  // Missed-run marker/action follow the grace window from settings; re-read per
+  // render so a settings save is reflected on the next page focus.
+  const missedGraceMs = getRuntimeSettings().missedScheduleGraceMs;
+  const isMissedRow = (item: ScheduledTask) =>
+    item.status === "pending" && isMissedScheduleRun(item, new Date(), missedGraceMs);
   const pickerMode = storagePickerTarget === "scriptPath" ? "file" : "directory";
   const pickerInitialPath =
     storagePickerTarget === "scriptPath"
@@ -756,7 +792,7 @@ export function ScheduledTasksPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         {/* The shell header already says plans run locally; this lead only adds what that means for missed runs. */}
         <div className="min-w-0 max-w-2xl">
-          <p className="text-sm leading-6 text-app-muted">{text("客户端关闭或休眠期间错过的计划，恢复后会先请你确认。", "Plans missed while the app was closed or asleep ask for your confirmation when it resumes.")}</p>
+          <p className="text-sm leading-6 text-app-muted">{text("客户端关闭或休眠期间错过的计划，恢复后按设置处理：默认等待确认，也可改为自动补跑或跳过（可在设置中调整）。", "Runs missed while the app was closed or asleep follow your settings: ask by default, or catch up / skip automatically (configurable in Settings).")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => setRunPreview({ targets: items.filter((item) => isScheduleDue(item)), force: false })}>
@@ -1065,9 +1101,12 @@ export function ScheduledTasksPage() {
                         <div className="truncate font-medium">{item.name}</div>
                         <MobileLongText className="mt-0.5 text-xs" tone="muted" value={item.description || "-"} />
                       </div>
-                      <StatePill tone={statusTone(item.status)} className="shrink-0">
-                        {locale === "en-US" ? statusText[item.status].en : statusText[item.status].zh}
-                      </StatePill>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {isMissedRow(item) ? <StatePill tone="warning">{text("已错过", "Missed")}</StatePill> : null}
+                        <StatePill tone={statusTone(item.status)}>
+                          {locale === "en-US" ? statusText[item.status].en : statusText[item.status].zh}
+                        </StatePill>
+                      </div>
                     </div>
                     <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
                       <div>
@@ -1128,9 +1167,12 @@ export function ScheduledTasksPage() {
                           {item.payload.cpu ?? "-"}C / {item.payload.gpu ?? 0}GPU / {item.payload.memory ?? "-"}G
                         </td>
                         <td className="whitespace-nowrap px-3 py-2 align-middle">
-                          <StatePill tone={statusTone(item.status)}>
-                            {locale === "en-US" ? statusText[item.status].en : statusText[item.status].zh}
-                          </StatePill>
+                          <div className="flex items-center gap-1.5">
+                            {isMissedRow(item) ? <StatePill tone="warning">{text("已错过", "Missed")}</StatePill> : null}
+                            <StatePill tone={statusTone(item.status)}>
+                              {locale === "en-US" ? statusText[item.status].en : statusText[item.status].zh}
+                            </StatePill>
+                          </div>
                         </td>
                         <td className="max-w-96 px-3 py-2 align-middle text-app-muted">
                           {item.lastError ? <span className="text-app-danger">{item.lastError}</span> : item.lastRunAt ? formatScheduleTime(item.lastRunAt) : "-"}

@@ -2,18 +2,22 @@ import { describe, afterEach, expect, it } from "vitest";
 
 import { resetAccountScope, setActiveAccountScope } from "./account-scope";
 import {
+  DEFAULT_MISSED_SCHEDULE_GRACE_MS,
   LEGACY_SCHEDULED_TASK_OWNER,
   SCHEDULED_TASKS_STORAGE_KEY,
   createScheduledTask,
   holdScheduledTaskForReview,
+  isMissedScheduleRun,
   isScheduleDue,
   loadScheduledTasks,
+  missedScheduleSkipNote,
   mutateScheduledTasks,
   normalizeRecurrence,
   pauseScheduledTask,
   resumeScheduledTask,
   saveScheduledTasks,
   scheduledTaskOwnerMismatch,
+  skipMissedScheduledRun,
   sortScheduledTasks,
   updateScheduledTask,
 } from "./scheduled-tasks";
@@ -166,6 +170,46 @@ describe("scheduled tasks", () => {
     });
     expect(() => isScheduleDue(task, new Date("2026-05-24T12:00:00"))).not.toThrow();
     expect(isScheduleDue(task, new Date("2026-05-24T12:00:00"))).toBe(false);
+  });
+});
+
+describe("missed schedule runs", () => {
+  const now = new Date("2026-05-24T10:31:00");
+  const graceMs = 10 * 60 * 1000;
+
+  it("marks only overdue pending runs as missed", () => {
+    expect(isMissedScheduleRun(makeTask({ scheduleTime: "2026-05-24T10:30", status: "pending" }), now, graceMs)).toBe(false);
+    expect(isMissedScheduleRun(makeTask({ scheduleTime: "2026-05-24T10:20", status: "pending" }), now, graceMs)).toBe(true);
+    expect(isMissedScheduleRun(makeTask({ scheduleTime: "2026-05-24T10:00", status: "done" }), now, graceMs)).toBe(false);
+    expect(isMissedScheduleRun(makeTask({ scheduleTime: "not-a-time", status: "pending" }), now, graceMs)).toBe(false);
+  });
+
+  it("defaults to the 10-minute grace window", () => {
+    expect(DEFAULT_MISSED_SCHEDULE_GRACE_MS).toBe(10 * 60 * 1000);
+    expect(isMissedScheduleRun(makeTask({ scheduleTime: "2026-05-24T10:20", status: "pending" }), now)).toBe(true);
+    expect(isMissedScheduleRun(makeTask({ scheduleTime: "2026-05-24T10:25", status: "pending" }), now)).toBe(false);
+  });
+
+  it("ends a one-shot plan when its missed run is skipped", () => {
+    const skipped = skipMissedScheduledRun(makeTask({ scheduleTime: "2026-05-24T10:00" }), "missed", now);
+    expect(skipped).toMatchObject({ status: "done", lastError: "missed" });
+  });
+
+  it("advances a recurring plan to the next occurrence when skipped", () => {
+    const skipped = skipMissedScheduledRun(
+      makeTask({ scheduleTime: "2026-05-24T10:00", recurrence: { type: "daily" } }),
+      "missed",
+      now,
+    );
+    expect(skipped.status).toBe("pending");
+    expect(Date.parse(skipped.scheduleTime)).toBe(Date.parse("2026-05-25T10:00"));
+    expect(skipped.lastError).toBe("missed");
+  });
+
+  it("records a localized skip note naming the original slot", () => {
+    const note = missedScheduleSkipNote(makeTask({ scheduleTime: "2026-05-24T10:00:00.000Z" }));
+    expect(note).toContain("2026-05-24 10:00");
+    expect(note).toContain("跳过");
   });
 });
 

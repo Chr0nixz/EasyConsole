@@ -6,6 +6,12 @@ import type { CreateTaskPayload, RuntimeStorage, ScheduledTask, ScheduledTaskOwn
 
 export const SCHEDULED_TASKS_STORAGE_KEY = "easy-console.scheduledTasks";
 export const STALE_LEASE_MS = 15 * 60 * 1000;
+/**
+ * A due run older than this window counts as "missed" — it became due while
+ * the app was closed, asleep, or the runner was stalled, so catching up means
+ * creating a billable instance well past its planned time.
+ */
+export const DEFAULT_MISSED_SCHEDULE_GRACE_MS = 10 * 60 * 1000;
 export const LEGACY_SCHEDULED_TASK_OWNER_KEY = "legacy";
 
 /** Owner marker for records created before account tracking existed. */
@@ -116,7 +122,7 @@ function normalizeSchedule(raw: unknown): ScheduledTask | null {
     lastError: invalid
       ? typeof raw.lastError === "string" && raw.lastError
         ? raw.lastError
-        : "Invalid recurrence configuration; confirm before running."
+        : i18nText("重复规则无效，请确认后再执行。", "Invalid recurrence configuration; confirm before running.")
       : typeof raw.lastError === "string"
         ? raw.lastError
         : undefined,
@@ -209,6 +215,40 @@ export function isScheduleDue(task: ScheduledTask, now = new Date()) {
     // A single corrupt recurrence must not abort the whole due-task loop.
     return false;
   }
+}
+
+/**
+ * Whether this pending run became due so long ago that it was missed while the
+ * app was closed or asleep. Same formula for one-shot and recurring rows: a
+ * recurring row's scheduleTime is always its next due moment.
+ */
+export function isMissedScheduleRun(
+  task: ScheduledTask,
+  now = new Date(),
+  graceMs = DEFAULT_MISSED_SCHEDULE_GRACE_MS,
+) {
+  if (task.status !== "pending") return false;
+  const scheduledAt = Date.parse(task.scheduleTime);
+  if (!Number.isFinite(scheduledAt)) return false;
+  return now.getTime() - scheduledAt > graceMs;
+}
+
+/** Localized note stored on a row whose missed run was skipped. */
+export function missedScheduleSkipNote(task: ScheduledTask): string {
+  const when = task.scheduleTime.replace("T", " ").slice(0, 16);
+  return i18nText(
+    `已跳过错过的执行（原定 ${when}）。单次计划已结束，重复计划从下一次继续。`,
+    `Missed run skipped (was scheduled for ${when}). One-shot plans are finished; recurring plans continue with the next occurrence.`,
+  );
+}
+
+/**
+ * Skip a missed run: a one-shot plan ends as done, a recurring plan advances to
+ * its next occurrence. The note explains why the row has no run for this slot.
+ */
+export function skipMissedScheduledRun(task: ScheduledTask, reason: string, now = new Date()): ScheduledTask {
+  const next = scheduleNextRun(task, now) ?? { ...task, status: "done" as const };
+  return { ...next, lastError: reason, leaseStartedAt: undefined };
 }
 
 export function sortScheduledTasks(items: ScheduledTask[]) {
@@ -326,8 +366,11 @@ export function resetStaleRunningTasks(items: ScheduledTask[], now = new Date(),
       status: "needs_review" as const,
       lastError:
         item.lastRemoteTaskId && item.executionKey
-          ? `Lease expired after remote create (${item.lastRemoteTaskId}); confirm before replaying.`
-          : "Lease expired while running; result unknown — confirm before replaying.",
+          ? i18nText(
+              `远程创建后租约已过期（${item.lastRemoteTaskId}）；重放前请先确认。`,
+              `Lease expired after remote create (${item.lastRemoteTaskId}); confirm before replaying.`,
+            )
+          : i18nText("运行期间租约已过期；结果未知，重放前请先确认。", "Lease expired while running; result unknown — confirm before replaying."),
       leaseStartedAt: undefined,
       updatedAt: nowIso(),
     };

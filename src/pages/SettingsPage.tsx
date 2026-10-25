@@ -3,6 +3,7 @@ import {
   Activity,
   ArrowLeft,
   BellRing,
+  CalendarClock,
   ChevronDown,
   DatabaseBackup,
   Download,
@@ -46,6 +47,8 @@ import {
   saveAccountSettings,
   saveAccountSshPassword,
   setRuntimeSettings,
+  MISSED_SCHEDULE_GRACE_OPTIONS,
+  MISSED_SCHEDULE_POLICY_OPTIONS,
   SSH_FONT_PRESETS,
   TASK_AUTO_REFRESH_OPTIONS,
   type AppSettings,
@@ -442,6 +445,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       normalized.taskAutoRefresh !== savedBaseline.taskAutoRefresh ||
       normalized.taskAutoRefreshIntervalMs !== savedBaseline.taskAutoRefreshIntervalMs ||
       normalized.autoNumberDuplicateTaskNames !== savedBaseline.autoNumberDuplicateTaskNames ||
+      normalized.missedSchedulePolicy !== savedBaseline.missedSchedulePolicy ||
+      normalized.missedScheduleGraceMs !== savedBaseline.missedScheduleGraceMs ||
       normalized.runLogLimit !== savedBaseline.runLogLimit ||
       normalized.runLogRetentionDays !== savedBaseline.runLogRetentionDays
     ) {
@@ -1999,6 +2004,52 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               <span className="mt-1 block text-xs leading-5 text-app-muted">
                 {text("例如已有 XXX 时创建为 XXX_1。默认开启；作用于新建、克隆、模板和定时创建。", "For example, create XXX_1 when XXX already exists. Enabled by default; applies to create, clone, template, and scheduled creation.")}
               </span>
+            </span>
+          </label>
+        </div>
+      </Panel>
+
+      <Panel>
+        <SectionHeader
+          icon={CalendarClock}
+          title={text("定时任务", "Scheduled Tasks")}
+          description={text("客户端关闭或休眠期间错过的计划，恢复后按此策略处理。", "Runs missed while the app was closed or asleep follow this policy when it resumes.")}
+        />
+        <div className="grid gap-3 p-4 sm:grid-cols-2">
+          <label className="block rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+            <span className="mb-1 block font-medium text-app-text">{text("错过执行的处理", "Missed run policy")}</span>
+            <Select
+              className="w-full"
+              value={form.missedSchedulePolicy}
+              onChange={(event) =>
+                setForm((value) => ({ ...value, missedSchedulePolicy: event.target.value as AppSettings["missedSchedulePolicy"] }))
+              }
+            >
+              {MISSED_SCHEDULE_POLICY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {text(option.zh, option.en)}
+                </option>
+              ))}
+            </Select>
+            <span className="mt-1 block text-xs leading-5 text-app-muted">
+              {text("每次询问：保持等待并提醒你确认；补跑一次：恢复后立即执行；跳过：不再补跑。", "Ask: keep waiting and notify you; Catch up once: run immediately on resume; Skip: never catch up.")}
+            </span>
+          </label>
+          <label className="block rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+            <span className="mb-1 block font-medium text-app-text">{text("容忍窗口", "Grace window")}</span>
+            <Select
+              className="w-full"
+              value={String(form.missedScheduleGraceMs)}
+              onChange={(event) => setForm((value) => ({ ...value, missedScheduleGraceMs: Number(event.target.value) }))}
+            >
+              {MISSED_SCHEDULE_GRACE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {text(option.zh, option.en)}
+                </option>
+              ))}
+            </Select>
+            <span className="mt-1 block text-xs leading-5 text-app-muted">
+              {text("超过计划时间多久仍算“错过”。应用运行中的短暂延迟不算错过。", "How far past the planned time still counts as missed. Brief delays while the app is running never do.")}
             </span>
           </label>
         </div>

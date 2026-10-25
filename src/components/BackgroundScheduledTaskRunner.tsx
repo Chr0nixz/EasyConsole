@@ -11,10 +11,13 @@ import { browserRuntime } from "../lib/runtime";
 import { executeScheduledTask } from "../lib/schedule-execution";
 import {
   holdScheduledTaskForReview,
+  isMissedScheduleRun,
   isScheduleDue,
+  missedScheduleSkipNote,
   mutateScheduledTasks,
   resetStaleRunningTasks,
   scheduledTaskOwnerMismatch,
+  skipMissedScheduledRun,
   sortScheduledTasks,
   updateScheduledTask,
 } from "../lib/scheduled-tasks";
@@ -62,6 +65,10 @@ export function BackgroundScheduledTaskRunner() {
   const { text } = useI18n();
   const queryClient = useQueryClient();
   const runningRef = useRef(false);
+  // Missed-run "ask" notifications are deduped per schedule slot (`id@scheduleTime`)
+  // so the 30-second loop does not re-toast an undecided row. Ref, not state:
+  // it survives effect restarts and never re-renders the runner.
+  const askedMissedKeysRef = useRef<Set<string>>(new Set());
 
   // `text` from useI18n is recreated whenever the locale changes. The scheduling
   // effect below owns the interval, the wake-up listeners and the desktop
@@ -94,6 +101,7 @@ export function BackgroundScheduledTaskRunner() {
       if (disposed || runningRef.current) return;
       runningRef.current = true;
       try {
+        const settings = getRuntimeSettings();
         const items = await persistUpdate((current) => resetStaleRunningTasks(current));
         const due = items.filter((item) => isScheduleDue(item));
         for (const task of due) {
@@ -142,6 +150,71 @@ export function BackgroundScheduledTaskRunner() {
             }
             if (hold.outcome === "gone") continue;
             // runnable: another window adopted the task; execute it now.
+          }
+          // A run that became due while the app was closed or asleep was
+          // "missed": creating the instance now is late, possibly hours late,
+          // so follow the user's policy instead of blindly catching up.
+          if (
+            settings.missedSchedulePolicy !== "run" &&
+            isMissedScheduleRun(task, new Date(), settings.missedScheduleGraceMs)
+          ) {
+            if (settings.missedSchedulePolicy === "skip") {
+              let skipped = false;
+              await persistUpdate((current) => {
+                const latest = current.find((item) => item.id === task.id);
+                // Re-check inside the storage lock: another window may have run,
+                // edited, or rescheduled this row since the list was loaded.
+                if (!latest || !isMissedScheduleRun(latest, new Date(), settings.missedScheduleGraceMs)) return current;
+                skipped = true;
+                return updateScheduledTask(current, skipMissedScheduledRun(latest, missedScheduleSkipNote(latest)));
+              });
+              if (skipped) {
+                toast.info(tt("已跳过错过的定时任务", "Missed scheduled task skipped"), task.name);
+                void appendRunLog(browserRuntime.storage, {
+                  source: "scheduled-task",
+                  level: "warning",
+                  channel: browserRuntime.runLogChannel,
+                  action: "scheduledTask.missedSkip",
+                  result: "failure",
+                  title: tt("已跳过错过的定时任务", "Missed scheduled task skipped"),
+                  targetName: task.name,
+                  targetId: task.id,
+                  metadata: { scheduleTime: task.scheduleTime },
+                });
+              }
+              continue;
+            }
+            // "ask": the row stays pending for the user to run or skip from the
+            // scheduled tasks page. It is deliberately NOT held as needs_review
+            // or paused — resuming such a row would re-trip this check and loop.
+            // The ask is deduped per schedule slot for this app session.
+            const askKey = `${task.id}@${task.scheduleTime}`;
+            if (!askedMissedKeysRef.current.has(askKey)) {
+              askedMissedKeysRef.current.add(askKey);
+              const scheduledFor = task.scheduleTime.replace("T", " ").slice(0, 16);
+              const reason = tt(
+                `计划已错过（原定 ${scheduledFor}），等待确认后再执行。`,
+                `Missed its scheduled time (${scheduledFor}); waiting for your confirmation before running.`,
+              );
+              toast.error(
+                tt("定时任务已错过，待确认", "Scheduled task missed, awaiting confirmation"),
+                `${task.name}: ${reason}`,
+                reviewAction(tt("去处理", "Resolve"), "/scheduled-tasks"),
+              );
+              void appendRunLog(browserRuntime.storage, {
+                source: "scheduled-task",
+                level: "warning",
+                channel: browserRuntime.runLogChannel,
+                action: "scheduledTask.missedAsk",
+                result: "failure",
+                title: tt("定时任务已错过，待确认", "Scheduled task missed, awaiting confirmation"),
+                targetName: task.name,
+                targetId: task.id,
+                error: reason,
+                metadata: { scheduleTime: task.scheduleTime },
+              });
+            }
+            continue;
           }
           try {
             const result = await executeScheduledTask(browserRuntime.storage, task.id, {

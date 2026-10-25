@@ -53,6 +53,8 @@ describe("app settings", () => {
       taskAutoRefreshIntervalMs: 10_000,
       autoCheckUpdates: true,
       autoNumberDuplicateTaskNames: true,
+      missedSchedulePolicy: "ask",
+      missedScheduleGraceMs: 10 * 60_000,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
       runLogLimit: DEFAULT_RUN_LOG_LIMIT,
@@ -74,6 +76,8 @@ describe("app settings", () => {
       taskAutoRefreshIntervalMs: 10_000,
       autoCheckUpdates: true,
       autoNumberDuplicateTaskNames: true,
+      missedSchedulePolicy: "ask",
+      missedScheduleGraceMs: 10 * 60_000,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
       runLogLimit: DEFAULT_RUN_LOG_LIMIT,
@@ -116,6 +120,25 @@ describe("app settings", () => {
       taskAutoRefresh: true,
       taskAutoRefreshIntervalMs: 10_000,
     });
+  });
+
+  it("defaults the missed schedule policy to ask with a 10-minute grace window", () => {
+    expect(DEFAULT_APP_SETTINGS).toMatchObject({
+      missedSchedulePolicy: "ask",
+      missedScheduleGraceMs: 10 * 60_000,
+    });
+  });
+
+  it("normalizes missed schedule policy and rejects unknown values", () => {
+    expect(normalizeAppSettings({ missedSchedulePolicy: "run", missedScheduleGraceMs: 30 * 60_000 })).toMatchObject({
+      missedSchedulePolicy: "run",
+      missedScheduleGraceMs: 30 * 60_000,
+    });
+    // Stored payloads go through parseAppSettings, so unknown values arrive as
+    // untyped JSON rather than a typed Partial<AppSettings>.
+    expect(parseAppSettings(JSON.stringify({ missedSchedulePolicy: "sometimes" })).missedSchedulePolicy).toBe("ask");
+    expect(normalizeAppSettings({ missedScheduleGraceMs: 7 * 60_000 }).missedScheduleGraceMs).toBe(10 * 60_000);
+    expect(normalizeAppSettings({ missedScheduleGraceMs: 0 }).missedScheduleGraceMs).toBe(10 * 60_000);
   });
 
   it("preserves empty default SSH password", () => {

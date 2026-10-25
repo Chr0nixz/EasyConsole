@@ -1,6 +1,7 @@
 import { API_BASE_URL } from "./api-client";
 import { DEFAULT_MONITOR_DASHBOARD_URL } from "./monitor-dashboard-core";
 import { DEFAULT_RUN_LOG_LIMIT, DEFAULT_RUN_LOG_RETENTION_DAYS } from "./run-logs";
+import { DEFAULT_MISSED_SCHEDULE_GRACE_MS } from "./scheduled-tasks";
 import { DEFAULT_CUSTOM_COLORS } from "./ssh-terminal-colors";
 import { withStorageLock } from "./storage-mutex";
 import type { PortForwardRule, PortForwardType, SshAuthMode, SshCustomColors } from "./types";
@@ -13,6 +14,9 @@ type ImportMetaWithEnv = ImportMeta & {
 
 /** "hacker" is the persisted settings key (renaming it would drop saved choices); the UI labels it 绿色终端/Green. */
 export type SshTerminalTheme = "dark" | "light" | "hacker" | "custom";
+
+/** What to do with a scheduled run that became due while the app was closed or asleep. */
+export type MissedSchedulePolicy = "ask" | "run" | "skip";
 
 export type { SshAuthMode } from "./types";
 export type { PortForwardRule, PortForwardType, SshCustomColors } from "./types";
@@ -54,6 +58,10 @@ export type AppSettings = {
   autoCheckUpdates: boolean;
   /** When creating instances, append `_1`, `_2`, … if the name already exists. Default on. */
   autoNumberDuplicateTaskNames: boolean;
+  /** Policy for scheduled runs that became due while the app was closed or asleep. Default "ask". */
+  missedSchedulePolicy: MissedSchedulePolicy;
+  /** A due run older than this window counts as missed. Default 10 minutes. */
+  missedScheduleGraceMs: number;
   desktopCloseToTray: boolean;
   desktopClosePrompt: boolean;
   runLogLimit: number;
@@ -92,6 +100,18 @@ export const TASK_AUTO_REFRESH_OPTIONS = [
 ] as const;
 
 export const DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS = 10_000;
+
+export const MISSED_SCHEDULE_POLICY_OPTIONS = [
+  { zh: "每次询问", en: "Ask every time", value: "ask" },
+  { zh: "补跑一次", en: "Catch up once", value: "run" },
+  { zh: "跳过", en: "Skip", value: "skip" },
+] as const;
+
+export const MISSED_SCHEDULE_GRACE_OPTIONS = [
+  { zh: "5 分钟", en: "5 min", value: 5 * 60_000 },
+  { zh: "10 分钟", en: "10 min", value: 10 * 60_000 },
+  { zh: "30 分钟", en: "30 min", value: 30 * 60_000 },
+] as const;
 
 // Re-exported here so existing settings consumers keep one import site; the
 // deliberate terminal color values themselves live in ssh-terminal-colors.ts.
@@ -144,6 +164,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   taskAutoRefreshIntervalMs: DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS,
   autoCheckUpdates: true,
   autoNumberDuplicateTaskNames: true,
+  missedSchedulePolicy: "ask",
+  missedScheduleGraceMs: DEFAULT_MISSED_SCHEDULE_GRACE_MS,
   desktopCloseToTray: false,
   desktopClosePrompt: true,
   runLogLimit: DEFAULT_RUN_LOG_LIMIT,
@@ -190,6 +212,15 @@ function normalizeNonNegativeInteger(value: unknown, fallback: number) {
 function normalizeTaskAutoRefreshInterval(value: unknown) {
   const interval = normalizePositiveInteger(value, DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS);
   return TASK_AUTO_REFRESH_OPTIONS.some((option) => option.value === interval) ? interval : DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS;
+}
+
+function normalizeMissedSchedulePolicy(value: unknown): MissedSchedulePolicy {
+  return value === "run" || value === "skip" || value === "ask" ? value : "ask";
+}
+
+function normalizeMissedScheduleGrace(value: unknown) {
+  const grace = normalizePositiveInteger(value, DEFAULT_MISSED_SCHEDULE_GRACE_MS);
+  return MISSED_SCHEDULE_GRACE_OPTIONS.some((option) => option.value === grace) ? grace : DEFAULT_MISSED_SCHEDULE_GRACE_MS;
 }
 
 function normalizeString(value: unknown, fallback: string) {
@@ -322,6 +353,8 @@ export function normalizeAppSettings(settings: Partial<AppSettings>): AppSetting
     taskAutoRefreshIntervalMs: normalizeTaskAutoRefreshInterval(settings.taskAutoRefreshIntervalMs),
     autoCheckUpdates: settings.autoCheckUpdates !== false,
     autoNumberDuplicateTaskNames: settings.autoNumberDuplicateTaskNames !== false,
+    missedSchedulePolicy: normalizeMissedSchedulePolicy(settings.missedSchedulePolicy),
+    missedScheduleGraceMs: normalizeMissedScheduleGrace(settings.missedScheduleGraceMs),
     desktopCloseToTray: settings.desktopCloseToTray === true,
     desktopClosePrompt: settings.desktopClosePrompt !== false,
     runLogLimit: normalizePositiveInteger(settings.runLogLimit, DEFAULT_APP_SETTINGS.runLogLimit),
