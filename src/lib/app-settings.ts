@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "./api-client";
+import { DEFAULT_IDLE_REMINDER_WINDOW_MS, IDLE_REMINDER_WINDOW_OPTIONS } from "./idle-instance-reminder";
 import { DEFAULT_MONITOR_DASHBOARD_URL } from "./monitor-dashboard-core";
 import { DEFAULT_RUN_LOG_LIMIT, DEFAULT_RUN_LOG_RETENTION_DAYS } from "./run-logs";
 import { DEFAULT_MISSED_SCHEDULE_GRACE_MS } from "./scheduled-tasks";
@@ -64,6 +65,8 @@ export type AppSettings = {
   missedScheduleGraceMs: number;
   /** Warn this far before a timed release fires. Default 10 minutes. */
   timedReleaseReminderLeadMs: number;
+  /** CPU/network heuristics window for idle-instance reminders. Default 120 minutes. */
+  idleReminderWindowMs: number;
   desktopCloseToTray: boolean;
   desktopClosePrompt: boolean;
   /** Launch the desktop app at OS login (applied to the autostart plugin). */
@@ -73,7 +76,7 @@ export type AppSettings = {
   ssh: SshSettings;
 };
 
-export type ImportantNotificationEvent = "task.success" | "task.failure" | "task.abnormal" | "task.releaseDue";
+export type ImportantNotificationEvent = "task.success" | "task.failure" | "task.abnormal" | "task.releaseDue" | "task.idle";
 
 export type NotificationMode = "off" | "app" | "system";
 
@@ -96,6 +99,7 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
   "task.failure": "system",
   "task.abnormal": "system",
   "task.releaseDue": "system",
+  "task.idle": "system",
 };
 
 export const TASK_AUTO_REFRESH_OPTIONS = [
@@ -180,6 +184,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   missedSchedulePolicy: "ask",
   missedScheduleGraceMs: DEFAULT_MISSED_SCHEDULE_GRACE_MS,
   timedReleaseReminderLeadMs: DEFAULT_TIMED_RELEASE_LEAD_MS,
+  idleReminderWindowMs: DEFAULT_IDLE_REMINDER_WINDOW_MS,
   desktopCloseToTray: false,
   desktopClosePrompt: true,
   desktopAutostart: false,
@@ -212,6 +217,7 @@ function normalizeNotificationPreferences(value: unknown): NotificationPreferenc
     "task.failure": normalizeNotificationMode(raw["task.failure"], DEFAULT_NOTIFICATION_PREFERENCES["task.failure"]),
     "task.abnormal": normalizeNotificationMode(raw["task.abnormal"], DEFAULT_NOTIFICATION_PREFERENCES["task.abnormal"]),
     "task.releaseDue": normalizeNotificationMode(raw["task.releaseDue"], DEFAULT_NOTIFICATION_PREFERENCES["task.releaseDue"]),
+    "task.idle": normalizeNotificationMode(raw["task.idle"], DEFAULT_NOTIFICATION_PREFERENCES["task.idle"]),
   };
 }
 
@@ -242,6 +248,11 @@ function normalizeMissedScheduleGrace(value: unknown) {
 function normalizeTimedReleaseLead(value: unknown) {
   const lead = normalizePositiveInteger(value, DEFAULT_TIMED_RELEASE_LEAD_MS);
   return TIMED_RELEASE_LEAD_OPTIONS.some((option) => option.value === lead) ? lead : DEFAULT_TIMED_RELEASE_LEAD_MS;
+}
+
+function normalizeIdleReminderWindow(value: unknown) {
+  const window = normalizePositiveInteger(value, DEFAULT_IDLE_REMINDER_WINDOW_MS);
+  return IDLE_REMINDER_WINDOW_OPTIONS.some((option) => option.value === window) ? window : DEFAULT_IDLE_REMINDER_WINDOW_MS;
 }
 
 function normalizeString(value: unknown, fallback: string) {
@@ -377,6 +388,7 @@ export function normalizeAppSettings(settings: Partial<AppSettings>): AppSetting
     missedSchedulePolicy: normalizeMissedSchedulePolicy(settings.missedSchedulePolicy),
     missedScheduleGraceMs: normalizeMissedScheduleGrace(settings.missedScheduleGraceMs),
     timedReleaseReminderLeadMs: normalizeTimedReleaseLead(settings.timedReleaseReminderLeadMs),
+    idleReminderWindowMs: normalizeIdleReminderWindow(settings.idleReminderWindowMs),
     desktopCloseToTray: settings.desktopCloseToTray === true,
     desktopClosePrompt: settings.desktopClosePrompt !== false,
     desktopAutostart: settings.desktopAutostart === true,

@@ -33,6 +33,7 @@ import { LanguageSwitch } from "../components/LanguageSwitch";
 import { ThemeSwitch } from "../components/ThemeSwitch";
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
 import { authApi, getTransportBlockReason, setApiBaseUrl } from "../lib/api";
+import { IDLE_REMINDER_WINDOW_OPTIONS } from "../lib/idle-instance-reminder";
 import {
   DEFAULT_APP_SETTINGS,
   DEFAULT_CUSTOM_COLORS,
@@ -153,6 +154,13 @@ const notificationEvents: Array<{ event: ImportantNotificationEvent; zh: string;
     en: "Timed release approaching",
     descriptionZh: "定时释放的任务在到期前提醒，可从任务详情页延长。",
     descriptionEn: "Reminds before a timed release fires; extend from the task detail page.",
+  },
+  {
+    event: "task.idle",
+    zh: "实例可能闲置",
+    en: "Instance may be idle",
+    descriptionZh: "运行中实例的 CPU 与网络持续偏低时提醒。平台接口不提供 GPU 利用率，属启发式判断，仅提醒不会自动释放。",
+    descriptionEn: "Reminds when a running instance's CPU and network stay low. The platform exposes no GPU utilization, so this is a heuristic — it never releases anything.",
   },
 ];
 
@@ -449,7 +457,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     if (JSON.stringify(normalized.ssh) !== JSON.stringify(savedBaseline.ssh)) groups.push(groupLabels.terminal);
     if (
       JSON.stringify(normalized.notificationPreferences) !== JSON.stringify(savedBaseline.notificationPreferences) ||
-      normalized.timedReleaseReminderLeadMs !== savedBaseline.timedReleaseReminderLeadMs
+      normalized.timedReleaseReminderLeadMs !== savedBaseline.timedReleaseReminderLeadMs ||
+      normalized.idleReminderWindowMs !== savedBaseline.idleReminderWindowMs
     ) {
       groups.push(groupLabels.notifications);
     }
@@ -2244,6 +2253,26 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             onChange={(event) => setForm((value) => ({ ...value, timedReleaseReminderLeadMs: Number(event.target.value) }))}
           >
             {TIMED_RELEASE_LEAD_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {text(option.zh, option.en)}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-app-border px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-app-text">{text("闲置判定窗口", "Idle detection window")}</div>
+            <p className="mt-0.5 text-xs leading-5 text-app-muted">
+              {text("CPU 与网络持续低于阈值的时长达到该窗口才提醒。仅对“实例可能闲置”生效。", "Reminds only after CPU and network stay below the thresholds for this long. Only affects “Instance may be idle”.")}
+            </p>
+          </div>
+          <Select
+            aria-label={text("闲置判定窗口", "Idle detection window")}
+            className="w-40"
+            value={String(form.idleReminderWindowMs)}
+            onChange={(event) => setForm((value) => ({ ...value, idleReminderWindowMs: Number(event.target.value) }))}
+          >
+            {IDLE_REMINDER_WINDOW_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
                 {text(option.zh, option.en)}
               </option>

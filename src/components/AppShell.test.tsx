@@ -69,6 +69,10 @@ vi.mock("./TaskNotificationWatcher", () => ({
   TaskNotificationWatcher: () => null,
 }));
 
+vi.mock("./IdleInstanceWatcher", () => ({
+  IdleInstanceWatcher: () => null,
+}));
+
 vi.mock("./BackgroundScheduledTaskRunner", () => ({
   BackgroundScheduledTaskRunner: () => null,
 }));

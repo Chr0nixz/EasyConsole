@@ -40,6 +40,7 @@ describe("app settings", () => {
           "task.failure": "off",
           "task.abnormal": "system",
           "task.releaseDue": "system",
+        "task.idle": "system",
         },
       }),
     ).toEqual({
@@ -50,6 +51,7 @@ describe("app settings", () => {
         "task.failure": "off",
         "task.abnormal": "system",
         "task.releaseDue": "system",
+        "task.idle": "system",
       },
       taskAutoRefresh: false,
       taskAutoRefreshIntervalMs: 10_000,
@@ -58,6 +60,7 @@ describe("app settings", () => {
       missedSchedulePolicy: "ask",
       missedScheduleGraceMs: 10 * 60_000,
       timedReleaseReminderLeadMs: 10 * 60_000,
+      idleReminderWindowMs: 120 * 60_000,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
       desktopAutostart: false,
@@ -76,6 +79,7 @@ describe("app settings", () => {
         "task.failure": "system",
         "task.abnormal": "system",
         "task.releaseDue": "system",
+        "task.idle": "system",
       },
       taskAutoRefresh: false,
       taskAutoRefreshIntervalMs: 10_000,
@@ -84,6 +88,7 @@ describe("app settings", () => {
       missedSchedulePolicy: "ask",
       missedScheduleGraceMs: 10 * 60_000,
       timedReleaseReminderLeadMs: 10 * 60_000,
+      idleReminderWindowMs: 120 * 60_000,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
       desktopAutostart: false,
@@ -108,6 +113,7 @@ describe("app settings", () => {
         "task.failure": "system",
         "task.abnormal": "system",
         "task.releaseDue": "system",
+        "task.idle": "system",
       },
     });
   });
@@ -156,6 +162,14 @@ describe("app settings", () => {
     expect(normalizeAppSettings({ timedReleaseReminderLeadMs: 0 }).timedReleaseReminderLeadMs).toBe(10 * 60_000);
     // Invalid notification modes for the new event fall back to the default.
     expect(parseAppSettings(JSON.stringify({ notificationPreferences: { "task.releaseDue": "loudly" } })).notificationPreferences["task.releaseDue"]).toBe("system");
+  });
+
+  it("defaults the idle reminder window to 120 minutes and whitelists options", () => {
+    expect(DEFAULT_APP_SETTINGS).toMatchObject({ idleReminderWindowMs: 120 * 60_000 });
+    expect(normalizeAppSettings({ idleReminderWindowMs: 30 * 60_000 }).idleReminderWindowMs).toBe(30 * 60_000);
+    expect(normalizeAppSettings({ idleReminderWindowMs: 45 * 60_000 }).idleReminderWindowMs).toBe(120 * 60_000);
+    expect(normalizeAppSettings({ idleReminderWindowMs: 0 }).idleReminderWindowMs).toBe(120 * 60_000);
+    expect(parseAppSettings(JSON.stringify({ notificationPreferences: { "task.idle": "loudly" } })).notificationPreferences["task.idle"]).toBe("system");
   });
 
   it("preserves empty default SSH password", () => {

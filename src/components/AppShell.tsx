@@ -7,6 +7,7 @@ import { BackgroundScheduledTaskRunner } from "./BackgroundScheduledTaskRunner";
 import { CommandPalette } from "./CommandPalette";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { TaskNotificationWatcher } from "./TaskNotificationWatcher";
+import { IdleInstanceWatcher } from "./IdleInstanceWatcher";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { Button, Dialog, ProgressBar } from "./ui";
 import { GLOBAL_SETTINGS_ACCOUNT_ID, getRuntimeSettings, saveAccountSettings, setRuntimeSettings } from "../lib/app-settings";
@@ -572,6 +573,7 @@ export function AppShell() {
         {text("跳到主内容", "Skip to main content")}
       </a>
       <TaskNotificationWatcher />
+      <IdleInstanceWatcher />
       <BackgroundScheduledTaskRunner />
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
