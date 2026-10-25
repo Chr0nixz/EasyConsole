@@ -344,7 +344,11 @@ function normalizeBody(body: unknown, headers: Record<string, string>) {
   return JSON.stringify(body);
 }
 
-async function readBlobWithProgress(response: Response, onProgress?: (progress: UploadProgress) => void) {
+async function readBlobWithProgress(
+  response: Response,
+  onProgress?: (progress: UploadProgress) => void,
+  onChunk?: () => void,
+) {
   const totalValue = response.headers.get("content-length");
   const total = totalValue ? Number(totalValue) : undefined;
   const knownTotal = total && Number.isFinite(total) && total > 0 ? total : undefined;
@@ -372,6 +376,8 @@ async function readBlobWithProgress(response: Response, onProgress?: (progress: 
     if (!value) continue;
     chunks.push(value as BlobPart);
     loaded += value.byteLength;
+    // Progress proves the connection is alive: reset the idle timeout window.
+    onChunk?.();
 
     if (onProgress) {
       const now = Date.now();
@@ -392,7 +398,22 @@ async function readBlobWithProgress(response: Response, onProgress?: (progress: 
 async function fetchRequest<T = unknown>(request: RuntimeHttpRequest): Promise<RuntimeHttpResponse<T>> {
   const controller = new AbortController();
   const timeoutMs = request.timeoutMs ?? 20_000;
-  const timeout = timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  // JSON/text requests keep one overall timeout. Blob (download) requests
+  // cannot: a large or slow body legitimately takes longer than the timeout
+  // budget. Once headers arrive, the same timer is re-armed per received
+  // chunk, turning it into an idle timeout that only fires when the
+  // connection stops delivering data. `timeoutMs <= 0` disables it entirely.
+  let timeout: number | undefined;
+  const armTimeout = () => {
+    if (timeoutMs <= 0) return;
+    if (timeout !== undefined) window.clearTimeout(timeout);
+    timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  };
+  const disarmTimeout = () => {
+    if (timeout !== undefined) window.clearTimeout(timeout);
+    timeout = undefined;
+  };
+  armTimeout();
   const abortFromCaller = () => controller.abort();
   request.signal?.addEventListener("abort", abortFromCaller, { once: true });
   const headers = { ...(request.headers ?? {}) };
@@ -412,7 +433,9 @@ async function fetchRequest<T = unknown>(request: RuntimeHttpRequest): Promise<R
     const responseType = request.responseType ?? "json";
     let data: unknown;
     if (responseType === "blob") {
-      data = await readBlobWithProgress(response, request.onDownloadProgress);
+      // Headers arrived: restart the timer as the first idle window.
+      armTimeout();
+      data = await readBlobWithProgress(response, request.onDownloadProgress, armTimeout);
     } else if (responseType === "text") {
       data = await response.text();
     } else {
@@ -427,7 +450,7 @@ async function fetchRequest<T = unknown>(request: RuntimeHttpRequest): Promise<R
     };
   } finally {
     request.signal?.removeEventListener("abort", abortFromCaller);
-    if (timeout) window.clearTimeout(timeout);
+    disarmTimeout();
   }
 }
 

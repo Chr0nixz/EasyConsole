@@ -40,6 +40,43 @@ function normalizeBody(body: unknown, headers: Record<string, string>) {
   return JSON.stringify(body);
 }
 
+function toProgress(loaded: number, total?: number) {
+  return { loaded, total, percent: total ? Math.round((loaded / total) * 100) : 0 };
+}
+
+async function readBlobWithProgress(
+  response: Response,
+  onProgress: ((progress: { loaded: number; total?: number; percent: number }) => void) | undefined,
+  onChunk: () => void,
+) {
+  const totalValue = response.headers.get("content-length");
+  const total = totalValue ? Number(totalValue) : undefined;
+  const knownTotal = total && Number.isFinite(total) && total > 0 ? total : undefined;
+  if (!response.body) {
+    const blob = await response.blob();
+    onProgress?.(toProgress(blob.size, knownTotal ?? blob.size));
+    return blob;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: BlobPart[] = [];
+  let loaded = 0;
+  onProgress?.(toProgress(0, knownTotal));
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    chunks.push(value as BlobPart);
+    loaded += value.byteLength;
+    // Progress proves the connection is alive: reset the idle timeout window.
+    onChunk();
+    onProgress?.(toProgress(loaded, knownTotal));
+  }
+  const blob = new Blob(chunks);
+  onProgress?.(toProgress(blob.size, knownTotal ?? blob.size));
+  return blob;
+}
+
 function unsupported(name: string): never {
   throw new Error(`${name} is not available in the EasyConsole Node runtime`);
 }
@@ -51,12 +88,23 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
   async function request<T = unknown>(requestOptions: RuntimeHttpRequest): Promise<RuntimeHttpResponse<T>> {
     const controller = new AbortController();
     const timeoutMs = requestOptions.timeoutMs ?? 20_000;
-    const timeout =
-      timeoutMs > 0
-        ? setTimeout(() => {
-            controller.abort();
-          }, timeoutMs)
-        : undefined;
+    // Mirrors src/lib/runtime.ts: one overall timeout for JSON/text; for blob
+    // (download) requests the timer is re-armed per received chunk once the
+    // headers arrive, so only a stalled connection -- not a large or slow
+    // body -- trips it. `timeoutMs <= 0` disables it entirely.
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const armTimeout = () => {
+      if (timeoutMs <= 0) return;
+      if (timeout !== undefined) clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        controller.abort();
+      }, timeoutMs);
+    };
+    const disarmTimeout = () => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      timeout = undefined;
+    };
+    armTimeout();
     const abortFromCaller = () => controller.abort();
     requestOptions.signal?.addEventListener("abort", abortFromCaller, { once: true });
     const headers = { ...(requestOptions.headers ?? {}) };
@@ -72,7 +120,9 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
       const responseType = requestOptions.responseType ?? "json";
       let data: unknown;
       if (responseType === "blob") {
-        data = await response.blob();
+        // Headers arrived: restart the timer as the first idle window.
+        armTimeout();
+        data = await readBlobWithProgress(response, requestOptions.onDownloadProgress, armTimeout);
       } else if (responseType === "text") {
         data = await response.text();
       } else {
@@ -82,7 +132,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
       return { status: response.status, headers: response.headers, data: data as T };
     } finally {
       requestOptions.signal?.removeEventListener("abort", abortFromCaller);
-      if (timeout) clearTimeout(timeout);
+      disarmTimeout();
     }
   }
 

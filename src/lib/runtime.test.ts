@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { browserRuntime, getRuntimeKind, initRuntimeKind } from "./runtime";
 
@@ -103,5 +103,118 @@ describe("runtime kind resolution", () => {
     expect(browserRuntime.supportsSshPopOut).toBe(false);
     expect(browserRuntime.supportsUpdater).toBe(false);
     expect(browserRuntime.supportsFileReveal).toBe(false);
+  });
+});
+
+describe("download timeout behavior", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  function sleep(ms: number) {
+    return new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  }
+
+  function byte(value: number) {
+    return new Uint8Array([value]);
+  }
+
+  /** Fake streaming response whose chunks arrive after configured delays. */
+  function chunkedResponse(chunks: Array<{ bytes: Uint8Array; delayMs: number }>, signal: AbortSignal) {
+    let index = 0;
+    const total = chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0);
+    return {
+      status: 200,
+      headers: new Headers({ "content-length": String(total) }),
+      body: {
+        getReader: () => ({
+          async read() {
+            if (index >= chunks.length) return { done: true, value: undefined };
+            const chunk = chunks[index];
+            index += 1;
+            if (chunk.delayMs > 0) await sleep(chunk.delayMs);
+            if (signal.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+            return { done: false, value: chunk.bytes };
+          },
+        }),
+      },
+    };
+  }
+
+  function stubFetchWithBody(handler: (signal: AbortSignal) => ReturnType<typeof chunkedResponse>) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        return handler(init?.signal ?? new AbortController().signal) as unknown as Response;
+      }),
+    );
+  }
+
+  it("completes a blob download whose body outlives the timeout budget", async () => {
+    // Six chunks with 200ms gaps: 1200ms total against a 500ms timeout. Only
+    // the gaps matter once the timer is per-chunk, so the download completes.
+    const chunks = [1, 2, 3, 4, 5, 6].map((value) => ({ bytes: byte(value), delayMs: 200 }));
+    stubFetchWithBody((signal) => chunkedResponse(chunks, signal));
+
+    const pending = browserRuntime.request<Blob>({
+      method: "GET",
+      url: "http://host/api/file",
+      responseType: "blob",
+      timeoutMs: 500,
+    });
+    for (let step = 0; step < 8; step += 1) {
+      await vi.advanceTimersByTimeAsync(200);
+    }
+
+    const response = await pending;
+    expect(response.data.size).toBe(6);
+  });
+
+  it("aborts a blob download once the body stalls past the idle window", async () => {
+    const chunks = [
+      { bytes: byte(1), delayMs: 0 },
+      { bytes: byte(2), delayMs: 10_000 },
+    ];
+    stubFetchWithBody((signal) => chunkedResponse(chunks, signal));
+
+    const pending = browserRuntime.request<Blob>({
+      method: "GET",
+      url: "http://host/api/file",
+      responseType: "blob",
+      timeoutMs: 500,
+    });
+    const rejection = expect(pending).rejects.toThrow(/abort/i);
+    await vi.advanceTimersByTimeAsync(10_600);
+    await rejection;
+  });
+
+  it("keeps the overall timeout for JSON responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const signal = init?.signal ?? new AbortController().signal;
+        return {
+          status: 200,
+          headers: new Headers(),
+          text: async () => {
+            await sleep(2_000);
+            if (signal.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+            return "{}";
+          },
+        } as unknown as Response;
+      }),
+    );
+
+    const pending = browserRuntime.request({ method: "GET", url: "http://host/api/demo", timeoutMs: 500 });
+    const rejection = expect(pending).rejects.toThrow(/abort/i);
+    await vi.advanceTimersByTimeAsync(2_500);
+    await rejection;
   });
 });
