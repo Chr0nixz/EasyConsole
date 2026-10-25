@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { BadgeCheck, Download, Eye, RefreshCw, Search, Star } from "lucide-react";
+import { BadgeCheck, Download, Eye, Pencil, RefreshCw, Search, Star, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { EmptyState, ErrorState, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { ImageDetailDialog } from "../components/images/ImageDetailDialog";
-import { Button, Input, Panel, Select, SettingTag, TableRegion } from "../components/ui";
+import { Button, Dialog, Input, Panel, Select, SettingTag, TableRegion } from "../components/ui";
 import { imageApi } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { useDownloadQueue } from "../lib/use-download-queue";
@@ -62,6 +62,10 @@ export function ImagesPage() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [detailImage, setDetailImage] = useState<{ id: string | number; name: string } | null>(null);
+  const [editImage, setEditImage] = useState<ImageRow | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
   const custom = useQuery({
     queryKey: queryKeys.images.list(),
     queryFn: ({ signal }) => imageApi.list({ page: 1, page_size: 100 }, { signal }),
@@ -152,6 +156,94 @@ export function ImagesPage() {
       action: "image.download",
       request: ({ signal, onProgress }) => imageApi.download(image.id, { signal, onProgress }),
     });
+  };
+
+  const deleteImageRow = (image: ImageRow) => {
+    confirm({
+      title: text("确认删除镜像", "Confirm Image Deletion"),
+      description: text(
+        `将删除自定义镜像 ${imageName(image)}。使用该镜像创建实例的能力将一并移除，此操作不可从 EasyConsole 撤销。`,
+        `Delete the custom image ${imageName(image)}. Instances can no longer be created from it; EasyConsole cannot undo this.`,
+      ),
+      confirmLabel: text("删除镜像", "Delete image"),
+      tone: "danger",
+      run: async () => {
+        try {
+          await imageApi.deleteImage(image.id);
+          toast.success(text("镜像已删除", "Image deleted"), imageName(image));
+          void runLogger.log({
+            source: "image",
+            level: "info",
+            action: "image.delete",
+            result: "success",
+            title: text("镜像已删除", "Image deleted"),
+            targetName: imageName(image),
+            targetId: image.id,
+          });
+          refetchImages();
+        } catch (error) {
+          void runLogger.log({
+            source: "image",
+            level: "error",
+            action: "image.delete",
+            result: "failure",
+            title: text("镜像删除失败", "Failed to delete image"),
+            targetName: imageName(image),
+            targetId: image.id,
+            error: errorMessage(error, text("镜像删除失败", "Failed to delete image")),
+          });
+          throw error;
+        }
+      },
+    });
+  };
+
+  const openEditImage = (image: ImageRow) => {
+    setEditImage(image);
+    setEditName(typeof image.name === "string" ? image.name : imageName(image));
+    setEditDescription(typeof image.description === "string" ? image.description : "");
+  };
+
+  const submitEditImage = async () => {
+    if (!editImage) return;
+    const trimmedName = editName.trim();
+    if (!trimmedName) {
+      toast.error(text("请填写镜像名称", "Enter an image name"));
+      return;
+    }
+    setEditSaving(true);
+    try {
+      await imageApi.updateImage(editImage.id, { name: trimmedName, description: editDescription.trim() });
+      toast.success(text("镜像已更新", "Image updated"), trimmedName);
+      void runLogger.log({
+        source: "image",
+        level: "info",
+        action: "image.update",
+        result: "success",
+        title: text("镜像已更新", "Image updated"),
+        targetName: trimmedName,
+        targetId: editImage.id,
+      });
+      setEditImage(null);
+      refetchImages();
+    } catch (error) {
+      toast.error(
+        text("镜像更新失败", "Failed to update image"),
+        `${trimmedName}: ${errorMessage(error, text("镜像更新失败", "Failed to update image"))}`,
+      );
+      void runLogger.log({
+        source: "image",
+        level: "error",
+        action: "image.update",
+        result: "failure",
+        title: text("镜像更新失败", "Failed to update image"),
+        targetName: trimmedName,
+        targetId: editImage.id,
+        error: errorMessage(error, text("镜像更新失败", "Failed to update image")),
+      });
+    } finally {
+      setEditSaving(false);
+    }
   };
 
   const isLoading = custom.isLoading || system.isLoading;
@@ -289,6 +381,29 @@ export function ImagesPage() {
                       <Download className="h-4 w-4" />
                       {text("下载", "Download")}
                     </Button>
+                    {image.source === "custom" ? (
+                      <>
+                        <Button
+                          aria-label={text(`编辑镜像 ${imageName(image)}`, `Edit image ${imageName(image)}`)}
+                          variant="ghost"
+                          title={text("编辑", "Edit")}
+                          onClick={() => openEditImage(image)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                          {text("编辑", "Edit")}
+                        </Button>
+                        <Button
+                          aria-label={text(`删除镜像 ${imageName(image)}`, `Delete image ${imageName(image)}`)}
+                          className="hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger"
+                          variant="ghost"
+                          title={text("删除", "Delete")}
+                          onClick={() => deleteImageRow(image)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          {text("删除", "Delete")}
+                        </Button>
+                      </>
+                    ) : null}
                   </div>
                 </article>
               );
@@ -356,6 +471,16 @@ export function ImagesPage() {
                         <Button aria-label={text(`下载镜像 ${imageName(image)}`, `Download image ${imageName(image)}`)} variant="ghost" title={text("下载", "Download")} onClick={() => downloadImage(image)}>
                           <Download className="h-4 w-4" />
                         </Button>
+                        {image.source === "custom" ? (
+                          <>
+                            <Button aria-label={text(`编辑镜像 ${imageName(image)}`, `Edit image ${imageName(image)}`)} variant="ghost" title={text("编辑", "Edit")} onClick={() => openEditImage(image)}>
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button aria-label={text(`删除镜像 ${imageName(image)}`, `Delete image ${imageName(image)}`)} className="hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger" variant="ghost" title={text("删除", "Delete")} onClick={() => deleteImageRow(image)}>
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -369,6 +494,43 @@ export function ImagesPage() {
       </Panel>
       {confirmDialog}
       <ImageDetailDialog imageId={detailImage?.id ?? null} imageName={detailImage?.name} onClose={() => setDetailImage(null)} />
+      <Dialog
+        open={Boolean(editImage)}
+        title={text("编辑镜像", "Edit image")}
+        onClose={() => setEditImage(null)}
+        width="max-w-md"
+      >
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitEditImage();
+          }}
+        >
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-app-text">{text("名称", "Name")}</span>
+            <Input value={editName} onChange={(event) => setEditName(event.target.value)} required />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-app-text">{text("说明", "Description")}</span>
+            <Input value={editDescription} onChange={(event) => setEditDescription(event.target.value)} placeholder={text("可选", "Optional")} />
+          </label>
+          <p className="text-xs leading-5 text-app-muted">
+            {text(
+              "通过镜像更新接口保存；接口行为以后端实际支持为准，失败时会提示具体原因。",
+              "Saved through the image update endpoint; failures surface the backend's reason.",
+            )}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button disabled={editSaving} type="button" variant="ghost" onClick={() => setEditImage(null)}>
+              {text("取消", "Cancel")}
+            </Button>
+            <Button disabled={editSaving} type="submit">
+              {editSaving ? text("保存中…", "Saving…") : text("保存", "Save")}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
     </div>
   );
 }

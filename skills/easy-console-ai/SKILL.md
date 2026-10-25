@@ -58,11 +58,11 @@ easy-console.exe
 easy-console-mcp.exe
 ```
 
-Use these tools by intent (all 52 registered tools):
+Use these tools by intent (all 54 registered tools):
 
 - Tasks: `easyconsole_task_list`, `easyconsole_task_log`, `easyconsole_task_get`, `easyconsole_task_wait`, `easyconsole_task_create`, `easyconsole_task_update`, `easyconsole_task_release`, `easyconsole_task_release_batch`, `easyconsole_task_delete`, `easyconsole_task_delete_batch`, `easyconsole_task_check_name`, `easyconsole_task_download`.
 - Storage: `easyconsole_storage_list`, `easyconsole_storage_read_text`, `easyconsole_storage_download`, `easyconsole_storage_upload`, `easyconsole_storage_mkdir`, `easyconsole_storage_delete`, `easyconsole_storage_info`.
-- Images: `easyconsole_image_list`, `easyconsole_image_system`, `easyconsole_image_detail`, `easyconsole_image_set_default`, `easyconsole_image_download`, `easyconsole_image_commit`.
+- Images: `easyconsole_image_list`, `easyconsole_image_system`, `easyconsole_image_detail`, `easyconsole_image_set_default`, `easyconsole_image_update`, `easyconsole_image_delete`, `easyconsole_image_download`, `easyconsole_image_commit`.
 - Account: `easyconsole_user_info`, `easyconsole_account_change_password`, `easyconsole_account_refresh_token`.
 - Metadata: `easyconsole_resource_list`, `easyconsole_price_list`, `easyconsole_monitor_url`.
 - Dashboard: `easyconsole_dashboard_stats`, `easyconsole_dashboard_cost`, `easyconsole_dashboard_cost_month`, `easyconsole_dashboard_monitor_index`.

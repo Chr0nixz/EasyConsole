@@ -17,6 +17,7 @@ import {
   createScheduledTaskRecord,
   createTask,
   createTaskTemplateRecord,
+  deleteImage,
   deleteScheduledTask,
   deleteStoragePath,
   deleteTask,
@@ -54,6 +55,7 @@ import {
   runScheduledTask,
   setDefaultImage,
   uploadLocalFile,
+  updateImage,
   updateScheduledTaskRecord,
   updateTask,
   updateTaskTemplateRecord,
@@ -669,6 +671,33 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   );
 
   const imageSystem = image.command("system").description("List system images");
+  const imageUpdate = image.command("update").description("Update a custom image's name/description");
+  imageUpdate.argument("<imageId>", "Image id");
+  imageUpdate.option("--name <name>", "New image name");
+  imageUpdate.option("--description <description>", "New image description");
+  imageUpdate.option("--payload-json <json>", "Raw update image JSON payload");
+  imageUpdate.option("--yes", "Execute instead of dry-run");
+  imageUpdate.action((imageId: string) =>
+    run(imageUpdate, (context) => {
+      const options = imageUpdate.opts<{ name?: string; description?: string; payloadJson?: string; yes?: boolean }>();
+      const payload: UnknownRecord = options.payloadJson
+        ? parseJsonRecord(options.payloadJson)
+        : compactRecord({ name: options.name, description: options.description });
+      if (Object.keys(payload).length === 0) throw new Error("Provide --name, --description, or --payload-json.");
+      return updateImage(context.api, parseId(imageId), payload, options.yes);
+    })(),
+  );
+
+  const imageDelete = image.command("delete").description("Delete a custom image; irreversible");
+  imageDelete.argument("<imageId>", "Image id");
+  imageDelete.option("--yes", "Execute instead of dry-run");
+  imageDelete.action((imageId: string) =>
+    run(imageDelete, (context) => {
+      const options = imageDelete.opts<{ yes?: boolean }>();
+      return deleteImage(context.api, parseId(imageId), options.yes);
+    })(),
+  );
+
   imageSystem.action(run(imageSystem, (context) => listSystemImages(context.api)));
 
   const imageDetail = image.command("detail").description("Show image detail");

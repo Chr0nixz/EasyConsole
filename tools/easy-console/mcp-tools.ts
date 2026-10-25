@@ -16,6 +16,7 @@ import {
   createScheduledTaskRecord,
   createTask,
   createTaskTemplateRecord,
+  deleteImage,
   deleteScheduledTask,
   deleteStoragePath,
   deleteTask,
@@ -56,6 +57,7 @@ import {
   setDefaultImage,
   uploadLocalFile,
   updateScheduledTaskRecord,
+  updateImage,
   updateTask,
   updateTaskTemplateRecord,
   userInfo,
@@ -346,6 +348,39 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       },
       handler(context, input) {
         return setDefaultImage(context.api, asId(input.imageId), asConfirm(input.confirm));
+      },
+    },
+    {
+      name: "easyconsole_image_update",
+      description:
+        "Update a custom image's metadata (name/description; unknown extra fields pass through). Requires confirm=true to execute. " +
+        "The backend endpoint exists in the API surface but its live behavior is unverified; failures surface the backend's reason.",
+      inputSchema: {
+        imageId: idSchema,
+        payload: z
+          .object({
+            name: z.string().min(1).optional(),
+            description: z.string().optional(),
+            tag: z.string().optional(),
+          })
+          .passthrough(),
+        confirm: z.boolean().optional(),
+      },
+      handler(context, input) {
+        return updateImage(context.api, asId(input.imageId), asRecord(input.payload), asConfirm(input.confirm));
+      },
+    },
+    {
+      name: "easyconsole_image_delete",
+      description:
+        "Delete a custom image by id; irreversible. Requires confirm=true to execute. " +
+        "Verify the id with easyconsole_image_list first — deletion removes the ability to create instances from the image.",
+      inputSchema: {
+        imageId: idSchema,
+        confirm: z.boolean().optional(),
+      },
+      handler(context, input) {
+        return deleteImage(context.api, asId(input.imageId), asConfirm(input.confirm));
       },
     },
     {

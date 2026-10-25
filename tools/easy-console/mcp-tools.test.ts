@@ -150,6 +150,52 @@ describe("easy-console MCP tools", () => {
     expect(failed).toMatchObject({ outcome: "failed", status: 8 });
   });
 
+  it("gates image update and delete behind confirm", async () => {
+    let updateCount = 0;
+    let deleteCount = 0;
+    const context = createFakeContext({
+      imageApi: {
+        list: async () => ({ items: [], raw: [] }),
+        system: async () => ({ items: [], raw: [] }),
+        setDefault: async () => ({}),
+        detail: async () => ({}),
+        download: async () => new Blob([]),
+        commitImage: async () => ({}),
+        updateImage: async (id: number, payload: Record<string, unknown>) => {
+          updateCount += 1;
+          return { id, payload };
+        },
+        deleteImage: async () => {
+          deleteCount += 1;
+          return {};
+        },
+      },
+    });
+
+    const dryRun = await invokeMcpToolDefinition(getTool("easyconsole_image_delete"), context, { imageId: 3 });
+    expect(dryRun).toMatchObject({ dryRun: true, action: "image.delete" });
+    expect(deleteCount).toBe(0);
+
+    const confirmed = await invokeMcpToolDefinition(getTool("easyconsole_image_delete"), context, { imageId: 3, confirm: true });
+    expect(confirmed).toMatchObject({ dryRun: false });
+    expect(deleteCount).toBe(1);
+
+    const updateDryRun = await invokeMcpToolDefinition(getTool("easyconsole_image_update"), context, {
+      imageId: 3,
+      payload: { name: "renamed" },
+    });
+    expect(updateDryRun).toMatchObject({ dryRun: true, action: "image.update" });
+    expect(updateCount).toBe(0);
+
+    const updated = await invokeMcpToolDefinition(getTool("easyconsole_image_update"), context, {
+      imageId: 3,
+      payload: { name: "renamed" },
+      confirm: true,
+    });
+    expect(updateCount).toBe(1);
+    expect(JSON.stringify(updated)).toContain("renamed");
+  });
+
   it("does not call mutation APIs without confirm=true", async () => {
     let releaseCount = 0;
     const context = createFakeContext({

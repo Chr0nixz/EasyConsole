@@ -162,6 +162,25 @@ describe("api factory", () => {
     });
   });
 
+  it("updates and deletes images through the per-id endpoints", async () => {
+    const { runtime, calls } = createRuntime({ code: 0, data: {} });
+    const client = new ApiClient(runtime, "http://host/api");
+    const api = createEasyConsoleApi(client);
+
+    await api.imageApi.updateImage(3, { name: "renamed", description: "updated" });
+    await api.imageApi.deleteImage(3);
+
+    expect(calls[0]).toMatchObject({
+      method: "PUT",
+      url: "http://host/api/image/image/3",
+      body: { name: "renamed", description: "updated" },
+    });
+    expect(calls[1]).toMatchObject({
+      method: "DELETE",
+      url: "http://host/api/image/image/3",
+    });
+  });
+
   it("passes download progress and abort options to blob endpoints", async () => {
     const onProgress = () => undefined;
     const signal = new AbortController().signal;

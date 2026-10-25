@@ -255,6 +255,14 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
     setDefault(id: string | number) {
       return apiClient.post<unknown>(`/image/default/${id}`);
     },
+    // Update/delete responses are unverified against the live API; typed as
+    // unknown on purpose (envelope behavior confirmed only by real traffic).
+    updateImage(id: string | number, payload: UnknownRecord) {
+      return apiClient.put<unknown>(`/image/image/${id}`, payload);
+    },
+    deleteImage(id: string | number) {
+      return apiClient.delete<unknown>(`/image/image/${id}`);
+    },
   };
 
   const storageApi = {

@@ -539,6 +539,14 @@ export function setDefaultImage(api: EasyConsoleApi, imageId: string | number, c
   return maybeMutate("image.setDefault", { id: imageId }, confirm, () => api.imageApi.setDefault(imageId));
 }
 
+export function updateImage(api: EasyConsoleApi, imageId: string | number, payload: UnknownRecord, confirm?: boolean) {
+  return maybeMutate("image.update", { id: imageId, payload }, confirm, () => api.imageApi.updateImage(imageId, payload));
+}
+
+export function deleteImage(api: EasyConsoleApi, imageId: string | number, confirm?: boolean) {
+  return maybeMutate("image.delete", { id: imageId }, confirm, () => api.imageApi.deleteImage(imageId));
+}
+
 export function userInfo(api: EasyConsoleApi) {
   return api.authApi.userInfo();
 }
