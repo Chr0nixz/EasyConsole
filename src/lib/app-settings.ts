@@ -62,6 +62,8 @@ export type AppSettings = {
   missedSchedulePolicy: MissedSchedulePolicy;
   /** A due run older than this window counts as missed. Default 10 minutes. */
   missedScheduleGraceMs: number;
+  /** Warn this far before a timed release fires. Default 10 minutes. */
+  timedReleaseReminderLeadMs: number;
   desktopCloseToTray: boolean;
   desktopClosePrompt: boolean;
   /** Launch the desktop app at OS login (applied to the autostart plugin). */
@@ -71,7 +73,7 @@ export type AppSettings = {
   ssh: SshSettings;
 };
 
-export type ImportantNotificationEvent = "task.success" | "task.failure" | "task.abnormal";
+export type ImportantNotificationEvent = "task.success" | "task.failure" | "task.abnormal" | "task.releaseDue";
 
 export type NotificationMode = "off" | "app" | "system";
 
@@ -93,6 +95,7 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
   "task.success": "system",
   "task.failure": "system",
   "task.abnormal": "system",
+  "task.releaseDue": "system",
 };
 
 export const TASK_AUTO_REFRESH_OPTIONS = [
@@ -114,6 +117,14 @@ export const MISSED_SCHEDULE_GRACE_OPTIONS = [
   { zh: "10 分钟", en: "10 min", value: 10 * 60_000 },
   { zh: "30 分钟", en: "30 min", value: 30 * 60_000 },
 ] as const;
+
+export const TIMED_RELEASE_LEAD_OPTIONS = [
+  { zh: "5 分钟", en: "5 min", value: 5 * 60_000 },
+  { zh: "10 分钟", en: "10 min", value: 10 * 60_000 },
+  { zh: "30 分钟", en: "30 min", value: 30 * 60_000 },
+] as const;
+
+export const DEFAULT_TIMED_RELEASE_LEAD_MS = 10 * 60_000;
 
 // Re-exported here so existing settings consumers keep one import site; the
 // deliberate terminal color values themselves live in ssh-terminal-colors.ts.
@@ -168,6 +179,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   autoNumberDuplicateTaskNames: true,
   missedSchedulePolicy: "ask",
   missedScheduleGraceMs: DEFAULT_MISSED_SCHEDULE_GRACE_MS,
+  timedReleaseReminderLeadMs: DEFAULT_TIMED_RELEASE_LEAD_MS,
   desktopCloseToTray: false,
   desktopClosePrompt: true,
   desktopAutostart: false,
@@ -199,6 +211,7 @@ function normalizeNotificationPreferences(value: unknown): NotificationPreferenc
     "task.success": normalizeNotificationMode(raw["task.success"], DEFAULT_NOTIFICATION_PREFERENCES["task.success"]),
     "task.failure": normalizeNotificationMode(raw["task.failure"], DEFAULT_NOTIFICATION_PREFERENCES["task.failure"]),
     "task.abnormal": normalizeNotificationMode(raw["task.abnormal"], DEFAULT_NOTIFICATION_PREFERENCES["task.abnormal"]),
+    "task.releaseDue": normalizeNotificationMode(raw["task.releaseDue"], DEFAULT_NOTIFICATION_PREFERENCES["task.releaseDue"]),
   };
 }
 
@@ -224,6 +237,11 @@ function normalizeMissedSchedulePolicy(value: unknown): MissedSchedulePolicy {
 function normalizeMissedScheduleGrace(value: unknown) {
   const grace = normalizePositiveInteger(value, DEFAULT_MISSED_SCHEDULE_GRACE_MS);
   return MISSED_SCHEDULE_GRACE_OPTIONS.some((option) => option.value === grace) ? grace : DEFAULT_MISSED_SCHEDULE_GRACE_MS;
+}
+
+function normalizeTimedReleaseLead(value: unknown) {
+  const lead = normalizePositiveInteger(value, DEFAULT_TIMED_RELEASE_LEAD_MS);
+  return TIMED_RELEASE_LEAD_OPTIONS.some((option) => option.value === lead) ? lead : DEFAULT_TIMED_RELEASE_LEAD_MS;
 }
 
 function normalizeString(value: unknown, fallback: string) {
@@ -358,6 +376,7 @@ export function normalizeAppSettings(settings: Partial<AppSettings>): AppSetting
     autoNumberDuplicateTaskNames: settings.autoNumberDuplicateTaskNames !== false,
     missedSchedulePolicy: normalizeMissedSchedulePolicy(settings.missedSchedulePolicy),
     missedScheduleGraceMs: normalizeMissedScheduleGrace(settings.missedScheduleGraceMs),
+    timedReleaseReminderLeadMs: normalizeTimedReleaseLead(settings.timedReleaseReminderLeadMs),
     desktopCloseToTray: settings.desktopCloseToTray === true,
     desktopClosePrompt: settings.desktopClosePrompt !== false,
     desktopAutostart: settings.desktopAutostart === true,

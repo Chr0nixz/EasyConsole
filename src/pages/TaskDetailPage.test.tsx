@@ -4,6 +4,7 @@ import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ToastProvider } from "../components/Toast";
+import { RunLoggerProvider } from "../components/RunLoggerProvider";
 import { I18nProvider } from "../lib/i18n";
 
 const mocks = vi.hoisted(() => ({
@@ -44,11 +45,13 @@ function renderDetail() {
         path: "/tasks/:id",
         element: (
           <I18nProvider>
-            <ToastProvider>
-              <QueryClientProvider client={client}>
-                <TaskDetailPage />
-              </QueryClientProvider>
-            </ToastProvider>
+            <RunLoggerProvider>
+              <ToastProvider>
+                <QueryClientProvider client={client}>
+                  <TaskDetailPage />
+                </QueryClientProvider>
+              </ToastProvider>
+            </RunLoggerProvider>
           </I18nProvider>
         ),
       },

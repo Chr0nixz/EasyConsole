@@ -1,6 +1,6 @@
 import { lazy, Suspense, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ChevronDown, CopyPlus, ExternalLink, FileJson, FileText, Maximize2, Monitor, Power, TerminalSquare, Trash2 } from "lucide-react";
+import { ArrowLeft, ChevronDown, Clock, CopyPlus, ExternalLink, FileJson, FileText, Maximize2, Monitor, Power, TerminalSquare, Trash2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
@@ -9,13 +9,18 @@ import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { ReleaseConfirmDescription } from "../components/tasks/ReleaseConfirmDescription";
 import { TaskLogPanel } from "../components/tasks/TaskLogPanel";
 import { TaskSshPanel } from "../components/tasks/TaskSshPanel";
-import { Button, Panel, Select } from "../components/ui";
+import { Button, Dialog, Panel, Select } from "../components/ui";
 import { instanceApi } from "../lib/api";
 import { formatCost, formatSecondsDuration, getTaskName, getTaskNodeName, getTaskReleaseCondition } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { buildMonitorDashboardUrl } from "../lib/monitor-dashboard";
 import { browserRuntime } from "../lib/runtime";
 import { buildTaskSshInfo } from "../lib/ssh-info";
+import {
+  formatReleaseTimeInput,
+  parseReleaseTime,
+  TIMED_RELEASE_CONDITION,
+} from "../lib/task-release-notifications";
 import { invalidateTaskQueries, taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
 import { getTaskAccess } from "../lib/task-terminal";
 import { FAILURE_STATUSES } from "../lib/task-status-notifications";
@@ -25,6 +30,7 @@ import { useAuth } from "../lib/use-auth";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useCompactLayout } from "../lib/use-compact-layout";
 import { useSlidingIndicator } from "../lib/use-sliding-indicator";
+import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
 const CreateTaskDialog = lazy(() => import("../components/tasks/CreateTaskDialog").then((module) => ({ default: module.CreateTaskDialog })));
@@ -50,6 +56,12 @@ const MONITOR_RANGES: Array<{ value: MonitorRange; zh: string; en: string }> = [
   { value: "now-6h", zh: "近 6 小时", en: "Last 6 hours" },
   { value: "now-24h", zh: "近 24 小时", en: "Last 24 hours" },
   { value: "now-7d", zh: "近 7 天", en: "Last 7 days" },
+];
+
+const EXTEND_RELEASE_OPTIONS: Array<{ value: number; zh: string; en: string }> = [
+  { value: 60 * 60_000, zh: "延长 1 小时", en: "Extend by 1 hour" },
+  { value: 3 * 60 * 60_000, zh: "延长 3 小时", en: "Extend by 3 hours" },
+  { value: 24 * 60 * 60_000, zh: "延长 24 小时", en: "Extend by 24 hours" },
 ];
 
 function extractSeriesPoints(series: MonitorMetricSeries | undefined): number[] {
@@ -101,6 +113,7 @@ export function TaskDetailPage() {
   const queryClient = useQueryClient();
   const { confirm, confirmDialog } = useConfirmAction();
   const toast = useToast();
+  const runLogger = useRunLogger();
   const [tab, setTab] = useState<Tab>(() => parseDetailTab(searchParams.get("tab")));
   // Panels slide toward the side the user moved to; the first panel just appears with the page.
   const [tabDirection, setTabDirection] = useState<"forward" | "back" | null>(null);
@@ -120,6 +133,10 @@ export function TaskDetailPage() {
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [cloneOpen, setCloneOpen] = useState(false);
   const [monitorRange, setMonitorRange] = useState<MonitorRange>("now-1h");
+  const [extendOpen, setExtendOpen] = useState(false);
+  const [extendDeltaMs, setExtendDeltaMs] = useState(60 * 60_000);
+  // Captured when the dialog opens so the preview stays put while it is open.
+  const [extendBaseMs, setExtendBaseMs] = useState(0);
 
   // Follow the URL when it changes (back/forward navigation); done during
   // render (React's documented state-adjustment pattern). The tab can also be
@@ -181,6 +198,45 @@ export function TaskDetailPage() {
     },
   });
 
+  // Extending writes a new `releace_time` through the edit endpoint. No
+  // verified backend extension API exists (the original console has none), so
+  // an unsupported backend surfaces updateTask's clear "not supported" error.
+  const extendReleaseMutation = useMutation({
+    mutationFn: (input: { task: Task; newReleaceTime: string }) =>
+      instanceApi.updateTask(input.task.id, { releace_time: input.newReleaceTime }),
+    onSuccess: (_data, input) => {
+      toast.success(text("释放时间已延长", "Release time extended"), `${getTaskName(input.task)}: ${input.newReleaceTime}`);
+      void runLogger.log({
+        source: "task",
+        level: "info",
+        action: "task.extendRelease",
+        result: "success",
+        title: text("释放时间已延长", "Release time extended"),
+        targetName: getTaskName(input.task),
+        targetId: input.task.id,
+        metadata: { releaceTime: input.newReleaceTime },
+      });
+      invalidateTaskQueries(queryClient);
+      setExtendOpen(false);
+    },
+    onError: (error, input) => {
+      toast.error(
+        text("延长释放失败", "Failed to extend release"),
+        `${getTaskName(input.task)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`,
+      );
+      void runLogger.log({
+        source: "task",
+        level: "error",
+        action: "task.extendRelease",
+        result: "failure",
+        title: text("延长释放失败", "Failed to extend release"),
+        targetName: getTaskName(input.task),
+        targetId: input.task.id,
+        error: errorMessage(error, text("延长释放失败", "Failed to extend release")),
+      });
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (task: Task) => instanceApi.deleteTask(task.id),
     onSuccess: (_data, deletedTask) => {
@@ -202,6 +258,13 @@ export function TaskDetailPage() {
     enabled: Boolean(task && tab === "monitor"),
     refetchInterval: 30_000,
   });
+
+  // Pure render input: the base time is fixed when the dialog opens.
+  const extendPreview = useMemo(() => {
+    if (!task) return "";
+    const releaseAt = parseReleaseTime(task) ?? 0;
+    return formatReleaseTimeInput(new Date(Math.max(extendBaseMs, releaseAt) + extendDeltaMs));
+  }, [task, extendBaseMs, extendDeltaMs]);
 
   const sparklineMetrics = useMemo(() => {
     const data = monitorIndexQuery.data;
@@ -286,6 +349,19 @@ export function TaskDetailPage() {
             <CopyPlus className="h-4 w-4" aria-hidden="true" />
             {text("克隆并修改", "Clone and edit")}
           </Button>
+          {canRelease && releaseCondition === TIMED_RELEASE_CONDITION ? (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setExtendBaseMs(Date.now());
+                setExtendOpen(true);
+              }}
+            >
+              <Clock className="h-4 w-4" aria-hidden="true" />
+              {text("延长释放", "Extend release")}
+            </Button>
+          ) : null}
           {canRelease ? (
             // Neutral at rest like the table's release action; danger color only on hover/focus and in the confirm.
             <Button
@@ -531,6 +607,54 @@ export function TaskDetailPage() {
       <Suspense fallback={null}>
         <TerminalDialog task={terminalOpen ? task : null} onClose={() => setTerminalOpen(false)} />
       </Suspense>
+      <Dialog
+        open={extendOpen}
+        title={text("延长定时释放", "Extend timed release")}
+        onClose={() => setExtendOpen(false)}
+        width="max-w-md"
+        describedBy="extend-release-description"
+      >
+        <div className="space-y-4">
+          <p id="extend-release-description" className="text-sm leading-6 text-app-muted">
+            {text(
+              `当前释放时间 ${String(task.releace_time ?? "-")}。延长会写入新的释放时间；如后端不支持修改会明确报错。`,
+              `Current release time ${String(task.releace_time ?? "-")}. Extending writes a new release time; an unsupported backend reports a clear error.`,
+            )}
+          </p>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-app-text">{text("延长时间", "Extension")}</span>
+            <Select
+              className="w-full"
+              value={String(extendDeltaMs)}
+              onChange={(event) => setExtendDeltaMs(Number(event.target.value))}
+            >
+              {EXTEND_RELEASE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {text(option.zh, option.en)}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <p className="app-numeric rounded-md border border-app-border bg-app-panel px-3 py-2 font-mono text-sm text-app-text">
+            {text("新释放时间", "New release time")}: {extendPreview}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setExtendOpen(false)}>
+              {text("取消", "Cancel")}
+            </Button>
+            <Button
+              disabled={extendReleaseMutation.isPending}
+              type="button"
+              onClick={() => {
+                const base = Math.max(Date.now(), parseReleaseTime(task) ?? Date.now());
+                extendReleaseMutation.mutate({ task, newReleaceTime: formatReleaseTimeInput(new Date(base + extendDeltaMs)) });
+              }}
+            >
+              {extendReleaseMutation.isPending ? text("提交中…", "Submitting…") : text("确认延长", "Extend")}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
       {confirmDialog}
     </div>
   );

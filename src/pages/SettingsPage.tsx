@@ -48,6 +48,7 @@ import {
   saveAccountSshPassword,
   setRuntimeSettings,
   MISSED_SCHEDULE_GRACE_OPTIONS,
+  TIMED_RELEASE_LEAD_OPTIONS,
   MISSED_SCHEDULE_POLICY_OPTIONS,
   SSH_FONT_PRESETS,
   TASK_AUTO_REFRESH_OPTIONS,
@@ -145,6 +146,13 @@ const notificationEvents: Array<{ event: ImportantNotificationEvent; zh: string;
     en: "Instance abnormal",
     descriptionZh: "实例状态进入异常时触发。",
     descriptionEn: "Triggered when an instance enters the abnormal state.",
+  },
+  {
+    event: "task.releaseDue",
+    zh: "定时释放即将到期",
+    en: "Timed release approaching",
+    descriptionZh: "定时释放的任务在到期前提醒，可从任务详情页延长。",
+    descriptionEn: "Reminds before a timed release fires; extend from the task detail page.",
   },
 ];
 
@@ -439,7 +447,10 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       groups.push(groupLabels.connection);
     }
     if (JSON.stringify(normalized.ssh) !== JSON.stringify(savedBaseline.ssh)) groups.push(groupLabels.terminal);
-    if (JSON.stringify(normalized.notificationPreferences) !== JSON.stringify(savedBaseline.notificationPreferences)) {
+    if (
+      JSON.stringify(normalized.notificationPreferences) !== JSON.stringify(savedBaseline.notificationPreferences) ||
+      normalized.timedReleaseReminderLeadMs !== savedBaseline.timedReleaseReminderLeadMs
+    ) {
       groups.push(groupLabels.notifications);
     }
     if (
@@ -2219,8 +2230,28 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             );
           })}
         </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-app-border px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-app-text">{text("到期前提醒时间", "Remind before release")}</div>
+            <p className="mt-0.5 text-xs leading-5 text-app-muted">
+              {text("定时释放的任务提前多久提醒。仅对上一行的“定时释放即将到期”生效。", "How far ahead to warn for timed releases. Only affects “Timed release approaching” above.")}
+            </p>
+          </div>
+          <Select
+            aria-label={text("到期前提醒时间", "Remind before release")}
+            className="w-40"
+            value={String(form.timedReleaseReminderLeadMs)}
+            onChange={(event) => setForm((value) => ({ ...value, timedReleaseReminderLeadMs: Number(event.target.value) }))}
+          >
+            {TIMED_RELEASE_LEAD_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {text(option.zh, option.en)}
+              </option>
+            ))}
+          </Select>
+        </div>
       </Panel>
-      </SettingsGroup>
+    </SettingsGroup>
 
       <SettingsGroup
         id={settingsGroupId("appearance")}

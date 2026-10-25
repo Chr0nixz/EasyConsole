@@ -39,6 +39,7 @@ describe("app settings", () => {
           "task.success": "app",
           "task.failure": "off",
           "task.abnormal": "system",
+          "task.releaseDue": "system",
         },
       }),
     ).toEqual({
@@ -48,6 +49,7 @@ describe("app settings", () => {
         "task.success": "app",
         "task.failure": "off",
         "task.abnormal": "system",
+        "task.releaseDue": "system",
       },
       taskAutoRefresh: false,
       taskAutoRefreshIntervalMs: 10_000,
@@ -55,6 +57,7 @@ describe("app settings", () => {
       autoNumberDuplicateTaskNames: true,
       missedSchedulePolicy: "ask",
       missedScheduleGraceMs: 10 * 60_000,
+      timedReleaseReminderLeadMs: 10 * 60_000,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
       desktopAutostart: false,
@@ -72,6 +75,7 @@ describe("app settings", () => {
         "task.success": "system",
         "task.failure": "system",
         "task.abnormal": "system",
+        "task.releaseDue": "system",
       },
       taskAutoRefresh: false,
       taskAutoRefreshIntervalMs: 10_000,
@@ -79,6 +83,7 @@ describe("app settings", () => {
       autoNumberDuplicateTaskNames: true,
       missedSchedulePolicy: "ask",
       missedScheduleGraceMs: 10 * 60_000,
+      timedReleaseReminderLeadMs: 10 * 60_000,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
       desktopAutostart: false,
@@ -102,6 +107,7 @@ describe("app settings", () => {
         "task.success": "system",
         "task.failure": "system",
         "task.abnormal": "system",
+        "task.releaseDue": "system",
       },
     });
   });
@@ -141,6 +147,15 @@ describe("app settings", () => {
     expect(parseAppSettings(JSON.stringify({ missedSchedulePolicy: "sometimes" })).missedSchedulePolicy).toBe("ask");
     expect(normalizeAppSettings({ missedScheduleGraceMs: 7 * 60_000 }).missedScheduleGraceMs).toBe(10 * 60_000);
     expect(normalizeAppSettings({ missedScheduleGraceMs: 0 }).missedScheduleGraceMs).toBe(10 * 60_000);
+  });
+
+  it("defaults the timed-release reminder lead to 10 minutes and whitelists options", () => {
+    expect(DEFAULT_APP_SETTINGS).toMatchObject({ timedReleaseReminderLeadMs: 10 * 60_000 });
+    expect(normalizeAppSettings({ timedReleaseReminderLeadMs: 30 * 60_000 }).timedReleaseReminderLeadMs).toBe(30 * 60_000);
+    expect(normalizeAppSettings({ timedReleaseReminderLeadMs: 7 * 60_000 }).timedReleaseReminderLeadMs).toBe(10 * 60_000);
+    expect(normalizeAppSettings({ timedReleaseReminderLeadMs: 0 }).timedReleaseReminderLeadMs).toBe(10 * 60_000);
+    // Invalid notification modes for the new event fall back to the default.
+    expect(parseAppSettings(JSON.stringify({ notificationPreferences: { "task.releaseDue": "loudly" } })).notificationPreferences["task.releaseDue"]).toBe("system");
   });
 
   it("preserves empty default SSH password", () => {
