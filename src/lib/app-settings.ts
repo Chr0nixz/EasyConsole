@@ -64,6 +64,8 @@ export type AppSettings = {
   missedScheduleGraceMs: number;
   desktopCloseToTray: boolean;
   desktopClosePrompt: boolean;
+  /** Launch the desktop app at OS login (applied to the autostart plugin). */
+  desktopAutostart: boolean;
   runLogLimit: number;
   runLogRetentionDays: number;
   ssh: SshSettings;
@@ -168,6 +170,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   missedScheduleGraceMs: DEFAULT_MISSED_SCHEDULE_GRACE_MS,
   desktopCloseToTray: false,
   desktopClosePrompt: true,
+  desktopAutostart: false,
   runLogLimit: DEFAULT_RUN_LOG_LIMIT,
   runLogRetentionDays: DEFAULT_RUN_LOG_RETENTION_DAYS,
   ssh: DEFAULT_SSH_SETTINGS,
@@ -357,6 +360,7 @@ export function normalizeAppSettings(settings: Partial<AppSettings>): AppSetting
     missedScheduleGraceMs: normalizeMissedScheduleGrace(settings.missedScheduleGraceMs),
     desktopCloseToTray: settings.desktopCloseToTray === true,
     desktopClosePrompt: settings.desktopClosePrompt !== false,
+    desktopAutostart: settings.desktopAutostart === true,
     runLogLimit: normalizePositiveInteger(settings.runLogLimit, DEFAULT_APP_SETTINGS.runLogLimit),
     runLogRetentionDays: normalizePositiveInteger(settings.runLogRetentionDays, DEFAULT_APP_SETTINGS.runLogRetentionDays),
     ssh: normalizeSshSettings(settings.ssh),

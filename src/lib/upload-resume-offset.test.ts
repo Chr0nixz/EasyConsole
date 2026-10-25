@@ -30,6 +30,7 @@ describe("resolveUploadResumeOffset", () => {
       supportsSshPopOut: false,
       supportsUpdater: false,
       supportsFileReveal: false,
+      supportsAutostart: false,
       storage: { async get() { return null; }, async set() {}, async remove() {} },
       secureStorage: { async get() { return null; }, async set() {}, async remove() {} },
       async request<T = unknown>(request: RuntimeHttpRequest) {
@@ -94,6 +95,10 @@ describe("resolveUploadResumeOffset", () => {
       async setDesktopClosePrompt() {},
       async cancelDesktopClosePrompt() {},
       async completeDesktopClosePrompt() {},
+      async getDesktopAutostart() {
+        return false;
+      },
+      async setDesktopAutostart() {},
       async showDesktopMainWindow() {},
       async hideDesktopTrayMenu() {},
       async runDueScheduledTasks() {},

@@ -16,6 +16,7 @@ function resetCapabilityGetters() {
     supportsSshPopOut: false,
     supportsUpdater: false,
     supportsFileReveal: false,
+    supportsAutostart: false,
   };
   for (const [key, value] of Object.entries(defaults)) {
     Object.defineProperty(browserRuntime, key, {

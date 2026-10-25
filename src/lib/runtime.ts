@@ -733,6 +733,9 @@ export const browserRuntime: RuntimeTransport = {
   get supportsFileReveal() {
     return runtimeKind === "desktop";
   },
+  get supportsAutostart() {
+    return runtimeKind === "desktop";
+  },
   get isApplePlatform() {
     return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
   },
@@ -974,6 +977,14 @@ export const browserRuntime: RuntimeTransport = {
   completeDesktopClosePrompt(action) {
     if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("complete_desktop_close_prompt", { action });
+  },
+  getDesktopAutostart() {
+    if (runtimeKind !== "desktop") return Promise.resolve(false);
+    return invokeTauriCommand<boolean>("plugin:autostart|is_enabled", {});
+  },
+  setDesktopAutostart(enabled) {
+    if (runtimeKind !== "desktop") return Promise.resolve();
+    return invokeTauriCommand(enabled ? "plugin:autostart|enable" : "plugin:autostart|disable", {});
   },
   showDesktopMainWindow() {
     if (runtimeKind !== "desktop") return Promise.resolve();

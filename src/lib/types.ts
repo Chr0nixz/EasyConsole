@@ -419,6 +419,7 @@ export type RuntimeTransport = {
   supportsSshPopOut: boolean;
   supportsUpdater: boolean;
   supportsFileReveal: boolean;
+  supportsAutostart: boolean;
   storage: RuntimeStorage;
   secureStorage: RuntimeStorage;
   request<T = unknown>(request: RuntimeHttpRequest): Promise<RuntimeHttpResponse<T>>;
@@ -485,6 +486,9 @@ export type RuntimeTransport = {
   setDesktopClosePrompt(enabled: boolean): Promise<void>;
   cancelDesktopClosePrompt(): Promise<void>;
   completeDesktopClosePrompt(action: "tray" | "exit"): Promise<void>;
+  /** OS-level launch-on-login (desktop only); reports false elsewhere. */
+  getDesktopAutostart(): Promise<boolean>;
+  setDesktopAutostart(enabled: boolean): Promise<void>;
   showDesktopMainWindow(): Promise<void>;
   hideDesktopTrayMenu(): Promise<void>;
   runDueScheduledTasks(): Promise<void>;

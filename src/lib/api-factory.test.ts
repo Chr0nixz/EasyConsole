@@ -18,6 +18,7 @@ function createRuntime(responseData: unknown) {
     supportsSshPopOut: false,
     supportsUpdater: false,
     supportsFileReveal: false,
+    supportsAutostart: false,
     storage: {
       async get() {
         return null;
@@ -104,6 +105,10 @@ function createRuntime(responseData: unknown) {
     async setDesktopClosePrompt() {},
     async cancelDesktopClosePrompt() {},
     async completeDesktopClosePrompt() {},
+    async getDesktopAutostart() {
+      return false;
+    },
+    async setDesktopAutostart() {},
     async showDesktopMainWindow() {},
     async hideDesktopTrayMenu() {},
     async runDueScheduledTasks() {},

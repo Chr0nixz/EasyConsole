@@ -121,6 +121,7 @@ function applySettings(settings: AppSettings) {
   setApiBaseUrl(settings.apiBaseUrl);
   void browserRuntime.setDesktopCloseToTray(settings.desktopCloseToTray);
   void browserRuntime.setDesktopClosePrompt(settings.desktopClosePrompt);
+  void browserRuntime.setDesktopAutostart(settings.desktopAutostart);
 }
 
 const notificationEvents: Array<{ event: ImportantNotificationEvent; zh: string; en: string; descriptionZh: string; descriptionEn: string }> = [
@@ -432,7 +433,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       normalized.apiBaseUrl !== savedBaseline.apiBaseUrl ||
       normalized.monitorDashboardUrl !== savedBaseline.monitorDashboardUrl ||
       normalized.desktopClosePrompt !== savedBaseline.desktopClosePrompt ||
-      normalized.desktopCloseToTray !== savedBaseline.desktopCloseToTray
+      normalized.desktopCloseToTray !== savedBaseline.desktopCloseToTray ||
+      normalized.desktopAutostart !== savedBaseline.desktopAutostart
     ) {
       groups.push(groupLabels.connection);
     }
@@ -1336,8 +1338,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         <Panel>
           <SectionHeader
             icon={PanelTopClose}
-            title={text("窗口关闭", "Window Close")}
-            description={text("控制桌面端点击关闭按钮后的确认和托盘行为。", "Control confirmation and tray behavior when closing the desktop window.")}
+            title={text("窗口与启动", "Window & Startup")}
+            description={text("控制桌面端关闭确认、托盘行为和开机自启。", "Control close confirmation, tray behavior, and launch at login on desktop.")}
           />
           <div className="grid gap-3 p-4 sm:grid-cols-2">
             <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface">
@@ -1365,6 +1367,23 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 <span className="block font-medium text-app-text">{text("关闭窗口时最小化到托盘", "Minimize to tray on close")}</span>
                 <span className="mt-1 block text-xs leading-5 text-app-muted">
                   {text("未启用关闭确认时生效：关闭主窗口会隐藏到托盘而不是退出。", "Applies when close confirmation is off: closing the main window hides it to tray instead of exiting.")}
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface sm:col-span-2">
+              <input
+                className="mt-1"
+                type="checkbox"
+                checked={form.desktopAutostart}
+                onChange={(event) => setForm((value) => ({ ...value, desktopAutostart: event.target.checked }))}
+              />
+              <span>
+                <span className="block font-medium text-app-text">{text("开机自动启动", "Launch at login")}</span>
+                <span className="mt-1 block text-xs leading-5 text-app-muted">
+                  {text(
+                    "登录系统后自动启动 EasyConsole，本地定时任务才能在后台按计划执行。可配合“关闭窗口时最小化到托盘”使用。",
+                    "Start EasyConsole when you sign in to the system so local scheduled tasks keep running. Pairs well with minimize-to-tray.",
+                  )}
                 </span>
               </span>
             </label>

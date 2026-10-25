@@ -147,6 +147,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     supportsSshPopOut: false,
     supportsUpdater: false,
     supportsFileReveal: false,
+    supportsAutostart: false,
     storage: nodeStorage,
     secureStorage: nodeStorage,
     request,
@@ -268,6 +269,10 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     async setDesktopClosePrompt() {},
     async cancelDesktopClosePrompt() {},
     async completeDesktopClosePrompt() {},
+    async getDesktopAutostart() {
+      return false;
+    },
+    async setDesktopAutostart() {},
     async showDesktopMainWindow() {},
     async hideDesktopTrayMenu() {},
     async runDueScheduledTasks() {},
