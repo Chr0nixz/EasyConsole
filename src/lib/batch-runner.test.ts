@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { retryFailedBatchItems, runBatch, type BatchItemOutcome } from "./batch-runner";
+import { ApiError } from "./types";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -11,6 +12,10 @@ function failingFor(target: string) {
     if (item === target) throw new Error(`boom:${item}`);
     return `ok:${item}`;
   };
+}
+
+function networkError(message = "Network request failed") {
+  return new ApiError(message, { kind: "network" });
 }
 
 describe("runBatch", () => {
@@ -30,7 +35,7 @@ describe("runBatch", () => {
       { item: "b", status: "succeeded", result: "B" },
       { item: "c", status: "succeeded", result: "C" },
     ]);
-    expect(result.summary).toEqual({ total: 3, succeeded: 2, failed: 1, skipped: 0 });
+    expect(result.summary).toEqual({ total: 3, succeeded: 2, failed: 1, skipped: 0, unknown: 0 });
   });
 
   it("resolves instead of rejecting when every item fails", async () => {
@@ -42,7 +47,7 @@ describe("runBatch", () => {
 
     expect(result.outcomes.map((outcome) => outcome.status)).toEqual(["failed", "failed", "failed"]);
     expect(result.outcomes.map((outcome) => outcome.error)).toEqual(["nope 1", "nope 2", "nope 3"]);
-    expect(result.summary).toEqual({ total: 3, succeeded: 0, failed: 3, skipped: 0 });
+    expect(result.summary).toEqual({ total: 3, succeeded: 0, failed: 3, skipped: 0, unknown: 0 });
   });
 
   it("marks non-Error rejections with a stringified error", async () => {
@@ -70,7 +75,7 @@ describe("runBatch", () => {
 
     expect(ran).toEqual(["a"]);
     expect(result.outcomes.map((outcome) => outcome.status)).toEqual(["succeeded", "skipped", "skipped"]);
-    expect(result.summary).toEqual({ total: 3, succeeded: 1, failed: 0, skipped: 2 });
+    expect(result.summary).toEqual({ total: 3, succeeded: 1, failed: 0, skipped: 2, unknown: 0 });
   });
 
   it("skips everything when the signal is already aborted", async () => {
@@ -97,7 +102,7 @@ describe("runBatch", () => {
 
     expect(ran).toEqual(["a", "b"]);
     expect(result.outcomes.map((outcome) => outcome.status)).toEqual(["succeeded", "failed", "skipped"]);
-    expect(result.summary).toEqual({ total: 3, succeeded: 1, failed: 1, skipped: 1 });
+    expect(result.summary).toEqual({ total: 3, succeeded: 1, failed: 1, skipped: 1, unknown: 0 });
   });
 
   it("does not wait before the first item and applies the delay between items", async () => {
@@ -152,7 +157,7 @@ describe("runBatch", () => {
     expect(snapshots.map((snapshot) => snapshot.current.status)).toEqual(["succeeded", "failed"]);
     expect(snapshots.map((snapshot) => snapshot.count)).toEqual([1, 2]);
     expect(snapshots[1]!.current).toMatchObject({ item: "b", status: "failed", error: "boom:b" });
-    expect(result.summary).toEqual({ total: 2, succeeded: 1, failed: 1, skipped: 0 });
+    expect(result.summary).toEqual({ total: 2, succeeded: 1, failed: 1, skipped: 0, unknown: 0 });
   });
 
   it("passes each item's index to run", async () => {
@@ -165,6 +170,33 @@ describe("runBatch", () => {
       },
     });
     expect(indices).toEqual([0, 1, 2]);
+  });
+
+  it("marks network-level failures as unknown instead of failed", async () => {
+    const result = await runBatch(["a", "b"], {
+      delayMs: 0,
+      run: async (item) => {
+        if (item === "a") throw networkError("fetch dropped");
+        return item;
+      },
+    });
+
+    expect(result.outcomes).toEqual([
+      { item: "a", status: "unknown", error: "fetch dropped" },
+      { item: "b", status: "succeeded", result: "b" },
+    ]);
+    expect(result.summary).toEqual({ total: 2, succeeded: 1, failed: 0, skipped: 0, unknown: 1 });
+  });
+
+  it("keeps abort-style failures as failed", async () => {
+    const result = await runBatch(["a"], {
+      delayMs: 0,
+      run: async () => {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      },
+    });
+
+    expect(result.outcomes[0]).toMatchObject({ status: "failed" });
   });
 });
 
@@ -191,7 +223,7 @@ describe("retryFailedBatchItems", () => {
 
     expect(ran).toEqual(["b"]);
     expect(retried.outcomes).toEqual([{ item: "b", status: "succeeded", result: "b" }]);
-    expect(retried.summary).toEqual({ total: 1, succeeded: 1, failed: 0, skipped: 0 });
+    expect(retried.summary).toEqual({ total: 1, succeeded: 1, failed: 0, skipped: 0, unknown: 0 });
     expect(withSkipped.outcomes.map((outcome) => outcome.status)).toEqual(["skipped", "skipped", "skipped"]);
   });
 
@@ -205,6 +237,28 @@ describe("retryFailedBatchItems", () => {
     });
 
     expect(retried.outcomes).toEqual([{ item: "b", status: "failed", error: "still broken" }]);
-    expect(retried.summary).toEqual({ total: 1, succeeded: 0, failed: 1, skipped: 0 });
+    expect(retried.summary).toEqual({ total: 1, succeeded: 0, failed: 1, skipped: 0, unknown: 0 });
+  });
+
+  it("never retries unknown items", async () => {
+    const previous = await runBatch(["a", "b"], {
+      delayMs: 0,
+      run: async (item) => {
+        if (item === "a") throw networkError();
+        throw new Error("definite rejection");
+      },
+    });
+
+    const ran: string[] = [];
+    const retried = await retryFailedBatchItems(previous, {
+      delayMs: 0,
+      run: async (item) => {
+        ran.push(item);
+        return item;
+      },
+    });
+
+    expect(ran).toEqual(["b"]);
+    expect(retried.summary).toEqual({ total: 1, succeeded: 1, failed: 0, skipped: 0, unknown: 0 });
   });
 });

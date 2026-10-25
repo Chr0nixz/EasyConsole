@@ -29,6 +29,16 @@ export type BatchOperationItem = {
   remoteTaskId?: string;
 };
 
+/** Manual resolution of an `unknown` item, mirroring the execution ledger. */
+export type BatchItemResolutionStatus = "confirmed-created" | "confirmed-not-created";
+
+export type BatchItemResolution = {
+  key: string;
+  status: BatchItemResolutionStatus;
+  /** Remote task id captured by the verification, when one was found. */
+  remoteTaskId?: string;
+};
+
 export type BatchOperationRecord = {
   /** `crypto.randomUUID()` — stable identity for retry linking. */
   id: string;
@@ -42,7 +52,7 @@ export type BatchOperationRecord = {
   /** ISO timestamp of the batch finish. */
   finishedAt?: string;
   items: BatchOperationItem[];
-  summary: { total: number; succeeded: number; failed: number; skipped: number };
+  summary: { total: number; succeeded: number; failed: number; skipped: number; unknown: number };
   /** Id of the record this retry batch was re-run from. */
   retryOf?: string;
 };
@@ -61,7 +71,7 @@ export type BatchOperationStoreOptions = {
 
 const BATCH_OPERATION_ACTIONS: readonly BatchOperationAction[] = ["release", "delete", "create", "template-apply"];
 const BATCH_OPERATION_TRIGGERS: readonly BatchOperationTrigger[] = ["ui", "cli"];
-const BATCH_ITEM_STATUSES: readonly BatchItemStatus[] = ["pending", "running", "succeeded", "failed", "skipped"];
+const BATCH_ITEM_STATUSES: readonly BatchItemStatus[] = ["pending", "running", "succeeded", "failed", "skipped", "unknown"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -90,12 +100,14 @@ function summarizeItems(items: BatchOperationItem[]): BatchOperationRecord["summ
   let succeeded = 0;
   let failed = 0;
   let skipped = 0;
+  let unknown = 0;
   for (const item of items) {
     if (item.status === "succeeded") succeeded += 1;
     else if (item.status === "failed") failed += 1;
     else if (item.status === "skipped") skipped += 1;
+    else if (item.status === "unknown") unknown += 1;
   }
-  return { total: items.length, succeeded, failed, skipped };
+  return { total: items.length, succeeded, failed, skipped, unknown };
 }
 
 /**
@@ -195,4 +207,54 @@ export async function appendBatchOperation(
     const current = pruneBatchOperations(parseBatchOperations(raw), options);
     return JSON.stringify(pruneBatchOperations([record, ...current], options));
   });
+}
+
+/**
+ * Revise a stored record in place (keeping its id and position) — used to land
+ * manual resolutions of `unknown` items. Returns null when the id is gone.
+ */
+export async function updateBatchOperation(
+  storage: RuntimeStorage,
+  id: string,
+  updater: (record: BatchOperationRecord) => BatchOperationRecord,
+  options: BatchOperationStoreOptions = {},
+): Promise<BatchOperationRecord | null> {
+  let updated: BatchOperationRecord | null = null;
+  await updateStorageValue(storage, BATCH_OPERATIONS_STORAGE_KEY, (raw) => {
+    const current = pruneBatchOperations(parseBatchOperations(raw), options);
+    const next = current.map((record) => {
+      if (record.id !== id) return record;
+      updated = updater(record);
+      return updated;
+    });
+    return JSON.stringify(pruneBatchOperations(next, options));
+  });
+  return updated;
+}
+
+/**
+ * Apply manual resolutions to a record's `unknown` items: confirmed-created
+ * items become `succeeded` (capturing the verified remote id), confirmed-
+ * not-created items become `failed` so the existing retry-failed path can pick
+ * them up. Items without a resolution keep their status.
+ */
+export function applyBatchItemResolutions(
+  record: BatchOperationRecord,
+  resolutions: Map<string, BatchItemResolution>,
+): BatchOperationRecord {
+  if (!record.items.some((item) => item.status === "unknown" && resolutions.has(item.key))) return record;
+  const items = record.items.map((item) => {
+    const resolution = resolutions.get(item.key);
+    if (!resolution || item.status !== "unknown") return item;
+    if (resolution.status === "confirmed-created") {
+      return {
+        ...item,
+        status: "succeeded" as const,
+        error: undefined,
+        ...(resolution.remoteTaskId && !item.remoteTaskId ? { remoteTaskId: resolution.remoteTaskId } : {}),
+      };
+    }
+    return { ...item, status: "failed" as const };
+  });
+  return { ...record, items, summary: summarizeItems(items) };
 }

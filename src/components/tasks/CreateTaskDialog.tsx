@@ -16,6 +16,7 @@ import { CreateImpactSummary } from "./CreateImpactSummary";
 import { BatchResultDialog, type PreviewItem } from "../batch/BatchResultDialog";
 import { batchExportPayload } from "../batch/batch-export";
 import { useBatchOperation } from "../batch/use-batch-operation";
+import { verifyUnknownCreateItems } from "../batch/verify-unknown-items";
 import { saveBlob } from "../../lib/download";
 import type { BatchRunResult } from "../../lib/batch-runner";
 import type { BatchOperationRecord } from "../../lib/change-list";
@@ -570,7 +571,7 @@ export function CreateTaskDialog({
   // preview and the shared batch engine with a change-list record; the
   // single-instance path above stays unchanged.
   const [batchPreviewPayloads, setBatchPreviewPayloads] = useState<CreateTaskPayload[] | null>(null);
-  const { state: batchState, start: startBatch, retryFailed: retryBatchFailed, clear: clearBatch } = useBatchOperation();
+  const { state: batchState, start: startBatch, retryFailed: retryBatchFailed, resolveUnknown: resolveBatchUnknown, clear: clearBatch } = useBatchOperation();
 
   const createBatchItems = useCallback(
     (payloads: CreateTaskPayload[]): PreviewItem[] =>
@@ -621,6 +622,7 @@ export function CreateTaskDialog({
           succeeded: result.summary.succeeded,
           failed: result.summary.failed,
           skipped: result.summary.skipped,
+          unknown: result.summary.unknown,
           recordId: record.id,
           retryOf: record.retryOf,
         },
@@ -642,6 +644,28 @@ export function CreateTaskDialog({
     },
     [createBatchItems, handleBatchSettled, startBatch],
   );
+
+  // Network-failed creates may have landed server-side; verify them against the
+  // live task list before anything becomes retryable (review P1-3).
+  const [resolvingUnknown, setResolvingUnknown] = useState(false);
+  const resolveUnknownItems = useCallback(async () => {
+    if (!batchState || batchState.pending) return;
+    setResolvingUnknown(true);
+    try {
+      const resolutions = await verifyUnknownCreateItems(batchState.result.outcomes, {
+        startedAt: batchState.records[0]?.startedAt,
+        listTasks: (query) => instanceApi.tasks(query),
+      });
+      if (resolutions.length > 0) await resolveBatchUnknown(resolutions);
+    } catch (error) {
+      toast.error(
+        text("核对未知项失败", "Failed to verify unknown items"),
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setResolvingUnknown(false);
+    }
+  }, [batchState, resolveBatchUnknown, text, toast]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -1182,6 +1206,8 @@ export function CreateTaskDialog({
           result={batchState.result}
           pending={batchState.pending}
           onRetryFailed={batchState.pending ? undefined : () => retryBatchFailed({ onSettled: handleBatchSettled })}
+          onResolveUnknown={batchState.pending ? undefined : () => void resolveUnknownItems()}
+          resolving={resolvingUnknown}
           onExport={(format) => {
             const records = batchState.records;
             if (records.length === 0) return;

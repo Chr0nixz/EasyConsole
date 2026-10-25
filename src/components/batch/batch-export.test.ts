@@ -23,7 +23,7 @@ function makeRecord(overrides: Partial<BatchOperationRecord> = {}): BatchOperati
       { key: "102", name: "alpha-02", status: "failed", error: "network reset" },
       { key: "103", name: "alpha-03", status: "skipped" },
     ],
-    summary: { total: 3, succeeded: 1, failed: 1, skipped: 1 },
+    summary: { total: 3, succeeded: 1, failed: 1, skipped: 1, unknown: 0 },
     ...overrides,
   };
 }
@@ -51,17 +51,17 @@ describe("batch-export", () => {
     expect(sanitized.endsWith("...")).toBe(true);
 
     // toBatchOperationExportItem routes every item error through the sanitizer.
-    const exported = toBatchOperationExportItem(makeRecord({ items: [{ key: "9", name: "big", status: "failed", error: longError }], summary: { total: 1, succeeded: 0, failed: 1, skipped: 0 } }));
+    const exported = toBatchOperationExportItem(makeRecord({ items: [{ key: "9", name: "big", status: "failed", error: longError }], summary: { total: 1, succeeded: 0, failed: 1, skipped: 0, unknown: 0 } }));
     expect(exported.items[0].error?.length).toBe(1003);
   });
 
   it("formats CSV with a header row and escaped failed-item details", () => {
     const csv = formatBatchOperationCsv([
-      makeRecord({ items: [{ key: "5", name: "odd, name", status: "failed", error: 'quote " inside' }], summary: { total: 1, succeeded: 0, failed: 1, skipped: 0 } }),
+      makeRecord({ items: [{ key: "5", name: "odd, name", status: "failed", error: 'quote " inside' }], summary: { total: 1, succeeded: 0, failed: 1, skipped: 0, unknown: 0 } }),
     ]);
     const lines = csv.split("\n");
     expect(lines).toHaveLength(2);
-    expect(lines[0]).toBe("id,startedAt,finishedAt,action,trigger,account,total,succeeded,failed,skipped,retryOf,failedItems");
+    expect(lines[0]).toBe("id,startedAt,finishedAt,action,trigger,account,total,succeeded,failed,skipped,unknown,retryOf,failedItems");
     expect(lines[1]).toContain('"odd, name (quote "" inside)"');
     expect(lines[1]).toContain("Alice");
     expect(lines[1]).toContain("delete");
@@ -79,14 +79,14 @@ describe("batch-export", () => {
 
   it("escapes pipes and newlines in Markdown cells and leaves non-failed records without failed details", () => {
     const markdown = formatBatchOperationMarkdown([
-      makeRecord({ id: "batch|2", items: [{ key: "1", name: "ok-name", status: "succeeded" }], summary: { total: 1, succeeded: 1, failed: 0, skipped: 0 } }),
+      makeRecord({ id: "batch|2", items: [{ key: "1", name: "ok-name", status: "succeeded" }], summary: { total: 1, succeeded: 1, failed: 0, skipped: 0, unknown: 0 } }),
     ]);
     expect(markdown).toContain("batch\\|2");
     expect(markdown).toContain("|  |  |");
   });
 
   it("keeps retry linkage and the account key fallback in every format", () => {
-    const record = makeRecord({ retryOf: "batch-0", accountDisplayName: "", items: [{ key: "1", name: "retry-me", status: "failed", error: "boom" }], summary: { total: 1, succeeded: 0, failed: 1, skipped: 0 } });
+    const record = makeRecord({ retryOf: "batch-0", accountDisplayName: "", items: [{ key: "1", name: "retry-me", status: "failed", error: "boom" }], summary: { total: 1, succeeded: 0, failed: 1, skipped: 0, unknown: 0 } });
     expect((JSON.parse(formatBatchOperationExport([record])) as { items: Array<{ retryOf?: string }> }).items[0].retryOf).toBe("batch-0");
     expect(formatBatchOperationCsv([record])).toContain("alice@116.172.93.164:28080");
     expect(formatBatchOperationMarkdown([record])).toContain("retry-me (boom)");

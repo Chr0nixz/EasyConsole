@@ -17,6 +17,7 @@ import { CreateImpactSummary } from "../components/tasks/CreateImpactSummary";
 import { BatchResultDialog, type PreviewItem } from "../components/batch/BatchResultDialog";
 import { batchExportPayload } from "../components/batch/batch-export";
 import { useBatchOperation } from "../components/batch/use-batch-operation";
+import { verifyUnknownCreateItems } from "../components/batch/verify-unknown-items";
 import type { BatchRunResult } from "../lib/batch-runner";
 import type { BatchOperationRecord } from "../lib/change-list";
 import { saveBlob } from "../lib/download";
@@ -761,9 +762,31 @@ export function TaskTemplatesPage() {
   // shared BatchPreviewDialog, the run itself goes through the batch engine
   // with a change-list record, and failed items can be retried in place.
   const [templatePreview, setTemplatePreview] = useState<{ template: TaskTemplate; payloads: CreateTaskPayload[] } | null>(null);
-  const { state: batchState, start: startBatch, retryFailed: retryBatchFailed, clear: clearBatch } = useBatchOperation();
+  const { state: batchState, start: startBatch, retryFailed: retryBatchFailed, resolveUnknown: resolveBatchUnknown, clear: clearBatch } = useBatchOperation();
   // Retry needs the template identity for toasts and run logs after the fact.
   const lastAppliedTemplateRef = useRef<TaskTemplate | null>(null);
+
+  // Network-failed creates may have landed server-side; verify them against the
+  // live task list before anything becomes retryable (review P1-3).
+  const [resolvingUnknown, setResolvingUnknown] = useState(false);
+  const resolveUnknownItems = useCallback(async () => {
+    if (!batchState || batchState.pending) return;
+    setResolvingUnknown(true);
+    try {
+      const resolutions = await verifyUnknownCreateItems(batchState.result.outcomes, {
+        startedAt: batchState.records[0]?.startedAt,
+        listTasks: (query) => instanceApi.tasks(query),
+      });
+      if (resolutions.length > 0) await resolveBatchUnknown(resolutions);
+    } catch (error) {
+      toast.error(
+        text("核对未知项失败", "Failed to verify unknown items"),
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setResolvingUnknown(false);
+    }
+  }, [batchState, resolveBatchUnknown, text, toast]);
 
   const templateApplyItems = useCallback(
     (payloads: CreateTaskPayload[]): PreviewItem[] =>
@@ -1219,6 +1242,8 @@ export function TaskTemplatesPage() {
             if (!template) return;
             void retryBatchFailed({ onSettled: (result, record) => handleTemplateSettled(template, result, record) });
           }}
+          onResolveUnknown={batchState.pending ? undefined : () => void resolveUnknownItems()}
+          resolving={resolvingUnknown}
           onExport={(format) => {
             const records = batchState.records;
             if (records.length === 0) return;

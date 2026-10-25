@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   activeBatchOperationAccount,
   appendBatchOperation,
+  applyBatchItemResolutions,
   BATCH_OPERATIONS_STORAGE_KEY,
   createBatchOperationRecord,
   listBatchOperations,
   parseBatchOperations,
   pruneBatchOperations,
+  updateBatchOperation,
   type BatchOperationItem,
   type BatchOperationRecord,
 } from "./change-list";
@@ -42,7 +44,7 @@ function makeRecord(patch: Partial<BatchOperationRecord> = {}): BatchOperationRe
       { key: "101", name: "train-a", status: "succeeded", remoteTaskId: "task-101" },
       { key: "102", name: "train-b", status: "failed", error: "release rejected" },
     ],
-    summary: { total: 2, succeeded: 1, failed: 1, skipped: 0 },
+    summary: { total: 2, succeeded: 1, failed: 1, skipped: 0, unknown: 0 },
     ...patch,
   });
 }
@@ -173,12 +175,72 @@ describe("parseBatchOperations", () => {
     expect(parsed.map((record) => record.id)).toEqual([good.id, "mixed-items"]);
     expect(parsed[1]!.items).toEqual([{ key: "1", name: "ok", status: "succeeded" }]);
     // The summary is recomputed from the surviving items.
-    expect(parsed[1]!.summary).toEqual({ total: 1, succeeded: 1, failed: 0, skipped: 0 });
+    expect(parsed[1]!.summary).toEqual({ total: 1, succeeded: 1, failed: 0, skipped: 0, unknown: 0 });
   });
 
   it("returns an empty list for missing or non-JSON content", () => {
     expect(parseBatchOperations(null)).toEqual([]);
     expect(parseBatchOperations("not json")).toEqual([]);
     expect(parseBatchOperations('{"items":[]}')).toEqual([]);
+  });
+});
+
+describe("updateBatchOperation / applyBatchItemResolutions", () => {
+  it("revises one record in place and keeps the others", async () => {
+    const first = makeRecord();
+    const second = makeRecord({
+      items: [
+        { key: "1", name: "train-a", status: "unknown", error: "fetch dropped" },
+        { key: "2", name: "train-b", status: "unknown", error: "fetch dropped" },
+      ],
+      summary: { total: 2, succeeded: 0, failed: 0, skipped: 0, unknown: 2 },
+    });
+    const storage = memoryStorage();
+    await appendBatchOperation(storage, first, { now: TEST_NOW });
+    await appendBatchOperation(storage, second, { now: TEST_NOW });
+
+    const updated = await updateBatchOperation(
+      storage,
+      second.id,
+      (record) =>
+        applyBatchItemResolutions(
+          record,
+          new Map([
+            ["1", { key: "1", status: "confirmed-not-created" }],
+            ["2", { key: "2", status: "confirmed-created", remoteTaskId: "task-2" }],
+          ]),
+        ),
+      { now: TEST_NOW },
+    );
+
+    expect(updated).not.toBeNull();
+    expect(updated?.items).toEqual([
+      { key: "1", name: "train-a", status: "failed", error: "fetch dropped" },
+      { key: "2", name: "train-b", status: "succeeded", remoteTaskId: "task-2" },
+    ]);
+    expect(updated?.summary).toEqual({ total: 2, succeeded: 1, failed: 1, skipped: 0, unknown: 0 });
+
+    const stored = await listBatchOperations(storage, { now: TEST_NOW });
+    expect(stored.map((record) => record.id)).toEqual([second.id, first.id]);
+    expect(stored[1]?.items.every((item) => item.status !== "unknown")).toBe(true);
+  });
+
+  it("returns null when the id is unknown", async () => {
+    const storage = memoryStorage();
+    await appendBatchOperation(storage, makeRecord(), { now: TEST_NOW });
+    const updated = await updateBatchOperation(storage, "missing", (record) => record, { now: TEST_NOW });
+    expect(updated).toBeNull();
+  });
+
+  it("keeps unresolved items unknown and returns the same record", () => {
+    const record = makeRecord({
+      items: [
+        { key: "1", name: "train-a", status: "unknown", error: "fetch dropped" },
+        { key: "2", name: "train-b", status: "succeeded" },
+      ],
+      summary: { total: 2, succeeded: 1, failed: 0, skipped: 0, unknown: 1 },
+    });
+    const revised = applyBatchItemResolutions(record, new Map());
+    expect(revised).toBe(record);
   });
 });

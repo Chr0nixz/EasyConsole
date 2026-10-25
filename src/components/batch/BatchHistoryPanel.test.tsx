@@ -26,7 +26,7 @@ const recordDeleteWithFailures: BatchOperationRecord = {
     { key: "102", name: "alpha-02", status: "succeeded", remoteTaskId: "102" },
     { key: "103", name: "alpha-03", status: "skipped" },
   ],
-  summary: { total: 3, succeeded: 1, failed: 1, skipped: 1 },
+  summary: { total: 3, succeeded: 1, failed: 1, skipped: 1, unknown: 0 },
 };
 
 const recordCreateAllSucceeded: BatchOperationRecord = {
@@ -41,7 +41,7 @@ const recordCreateAllSucceeded: BatchOperationRecord = {
     { key: "0", name: "train-a", status: "succeeded", remoteTaskId: "201" },
     { key: "1", name: "train-b", status: "succeeded", remoteTaskId: "202" },
   ],
-  summary: { total: 2, succeeded: 2, failed: 0, skipped: 0 },
+  summary: { total: 2, succeeded: 2, failed: 0, skipped: 0, unknown: 0 },
 };
 
 const recordRetry: BatchOperationRecord = {
@@ -53,7 +53,7 @@ const recordRetry: BatchOperationRecord = {
   startedAt: "2026-10-24T08:05:00.000Z",
   finishedAt: "2026-10-24T08:05:01.000Z",
   items: [{ key: "101", name: "alpha-01", status: "succeeded", remoteTaskId: "101" }],
-  summary: { total: 1, succeeded: 1, failed: 0, skipped: 0 },
+  summary: { total: 1, succeeded: 1, failed: 0, skipped: 0, unknown: 0 },
   retryOf: "batch-1",
 };
 

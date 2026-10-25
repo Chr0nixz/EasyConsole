@@ -69,7 +69,7 @@ function csvEscape(value: unknown) {
 }
 
 export function formatBatchOperationCsv(records: BatchOperationRecord[]) {
-  const header = ["id", "startedAt", "finishedAt", "action", "trigger", "account", "total", "succeeded", "failed", "skipped", "retryOf", "failedItems"];
+  const header = ["id", "startedAt", "finishedAt", "action", "trigger", "account", "total", "succeeded", "failed", "skipped", "unknown", "retryOf", "failedItems"];
   const rows = records.map((record) =>
     [
       record.id,
@@ -82,6 +82,7 @@ export function formatBatchOperationCsv(records: BatchOperationRecord[]) {
       record.summary.succeeded,
       record.summary.failed,
       record.summary.skipped,
+      record.summary.unknown,
       record.retryOf ?? "",
       failedItemDetails(record),
     ]
@@ -99,7 +100,7 @@ export function formatBatchOperationMarkdown(records: BatchOperationRecord[]) {
   const header = "| Id | Started | Action | Trigger | Account | Summary | Failed items | Retry of |";
   const separator = "| --- | --- | --- | --- | --- | --- | --- | --- |";
   const rows = records.map((record) => {
-    const summary = `${record.summary.succeeded}/${record.summary.total} ok, ${record.summary.failed} failed, ${record.summary.skipped} skipped`;
+    const summary = `${record.summary.succeeded}/${record.summary.total} ok, ${record.summary.failed} failed, ${record.summary.skipped} skipped${record.summary.unknown > 0 ? `, ${record.summary.unknown} unknown` : ""}`;
     const failed = failedItemDetails(record);
     return `| ${markdownEscape(record.id)} | ${markdownEscape(record.startedAt)} | ${record.action} | ${record.trigger} | ${markdownEscape(record.accountDisplayName || record.accountKey)} | ${markdownEscape(summary)} | ${markdownEscape(failed)} | ${record.retryOf ? markdownEscape(record.retryOf) : ""} |`;
   });

@@ -13,7 +13,7 @@ function makeResult(overrides: Partial<BatchRunResult<PreviewItem>> = {}): Batch
       { item: { key: "3", name: "alpha-03" }, status: "skipped" },
       { item: { key: "4", name: "alpha-04" }, status: "succeeded" },
     ],
-    summary: { total: 4, succeeded: 2, failed: 1, skipped: 1 },
+    summary: { total: 4, succeeded: 2, failed: 1, skipped: 1, unknown: 0 },
     ...overrides,
   };
 }
@@ -78,7 +78,7 @@ describe("BatchResultDialog", () => {
     pendingView.unmount();
 
     // A fully successful run has nothing to retry.
-    renderDialog(makeResult({ outcomes: makeResult().outcomes.filter((outcome) => outcome.status !== "failed"), summary: { total: 3, succeeded: 2, failed: 0, skipped: 1 } }), { onRetryFailed: undefined });
+    renderDialog(makeResult({ outcomes: makeResult().outcomes.filter((outcome) => outcome.status !== "failed"), summary: { total: 3, succeeded: 2, failed: 0, skipped: 1, unknown: 0 } }), { onRetryFailed: undefined });
     expect(screen.queryByRole("button", { name: /重试失败项|Retry failed/ })).not.toBeInTheDocument();
   });
 
@@ -102,7 +102,7 @@ describe("BatchResultDialog", () => {
 
   it("shows progress while pending and offers the background escape hatch instead of close", () => {
     const { onClose } = renderDialog(
-      makeResult({ outcomes: makeResult().outcomes.slice(0, 2), summary: { total: 4, succeeded: 1, failed: 1, skipped: 0 } }),
+      makeResult({ outcomes: makeResult().outcomes.slice(0, 2), summary: { total: 4, succeeded: 1, failed: 1, skipped: 0, unknown: 0 } }),
       { pending: true, onExport: undefined, onRetryFailed: undefined },
     );
 
@@ -112,9 +112,46 @@ describe("BatchResultDialog", () => {
   });
 
   it("renders the empty state before the first outcome lands", () => {
-    renderDialog(makeResult({ outcomes: [], summary: { total: 3, succeeded: 0, failed: 0, skipped: 0 } }), { pending: true });
+    renderDialog(makeResult({ outcomes: [], summary: { total: 3, succeeded: 0, failed: 0, skipped: 0, unknown: 0 } }), { pending: true });
 
     expect(screen.getByText(/还没有已完成的条目|No items have finished yet/)).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: /逐项结果|Per-item results/ })).not.toBeInTheDocument();
+  });
+
+  it("labels unknown outcomes, explains the billing risk, and gates retry behind verification", () => {
+    const result = makeResult({
+      outcomes: [
+        { item: { key: "1", name: "alpha-01" }, status: "unknown", error: "fetch dropped" },
+        { item: { key: "2", name: "alpha-02" }, status: "succeeded" },
+      ],
+      summary: { total: 2, succeeded: 1, failed: 0, skipped: 0, unknown: 1 },
+    });
+    const onResolveUnknown = vi.fn();
+    renderDialog(result, { onResolveUnknown });
+
+    expect(screen.getByTestId("batch-result-summary")).toHaveTextContent(/未知 1|1 unknown/);
+    expect(screen.getByText(/结果未知|Unknown/)).toBeInTheDocument();
+    expect(screen.getByText(/可能已经创建|may already exist/)).toBeInTheDocument();
+    // Unknown items are not failures: no retry entry, but a verify entry.
+    expect(screen.queryByRole("button", { name: /重试失败项|Retry failed/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /核对未知项 \(1\)|Verify unknown \(1\)/ }));
+    expect(onResolveUnknown).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the verify button while a verification is running and hides it when none is wired", () => {
+    const result = makeResult({
+      outcomes: [{ item: { key: "1", name: "alpha-01" }, status: "unknown", error: "fetch dropped" }],
+      summary: { total: 1, succeeded: 0, failed: 0, skipped: 0, unknown: 1 },
+    });
+
+    const first = renderDialog(result, { onResolveUnknown: vi.fn(), resolving: true });
+    expect(screen.getByRole("button", { name: /核对中…|Verifying…/ })).toBeDisabled();
+    first.unmount();
+
+    // Without a wired verification (release/delete batches) unknown items show as-is.
+    renderDialog(result);
+    expect(screen.queryByRole("button", { name: /核对未知项|Verify unknown/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/可能已经创建|may already exist/)).not.toBeInTheDocument();
+    expect(screen.getByText(/结果未知|Unknown/)).toBeInTheDocument();
   });
 });

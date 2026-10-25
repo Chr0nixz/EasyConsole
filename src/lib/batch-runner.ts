@@ -4,11 +4,13 @@
  * renderer and the Node tools can reuse the same item/progress/summary model.
  *
  * The engine never rejects because of an item failure or an abort — every item
- * lands a terminal outcome (`succeeded` / `failed` / `skipped`) so callers can
- * render a complete change list and retry the failed subset.
+ * lands a terminal outcome (`succeeded` / `failed` / `skipped` / `unknown`) so
+ * callers can render a complete change list and retry the failed subset.
  */
 
-export type BatchItemStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
+import { isNetworkError } from "./api-client";
+
+export type BatchItemStatus = "pending" | "running" | "succeeded" | "failed" | "skipped" | "unknown";
 
 export type BatchItemOutcome<TItem, TResult = unknown> = {
   item: TItem;
@@ -31,7 +33,7 @@ export type BatchRunOptions<TItem, TResult> = {
 
 export type BatchRunResult<TItem, TResult = unknown> = {
   outcomes: BatchItemOutcome<TItem, TResult>[];
-  summary: { total: number; succeeded: number; failed: number; skipped: number };
+  summary: { total: number; succeeded: number; failed: number; skipped: number; unknown: number };
 };
 
 export const DEFAULT_BATCH_DELAY_MS = 350;
@@ -48,12 +50,14 @@ function summarize<TItem, TResult>(outcomes: BatchItemOutcome<TItem, TResult>[])
   let succeeded = 0;
   let failed = 0;
   let skipped = 0;
+  let unknown = 0;
   for (const outcome of outcomes) {
     if (outcome.status === "succeeded") succeeded += 1;
     else if (outcome.status === "failed") failed += 1;
     else if (outcome.status === "skipped") skipped += 1;
+    else if (outcome.status === "unknown") unknown += 1;
   }
-  return { total: outcomes.length, succeeded, failed, skipped };
+  return { total: outcomes.length, succeeded, failed, skipped, unknown };
 }
 
 export async function runBatch<TItem, TResult = unknown>(
@@ -86,7 +90,13 @@ export async function runBatch<TItem, TResult = unknown>(
       const result = await options.run(item, index);
       emit({ item, status: "succeeded", result });
     } catch (error) {
-      emit({ item, status: "failed", error: outcomeError(error) });
+      // A network-level failure never proves the mutation did not land: the
+      // request may have reached the server without the response making it
+      // back. Such items land as `unknown` — same semantics as the execution
+      // ledger's needs_review — so callers verify before retrying instead of
+      // blindly re-running a possibly billed create.
+      const status = isNetworkError(error) ? "unknown" : "failed";
+      emit({ item, status, error: outcomeError(error) });
       if (!continueOnError) {
         for (let rest = index + 1; rest < items.length; rest += 1) {
           emit({ item: items[rest], status: "skipped" });
@@ -101,8 +111,11 @@ export async function runBatch<TItem, TResult = unknown>(
 
 /**
  * Re-run only the items whose previous outcome was `failed`, keeping their
- * original order. The returned result covers just the retried subset, so a
- * caller combining it with the previous run replaces those outcomes in place.
+ * original order. `unknown` items are deliberately excluded: their mutation
+ * may already have landed, so they must be verified (and flipped to a terminal
+ * outcome) before they become retryable. The returned result covers just the
+ * retried subset, so a caller combining it with the previous run replaces
+ * those outcomes in place.
  */
 export async function retryFailedBatchItems<TItem, TResult = unknown>(
   previous: BatchRunResult<TItem, TResult>,

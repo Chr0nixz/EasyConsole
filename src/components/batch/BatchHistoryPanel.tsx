@@ -30,12 +30,14 @@ const itemStatusText: Record<BatchOperationRecord["items"][number]["status"], { 
   succeeded: { zh: "成功", en: "Succeeded" },
   failed: { zh: "失败", en: "Failed" },
   skipped: { zh: "已跳过", en: "Skipped" },
+  unknown: { zh: "结果未知", en: "Unknown" },
 };
 
 function itemStatusTone(status: BatchOperationRecord["items"][number]["status"]): StateTone {
   if (status === "succeeded") return "success";
   if (status === "failed") return "danger";
   if (status === "skipped") return "warning";
+  if (status === "unknown") return "warning";
   if (status === "running") return "info";
   return "neutral";
 }
@@ -52,6 +54,11 @@ function formatRecordTime(value: string, locale: Locale) {
 
 function recordHasFailures(record: BatchOperationRecord) {
   return record.summary.failed > 0;
+}
+
+/** Records that are neither failed nor unknown are the only clean ones. */
+function recordHasUnknown(record: BatchOperationRecord) {
+  return record.summary.unknown > 0;
 }
 
 /**
@@ -213,10 +220,12 @@ export function BatchHistoryPanel({
                     <time className="app-numeric text-app-muted" dateTime={record.startedAt}>
                       {formatRecordTime(record.startedAt, locale)}
                     </time>
-                    <StatePill tone={recordHasFailures(record) ? "danger" : "success"}>
+                    <StatePill tone={recordHasFailures(record) ? "danger" : recordHasUnknown(record) ? "warning" : "success"}>
                       {recordHasFailures(record)
                         ? text(`失败 ${record.summary.failed}/${record.summary.total}`, `Failed ${record.summary.failed}/${record.summary.total}`)
-                        : text(`成功 ${record.summary.succeeded}/${record.summary.total}`, `Succeeded ${record.summary.succeeded}/${record.summary.total}`)}
+                        : recordHasUnknown(record)
+                          ? text(`未知 ${record.summary.unknown}/${record.summary.total}`, `Unknown ${record.summary.unknown}/${record.summary.total}`)
+                          : text(`成功 ${record.summary.succeeded}/${record.summary.total}`, `Succeeded ${record.summary.succeeded}/${record.summary.total}`)}
                     </StatePill>
                     <span className="font-medium">{localized(actionText[record.action], locale)}</span>
                     <span className="text-xs text-app-muted">

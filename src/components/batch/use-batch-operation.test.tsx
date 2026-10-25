@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { listBatchOperations } from "../../lib/change-list";
 import { I18nProvider } from "../../lib/i18n";
+import { ApiError } from "../../lib/types";
 import type { PreviewItem } from "./BatchResultDialog";
 import { useBatchOperation } from "./use-batch-operation";
 
@@ -57,7 +58,7 @@ describe("useBatchOperation", () => {
     await waitFor(() => expect(result.current.state?.pending).toBe(false));
     expect(run).toHaveBeenCalledTimes(3);
     const finalState = result.current.state!;
-    expect(finalState.result.summary).toEqual({ total: 3, succeeded: 2, failed: 1, skipped: 0 });
+    expect(finalState.result.summary).toEqual({ total: 3, succeeded: 2, failed: 1, skipped: 0, unknown: 0 });
     expect(settled).toHaveBeenCalledWith(finalState.result, finalState.record);
 
     const records = await listBatchOperations(memoryStorage);
@@ -65,7 +66,7 @@ describe("useBatchOperation", () => {
     expect(records[0]).toMatchObject({ action: "create", trigger: "ui" });
     expect(records[0].items[1]).toMatchObject({ key: "2", status: "failed", error: "boom" });
     expect(records[0].items[0].remoteTaskId).toBe("11");
-    expect(records[0].summary).toEqual({ total: 3, succeeded: 2, failed: 1, skipped: 0 });
+    expect(records[0].summary).toEqual({ total: 3, succeeded: 2, failed: 1, skipped: 0, unknown: 0 });
     expect(result.current.state?.records).toHaveLength(1);
   });
 
@@ -83,7 +84,7 @@ describe("useBatchOperation", () => {
     expect(firstRun).toHaveBeenCalledTimes(4);
     expect(firstRun.mock.calls[3][0]).toMatchObject({ key: "2", name: "alpha-02" });
 
-    expect(result.current.state?.result.summary).toEqual({ total: 3, succeeded: 3, failed: 0, skipped: 0 });
+    expect(result.current.state?.result.summary).toEqual({ total: 3, succeeded: 3, failed: 0, skipped: 0, unknown: 0 });
     expect(result.current.state?.result.outcomes.every((outcome) => outcome.status === "succeeded")).toBe(true);
 
     const records = await listBatchOperations(memoryStorage);
@@ -109,5 +110,75 @@ describe("useBatchOperation", () => {
 
     act(() => result.current.clear());
     expect(result.current.state).toBeNull();
+  });
+
+  it("does not get stuck pending when the change-list write fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { result } = renderOperation();
+    const run = vi.fn().mockResolvedValue({});
+    const failingSet = vi.spyOn(memoryStorage, "set").mockRejectedValueOnce(new Error("quota exceeded"));
+
+    await act(async () => {
+      await result.current.start({ action: "create", items: items.slice(0, 1), run });
+    });
+
+    expect(result.current.state?.pending).toBe(false);
+    expect(result.current.state?.record).toBeTruthy();
+    expect(result.current.state?.result.summary.succeeded).toBe(1);
+    expect(failingSet).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+    failingSet.mockRestore();
+  });
+
+  it("records the retry start time before the re-run, not its finish", async () => {
+    const { result } = renderOperation();
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockImplementationOnce(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        return {};
+      });
+    await act(async () => {
+      await result.current.start({ action: "create", items: items.slice(0, 2), run });
+    });
+
+    const retried = await act(async () => result.current.retryFailed());
+    const duration = Date.parse(retried!.record.finishedAt ?? "") - Date.parse(retried!.record.startedAt);
+    expect(duration).toBeGreaterThanOrEqual(30);
+  });
+
+  it("resolves unknown items into terminal outcomes and revises the stored record", async () => {
+    const { result } = renderOperation();
+    const networkFailure = new ApiError("fetch dropped", { kind: "network" });
+    const run = vi.fn().mockResolvedValueOnce({ id: "11" }).mockRejectedValueOnce(networkFailure);
+    await act(async () => {
+      await result.current.start({ action: "create", items: items.slice(0, 2), run });
+    });
+    expect(result.current.state?.result.summary).toEqual({ total: 2, succeeded: 1, failed: 0, skipped: 0, unknown: 1 });
+
+    await act(async () => {
+      const next = await result.current.resolveUnknown([{ key: "2", status: "confirmed-created", remoteTaskId: "task-22" }]);
+      expect(next?.summary).toEqual({ total: 2, succeeded: 2, failed: 0, skipped: 0, unknown: 0 });
+    });
+    expect(result.current.state?.result.outcomes[1]).toMatchObject({ status: "succeeded" });
+
+    // Flip a fresh unknown to not-created: it becomes retryable (failed).
+    const runTwo = vi.fn().mockRejectedValueOnce(networkFailure);
+    await act(async () => {
+      await result.current.start({ action: "create", items: items.slice(0, 1), run: runTwo });
+    });
+    await act(async () => {
+      await result.current.resolveUnknown([{ key: "1", status: "confirmed-not-created" }]);
+    });
+    expect(result.current.state?.result.outcomes[0]).toMatchObject({ status: "failed" });
+    expect(result.current.state?.result.summary.unknown).toBe(0);
+
+    const records = await listBatchOperations(memoryStorage);
+    expect(records.every((record) => record.summary.unknown === 0)).toBe(true);
+    expect(records[0].items[0]).toMatchObject({ key: "1", status: "failed" });
+    expect(records[1].items[1]).toMatchObject({ key: "2", status: "succeeded", remoteTaskId: "task-22" });
   });
 });

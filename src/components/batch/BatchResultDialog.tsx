@@ -1,4 +1,4 @@
-import { ChevronDown, Download, RefreshCw, Square } from "lucide-react";
+import { ChevronDown, Download, RefreshCw, SearchCheck, Square } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import type { BatchRunResult } from "../../lib/batch-runner";
@@ -20,6 +20,14 @@ export type BatchResultDialogProps = {
   result: BatchRunResult<PreviewItem>;
   pending?: boolean;
   onRetryFailed?: () => void;
+  /**
+   * Verify `unknown` items (network-failed creates that may have landed) against
+   * the live task list. Only create-type batches wire this; release/delete
+   * batches have no duplicate-billing risk and leave unknown items as-is.
+   */
+  onResolveUnknown?: () => void;
+  /** True while the verification lookup is running; disables its button. */
+  resolving?: boolean;
   /** Stop after the item in flight; the rest settle as skipped. Shown only while pending. */
   onStop?: () => void;
   onExport?: (format: BatchExportFormat) => void;
@@ -36,6 +44,7 @@ function outcomeTone(status: OutcomeStatus): StateTone {
   if (status === "succeeded") return "success";
   if (status === "failed") return "danger";
   if (status === "skipped") return "warning";
+  if (status === "unknown") return "warning";
   if (status === "running") return "info";
   return "neutral";
 }
@@ -45,7 +54,18 @@ function outcomeTone(status: OutcomeStatus): StateTone {
  * pills, a summary line, stop while running, retry for the failed subset, and an
  * export menu. Retry only appears once the run has finished and something failed.
  */
-export function BatchResultDialog({ open, title, result, pending, onRetryFailed, onStop, onExport, onClose }: BatchResultDialogProps) {
+export function BatchResultDialog({
+  open,
+  title,
+  result,
+  pending,
+  onRetryFailed,
+  onResolveUnknown,
+  resolving,
+  onStop,
+  onExport,
+  onClose,
+}: BatchResultDialogProps) {
   const { text } = useI18n();
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
@@ -79,7 +99,10 @@ export function BatchResultDialog({ open, title, result, pending, onRetryFailed,
 
   const { outcomes, summary } = result;
   const failedCount = summary.failed;
+  const unknownCount = summary.unknown;
   const retryAvailable = !pending && failedCount > 0 && Boolean(onRetryFailed);
+  const resolveAvailable = !pending && unknownCount > 0 && Boolean(onResolveUnknown);
+  const showErrorColumn = failedCount > 0 || unknownCount > 0;
   const stopping = Boolean(pending && stopRequested);
 
   return (
@@ -92,12 +115,21 @@ export function BatchResultDialog({ open, title, result, pending, onRetryFailed,
           <span aria-hidden="true"> · </span>
           <span className="app-numeric">
             {text(
-              `成功 ${summary.succeeded} · 失败 ${summary.failed} · 跳过 ${summary.skipped}`,
-              `${summary.succeeded} succeeded · ${summary.failed} failed · ${summary.skipped} skipped`,
+              `成功 ${summary.succeeded} · 失败 ${summary.failed} · 跳过 ${summary.skipped}${summary.unknown > 0 ? ` · 未知 ${summary.unknown}` : ""}`,
+              `${summary.succeeded} succeeded · ${summary.failed} failed · ${summary.skipped} skipped${summary.unknown > 0 ? ` · ${summary.unknown} unknown` : ""}`,
             )}
           </span>
           {stopping ? <span>{text(" · 正在停止，当前项完成后结束", " · Stopping after the current item")}</span> : null}
         </p>
+
+        {unknownCount > 0 && onResolveUnknown ? (
+          <p className="rounded-md bg-app-panel px-3 py-2 text-xs text-app-muted">
+            {text(
+              "网络错误的结果未知：实例可能已经创建。请先核对，确认未创建的项才能重试，避免重复创建计费实例。",
+              "Network-failed items have unknown results: the instance may already exist. Verify first — only items confirmed as not created can be retried, to avoid double-creating billed instances.",
+            )}
+          </p>
+        ) : null}
 
         {outcomes.length === 0 ? (
           <p className="px-1 py-6 text-center text-sm text-app-muted">{text("还没有已完成的条目。", "No items have finished yet.")}</p>
@@ -108,7 +140,7 @@ export function BatchResultDialog({ open, title, result, pending, onRetryFailed,
                 <tr>
                   <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("名称", "Name")}</th>
                   <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("结果", "Outcome")}</th>
-                  {summary.failed > 0 ? (
+                  {showErrorColumn ? (
                     <th className="whitespace-nowrap border-b border-app-border px-3 py-2 font-medium" scope="col">{text("错误", "Error")}</th>
                   ) : null}
                 </tr>
@@ -123,7 +155,7 @@ export function BatchResultDialog({ open, title, result, pending, onRetryFailed,
                     <td className="whitespace-nowrap px-3 py-2 align-middle">
                       <StatePill tone={outcomeTone(outcome.status)}>{statusText(outcome.status, text)}</StatePill>
                     </td>
-                    {summary.failed > 0 ? (
+                    {showErrorColumn ? (
                       <td className="max-w-72 px-3 py-2 align-middle text-xs text-app-muted">
                         {outcome.error ? <span className="line-clamp-2" title={outcome.error}>{outcome.error}</span> : null}
                       </td>
@@ -190,6 +222,14 @@ export function BatchResultDialog({ open, title, result, pending, onRetryFailed,
               ) : null}
             </div>
           ) : null}
+          {resolveAvailable ? (
+            <Button type="button" variant="secondary" disabled={resolving} onClick={onResolveUnknown}>
+              <SearchCheck className="h-4 w-4" aria-hidden="true" />
+              {resolving
+                ? text("核对中…", "Verifying…")
+                : text(`核对未知项 (${unknownCount})`, `Verify unknown (${unknownCount})`)}
+            </Button>
+          ) : null}
           {retryAvailable ? (
             <Button type="button" variant="secondary" onClick={onRetryFailed}>
               <RefreshCw className="h-4 w-4" aria-hidden="true" />
@@ -224,6 +264,7 @@ function statusText(status: OutcomeStatus, text: (zh: string, en: string) => str
   if (status === "succeeded") return text("成功", "Succeeded");
   if (status === "failed") return text("失败", "Failed");
   if (status === "skipped") return text("已跳过", "Skipped");
+  if (status === "unknown") return text("结果未知", "Unknown");
   if (status === "running") return text("进行中", "Running");
   return text("等待中", "Pending");
 }

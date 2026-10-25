@@ -3,8 +3,11 @@ import { useCallback, useRef, useState } from "react";
 import type { BatchItemOutcome, BatchRunResult } from "../../lib/batch-runner";
 import { retryFailedBatchItems, runBatch } from "../../lib/batch-runner";
 import {
+  applyBatchItemResolutions,
   appendBatchOperation,
   createBatchOperationRecord,
+  updateBatchOperation,
+  type BatchItemResolution,
   type BatchOperationAction,
   type BatchOperationItem,
   type BatchOperationRecord,
@@ -18,12 +21,14 @@ export function summarizeOutcomes(outcomes: BatchItemOutcome<PreviewItem>[], tot
   let succeeded = 0;
   let failed = 0;
   let skipped = 0;
+  let unknown = 0;
   for (const outcome of outcomes) {
     if (outcome.status === "succeeded") succeeded += 1;
     else if (outcome.status === "failed") failed += 1;
     else if (outcome.status === "skipped") skipped += 1;
+    else if (outcome.status === "unknown") unknown += 1;
   }
-  return { total: total ?? outcomes.length, succeeded, failed, skipped };
+  return { total: total ?? outcomes.length, succeeded, failed, skipped, unknown };
 }
 
 /**
@@ -42,6 +47,20 @@ export function changeListItemsFromOutcomes(
     error: outcome.error,
     remoteTaskId: extractRemoteTaskId(outcome.result) ?? remoteTaskIdFromItem?.(outcome.item),
   }));
+}
+
+/**
+ * Best-effort change-list persistence. The change list is an audit trail, never
+ * a participant in the batch flow: append/revision failures are swallowed so a
+ * storage hiccup can never leave the dialog stuck on "in progress" (same
+ * policy as the execution ledger's recordExecutionOutcome).
+ */
+async function persistRecord(write: () => Promise<unknown>) {
+  try {
+    await write();
+  } catch (error) {
+    console.warn("Failed to persist the batch change-list record.", error);
+  }
 }
 
 export type BatchOperationState = {
@@ -88,7 +107,7 @@ export function useBatchOperation() {
       const { action, items, run } = args;
       runRef.current = run;
       const startedAt = new Date().toISOString();
-      update({ action, result: { outcomes: [], summary: { total: items.length, succeeded: 0, failed: 0, skipped: 0 } }, pending: true, records: [] });
+      update({ action, result: { outcomes: [], summary: { total: items.length, succeeded: 0, failed: 0, skipped: 0, unknown: 0 } }, pending: true, records: [] });
       const controller = new AbortController();
       abortRef.current = controller;
       const result = await runBatch(items, {
@@ -110,7 +129,7 @@ export function useBatchOperation() {
         summary: result.summary,
         retryOf: args.retryOf,
       });
-      await appendBatchOperation(browserRuntime.storage, record);
+      await persistRecord(() => appendBatchOperation(browserRuntime.storage, record));
       update({ action, result, pending: false, record, records: [record] });
       args.onSettled?.(result, record);
       return { result, record };
@@ -126,6 +145,7 @@ export function useBatchOperation() {
       if (!current || current.pending || !run || current.result.summary.failed === 0) return undefined;
       const previous = current.result;
       const retryOutcomesByKey = new Map<string, BatchItemOutcome<PreviewItem>>();
+      const startedAt = new Date().toISOString();
       const controller = new AbortController();
       abortRef.current = controller;
       const retryResult = await retryFailedBatchItems(previous, {
@@ -156,19 +176,51 @@ export function useBatchOperation() {
       const record = createBatchOperationRecord({
         action: current.action,
         trigger: "ui",
-        startedAt: new Date().toISOString(),
+        startedAt,
         finishedAt: new Date().toISOString(),
         items: changeListItemsFromOutcomes(retryResult.outcomes),
         summary: retryResult.summary,
         retryOf: current.record?.id,
       });
-      await appendBatchOperation(browserRuntime.storage, record);
+      await persistRecord(() => appendBatchOperation(browserRuntime.storage, record));
       update({ action: current.action, result: { outcomes: mergedOutcomes, summary: summarizeOutcomes(mergedOutcomes) }, pending: false, record, records: [...current.records, record] });
       args?.onSettled?.(retryResult, record);
       return { result: retryResult, record };
     },
     [update],
   );
+
+  /**
+   * Land manual/verified resolutions of `unknown` items: confirmed-created
+   * items become `succeeded`, confirmed-not-created items become `failed` (and
+   * therefore retryable). Every record of this dialog session that still holds
+   * a resolved item is revised in storage. Returns the updated result.
+   */
+  const resolveUnknown = useCallback(async (resolutions: BatchItemResolution[]) => {
+    const current = stateRef.current;
+    if (!current || current.pending || resolutions.length === 0) return undefined;
+    const byKey = new Map(resolutions.map((resolution) => [resolution.key, resolution]));
+    const applyToOutcome = (outcome: BatchItemOutcome<PreviewItem>) => {
+      const resolution = byKey.get(outcome.item.key);
+      if (!resolution || outcome.status !== "unknown") return outcome;
+      if (resolution.status === "confirmed-created") {
+        return { ...outcome, status: "succeeded" as const, error: undefined };
+      }
+      return { ...outcome, status: "failed" as const };
+    };
+    const outcomes = current.result.outcomes.map(applyToOutcome);
+    const result: BatchRunResult<PreviewItem> = { outcomes, summary: summarizeOutcomes(outcomes) };
+    const records = current.records.map((record) => applyBatchItemResolutions(record, byKey));
+    const revisedCurrent = records.find((record) => record.id === current.record?.id);
+    update({ ...current, result, records, record: revisedCurrent ?? current.record });
+    for (let index = 0; index < records.length; index += 1) {
+      if (records[index] !== current.records[index]) {
+        const revised = records[index];
+        await persistRecord(() => updateBatchOperation(browserRuntime.storage, revised.id, () => revised));
+      }
+    }
+    return result;
+  }, [update]);
 
   const clear = useCallback(() => update(null), [update]);
 
@@ -177,5 +229,5 @@ export function useBatchOperation() {
     abortRef.current?.abort();
   }, []);
 
-  return { state, start, retryFailed, clear, stop };
+  return { state, start, retryFailed, resolveUnknown, clear, stop };
 }
