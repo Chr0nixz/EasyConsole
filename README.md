@@ -87,9 +87,9 @@ EASY_CONSOLE_CONFIG=D:\path\to\config.json
 EASY_CONSOLE_ALLOW_INSECURE_HTTP=1
 ```
 
-The CLI and MCP server reject remote cleartext HTTP by default. Prefer HTTPS or a loopback tunnel (`http://127.0.0.1:...`). For lab APIs over plain HTTP, pass `--allow-insecure-http` or set `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1`.
+The CLI and MCP server reject remote cleartext HTTP by default. Production and externally reachable environments should use HTTPS or a local secure tunnel (`http://127.0.0.1:...`). The plain-HTTP lab console is an explicitly accepted exception: pass `--allow-insecure-http` or set `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` to opt in.
 
-The desktop and web app deliberately do **not** block remote cleartext URLs, because the default lab console is only reachable over plain HTTP. Settings shows a persistent warning whenever a remote `http://` API or monitor URL is in use: password digests and bearer tokens are replayable on such a link, so use it only on a trusted network.
+The desktop and web app deliberately do **not** block remote cleartext URLs, because the default lab console is only reachable over plain HTTP — the same explicitly accepted lab exception. Settings shows a persistent warning whenever a remote `http://` API or monitor URL is in use: password digests and bearer tokens are replayable on such a link, so use it only on a trusted network. For production or externally reachable deployments, point the app at an HTTPS endpoint or a local secure tunnel instead.
 
 Login stores a normalized bearer token in the local config file:
 

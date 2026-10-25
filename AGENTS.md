@@ -59,7 +59,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 Use `npm.cmd run build` for the web-only production build. Use `npm.cmd run build:desktop` for Tauri build inputs; it builds sidecars, typechecks the app, and runs Vite. Use `npm.cmd run tauri:build` when an actual desktop bundle or installer is required. When time is limited, prioritize desktop input build and Tauri shell checks over web-only verification.
 
-`lint` runs with `--max-warnings=46`, which is a ratchet rather than a target. The number may only go down: when you remove warnings, lower it in the same commit. Never raise it to make a build pass -- fix the new warning instead. Remaining warnings are `react-hooks/set-state-in-effect`, `react-refresh/only-export-components`, `react-hooks/exhaustive-deps`, and `react-hooks/incompatible-library`.
+`lint` runs with `--max-warnings=39`, which is a ratchet rather than a target. The number may only go down: when you remove warnings, lower it in the same commit. Never raise it to make a build pass -- fix the new warning instead. Remaining warnings are `react-hooks/set-state-in-effect`, `react-refresh/only-export-components`, `react-hooks/exhaustive-deps`, and `react-hooks/incompatible-library`.
 
 For `react-refresh/only-export-components` in context files, follow the existing split used by `use-toast.ts` and `use-download-queue.ts`: contexts, hooks, and plain helpers live in a `use-*.ts` file, and the `*Provider` component stays in its own file. That removes the warning instead of suppressing it.
 
@@ -95,7 +95,7 @@ EASY_CONSOLE_CONFIG=D:\path\to\config.json
 EASY_CONSOLE_ALLOW_INSECURE_HTTP=1
 ```
 
-Packaged desktop builds currently allow remote cleartext `http://` / `ws://` (lab console). Settings still warn when remote HTTP is in use. Prefer `https://...` or `http://127.0.0.1:...` (local reverse proxy / VPN tunnel) when available. CLI/MCP reject remote cleartext by default; opt in with `--allow-insecure-http` or `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` for lab use.
+Packaged desktop builds currently allow remote cleartext `http://` / `ws://` (lab console). Settings still warn when remote HTTP is in use. Production and externally reachable environments should use `https://...` or a local secure tunnel (`http://127.0.0.1:...`, local reverse proxy / VPN tunnel); the plain-HTTP lab console is an explicitly accepted exception. CLI/MCP reject remote cleartext by default; opt in with `--allow-insecure-http` or `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` for lab use.
 
 Do not commit real account credentials, tokens, or live test secrets.
 
@@ -113,6 +113,10 @@ Do not commit real account credentials, tokens, or live test secrets.
 - `tools/easy-console/locale.ts`: CLI/MCP locale bootstrap (`--lang` → `EASY_CONSOLE_LANG` → system locale → English).
 - `tools/eslint-rules/no-bare-cjk.mjs`: ESLint rule that rejects hardcoded CJK text outside the localization helpers. See the Language section of DESIGN.md for which mechanism to use.
 - `src/lib/run-logs.ts`: local operation log model for web, Tauri, CLI, and MCP channels.
+- `src/lib/execution-ledger.ts`: local audit ledger for scheduled-task executions (trigger, account, remote task ID, outcome), with manual resolution of uncertain remote results from the scheduled tasks page.
+- `src/lib/batch-runner.ts`: shared sequential batch engine (per-item outcomes, continue-on-error, progress, abort, failed-subset retry) reused by the UI and CLI/MCP.
+- `src/lib/change-list.ts`: local change list for finished batch operations (action, trigger, account, per-item outcomes, `retryOf` linkage), rendered on the tasks page and exportable as JSON/CSV/Markdown.
+- `src/components/batch/`: batch operation UI (impact-list preview, per-item result dialog with export, collapsible recent-batch history panel) and the `useBatchOperation` orchestration hook.
 - `src/lib/task-templates.ts`: local instance template persistence and batch payload generation.
 - `src/lib/scheduled-tasks.ts`: local scheduled task persistence and due-state helpers.
 - `src/lib/task-list-query.ts` and `src/lib/task-search.ts`: task list URL query state and client-side search ranking.

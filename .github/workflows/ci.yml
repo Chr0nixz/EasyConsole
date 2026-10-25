@@ -60,6 +60,8 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
+            libdbus-1-dev \
+            pkg-config \
             patchelf \
             file
 
@@ -95,6 +97,9 @@ jobs:
 
       - name: Check Tauri shell
         run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: SSH integration tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test ssh_integration --features ssh-test-internals
 
       - name: Upload sidecar artifacts
         uses: actions/upload-artifact@v4
