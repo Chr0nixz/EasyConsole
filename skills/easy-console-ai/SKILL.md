@@ -58,12 +58,20 @@ easy-console.exe
 easy-console-mcp.exe
 ```
 
-Use these tools by intent:
+Use these tools by intent (all 50 registered tools):
 
-- Tasks: `easyconsole_task_list`, `easyconsole_task_log`, `easyconsole_task_create`, `easyconsole_task_release`, `easyconsole_task_delete`.
-- Storage: `easyconsole_storage_list`, `easyconsole_storage_read_text`, `easyconsole_storage_download`, `easyconsole_storage_mkdir`, `easyconsole_storage_delete`.
-- Images: `easyconsole_image_list`, `easyconsole_image_set_default`.
-- Metadata: `easyconsole_user_info`, `easyconsole_resource_list`, `easyconsole_price_list`, `easyconsole_monitor_url`.
+- Tasks: `easyconsole_task_list`, `easyconsole_task_log`, `easyconsole_task_create`, `easyconsole_task_update`, `easyconsole_task_release`, `easyconsole_task_release_batch`, `easyconsole_task_delete`, `easyconsole_task_delete_batch`, `easyconsole_task_check_name`, `easyconsole_task_download`.
+- Storage: `easyconsole_storage_list`, `easyconsole_storage_read_text`, `easyconsole_storage_download`, `easyconsole_storage_upload`, `easyconsole_storage_mkdir`, `easyconsole_storage_delete`, `easyconsole_storage_info`.
+- Images: `easyconsole_image_list`, `easyconsole_image_system`, `easyconsole_image_detail`, `easyconsole_image_set_default`, `easyconsole_image_download`, `easyconsole_image_commit`.
+- Account: `easyconsole_user_info`, `easyconsole_account_change_password`, `easyconsole_account_refresh_token`.
+- Metadata: `easyconsole_resource_list`, `easyconsole_price_list`, `easyconsole_monitor_url`.
+- Dashboard: `easyconsole_dashboard_stats`, `easyconsole_dashboard_cost`, `easyconsole_dashboard_cost_month`, `easyconsole_dashboard_monitor_index`.
+- Templates: `easyconsole_template_list`, `easyconsole_template_create`, `easyconsole_template_update`, `easyconsole_template_apply`, `easyconsole_template_delete`.
+- Schedules: `easyconsole_schedule_list`, `easyconsole_schedule_create`, `easyconsole_schedule_update`, `easyconsole_schedule_pause`, `easyconsole_schedule_resume`, `easyconsole_schedule_run`, `easyconsole_schedule_delete`.
+- Backup: `easyconsole_backup_export`, `easyconsole_backup_import`.
+- Run logs: `easyconsole_run_log_list`, `easyconsole_run_log_export`, `easyconsole_run_log_clear`.
+
+CLI/MCP schedules are local records only: they are never executed automatically — run them with `easyconsole_schedule_run` (or the desktop app).
 
 For mutating MCP tools, pass `confirm: true` only after the user has clearly requested execution. Without it, the tool returns a dry-run payload.
 

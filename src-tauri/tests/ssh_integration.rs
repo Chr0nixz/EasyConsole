@@ -105,6 +105,13 @@ fn known_hosts_store(app: &tauri::App<tauri::test::MockRuntime>) -> std::path::P
     easy_console_lib::app_data_file(app.handle(), "known-ssh-hosts.json").expect("store path")
 }
 
+/// Per-test temp directory that removes itself (and everything in it) when the
+/// test ends. Tests used to hand-create `ec-sftp-*`/`ec-local-*` folders under
+/// %TEMP% that were never cleaned up.
+fn test_temp_dir(prefix: &str) -> tempfile::TempDir {
+    tempfile::TempDir::with_prefix(prefix).expect("create temp dir")
+}
+
 /// The shared test host key, generated once per process. A per-run UUID file
 /// name would make Windows Defender scan a fresh file for every test, which
 /// intermittently stalled handshakes for tens of seconds.
@@ -256,8 +263,8 @@ async fn wait_for_connected(
 
 async fn wrong_password_fails_the_session() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     let (port, fingerprint, _done) = spawn_server(TestSshServer {
         username: "ubuntu".into(),
         password: "correct".into(),
@@ -285,8 +292,8 @@ async fn wrong_password_fails_the_session() {
 
 async fn correct_password_connects_and_closes_cleanly() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     let (port, fingerprint, _done) = spawn_server(TestSshServer {
         username: "ubuntu".into(),
         password: "correct".into(),
@@ -335,8 +342,8 @@ async fn correct_password_connects_and_closes_cleanly() {
 /// teardown aborts the stalled writer instead of queueing behind it.
 async fn large_input_cannot_block_session_control() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     let (port, fingerprint, _done) = spawn_server(TestSshServer {
         username: "ubuntu".into(),
         password: "correct".into(),
@@ -381,10 +388,21 @@ async fn large_input_cannot_block_session_control() {
 
 async fn private_key_auth_accepts_and_rejects_keys() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
-    // The key the server authorizes is the one phase 2 signs in with.
-    let (allowed_key, _) = generate_key_pair(&std::env::temp_dir(), "ec-test-allowed", "");
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
+    // The key the server authorizes is the one phase 2 signs in with. It must
+    // live under the home directory because this test also exercises `~`
+    // expansion; the UUID suffix keeps parallel runs from clobbering one file
+    // and both halves are removed at the end of the test.
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from)
+        .expect("home directory exists");
+    let (allowed_key, allowed_key_pub) = generate_key_pair(
+        &home,
+        &format!("ec-test-allowed-{}", uuid::Uuid::new_v4()),
+        "",
+    );
     let authorized_public_key =
         russh::keys::load_secret_key(allowed_key.to_string_lossy().as_ref(), None)
             .unwrap()
@@ -406,7 +424,8 @@ async fn private_key_auth_accepts_and_rejects_keys() {
     persist_known_host(app.handle(), "127.0.0.1", port, &fingerprint).expect("trust host");
 
     // A fresh key the server does not know must be rejected.
-    let (rejected_key, _) = generate_key_pair(&std::env::temp_dir(), "ec-test-rejected", "");
+    let _keys_dir = test_temp_dir("ec-keys-");
+    let (rejected_key, _) = generate_key_pair(_keys_dir.path(), "rejected", "");
     let mut rejected_session =
         start_session(&app, key_request(port, rejected_key.to_str().unwrap())).await;
     let result = tokio::time::timeout(TEST_TIMEOUT, &mut rejected_session.task)
@@ -415,10 +434,6 @@ async fn private_key_auth_accepts_and_rejects_keys() {
     assert!(result.expect("join").is_err(), "unauthorized key must fail");
 
     // The authorized key must connect; `~` in the key path must expand natively.
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(std::path::PathBuf::from)
-        .expect("home directory exists");
     let relative = allowed_key
         .strip_prefix(&home)
         .expect("key lives under home");
@@ -433,12 +448,16 @@ async fn private_key_auth_accepts_and_rejects_keys() {
     let _ = tokio::time::timeout(TEST_TIMEOUT, session.task).await;
     let _ = rejected_session.window.close();
     let _ = session.window.close();
+    // The authorized key lives under the user's home directory, outside any
+    // auto-cleaned temp dir, so remove it explicitly (best effort).
+    let _ = std::fs::remove_file(&allowed_key);
+    let _ = std::fs::remove_file(&allowed_key_pub);
 }
 
 async fn host_key_prompt_confirms_first_connection() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     let (port, _fingerprint, _done) = spawn_server(TestSshServer {
         username: "ubuntu".into(),
         password: "correct".into(),
@@ -498,8 +517,8 @@ async fn host_key_prompt_confirms_first_connection() {
 
 async fn changed_host_key_is_rejected() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     let (port, _fingerprint, _done) = spawn_server(TestSshServer {
         username: "ubuntu".into(),
         password: "correct".into(),
@@ -542,8 +561,8 @@ async fn trusted_session(
 
 async fn sftp_upload_and_download_round_trip() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     let (port, fingerprint, _done) = spawn_server(TestSshServer {
         username: "ubuntu".into(),
         password: "correct".into(),
@@ -559,8 +578,8 @@ async fn sftp_upload_and_download_round_trip() {
 
     let session = trusted_session(&app, port, &fingerprint).await;
 
-    let local_dir = std::env::temp_dir().join(format!("ec-local-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&local_dir).unwrap();
+    let _local_dir_holder = test_temp_dir("ec-local-");
+    let local_dir = _local_dir_holder.path().to_path_buf();
     let local_file = local_dir.join("upload.bin");
     std::fs::write(&local_file, vec![7_u8; 256 * 1024]).unwrap();
 
@@ -648,8 +667,8 @@ async fn sftp_upload_and_download_round_trip() {
 
 async fn sftp_cancel_aborts_upload_and_leaves_no_remote_file() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     let (port, fingerprint, _done) = spawn_server(TestSshServer {
         username: "ubuntu".into(),
         password: "correct".into(),
@@ -666,8 +685,8 @@ async fn sftp_cancel_aborts_upload_and_leaves_no_remote_file() {
 
     let session = trusted_session(&app, port, &fingerprint).await;
 
-    let local_dir = std::env::temp_dir().join(format!("ec-local-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&local_dir).unwrap();
+    let _local_dir_holder = test_temp_dir("ec-local-");
+    let local_dir = _local_dir_holder.path().to_path_buf();
     let local_file = local_dir.join("big.bin");
     std::fs::write(&local_file, vec![1_u8; 2 * 1024 * 1024]).unwrap();
 
@@ -731,8 +750,8 @@ async fn sftp_cancel_aborts_upload_and_leaves_no_remote_file() {
 
 async fn sftp_cancel_removes_local_part_file() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     std::fs::write(root.join("remote.bin"), vec![3_u8; 2 * 1024 * 1024]).unwrap();
     let (port, fingerprint, _done) = spawn_server(TestSshServer {
         username: "ubuntu".into(),
@@ -749,8 +768,8 @@ async fn sftp_cancel_removes_local_part_file() {
 
     let session = trusted_session(&app, port, &fingerprint).await;
 
-    let local_dir = std::env::temp_dir().join(format!("ec-local-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&local_dir).unwrap();
+    let _local_dir_holder = test_temp_dir("ec-local-");
+    let local_dir = _local_dir_holder.path().to_path_buf();
     let target = local_dir.join("remote.bin");
 
     let (response_tx, response_rx) = oneshot::channel();
@@ -807,8 +826,8 @@ async fn sftp_cancel_removes_local_part_file() {
 
 async fn port_forward_rules_track_their_lifecycle() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     let (port, fingerprint, _done) = spawn_server(TestSshServer {
         username: "ubuntu".into(),
         password: "correct".into(),
@@ -939,8 +958,8 @@ async fn port_forward_stop_aborts_tunneled_connections() {
     use tokio::io::AsyncReadExt as _;
 
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     let (port, fingerprint, _done) = spawn_server(TestSshServer {
         username: "ubuntu".into(),
         password: "correct".into(),
@@ -1036,8 +1055,8 @@ async fn port_forward_stop_aborts_tunneled_connections() {
 /// two-step remove-then-rename fallback.
 async fn sftp_overwrite_uses_atomic_posix_rename() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     let posix_seen = Arc::new(AtomicBool::new(false));
     let (port, fingerprint, _done) = spawn_server(TestSshServer {
         username: "ubuntu".into(),
@@ -1054,8 +1073,8 @@ async fn sftp_overwrite_uses_atomic_posix_rename() {
 
     let session = trusted_session(&app, port, &fingerprint).await;
 
-    let local_dir = std::env::temp_dir().join(format!("ec-local-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&local_dir).unwrap();
+    let _local_dir_holder = test_temp_dir("ec-local-");
+    let local_dir = _local_dir_holder.path().to_path_buf();
     let local_file = local_dir.join("atomic.bin");
     std::fs::write(&local_file, vec![7_u8; 32 * 1024]).unwrap();
 
@@ -1114,9 +1133,10 @@ async fn sftp_overwrite_uses_atomic_posix_rename() {
 async fn minimal_two_key_connections() {
     // Pure russh repro: two sequential key-auth connections against the mock
     // server — the first rejected, the second authorized.
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
-    let (authorized, _) = generate_key_pair(&std::env::temp_dir(), "ec-min-authorized", "");
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
+    let _keys_dir = test_temp_dir("ec-keys-");
+    let (authorized, _) = generate_key_pair(_keys_dir.path(), "authorized", "");
     let authorized_public_key =
         russh::keys::load_secret_key(authorized.to_string_lossy().as_ref(), None)
             .unwrap()
@@ -1134,7 +1154,7 @@ async fn minimal_two_key_connections() {
         posix_rename_seen: Arc::new(AtomicBool::new(false)),
     })
     .await;
-    let (rejected, _) = generate_key_pair(&std::env::temp_dir(), "ec-min-rejected", "");
+    let (rejected, _) = generate_key_pair(_keys_dir.path(), "rejected", "");
 
     use russh::client;
     struct NoCheck;
@@ -1187,10 +1207,11 @@ async fn minimal_two_key_connections() {
 
 async fn reconnect_after_auth_failure_connects() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     // The server authorizes exactly one key; round 1 signs in with it.
-    let (authorized, _) = generate_key_pair(&std::env::temp_dir(), "ec-reauth-authorized", "");
+    let _keys_dir = test_temp_dir("ec-keys-");
+    let (authorized, _) = generate_key_pair(_keys_dir.path(), "authorized", "");
     let authorized_public_key =
         russh::keys::load_secret_key(authorized.to_string_lossy().as_ref(), None)
             .unwrap()
@@ -1228,8 +1249,8 @@ async fn reconnect_after_auth_failure_connects() {
 
 async fn second_connection_to_the_same_server_connects() {
     let app = mock_app();
-    let root = std::env::temp_dir().join(format!("ec-sftp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let _root_dir = test_temp_dir("ec-sftp-");
+    let root = _root_dir.path().to_path_buf();
     let (port, fingerprint, _done) = spawn_server(TestSshServer {
         username: "ubuntu".into(),
         password: "correct".into(),
