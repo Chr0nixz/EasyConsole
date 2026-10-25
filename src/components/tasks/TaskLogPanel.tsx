@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDownToLine, ChevronDown, ChevronUp, Copy, Crosshair, ListFilter, RefreshCw, WrapText } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, memo, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 
 import { ErrorState, LoadingState } from "../DataState";
 import { Button, Input } from "../ui";
@@ -14,7 +14,12 @@ import { cn } from "../../lib/utils";
 import { RelativeUpdatedAt } from "../RelativeUpdatedAt";
 
 const LONG_LOG_CHARS = 200_000;
-const MAX_LOG_DISPLAY_CHARS = 500_000;
+/**
+ * Render cap for the log body: only the tail is rendered (copy still uses the
+ * full log). Aligned with LONG_LOG_CHARS so the "long log" hint and the
+ * truncation cutoff describe the same magnitude.
+ */
+const MAX_LOG_DISPLAY_CHARS = 200_000;
 const FOLLOW_BOTTOM_THRESHOLD_PX = 48;
 const FILTER_DEBOUNCE_MS = 200;
 /** While following a running task the log re-reads on this cadence; paused when the window is hidden. */
@@ -53,6 +58,53 @@ function findFailureSummary(lines: string[], errorLines: Set<number>) {
   const index = exceptionIndex >= 0 ? exceptionIndex : lastErrorIndex;
   return index >= 0 ? { index, line: lines[index].trim(), exitCode } : null;
 }
+
+/**
+ * Memoized log body. The live 6-second poll re-renders the panel even when the
+ * fetched text is unchanged; with plain rendering that reconciles thousands of
+ * line spans every poll. All props come from memos over the log text, so an
+ * unchanged poll keeps every prop identity and skips this subtree entirely.
+ */
+const LogLines = memo(function LogLines({
+  lines,
+  errorLines,
+  matchSet,
+  visibleLineIndexes,
+  currentMatch,
+  focusedLine,
+}: {
+  lines: string[];
+  errorLines: Set<number>;
+  matchSet: Set<number>;
+  visibleLineIndexes: number[] | null;
+  currentMatch: number | null;
+  focusedLine: number | null;
+}) {
+  const renderLine = (index: number) => {
+    const line = lines[index];
+    const isError = errorLines.has(index);
+    return (
+      <span
+        key={index}
+        data-log-line={index}
+        className={cn(
+          "block",
+          isError && "bg-app-danger/25",
+          matchSet.has(index) && "bg-app-terminalAccent/20",
+          (index === currentMatch || index === focusedLine) && "bg-app-terminalAccent/35 outline outline-1 -outline-offset-1 outline-app-terminalAccent",
+        )}
+      >
+        {line || " "}
+      </span>
+    );
+  };
+
+  return (
+    <>
+      {visibleLineIndexes ? visibleLineIndexes.map(renderLine) : lines.map((_, index) => renderLine(index))}
+    </>
+  );
+});
 
 /** `toolbarEnd` sits at the right end of the toolbar, e.g. the detail page's expand action. */
 export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: ReactNode }) {
@@ -112,7 +164,8 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
   const matchSet = useMemo(() => new Set(matchLines), [matchLines]);
   const currentMatch = matchLines.length > 0 ? matchLines[Math.min(matchCursor, matchLines.length - 1)] : null;
   const filtering = onlyMatches && Boolean(normalizedFind);
-  const visibleLineIndexes = filtering ? matchLines : null;
+  // Memoized so LogLines receives a stable identity when the log text is unchanged.
+  const visibleLineIndexes = useMemo(() => (filtering ? matchLines : null), [filtering, matchLines]);
 
   const scrollToLine = (index: number) => {
     setFollowBottom(false);
@@ -188,25 +241,6 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
         `日志较长（约 ${charCount.toLocaleString()} 字符），已全部加载`,
         `Long log (~${charCount.toLocaleString()} characters), fully loaded`,
       );
-
-  const renderLine = (index: number) => {
-    const line = lines[index];
-    const isError = errorLines.has(index);
-    return (
-      <span
-        key={index}
-        data-log-line={index}
-        className={cn(
-          "block",
-          isError && "bg-app-danger/25",
-          matchSet.has(index) && "bg-app-terminalAccent/20",
-          (index === currentMatch || index === focusedLine) && "bg-app-terminalAccent/35 outline outline-1 -outline-offset-1 outline-app-terminalAccent",
-        )}
-      >
-        {line || " "}
-      </span>
-    );
-  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -334,9 +368,16 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
               ? text("暂无日志输出", "No log output")
               : filtering && matchLines.length === 0
                 ? text("无匹配日志行", "No matching log lines")
-                : visibleLineIndexes
-                  ? visibleLineIndexes.map(renderLine)
-                  : lines.map((_, index) => renderLine(index))}
+                : (
+                  <LogLines
+                    currentMatch={currentMatch}
+                    errorLines={errorLines}
+                    focusedLine={focusedLine}
+                    lines={lines}
+                    matchSet={matchSet}
+                    visibleLineIndexes={visibleLineIndexes}
+                  />
+                )}
           </pre>
         )}
       </div>
