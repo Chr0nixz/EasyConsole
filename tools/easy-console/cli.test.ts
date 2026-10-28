@@ -1,5 +1,8 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rmdir, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 
 import type { EasyConsoleContext } from "./context";
 import { runCli } from "./cli";
@@ -88,6 +91,138 @@ function createFakeContext(overrides: Record<string, unknown> = {}) {
 }
 
 describe("easy-console cli", () => {
+  it.each(["9007199254740993", "00042"])("preserves an opaque id without rounding or dropping zeroes: %s", async (id) => {
+    const context = createFakeContext();
+    const release = vi.spyOn(context.api.instanceApi, "operateTask");
+    const result = await runCli(["--json", "task", "release", id, "--yes"], { createContext: async () => context });
+    expect(result.exitCode).toBe(0);
+    expect(release).toHaveBeenCalledExactlyOnceWith(id);
+  });
+
+  it.each([
+    ["task", "download", "42"],
+    ["storage", "download", "/file.txt"],
+    ["image", "download", "11"],
+  ])("requires --yes before a download reads remote bytes or writes a local file: %s", async (...command) => {
+    const directory = await mkdtemp(join(tmpdir(), "ec-cli-download-"));
+    const outputPath = join(directory, "download.bin");
+    try {
+      const context = createFakeContext();
+      const requests = [vi.spyOn(context.api.instanceApi, "downloadTask"), vi.spyOn(context.api.storageApi, "transmit"), vi.spyOn(context.api.imageApi, "download")];
+      const args = ["--json", ...command, "--output", outputPath];
+      const preview = await runCli(args, { createContext: async () => context });
+      expect(JSON.parse(preview.stdout).data).toMatchObject({ dryRun: true });
+      for (const request of requests) expect(request).not.toHaveBeenCalled();
+      await expect(readFile(outputPath)).rejects.toMatchObject({ code: "ENOENT" });
+      const executed = await runCli([...args, "--yes"], { createContext: async () => context });
+      expect(executed.exitCode).toBe(0);
+      expect(JSON.parse(executed.stdout).data).toMatchObject({ path: outputPath });
+      expect((await readFile(outputPath)).length).toBeGreaterThan(0);
+      expect(requests.reduce((count, request) => count + request.mock.calls.length, 0)).toBe(1);
+    } finally {
+      await unlink(outputPath).catch(() => undefined);
+      await rmdir(directory);
+    }
+  });
+
+  it.each([false, true])("does not read credentials or overwrite an export file until confirmed (includeSecrets=%s)", async (includeSecrets) => {
+    const directory = await mkdtemp(join(tmpdir(), "ec-cli-export-"));
+    const outputPath = join(directory, "backup.json");
+    await writeFile(outputPath, "original file");
+    try {
+      const context = createFakeContext();
+      const get = vi.fn(async () => "Bearer export-secret");
+      context.credentialStorage = { ...memoryStorage(), get };
+      const args = ["--json", "backup", "export", "--output", outputPath, ...(includeSecrets ? ["--include-secrets"] : [])];
+      const preview = await runCli(args, { createContext: async () => context });
+      expect(JSON.parse(preview.stdout).data).toMatchObject({ dryRun: true, action: "backup.export" });
+      expect(get).not.toHaveBeenCalled();
+      expect(await readFile(outputPath, "utf8")).toBe("original file");
+      const executed = await runCli([...args, "--yes"], { createContext: async () => context });
+      expect(executed.exitCode).toBe(0);
+      const backup = JSON.parse(await readFile(outputPath, "utf8"));
+      expect(backup.includeSecrets).toBe(includeSecrets);
+      expect(backup.items.token).toBe(includeSecrets ? "Bearer export-secret" : undefined);
+      expect(executed.stdout).not.toContain("export-secret");
+    } finally {
+      await unlink(outputPath);
+      await rmdir(directory);
+    }
+  });
+
+  it("previews login without reading stdin, authenticating, or overwriting credentials", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ec-cli-login-"));
+    const configPath = join(directory, "config.json");
+    const original = JSON.stringify({ token: "Bearer old-token" });
+    await writeFile(configPath, original);
+    try {
+      const context = createFakeContext();
+      context.config.configPath = configPath;
+      const login = vi.spyOn(context.api.authApi, "login");
+      const readStdin = vi.fn(async () => "stdin-secret");
+      const preview = await runCli(["--json", "login", "--username", "tester", "--password-stdin"], {
+        createContext: async () => context, readStdin,
+      });
+      expect(preview.exitCode).toBe(0);
+      expect(JSON.parse(preview.stdout).data).toMatchObject({ dryRun: true, action: "auth.login" });
+      expect(readStdin).not.toHaveBeenCalled();
+      expect(login).not.toHaveBeenCalled();
+      expect(await readFile(configPath, "utf8")).toBe(original);
+
+      const executed = await runCli(["--json", "login", "--username", "tester", "--password-stdin", "--yes"], {
+        createContext: async () => context, readStdin,
+      });
+      expect(executed.exitCode).toBe(0);
+      expect(JSON.parse(executed.stdout).data).toMatchObject({ tokenSaved: true });
+      expect(readStdin).toHaveBeenCalledOnce();
+      expect(login).toHaveBeenCalledOnce();
+      expect(JSON.parse(await readFile(configPath, "utf8")).token).toBe("Bearer saved-token");
+      expect(executed.stdout).not.toContain("stdin-secret");
+    } finally {
+      await unlink(configPath);
+      await rmdir(directory);
+    }
+  });
+
+  it("requires --yes before refreshing or replacing a token", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ec-cli-refresh-"));
+    const configPath = join(directory, "config.json");
+    const original = JSON.stringify({ token: "Bearer current-token" });
+    await writeFile(configPath, original);
+    try {
+      const context = createFakeContext();
+      context.config.configPath = configPath;
+      context.config.token = "Bearer current-token";
+      const refresh = vi.spyOn(context.api.authApi, "refreshToken");
+      const preview = await runCli(["--json", "account", "refresh-token"], { createContext: async () => context });
+      expect(JSON.parse(preview.stdout).data).toMatchObject({ dryRun: true, action: "account.refresh-token" });
+      expect(preview.stdout).not.toContain("current-token");
+      expect(refresh).not.toHaveBeenCalled();
+      expect(await readFile(configPath, "utf8")).toBe(original);
+      const executed = await runCli(["--json", "account", "refresh-token", "--yes"], { createContext: async () => context });
+      expect(executed.exitCode).toBe(0);
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(JSON.parse(await readFile(configPath, "utf8")).token).toBe("Bearer new-token");
+    } finally {
+      await unlink(configPath);
+      await rmdir(directory);
+    }
+  });
+
+  it.each([
+    ["--json", "unknown-command"],
+    ["--json", "task", "release"],
+    ["task", "release", "--json"],
+    ["--json", "task", "list", "--unknown-option"],
+  ])("keeps usage errors machine-readable: %j", async (...argv) => {
+    const createContext = vi.fn(async () => createFakeContext());
+    const result = await runCli(argv, { createContext });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, data: null, error: { message: expect.any(String), code: expect.stringContaining("commander.") } });
+    expect(createContext).not.toHaveBeenCalled();
+  });
+
   it("prints JSON success envelopes", async () => {
     const result = await runCli(["--json", "whoami"], {
       createContext: async () => createFakeContext(),

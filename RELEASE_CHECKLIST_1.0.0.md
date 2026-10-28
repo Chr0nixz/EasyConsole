@@ -101,17 +101,17 @@ CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执
 
 ### 3.1 Sidecar 布局
 
-- [ ] 决定是否把 `easy-console-cli`（约 58MB）和 `easy-console-mcp`（约 60MB）合并成一个按子命令分派的可执行文件。合并能让 sidecar 体积减半；但 MCP 客户端配置里写的是可执行文件路径，1.0 之后再合并会让所有已有配置失效。要合就在这一阶段合。
+- [x] 决定是否把 `easy-console-cli`（约 58MB）和 `easy-console-mcp`（约 60MB）合并成一个按子命令分派的可执行文件。合并能让 sidecar 体积减半；但 MCP 客户端配置里写的是可执行文件路径，1.0 之后再合并会让所有已有配置失效。要合就在这一阶段合。证据：2026-10-29 [CLI/MCP 契约](CLI_MCP_CONTRACT.md) 决定保留两个入口，接受当前体积，1.x 不删除既有可执行文件名；安装路径实物核对仍为下一待办。
 - [x] 修正文档里的可执行文件名：[SKILL.md](skills/easy-console-ai/SKILL.md) 的命令替换说明和二进制清单统一为 `easy-console-cli.exe` / `easy-console-cli`，与 README 和 sidecar 构建输出一致。证据：2026-10-28 文档及 `build:desktop` 产物名核对。
 - [ ] 写明各平台安装后 sidecar 的实际路径，MCP 接入示例直接使用这个路径。
 
 ### 3.2 CLI / MCP 接口
 
-- [ ] 逐个审阅 54 个 MCP 工具的名称、参数和返回结构，该改名的现在改。1.0 之后改名或删除工具，要先保留旧名并标记弃用，到 2.0 才移除。
-- [ ] 审阅 CLI 子命令、参数、退出码，以及 `--json` 的 `{ ok, data, error }` 输出格式。
-- [ ] 所有变更类操作保持一致：CLI 默认 dry-run，需要 `--yes`；MCP 需要 `confirm: true`。
-- [ ] MCP resource URI（`easyconsole://local/templates`、`easyconsole://local/resource-presets` 及单项 URI）纳入契约。
-- [ ] 在 SKILL.md 和 README 里标明稳定性分级：stable（1.x 内兼容）和 experimental（可能变化）。
+- [x] 逐个审阅 54 个 MCP 工具的名称、参数和返回结构，该改名的现在改。1.0 之后改名或删除工具，要先保留旧名并标记弃用，到 2.0 才移除。证据：2026-10-29 [54 工具契约表](CLI_MCP_CONTRACT.md)，与注册 schema 参数/可选性静态核对无缺项；保留全部名称，修复 task_update 错误要求 name 的问题，PATCH 可只更新释放时间；纳入回归测试。
+- [x] 审阅 CLI 子命令、参数、退出码，以及 `--json` 的 `{ ok, data, error }` 输出格式。证据：2026-10-29 契约记录 55 个叶子命令、stdout/stderr 与业务失败边界；用法错误改为 JSON envelope，长 ID/前导零不再丢失；cli 测试及全量 882 项通过。
+- [x] 所有变更类操作保持一致：CLI 默认 dry-run，需要 `--yes`；MCP 需要 `confirm: true`。证据：2026-10-29 补齐 CLI 登录、令牌刷新、三种下载、备份写文件及 MCP 令牌刷新；测试覆盖预览不读密码/远程字节、不覆盖凭据/文件，确认后保留原有成功字段；旧备份存储集成测试同步显式确认。
+- [x] MCP resource URI（`easyconsole://local/templates`、`easyconsole://local/resource-presets` 及单项 URI）纳入契约。证据：2026-10-29 契约记录集合/单项、JSON MIME、一次 percent 编解码、缺失项错误和新鲜共享读取边界；既有 mcp-resources 测试全部通过。
+- [x] 在 SKILL.md 和 README 里标明稳定性分级：stable（1.x 内兼容）和 experimental（可能变化）。证据：2026-10-29 两处同步链接完整契约，标明 task PATCH、镜像编辑/删除为 experimental，已发布名称及两个可执行入口至少保留到 2.0；AGENTS.md 增加维护约束。
 
 ### 3.3 本地数据格式
 
@@ -196,7 +196,7 @@ CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执
 
 - [ ] README 面向新成员：安装、首次登录、本地数据的存放位置、备份与恢复、接入 MCP、HTTP 实验室例外的说明。
 - [ ] 按第 5.2 节的结果更新 [PRODUCT.md:58](PRODUCT.md:58) 的"尚未验证"一段。
-- [ ] SKILL.md 的工具清单和稳定性分级与第 3.2 节一致。
+- [x] SKILL.md 的工具清单和稳定性分级与第 3.2 节一致。证据：2026-10-29 全 54 工具清单保留，stable/experimental、确认门、JSON 输出与共享资源边界与 CLI_MCP_CONTRACT.md 一致。
 - [ ] 1.0 发布说明写成产品全貌，不写成增量列表，包括：主要能力；从 0.4.x 升级的须知（数据迁移、是否支持降级）；1.x 的兼容性承诺（第 3 节的契约）；已知限制（非官方客户端、接口为逆向整理、实验性功能）。
 - [ ] （可选）把根目录的审阅与验收报告移到 `docs/reviews/`，同步更新 PRODUCT.md、AGENTS.md 和本清单里的链接。
 

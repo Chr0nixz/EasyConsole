@@ -68,7 +68,7 @@ describe("shared sidecar context", () => {
     await expect(readFile(join(dirname(sharedPath), "runtime-storage.d", tokenFile))).rejects.toMatchObject({ code: "ENOENT" });
 
     const exportedPath = join(directory, "export.json");
-    const exported = await runCli(["--json", "backup", "export", "--include-secrets", "--output", exportedPath], {
+    const exported = await runCli(["--json", "backup", "export", "--include-secrets", "--output", exportedPath, "--yes"], {
       createContext: async () => context,
     });
     expect(exported.exitCode).toBe(0);

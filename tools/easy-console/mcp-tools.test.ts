@@ -1,5 +1,8 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rmdir, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 
 import type { EasyConsoleContext } from "./context";
 import type { RuntimeStorage } from "../../src/lib/types";
@@ -93,6 +96,46 @@ function createFakeContext(overrides: Record<string, unknown> = {}) {
 }
 
 describe("easy-console MCP tools", () => {
+  it("accepts a task patch without a create-only name and keeps the confirm gate", async () => {
+    const context = createFakeContext();
+    const update = vi.spyOn(context.api.instanceApi, "updateTask");
+    const tool = getTool("easyconsole_task_update");
+    const payload = { releace_time: "2030-01-01T12:00:00Z" };
+    const preview = await invokeMcpToolDefinition(tool, context, { taskId: 42, payload });
+    expect(preview).toMatchObject({ dryRun: true, action: "task.update" });
+    expect(update).not.toHaveBeenCalled();
+    await invokeMcpToolDefinition(tool, context, { taskId: 42, payload, confirm: true });
+    expect(update).toHaveBeenCalledExactlyOnceWith(42, payload);
+  });
+
+  it("requires confirm before refreshing or replacing credentials", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ec-mcp-refresh-"));
+    const configPath = join(directory, "config.json");
+    const original = JSON.stringify({ token: "Bearer current-token" });
+    await writeFile(configPath, original);
+    try {
+      const context = createFakeContext();
+      context.config.configPath = configPath;
+      context.config.token = "Bearer current-token";
+      const refresh = vi.spyOn(context.api.authApi, "refreshToken");
+      const tool = getTool("easyconsole_account_refresh_token");
+      for (const input of [{}, { confirm: false }]) {
+        const preview = await invokeMcpToolDefinition(tool, context, input);
+        expect(preview).toMatchObject({ dryRun: true, action: "account.refresh-token" });
+        expect(JSON.stringify(preview)).not.toContain("current-token");
+      }
+      await expect(invokeMcpToolDefinition(tool, context, { confirm: "true" })).rejects.toThrow();
+      expect(refresh).not.toHaveBeenCalled();
+      expect(await readFile(configPath, "utf8")).toBe(original);
+      await invokeMcpToolDefinition(tool, context, { confirm: true });
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(JSON.parse(await readFile(configPath, "utf8")).token).toBe("Bearer new-token");
+    } finally {
+      await unlink(configPath);
+      await rmdir(directory);
+    }
+  });
+
   it.each([
     { name: " " }, { cpu: 0 }, { cpu: "bad" }, { gpu: -1 }, { gpu: 1.5 },
     { memory: 0 }, { memory: "1.2" }, { releace_conditions: 9 },

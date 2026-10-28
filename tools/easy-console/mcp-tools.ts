@@ -136,7 +136,7 @@ function asRecord(value: unknown) {
 /**
  * Stamp the confirmed schedule.create outcome: the CLI/MCP sidecar has no
  * runner, so without this note agents assume the task will fire automatically
- * (the desktop app's runner reads a different store entirely).
+ * (shared plans still require verified ownership in the desktop app).
  */
 function withScheduleAutoRunNote(result: Awaited<ReturnType<typeof createScheduledTaskRecord>>) {
   if (result.dryRun) return result;
@@ -359,7 +359,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     {
       name: "easyconsole_image_update",
       description:
-        "Update a custom image's metadata (name/description; unknown extra fields pass through). Requires confirm=true to execute. " +
+        "Experimental: update a custom image's metadata (name/description; unknown extra fields pass through). Requires confirm=true to execute. " +
         "The backend endpoint exists in the API surface but its live behavior is unverified; failures surface the backend's reason.",
       inputSchema: {
         imageId: idSchema,
@@ -379,7 +379,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     {
       name: "easyconsole_image_delete",
       description:
-        "Delete a custom image by id; irreversible. Requires confirm=true to execute. " +
+        "Experimental: delete a custom image by id; irreversible. Requires confirm=true to execute. " +
         "Verify the id with easyconsole_image_list first — deletion removes the ability to create instances from the image.",
       inputSchema: {
         imageId: idSchema,
@@ -425,14 +425,14 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_task_update",
-      description: "Update an EasyConsole task. Requires confirm=true to execute.",
+      description: "Experimental: update an EasyConsole task through PATCH only. Requires confirm=true to execute. The live backend's edit support must be verified.",
       inputSchema: {
         taskId: idSchema,
         payload: updateTaskPayloadSchema,
         confirm: z.boolean().optional(),
       },
       handler(context, input) {
-        return updateTask(context.api, asId(input.taskId), buildCreateTaskPayload(asRecord(input.payload)), asConfirm(input.confirm));
+        return updateTask(context.api, asId(input.taskId), asRecord(input.payload), asConfirm(input.confirm));
       },
     },
     {
@@ -605,9 +605,12 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_account_refresh_token",
-      description: "Refresh the current auth token and persist the new token to config.",
-      inputSchema: {},
-      async handler(context) {
+      description: "Refresh the current auth token and persist the new token to config. Requires confirm=true to execute; otherwise returns a dry-run preview without credentials.",
+      inputSchema: { confirm: z.boolean().optional() },
+      async handler(context, input) {
+        if (!asConfirm(input.confirm)) {
+          return { dryRun: true, action: "account.refresh-token", payload: { configPath: context.config.configPath }, message: "Pass confirm=true to refresh and save local credentials." };
+        }
         if (!context.config.token) throw new Error("No current token found in config.");
         const result = await refreshToken(context.api, context.config.token);
         if (result.token) {
@@ -792,7 +795,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     {
       name: "easyconsole_backup_export",
       description:
-        "Export non-secret local data (settings, language, task templates, scheduled tasks, run logs) as a backup JSON object. " +
+        "Export non-secret local data (settings, language, task templates, resource presets, scheduled tasks, run logs) as a backup JSON object. " +
         "Tokens and saved accounts are never included: export those from the desktop Settings page instead.",
       inputSchema: {},
       handler(context) {

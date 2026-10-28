@@ -107,7 +107,8 @@ The desktop and web app deliberately do **not** block remote cleartext URLs, bec
 Login stores a normalized bearer token in the local config file:
 
 ```powershell
-"your-password" | npm.cmd run ec -- login --username your-name --password-stdin
+$easyConsoleCredential = Get-Credential -UserName "your-name" -Message "EasyConsole login"
+$easyConsoleCredential.GetNetworkCredential().Password | npm.cmd run ec -- login --username $easyConsoleCredential.UserName --password-stdin --yes
 ```
 
 Do not commit real credentials or generated config files.
@@ -130,7 +131,7 @@ npm.cmd run ec -- --json run-log list
 npm.cmd run ec -- --json run-log export
 ```
 
-Mutation commands are dry-run by default. Pass `--yes` to execute:
+Mutation commands are dry-run by default. Pass `--yes` to execute, including login, token refresh, downloads, and backup file output:
 
 ```powershell
 npm.cmd run ec -- --json task create --name demo --image-id 1 --cpu 4 --gpu 0 --memory 16
@@ -149,6 +150,10 @@ All `--json` CLI output uses this shape:
 { "ok": true, "data": {}, "error": null }
 ```
 
+Success envelopes go to stdout; errors (including usage errors) go to stderr with `ok: false` and a nonzero exit code. `--help` remains text. A successful wait or batch command may contain timeout/failed outcomes; inspect the returned business result.
+
+The [CLI/MCP contract](CLI_MCP_CONTRACT.md) records all 54 MCP tools, CLI arguments, result shapes and resource URIs. For 1.x, **stable** interfaces keep compatible names, inputs and client-owned return fields. **Experimental** interfaces are task PATCH editing and image editing/deletion; their live service behavior remains unverified. Idle auto-release and Windows scheduled wake are also experimental desktop capabilities. Published names and both sidecar entrypoints are retained throughout 1.x, with deprecation before removal in 2.0.
+
 Task logs and remote text reads are truncated by default at `200000` bytes and return truncation metadata.
 
 ### MCP server
@@ -163,9 +168,9 @@ Available MCP tools include task list/log/create/release/delete, storage list/re
 
 ## Desktop Runtime
 
-- Idle reminders use CPU/network metrics, plus real GPU utilization sampled with `nvidia-smi` over an existing in-app SSH connection in the main window. Auto-release is off by default and requires explicit opt-in, a full continuous sampling window for every allocated GPU, fresh low CPU metrics, zero network traffic, and the same signed-in account/API realm. Missing samples never authorize release; uncertain release results are recorded and never automatically retried.
-- On Windows, Settings → Window & Startup can register an opt-in Task Scheduler wake-up. It checks the desktop's local plans every minute and starts the app when a pending plan is due. It requires an interactive OS login and valid console credentials; the desktop runner still checks ownership and missed-run policy. Turning it off removes the OS task. Other platforms keep launch-at-login/tray behavior.
-- Task editing and release extension use PATCH only. PUT on the same task route is the original console's release operation and is never used as an editing fallback. A backend without PATCH support reports an unsupported operation.
+- Idle reminders use CPU/network metrics, plus real GPU utilization sampled with `nvidia-smi` over an existing in-app SSH connection in the main window. **Experimental auto-release is off by default**; release stops billing and destroys container-local data irreversibly. It requires explicit opt-in, a full continuous sampling window for every allocated GPU, fresh low CPU metrics, zero network traffic, and the same signed-in account/API realm. Missing samples never authorize release; uncertain release results are recorded and never automatically retried.
+- On Windows, Settings → Window & Startup can register an **experimental**, opt-in Task Scheduler wake-up. It checks the desktop's local plans every minute and starts the app when a pending plan is due. It requires an interactive OS login and valid console credentials; the desktop runner still checks ownership and missed-run policy. Turning it off removes the OS task. Other platforms keep launch-at-login/tray behavior.
+- **Experimental** task editing and release extension use PATCH only. PUT on the same task route is the original console's release operation and is never used as an editing fallback. A backend without PATCH support reports an unsupported operation. **Image editing/deletion are also experimental**; use test images until live-service acceptance is complete.
 
 The desktop app is built with Tauri 2 and is the primary product target. Web code talks to `src/lib/runtime.ts`; Tauri-specific commands live in `src-tauri/src/lib.rs`.
 
@@ -269,6 +274,8 @@ GitHub Actions workflows live in `.github/workflows/`:
 - `ci.yml`: runs on pull requests and pushes to `main`/`master`; verifies Windows, macOS arm64, and Linux with version consistency, app/tools typechecks, lint, coverage gates, rustfmt, clippy, Rust unit/storage interoperability tests, SSH integration tests, desktop input build, Tauri shell check, and sidecar artifact upload.
 - `android-ci.yml`: runs on pull requests, pushes to `main`/`master`, and manual dispatch; checks the app and tools, builds desktop inputs, and builds an Android aarch64 debug APK. This does not verify production signing or upgrades of installed release APKs.
 - `release.yml`: runs on `v*` tags or manual dispatch; verifies the project (including rustfmt/clippy), builds Windows, Linux, and macOS arm64/x64 desktop bundles serially, signs updater artifacts, then builds signed Android aarch64/x86_64 release APKs. A tag run publishes the GitHub release directly; a manual run creates a `manual-N` draft prerelease for rehearsal. Draft prereleases do not reach clients using the production `releases/latest/download/latest.json` endpoint.
+
+Only a matching version-tag **push** publishes publicly; manual dispatch remains a draft even when started from a tag. Version-specific notes in `docs/releases/<version>.md` supply both the GitHub Release body and updater notes. See [release note preparation](docs/releases/README.md); a public release fails before packaging when its notes are missing.
 
 Release gates and evidence are tracked in [RELEASE_CHECKLIST_1.0.0.md](RELEASE_CHECKLIST_1.0.0.md). Use [UPGRADE_ACCEPTANCE_0.5.0.md](UPGRADE_ACCEPTANCE_0.5.0.md) for the pending 0.4.27 → 0.5.0 installer and local-data migration acceptance; successful CI does not replace those checks.
 

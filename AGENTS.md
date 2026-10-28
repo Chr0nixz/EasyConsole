@@ -109,6 +109,7 @@ The following production identity values are fixed for 1.x. Do not change them a
 - Updater public key in `src-tauri/tauri.conf.json`: `dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIyNjBFRTlCRkIwQzAwREQKUldUZEFBejdtKzVnSW1UYWpiOWVnYWFhV2hxN2daWGJnaWpsVVA4bG55RXFlcTJJQ3Vya1VGQmIK`. Never replace it without a separately verified migration for installed clients.
 - Android release application ID: `com.easyconsole.desktop`; debug uses `.debug`. Production signing-certificate identity and offline signing-key backup verification remain release gates; do not infer them from debug builds.
 - Local storage, backups and the shared directory-lock protocol follow [LOCAL_DATA_FORMATS.md](LOCAL_DATA_FORMATS.md). 1.x changes must preserve forward migration and old backup import; never silently overwrite an unknown format.
+- CLI/MCP compatibility follows [CLI_MCP_CONTRACT.md](CLI_MCP_CONTRACT.md). Keep both `easy-console-cli` and `easy-console-mcp` entrypoints for 1.x; deprecate published command/tool names before removal in 2.0. Preserve stable JSON envelopes, required arguments and MCP resource URIs. All requested credential/file/record/remote writes are dry-run unless CLI `--yes` or MCP `confirm: true` is supplied.
 
 ## Architecture
 

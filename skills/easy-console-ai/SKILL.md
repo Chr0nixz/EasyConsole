@@ -11,7 +11,7 @@ Use EasyConsole through the structured MCP tools when available. Use the CLI whe
 
 - Never ask for or commit real passwords, tokens, or live test secrets.
 - Prefer read-only operations first: list tasks, read logs, list storage, inspect images/resources/prices.
-- Treat create, release, delete, mkdir, storage delete, and image default changes as mutating operations.
+- Treat remote changes, local-record changes, login/token refresh, downloads and backup file output as mutating operations.
 - Do not execute mutating operations unless the user explicitly asked for the action and the command/tool includes confirmation.
 - Expect CLI JSON responses shaped as `{ "ok": boolean, "data": unknown, "error": unknown }`.
 
@@ -37,7 +37,8 @@ Default config path on Windows:
 Login through stdin so passwords are not left in shell history:
 
 ```powershell
-"password" | npm.cmd run ec -- login --username USERNAME --password-stdin
+$easyConsoleCredential = Get-Credential -UserName "USERNAME" -Message "EasyConsole login"
+$easyConsoleCredential.GetNetworkCredential().Password | npm.cmd run ec -- login --username $easyConsoleCredential.UserName --password-stdin --yes
 ```
 
 If the repo is packaged as desktop binaries, replace `npm.cmd run ec --` with `easy-console-cli.exe` on Windows (`easy-console-cli` on macOS/Linux).
@@ -81,6 +82,16 @@ Read-only MCP resources expose the shared local template and resource-preset col
 Discover item URIs with `resources/list`; percent-encode item IDs. Resources read fresh shared local data without requiring remote authentication. Existing CLI/MCP `local-data.json` values are copied only into missing desktop keys and the source remains unchanged. CLI/MCP credentials stay in a separate local store and do not sync with the desktop keychain. The Windows scheduled wake-up operates on desktop plans only; plans created by CLI/MCP have an unverified owner and require review in the desktop app before automatic execution. Shared access requires the updated desktop and sidecars, since older desktop releases do not participate in the file lock.
 
 For mutating MCP tools, pass `confirm: true` only after the user has clearly requested execution. Without it, the tool returns a dry-run payload.
+
+## Stability and compatibility
+
+The [contract inventory](../../CLI_MCP_CONTRACT.md) covers all 54 tools, their arguments/results, CLI commands, shared resources and sidecar layout. The two executable names remain separate and are preserved for 1.x. Confirm the installed absolute sidecar path before writing a client configuration; build-input paths are not installation paths.
+
+- **stable**: all listed tool/CLI interfaces except the three experimental operations below. Within 1.x, preserve names, required arguments and client-owned result fields; optional additions are allowed. Raw backend fields and units are not a client compatibility promise.
+- **experimental**: `easyconsole_task_update` / `task update`, `easyconsole_image_update` / `image update`, `easyconsole_image_delete` / `image delete`. Verify against a dedicated test instance/image before relying on live behavior. Idle auto-release and Windows scheduled wake are also experimental desktop features.
+- Keep old names as deprecated aliases before a rename/removal; remove no published tool or executable entrypoint before 2.0. Experimental status never bypasses confirmation.
+- `easyconsole_account_refresh_token` now requires `confirm: true`. CLI login, account refresh-token, all downloads and backup export --output need `--yes`; previews do not read a login password or replace credentials/files.
+- CLI JSON success goes to stdout, JSON errors to stderr; help is text. Inspect wait outcomes and batch per-item results even when the process exits 0.
 
 ## CLI Usage
 
