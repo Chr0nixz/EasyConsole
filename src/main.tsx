@@ -20,8 +20,6 @@ import { initRuntimeKind } from "./lib/runtime";
 import { applyInitialTheme } from "./lib/theme";
 import { TrayMenu } from "./components/TrayMenu";
 
-const SshTerminalPage = lazy(() => import("./pages/SshTerminalPage").then((module) => ({ default: module.SshTerminalPage })));
-
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -56,6 +54,7 @@ applyInitialTheme();
 // renderer can pick capability flags without race conditions. On web this
 // resolves immediately.
 initRuntimeKind().finally(() => {
+  const SshTerminalPage = lazy(() => import("./pages/SshTerminalPage").then((module) => ({ default: module.SshTerminalPage })));
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <ErrorBoundary>

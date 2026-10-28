@@ -34,9 +34,28 @@
 起始状态：main 上有 95 个文件、约 +5.2k / −1.2k 行改动尚未提交，其中包括本地存储迁移和 SSH 审阅的修复，都还没在远程 CI 上跑过。发布准备工作在 `codex/release-readiness-1-0` 分支推进。
 
 - [x] 按主题拆成几次提交，例如：按 key 存储与跨进程锁（含 CLI/MCP 共享存储）；SSH 审阅修复；GPU 闲置检测与自动释放；定时任务唤起与错过执行策略；MCP resources；测试与覆盖率门槛；文档。证据：`c6302c5` 存储与归属、`48aac9e` SSH、`86e56d2` 闲置检测、`ed65a7e` 计划唤起、`6473dcd` MCP resources、`9198741` 任务/日志/存储流程、`b4ac834` CI 与覆盖率；文档在本提交统一落盘。
-- [ ] 最终提交状态通过 [AGENTS.md](AGENTS.md) 规定的全套本地检查。
+- [x] 最终提交状态通过 [AGENTS.md](AGENTS.md) 规定的全套本地检查。证据：2026-10-28 Windows 本地检查记录如下；代码保持 0.4.27，尚未制作候选安装包。
 - [ ] 推送后 CI 三个平台（Windows、macOS arm64、Linux）全绿，包括覆盖率门槛、`cargo test --lib` 和 `ssh_integration`；Android CI 全绿。
 - [x] 对照 [SSH_REVIEW_2026-10-27.md](SSH_REVIEW_2026-10-27.md) 第 7 节第 1、2 批的完成标准逐项核对。从代码看，SSH-P1-06/07/08、P2-12、P2-15、P3-13 已有对应改动；P2-13、P2-14 和其余 P3 需逐项确认。每一项要么有自动化测试，要么列入第 5.3 节的真机回归。证据：2026-10-28 [逐项复核记录（第 8 节）](SSH_REVIEW_2026-10-27.md#8-2026-10-28-发布准备复核)，35 项 Windows SSH 集成测试通过；真机项目继续保留。
+
+### 2026-10-28 本地检查记录
+
+| 检查 | 结果 |
+| --- | --- |
+| `npm.cmd run version:check` | 0.4.27 版本一致 |
+| `npm.cmd run typecheck`、`npm.cmd run typecheck:tools` | 通过 |
+| `npm.cmd run lint` | 通过，37 warnings / 0 errors，上限未提高 |
+| `npm.cmd run test` | 116 个文件、856 项通过 |
+| `npm.cmd run test:coverage` | 856 项通过；lines 65.09%、statements 62.61%、functions 55.36%、branches 56.45%，全部门槛通过 |
+| `npm.cmd run build:desktop` | 两份 sidecar 与 Vite 渲染层构建通过 |
+| `cargo check --manifest-path src-tauri/Cargo.toml` | 通过 |
+| `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | 通过 |
+| `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` | 通过；额外启用 `ssh-test-internals` 的 clippy 也通过 |
+| `cargo test --manifest-path src-tauri/Cargo.toml --lib` | 83 项通过，1 项修改 OS 计划任务的测试按配置忽略 |
+| `cargo test --manifest-path src-tauri/Cargo.toml --features ssh-test-internals --test ssh_integration` | Windows 35 项通过；Unix 额外符号链接用例等待 CI |
+| Android arm64 `cargo check --target aarch64-linux-android`（在 `src-tauri/`，NDK 27） | 通过，未构建 APK、未做真机验收 |
+| 三个 workflow 的 YAML / Action 引用校验 | YAML 解析通过；29 个 SHA、4 处显式 stable，Android PR 触发开启 |
+| `git diff --check` | 通过 |
 
 ## 2. 0.5.0：承载本地存储迁移
 
