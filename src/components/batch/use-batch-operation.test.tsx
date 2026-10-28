@@ -6,6 +6,7 @@ import { I18nProvider } from "../../lib/i18n";
 import { ApiError } from "../../lib/types";
 import type { PreviewItem } from "./BatchResultDialog";
 import { useBatchOperation } from "./use-batch-operation";
+import { verifyUnknownCreateItems } from "./verify-unknown-items";
 
 const { memoryStorage, store } = vi.hoisted(() => {
   const store = new Map<string, string>();
@@ -180,5 +181,40 @@ describe("useBatchOperation", () => {
     expect(records.every((record) => record.summary.unknown === 0)).toBe(true);
     expect(records[0].items[0]).toMatchObject({ key: "1", status: "failed" });
     expect(records[1].items[1]).toMatchObject({ key: "2", status: "succeeded", remoteTaskId: "task-22" });
+  });
+
+  it.each(["scan-limit", "missing-timestamp"])("does not resubmit a create after inconclusive %s verification", async (scenario) => {
+    const { result } = renderOperation();
+    const run = vi.fn()
+      .mockRejectedValueOnce(new ApiError("response lost after remote create", { kind: "network" }))
+      .mockResolvedValueOnce({ id: "duplicate-instance" });
+    await act(async () => {
+      await result.current.start({ action: "create", items: items.slice(0, 1), run });
+    });
+
+    const state = result.current.state!;
+    const existingTask = { id: "already-created", name: items[0].name };
+    const resolutions = await verifyUnknownCreateItems(state.result.outcomes, {
+      startedAt: state.record!.startedAt,
+      listTasks: async ({ page }) => ({
+        items: scenario === "missing-timestamp"
+          ? [existingTask]
+          : page === 4
+            ? [{ ...existingTask, create_time: state.record!.startedAt }]
+            : Array.from({ length: 100 }, (_, index) => ({ id: `${page}-${index}`, name: `other-${page}-${index}` })),
+      }),
+    });
+
+    await act(async () => {
+      await result.current.resolveUnknown(resolutions);
+    });
+    const retry = await act(async () => result.current.retryFailed());
+
+    expect(retry).toBeUndefined();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.current.state?.result.summary).toMatchObject({ failed: 0, unknown: 1 });
+    const records = await listBatchOperations(memoryStorage);
+    expect(records).toHaveLength(1);
+    expect(records[0].items[0]).toMatchObject({ status: "unknown" });
   });
 });

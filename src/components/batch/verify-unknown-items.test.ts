@@ -103,4 +103,110 @@ describe("verifyUnknownCreateItems", () => {
     expect(requestedPages).toEqual([1, 2]);
     expect(resolutions).toEqual([{ key: "0", status: "confirmed-created", remoteTaskId: "task-101" }]);
   });
+
+  it("keeps a create unknown when the matching task is beyond the scan limit", async () => {
+    const listTasks = vi.fn(async ({ page }: { page: number }) => ({
+      items: page === 4
+        ? [task(301, "train-a", "2026-10-25T10:00:05Z")]
+        : Array.from({ length: 100 }, (_, index) => task(page * 100 + index, `filler-${page}-${index}`)),
+    }));
+
+    const resolutions = await verifyUnknownCreateItems([unknownOutcome("0", "train-a")], {
+      startedAt: STARTED_AT,
+      listTasks,
+    });
+
+    expect(listTasks.mock.calls.map(([query]) => query.page)).toEqual([1, 2, 3]);
+    expect(resolutions).toEqual([]);
+  });
+
+  it("does not confirm a match before a truncated scan can rule out other candidates", async () => {
+    const resolutions = await verifyUnknownCreateItems([unknownOutcome("0", "train-a")], {
+      startedAt: STARTED_AT,
+      listTasks: async ({ page }) => ({
+        items: Array.from({ length: 100 }, (_, index) =>
+          page === 1 && index === 0
+            ? task(1, "train-a", "2026-10-25T10:00:05Z")
+            : task(page * 100 + index, `filler-${page}-${index}`),
+        ),
+      }),
+    });
+
+    expect(resolutions).toEqual([]);
+  });
+
+  it("checks for a final page after a full page before confirming absence", async () => {
+    const listTasks = vi.fn(async ({ page }: { page: number }) => ({
+      items: page === 1 ? Array.from({ length: 100 }, (_, index) => task(index, `filler-${index}`)) : [],
+    }));
+
+    const resolutions = await verifyUnknownCreateItems([unknownOutcome("0", "train-a")], {
+      startedAt: STARTED_AT,
+      listTasks,
+    });
+
+    expect(listTasks.mock.calls.map(([query]) => query.page)).toEqual([1, 2]);
+    expect(resolutions).toEqual([{ key: "0", status: "confirmed-not-created" }]);
+  });
+
+  it.each([undefined, "invalid-date"])("keeps a same-named task with timestamp %s unknown", async (timestamp) => {
+    const resolutions = await verifyUnknownCreateItems([unknownOutcome("0", "train-a")], {
+      startedAt: STARTED_AT,
+      listTasks: async () => ({ items: [task(1, "train-a", timestamp)] }),
+    });
+
+    expect(resolutions).toEqual([]);
+  });
+
+  it("does not confirm a dated match while another candidate has an unreadable timestamp", async () => {
+    const resolutions = await verifyUnknownCreateItems([unknownOutcome("0", "train-a")], {
+      startedAt: STARTED_AT,
+      listTasks: async () => ({
+        items: [task(1, "train-a", "2026-10-25T10:00:05Z"), task(2, "train-a-2")],
+      }),
+    });
+
+    expect(resolutions).toEqual([]);
+  });
+
+  it("resolves other batch items even when one item has an undated candidate", async () => {
+    const resolutions = await verifyUnknownCreateItems(
+      [unknownOutcome("0", "train-a"), unknownOutcome("1", "train-b"), unknownOutcome("2", "train-c")],
+      {
+        startedAt: STARTED_AT,
+        listTasks: async () => ({
+          items: [task(1, "train-a"), task(2, "train-b", "2026-10-25T10:00:05Z")],
+        }),
+      },
+    );
+
+    expect(resolutions).toEqual([
+      { key: "1", status: "confirmed-created", remoteTaskId: "task-2" },
+      { key: "2", status: "confirmed-not-created" },
+    ]);
+  });
+
+  it("keeps results unknown when the reported total exceeds the scanned rows", async () => {
+    const resolutions = await verifyUnknownCreateItems(
+      [unknownOutcome("0", "train-a"), unknownOutcome("1", "train-b")],
+      {
+        startedAt: STARTED_AT,
+        listTasks: async () => ({ items: [task(1, "train-a", "2026-10-25T10:00:05Z")], total: 200 }),
+      },
+    );
+
+    expect(resolutions).toEqual([]);
+  });
+
+  it("does not return partial resolutions when a later page fails", async () => {
+    const failure = new Error("task list unavailable");
+    const listTasks = vi.fn()
+      .mockResolvedValueOnce({ items: Array.from({ length: 100 }, (_, index) => task(index, `filler-${index}`)) })
+      .mockRejectedValueOnce(failure);
+
+    await expect(verifyUnknownCreateItems([unknownOutcome("0", "train-a")], {
+      startedAt: STARTED_AT,
+      listTasks,
+    })).rejects.toBe(failure);
+  });
 });

@@ -4,11 +4,12 @@ import { useEffect, useMemo, useRef, useState, memo, type KeyboardEvent as React
 
 import { ErrorState, LoadingState } from "../DataState";
 import { Button, Input } from "../ui";
-import { instanceApi } from "../../lib/api";
 import { useI18n } from "../../lib/i18n";
 import { browserRuntime } from "../../lib/runtime";
 import { FAILURE_STATUSES } from "../../lib/task-status-notifications";
+import { taskLogQueryOptions } from "../../lib/task-log-query";
 import type { Task } from "../../lib/types";
+import { useCompactLayout } from "../../lib/use-compact-layout";
 import { useToast } from "../../lib/use-toast";
 import { cn } from "../../lib/utils";
 import { RelativeUpdatedAt } from "../RelativeUpdatedAt";
@@ -22,8 +23,6 @@ const LONG_LOG_CHARS = 200_000;
 const MAX_LOG_DISPLAY_CHARS = 200_000;
 const FOLLOW_BOTTOM_THRESHOLD_PX = 48;
 const FILTER_DEBOUNCE_MS = 200;
-/** While following a running task the log re-reads on this cadence; paused when the window is hidden. */
-const LIVE_LOG_POLL_MS = 6_000;
 
 /** Lines that read as a failure: tracebacks, exceptions, fatal signals, OOM, non-zero exits. */
 const ERROR_LINE_PATTERN = /traceback \(most recent call last\)|\b(?:error|exception|fatal|panic|killed|segmentation fault)\b|out of memory|exit(?:ed)? (?:with )?(?:code|status) [1-9]/i;
@@ -60,7 +59,7 @@ function findFailureSummary(lines: string[], errorLines: Set<number>) {
 }
 
 /**
- * Memoized log body. The live 6-second poll re-renders the panel even when the
+ * Memoized log body. A live poll re-renders the panel even when the
  * fetched text is unchanged; with plain rendering that reconciles thousands of
  * line spans every poll. All props come from memos over the log text, so an
  * unchanged poll keeps every prop identity and skips this subtree entirely.
@@ -110,7 +109,9 @@ const LogLines = memo(function LogLines({
 export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: ReactNode }) {
   const { locale, text } = useI18n();
   const toast = useToast();
-  const [wrapLines, setWrapLines] = useState(() => browserRuntime.isMobile);
+  const compactLayout = useCompactLayout();
+  // A phone-width log is unreadable unwrapped, whether or not it runs in the native app.
+  const [wrapLines, setWrapLines] = useState(() => compactLayout);
   const [followBottom, setFollowBottom] = useState(true);
   const [findInput, setFindInput] = useState("");
   const [debouncedFind, setDebouncedFind] = useState("");
@@ -124,19 +125,15 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
   // Only a running task still writes to its log; following one turns the panel into a feed.
   const live = followBottom && Number(task.status) === 2;
   const failedTask = FAILURE_STATUSES.has(Number(task.status));
-  const query = useQuery({
-    queryKey: ["task-log", task.task_id ?? task.id],
-    queryFn: () => instanceApi.taskLog(task),
-    refetchInterval: live ? LIVE_LOG_POLL_MS : false,
-  });
+  const query = useQuery(taskLogQueryOptions(task, live));
 
   const refreshNow = () => {
     setManualRefreshing(true);
     void query.refetch().finally(() => setManualRefreshing(false));
   };
 
-  const rawLog = query.data ?? "";
-  const canCopy = Boolean(query.data) && !query.isLoading && !query.isError;
+  const rawLog = query.data?.text ?? "";
+  const canCopy = Boolean(rawLog) && !query.isLoading && !query.isError;
   const normalizedFind = debouncedFind.trim().toLowerCase();
 
   useEffect(() => {
@@ -216,16 +213,19 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
   const copyAll = () => {
     if (!canCopy) return;
     void browserRuntime
-      .copyText(query.data!)
+      .copyText(rawLog)
       .then(() => toast.success(text("已复制", "Copied"), text("任务日志", "Task log")))
       .catch(() => toast.error(text("复制失败", "Copy failed"), text("当前浏览器不允许写入剪贴板", "The current browser does not allow clipboard writes")));
   };
 
   const updatedAt = query.dataUpdatedAt;
+  // Phones keep the dot and the age; the words stay for screen readers.
   const updatedLabel = updatedAt ? (
     <>
-      {live ? `${text("实时跟随", "Live")} · ` : ""}
-      {text("更新于 ", "updated ")}
+      <span className="max-sm:sr-only">
+        {live ? `${text("实时跟随", "Live")} · ` : ""}
+        {text("更新于 ", "updated ")}
+      </span>
       <RelativeUpdatedAt updatedAt={updatedAt} intervalMs={live ? 1_000 : 10_000} />
     </>
   ) : null;
@@ -275,7 +275,7 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
           type="button"
           variant="secondary"
           title={Number(task.status) === 2
-            ? text("跟随底部时每 6 秒自动读取新日志", "While following, new log output is read every 6 seconds")
+            ? text("跟随底部时每 6–60 秒读取日志全文；无变化或日志较大时降低频率", "While following, full logs are read every 6–60 seconds; idle or large logs are polled less often")
             : text("实例未在运行，日志不再更新", "The instance is not running, so its log no longer changes")}
           onClick={() => {
             setFocusedLine(null);
@@ -285,11 +285,12 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
           <ArrowDownToLine className="h-4 w-4" aria-hidden="true" />
           <span className="max-sm:sr-only">{text("跟随底部", "Follow bottom")}</span>
         </Button>
-        <div className="flex min-w-[12rem] flex-1 items-center gap-1 sm:max-w-sm">
+        {/* On phones search takes the first row to itself and the view toggles share the second. */}
+        <div className="flex min-w-[12rem] flex-1 items-center gap-1 max-sm:order-first max-sm:basis-full sm:max-w-sm">
           <Input
             aria-label={text("查找日志", "Search logs")}
             className="h-8 min-w-0 flex-1"
-            placeholder={text("查找…（Enter 下一处）", "Find… (Enter for next)")}
+            placeholder={compactLayout ? text("查找日志", "Find in log") : text("查找…（Enter 下一处）", "Find… (Enter for next)")}
             value={findInput}
             onChange={(event) => setFindInput(event.target.value)}
             onKeyDown={onFindKeyDown}

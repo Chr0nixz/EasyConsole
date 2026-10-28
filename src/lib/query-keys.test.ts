@@ -34,6 +34,11 @@ describe("queryKeys", () => {
     ).toEqual(["account", "alice@console.example/api", "tasks", "list", 2, 50, "gpu", "2", "name", "asc"]);
   });
 
+  it("scopes task log snapshots to the active account", () => {
+    setActiveAccountScope({ key: "alice@console.example/api", displayName: "Alice" });
+    expect(queryKeys.tasks.log(12)).toEqual(["account", "alice@console.example/api", "tasks", "log", "12"]);
+  });
+
   it("rebuilds keys under the next account after a switch", () => {
     setActiveAccountScope({ key: "a@console", displayName: "A" });
     const accountAList = queryKeys.images.list();

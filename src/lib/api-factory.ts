@@ -114,10 +114,10 @@ function extractList<T>(raw: unknown): ListResult<T> {
   };
 }
 
-let isTaskEditable: boolean | null = null;
+const taskEditableByBaseUrl = new Map<string, boolean>();
 
-export function getTaskEditableState() {
-  return isTaskEditable;
+export function getTaskEditableState(apiBaseUrl: string) {
+  return taskEditableByBaseUrl.get(apiBaseUrl) ?? null;
 }
 
 export function createEasyConsoleApi(apiClient: ApiClient) {
@@ -175,26 +175,20 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       return apiClient.post<unknown>("/instance/task", payload);
     },
     async updateTask(id: string | number, payload: Partial<CreateTaskPayload>) {
-      if (isTaskEditable === false) {
+      const baseUrl = apiClient.getBaseUrl();
+      if (getTaskEditableState(baseUrl) === false) {
         throw new Error(i18nText("后端不支持任务编辑，请删除后重建", "Backend does not support task editing. Delete and recreate instead"));
       }
       try {
         const result = await apiClient.patch<unknown>(`/instance/task/${id}`, payload);
-        isTaskEditable = true;
+        taskEditableByBaseUrl.set(baseUrl, true);
         return result;
       } catch (error) {
         if (error instanceof ApiError && (error.status === 404 || error.status === 405)) {
-          // Try PUT with body as fallback (some backends use PUT for edits).
-          try {
-            const putResult = await apiClient.put<unknown>(`/instance/task/${id}`, payload);
-            isTaskEditable = true;
-            return putResult;
-          } catch (putError) {
-            if (putError instanceof ApiError && (putError.status === 404 || putError.status === 405)) {
-              isTaskEditable = false;
-            }
-            throw putError;
-          }
+          // The original console uses PUT on this exact route to RELEASE an
+          // instance. Falling back to it for editing can destroy a running job.
+          taskEditableByBaseUrl.set(baseUrl, false);
+          throw new Error(i18nText("后端不支持安全的任务编辑，未修改或释放实例", "Backend does not support safe task editing; the instance was not changed or released"), { cause: error });
         }
         throw error;
       }
@@ -211,10 +205,11 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
     deleteTasks(ids: Array<string | number>) {
       return apiClient.delete<unknown>("/instance/task", { body: ids });
     },
-    taskLog(task: Pick<Task, "id" | "task_id">) {
+    taskLog(task: Pick<Task, "id" | "task_id">, options?: { signal?: AbortSignal }) {
       return apiClient.get<string>("/instance/task_log", {
         query: { task_id: task.task_id ?? task.id },
         responseType: "text",
+        signal: options?.signal,
       });
     },
     monitorIndex(query?: UnknownRecord) {

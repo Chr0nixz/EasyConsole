@@ -146,6 +146,22 @@ describe("api factory", () => {
     });
   });
 
+  it("requests a task log as text and forwards query cancellation", async () => {
+    const signal = new AbortController().signal;
+    const { runtime, calls } = createRuntime("log text");
+    const api = createEasyConsoleApi(new ApiClient(runtime, "http://host/api"));
+
+    await api.instanceApi.taskLog({ id: 7, task_id: 12 }, { signal });
+
+    expect(calls[0]).toMatchObject({
+      method: "GET",
+      url: "http://host/api/instance/task_log",
+      query: { task_id: 12 },
+      responseType: "text",
+      signal,
+    });
+  });
+
   it("keeps the browser facade exports available", () => {
     expect(apiClient).toBeInstanceOf(ApiClient);
     expect(typeof authApi.login).toBe("function");

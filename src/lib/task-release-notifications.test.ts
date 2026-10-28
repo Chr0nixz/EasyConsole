@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatReleaseCountdown,
   formatReleaseTimeInput,
+  getLiveTimedReleaseAt,
   getUpcomingTimedReleaseNotification,
   parseReleaseTime,
   TIMED_RELEASE_CONDITION,
@@ -124,5 +126,30 @@ describe("getUpcomingTimedReleaseNotification", () => {
       "zh-CN",
     );
     expect(pastLead).toBeNull();
+  });
+});
+
+describe("getLiveTimedReleaseAt", () => {
+  it("returns the release time of a live timed-release task", () => {
+    expect(getLiveTimedReleaseAt(timedTask({ releace_time: "2026-10-26 10:00:00" }))).toBe(Date.parse("2026-10-26T10:00:00"));
+  });
+
+  it("returns null for other release conditions, ended tasks and missing times", () => {
+    expect(getLiveTimedReleaseAt(timedTask({ releace_conditions: 1, releace_time: "2026-10-26 10:00:00" }))).toBeNull();
+    expect(getLiveTimedReleaseAt(timedTask({ status: 4, releace_time: "2026-10-26 10:00:00" }))).toBeNull();
+    expect(getLiveTimedReleaseAt(timedTask({ releace_time: null }))).toBeNull();
+  });
+});
+
+describe("formatReleaseCountdown", () => {
+  it("rounds the time left down to the minute in both languages", () => {
+    expect(formatReleaseCountdown(40 * 60_000 + 30_000, "zh-CN")).toBe("40 分钟后释放");
+    expect(formatReleaseCountdown((5 * 60 + 12) * 60_000, "en-US")).toBe("Releases in 5 hr 12 min");
+  });
+
+  it("names the last minute and an overdue release instead of showing zero", () => {
+    expect(formatReleaseCountdown(20_000, "zh-CN")).toBe("1 分钟内释放");
+    expect(formatReleaseCountdown(0, "en-US")).toBe("Release due");
+    expect(formatReleaseCountdown(-5_000, "zh-CN")).toBe("已到释放时间");
   });
 });

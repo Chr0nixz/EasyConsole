@@ -4,6 +4,7 @@ import {
   flexRender,
   getCoreRowModel,
   useReactTable,
+  type ColumnSizingState,
   type VisibilityState,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -72,6 +73,7 @@ import { createTaskTemplate, loadTaskTemplates, saveTaskTemplates, taskToEditabl
 import { TASK_PAGE_SIZE_OPTIONS, type TaskListSortBy } from "../lib/task-list-query";
 import { consumePendingCreateTaskRequest, subscribeCreateTaskRequests } from "../lib/task-create-request";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
+import { getLiveTimedReleaseAt } from "../lib/task-release-notifications";
 import { queryKeys } from "../lib/query-keys";
 import type { Task } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
@@ -90,7 +92,9 @@ const CreateTaskDialog = lazy(() => import("../components/tasks/CreateTaskDialog
 const TaskLogDialog = lazy(() => import("../components/tasks/TaskLogDialog").then((module) => ({ default: module.TaskLogDialog })));
 const TerminalDialog = lazy(() => import("../components/tasks/TerminalDialog").then((module) => ({ default: module.TerminalDialog })));
 const COLUMN_VISIBILITY_KEY = "easy-console.tasks.columnVisibility";
+const COLUMN_SIZING_KEY = "easy-console.tasks.columnSizing";
 const ALWAYS_VISIBLE_COLUMNS = new Set(["select", "actions"]);
+const ACTION_COLUMN_WIDTH = 232;
 // Pages at or under this many phone cards render whole (the 20-per-page option always does).
 const MOBILE_CARD_VIRTUALIZE_MIN = 30;
 const defaultColumnVisibility: VisibilityState = {
@@ -103,7 +107,28 @@ const defaultColumnVisibility: VisibilityState = {
   release: false,
   deleted: false,
 };
+const taskColumnSizing = {
+  select: { size: 48, minSize: 48, maxSize: 80 },
+  name: { size: 240, minSize: 160, maxSize: 560 },
+  status: { size: 112, minSize: 88, maxSize: 180 },
+  resource: { size: 152, minSize: 120, maxSize: 240 },
+  node: { size: 160, minSize: 100, maxSize: 320 },
+  endpoint: { size: 160, minSize: 100, maxSize: 360 },
+  owner: { size: 140, minSize: 100, maxSize: 240 },
+  group: { size: 160, minSize: 100, maxSize: 260 },
+  duration: { size: 120, minSize: 96, maxSize: 180 },
+  billed: { size: 112, minSize: 96, maxSize: 180 },
+  created: { size: 190, minSize: 144, maxSize: 320 },
+  release: { size: 190, minSize: 144, maxSize: 320 },
+  releaseCondition: { size: 140, minSize: 108, maxSize: 240 },
+  deleted: { size: 120, minSize: 96, maxSize: 180 },
+  actions: { size: ACTION_COLUMN_WIDTH, minSize: 124, maxSize: 360 },
+} satisfies Record<string, { size: number; minSize: number; maxSize: number }>;
+const defaultColumnSizing: ColumnSizingState = Object.fromEntries(
+  Object.entries(taskColumnSizing).map(([id, sizing]) => [id, sizing.size]),
+);
 const columnLabels: Record<string, { zh: string; en: string }> = {
+  select: { zh: "选择", en: "Selection" },
   name: { zh: "实例名称", en: "Instance name" },
   status: { zh: "状态", en: "Status" },
   resource: { zh: "资源", en: "Resources" },
@@ -118,6 +143,7 @@ const columnLabels: Record<string, { zh: string; en: string }> = {
   release: { zh: "释放时间", en: "Release time" },
   releaseCondition: { zh: "释放条件", en: "Release condition" },
   deleted: { zh: "删除状态", en: "Delete status" },
+  actions: { zh: "操作", en: "Actions" },
 };
 const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_2rem_4rem_2rem] items-center gap-1";
 const COMPACT_ACTION_GRID_CLASS = "grid grid-cols-[4rem_2rem] items-center gap-1";
@@ -253,6 +279,28 @@ async function loadColumnVisibility(): Promise<VisibilityState> {
   } catch {
     return defaultColumnVisibility;
   }
+}
+
+async function loadColumnSizing(): Promise<ColumnSizingState> {
+  try {
+    const raw = await browserRuntime.storage.get(COLUMN_SIZING_KEY);
+    if (!raw) return defaultColumnSizing;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return defaultColumnSizing;
+    return normalizeColumnSizing(parsed as Record<string, unknown>);
+  } catch {
+    return defaultColumnSizing;
+  }
+}
+
+function normalizeColumnSizing(sizing: Record<string, unknown>): ColumnSizingState {
+  return Object.fromEntries(
+    Object.entries(taskColumnSizing).map(([id, bounds]) => {
+      const value = sizing[id];
+      const width = typeof value === "number" && Number.isFinite(value) ? value : bounds.size;
+      return [id, Math.min(bounds.maxSize, Math.max(bounds.minSize, width))];
+    }),
+  );
 }
 
 type MoreMenuPosition = { left: number; top: number };
@@ -949,6 +997,7 @@ export function TasksPage() {
   const [rawTask, setRawTask] = useState<Task | null>(null);
   const [columnSettingsOpen, setColumnSettingsOpen] = useState(false);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(defaultColumnVisibility);
+  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(defaultColumnSizing);
   const [pinnedTaskIds, setPinnedTaskIds] = useState<string[]>([]);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [moreMenu, setMoreMenu] = useState<null | {
@@ -1442,6 +1491,7 @@ export function TasksPage() {
     () => [
       columnHelper.display({
         id: "select",
+        ...taskColumnSizing.select,
         header: ({ table }) => (
           <label className={CHECKBOX_HIT_CLASS}>
             <input
@@ -1467,13 +1517,14 @@ export function TasksPage() {
       }),
       columnHelper.accessor((row) => getTaskName(row), {
         id: "name",
+        ...taskColumnSizing.name,
         header: text("实例名称", "Instance name"),
         cell: ({ row, getValue, table }) => {
           const pinned = isTaskPinned(taskTableMeta(table).pinnedTaskIds, row.original);
           return (
             // 18rem keeps one long experiment name from pushing status under the action column;
             // the name wraps (at any character if it has to) instead of widening the table.
-            <div className="w-max min-w-40 max-w-72 whitespace-normal [overflow-wrap:anywhere]">
+            <div className="min-w-40 max-w-full whitespace-normal [overflow-wrap:anywhere]">
               <div className="flex items-start gap-1.5">
                 {pinned ? <Pin className="mt-1 h-3.5 w-3.5 shrink-0 text-app-accent" aria-label={text("已置顶", "Pinned")} /> : null}
                 <div className="min-w-0">
@@ -1486,41 +1537,49 @@ export function TasksPage() {
         },
       }),
       columnHelper.accessor("status", {
+        ...taskColumnSizing.status,
         header: text("状态", "Status"),
         cell: (info) => <StatusBadge status={info.getValue()} />,
       }),
       columnHelper.accessor((row) => resourceText(row), {
         id: "resource",
+        ...taskColumnSizing.resource,
         header: text("资源", "Resources"),
         cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => getTaskNodeName(row) || "-", {
         id: "node",
+        ...taskColumnSizing.node,
         header: text("节点", "Node"),
         cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => endpointText(row), {
         id: "endpoint",
+        ...taskColumnSizing.endpoint,
         header: text("入口", "Endpoint"),
         cell: (info) => <span className="whitespace-nowrap font-mono text-xs text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => ownerText(row), {
         id: "owner",
+        ...taskColumnSizing.owner,
         header: text("用户", "User"),
         cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => groupText(row), {
         id: "group",
+        ...taskColumnSizing.group,
         header: text("用户组", "User group"),
         cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.use_time, {
         id: "duration",
+        ...taskColumnSizing.duration,
         header: text("时长", "Duration"),
         cell: (info) => <span className="app-numeric whitespace-nowrap text-app-text">{formatSecondsDuration(info.getValue(), locale)}</span>,
       }),
       columnHelper.accessor((row) => row.cost, {
         id: "billed",
+        ...taskColumnSizing.billed,
         header: text("费用", "Cost"),
         cell: (info) => (
           <span className="app-numeric whitespace-nowrap text-app-text">{Number(info.getValue()) > 0 ? formatCost(info.getValue(), locale) : "—"}</span>
@@ -1528,21 +1587,25 @@ export function TasksPage() {
       }),
       columnHelper.accessor((row) => row.create_time ?? row.created_at ?? "-", {
         id: "created",
+        ...taskColumnSizing.created,
         header: text("创建时间", "Created"),
         cell: (info) => <span className="app-numeric whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.releace_time ?? "-", {
         id: "release",
+        ...taskColumnSizing.release,
         header: text("释放时间", "Release time"),
         cell: (info) => <span className="app-numeric whitespace-nowrap text-app-text">{info.getValue()}</span>,
       }),
       columnHelper.accessor((row) => row.releace_conditions ?? row.release_condition, {
         id: "releaseCondition",
+        ...taskColumnSizing.releaseCondition,
         header: text("释放条件", "Release condition"),
         cell: (info) => <ReleaseConditionBadge condition={info.getValue()} />,
       }),
       columnHelper.accessor((row) => (row.is_delete ? text("已删除", "Deleted") : text("正常", "Normal")), {
         id: "deleted",
+        ...taskColumnSizing.deleted,
         header: text("删除状态", "Delete status"),
         cell: (info) => (
           <span className={info.getValue() === text("已删除", "Deleted") ? "text-app-danger" : "text-app-text"}>{info.getValue()}</span>
@@ -1550,6 +1613,7 @@ export function TasksPage() {
       }),
       columnHelper.display({
         id: "actions",
+        ...taskColumnSizing.actions,
         header: () => <ActionHeader />,
         cell: ({ row, table }) => {
           const task = row.original;
@@ -1614,7 +1678,7 @@ export function TasksPage() {
                 {text("释放", "Release")}
               </Button>
               <MoreActionsMenu
-                canEdit={getTaskEditableState() !== false}
+                canEdit={getTaskEditableState(getRuntimeSettings().apiBaseUrl) !== false}
                 isPinned={isTaskPinned(meta.pinnedTaskIds, task)}
                 open={meta.moreMenuTaskId === taskRowId(task)}
                 promoteClone={!compact}
@@ -1646,7 +1710,7 @@ export function TasksPage() {
     pinnedTaskIds,
     moreMenuTaskId: moreMenu?.taskId ?? null,
     releasePending: releaseMutation.isPending,
-    compactActions,
+    compactActions: compactActions || columnSizing.actions < ACTION_COLUMN_WIDTH,
     onTerminal: openTerminal,
     onLog: setLogTask,
     onClone: openCloneTask,
@@ -1671,10 +1735,13 @@ export function TasksPage() {
     enableRowSelection: true,
     state: {
       columnVisibility,
+      columnSizing,
       rowSelection,
     },
     onColumnVisibilityChange: setColumnVisibility,
+    onColumnSizingChange: setColumnSizing,
     onRowSelectionChange: setRowSelection,
+    columnResizeMode: "onChange",
   });
 
   const tableRows = table.getRowModel().rows;
@@ -1710,9 +1777,10 @@ export function TasksPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const savedVisibility = await loadColumnVisibility();
+      const [savedVisibility, savedSizing] = await Promise.all([loadColumnVisibility(), loadColumnSizing()]);
       if (cancelled) return;
       setColumnVisibility(savedVisibility);
+      setColumnSizing(savedSizing);
       settingsHydratedRef.current = true;
     })();
     return () => {
@@ -1724,6 +1792,14 @@ export function TasksPage() {
     if (!settingsHydratedRef.current) return;
     void browserRuntime.storage.set(COLUMN_VISIBILITY_KEY, JSON.stringify(columnVisibility));
   }, [columnVisibility]);
+
+  useEffect(() => {
+    if (!settingsHydratedRef.current) return;
+    const timeoutId = window.setTimeout(() => {
+      void browserRuntime.storage.set(COLUMN_SIZING_KEY, JSON.stringify(normalizeColumnSizing(columnSizing)));
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [columnSizing]);
 
   const configurableColumns = table.getAllLeafColumns().filter((column) => !ALWAYS_VISIBLE_COLUMNS.has(column.id));
   const selectedTasks = table.getSelectedRowModel().flatRows.map((row) => row.original);
@@ -1958,19 +2034,28 @@ export function TasksPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
-          <div className="relative w-full sm:w-auto">
-            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" aria-hidden="true" />
-            <Input
-              aria-label={text("搜索实例名称", "Search instance name")}
-              className="w-full pl-9 sm:w-64"
-              placeholder={text("搜索实例名称", "Search instance name")}
-              value={keywordInput}
-              onChange={(event) => setKeywordInput(event.target.value)}
-            />
+          {/* Phones keep search and 新建 on one row and the filters on the next, so the list starts sooner. */}
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            <div className="relative min-w-0 flex-1 sm:flex-none">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" aria-hidden="true" />
+              <Input
+                aria-label={text("搜索实例名称", "Search instance name")}
+                className="w-full pl-9 sm:w-64"
+                placeholder={text("搜索实例名称", "Search instance name")}
+                value={keywordInput}
+                onChange={(event) => setKeywordInput(event.target.value)}
+              />
+            </div>
+            {compactLayout ? (
+              <Button className="shrink-0" onClick={openCreateTask}>
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                {text("新建", "New")}
+              </Button>
+            ) : null}
           </div>
           <Select
             aria-label={text("按状态筛选", "Filter by status")}
-            className="w-32"
+            className={compactLayout ? "min-w-0 flex-1" : "w-32"}
             value={queryState.status}
             onChange={(event) => updateTaskQuery({ status: event.target.value })}
           >
@@ -2073,10 +2158,12 @@ export function TasksPage() {
             ) : null}
           </div>
         </div>
-        <Button className="w-full sm:w-auto" onClick={openCreateTask}>
-          <Plus className="h-4 w-4" />
-          {text("新建任务", "New task")}
-        </Button>
+        {compactLayout ? null : (
+          <Button onClick={openCreateTask}>
+            <Plus className="h-4 w-4" />
+            {text("新建任务", "New task")}
+          </Button>
+        )}
       </div>
 
       <Panel className="overflow-hidden">
@@ -2110,6 +2197,8 @@ export function TasksPage() {
               const task = row.original;
               const release = isReleasableTask(task);
               const taskName = getTaskName(task);
+              const runtime = Number(task.use_time);
+              const cost = Number(task.cost);
               return (
                 <article
                   key={row.id}
@@ -2119,7 +2208,9 @@ export function TasksPage() {
                   data-index={rowIndex}
                   data-task-row-index={rowIndex}
                   className={cn(
-                    "space-y-3 px-3 py-3",
+                    // The name link stretches over the card, so a tap anywhere opens the detail page;
+                    // the checkbox and the action row sit above it.
+                    "relative px-3 pb-1.5 pt-3",
                     // Only trouble gets a fill; the keyboard cursor is a solid accent frame.
                     isTroubleTask(task) && "bg-app-rowDanger",
                     activeRowIndex === rowIndex && "app-card-active",
@@ -2127,8 +2218,9 @@ export function TasksPage() {
                   onFocusCapture={() => setActiveRowIndex(rowIndex)}
                   aria-labelledby={`task-card-${row.id}`}
                 >
-                  <div className="flex items-start gap-3">
-                    <label className={`${CHECKBOX_HIT_CLASS} mt-0.5 shrink-0`}>
+                  <div className="flex items-start gap-2.5">
+                    {/* The 44px touch target overhangs the card edge and the name line instead of pushing them apart. */}
+                    <label className={`${CHECKBOX_HIT_CLASS} relative z-10 shrink-0 [@media(pointer:coarse)]:-my-3 [@media(pointer:coarse)]:-ml-3 [@media(pointer:coarse)]:-mr-2.5`}>
                       <input
                         aria-label={text(`选择 ${taskName}`, `Select ${taskName}`)}
                         className="h-4 w-4 accent-app-accent"
@@ -2138,42 +2230,31 @@ export function TasksPage() {
                       />
                     </label>
                     <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 id={`task-card-${row.id}`} className="flex min-w-0 flex-1 items-center gap-1.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <h3 id={`task-card-${row.id}`} className="flex min-w-0 items-center gap-1.5 pt-px">
                           {isTaskPinned(pinnedTaskIds, task) ? <Pin className="h-3.5 w-3.5 shrink-0 text-app-accent" aria-label={text("已置顶", "Pinned")} /> : null}
-                          <span className="min-w-0 flex-1"><TaskInstanceName compact name={taskName} taskId={task.id} /></span>
+                          <span className="min-w-0"><TaskInstanceName compact stretched name={taskName} taskId={task.id} /></span>
                         </h3>
                         <StatusBadge status={task.status} />
                       </div>
-                      <div className="mt-1 font-mono text-xs text-app-muted">#{task.id}</div>
+                      {/* What the instance is and what it has cost, in two lines a glance can take in. */}
+                      <p className="mt-1 text-xs text-app-muted">
+                        <span className="font-mono">#{task.id}</span>
+                        <span aria-hidden="true"> · </span>
+                        {resourceText(task)}
+                      </p>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-app-muted">
+                        {Number.isFinite(runtime) && runtime > 0 ? (
+                          <span className="app-numeric text-app-text">{formatSecondsDuration(runtime, locale)}</span>
+                        ) : null}
+                        {Number.isFinite(cost) && cost > 0 ? (
+                          <span className="app-numeric text-app-text">{formatCost(cost, locale)}</span>
+                        ) : null}
+                        <ReleaseConditionBadge condition={task.releace_conditions ?? task.release_condition} releaseAt={getLiveTimedReleaseAt(task)} />
+                      </div>
                     </div>
                   </div>
-                  <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-                    <div>
-                      <dt className="text-app-muted">{text("资源", "Resources")}</dt>
-                      <dd className="mt-0.5 text-app-text">{resourceText(task)}</dd>
-                    </div>
-                    {/* Only running instances have an endpoint; the others show their duration in that slot. */}
-                    {endpointText(task) !== "-" ? (
-                      <div>
-                        <dt className="text-app-muted">{text("入口", "Endpoint")}</dt>
-                        <dd className="mt-0.5 truncate font-mono text-app-text">{endpointText(task)}</dd>
-                      </div>
-                    ) : null}
-                    <div className={endpointText(task) !== "-" ? "hidden sm:block" : undefined}>
-                      <dt className="text-app-muted">{text("时长", "Duration")}</dt>
-                      <dd className="app-numeric mt-0.5 text-app-text">{formatSecondsDuration(task.use_time, locale)}</dd>
-                    </div>
-                    <div className="hidden sm:block">
-                      <dt className="text-app-muted">{text("用户", "User")}</dt>
-                      <dd className="mt-0.5 truncate text-app-text">{ownerText(task)}</dd>
-                    </div>
-                    <div className="col-span-2">
-                      <dt className="text-app-muted">{text("释放条件", "Release condition")}</dt>
-                      <dd className="mt-1"><ReleaseConditionBadge condition={task.releace_conditions ?? task.release_condition} /></dd>
-                    </div>
-                  </dl>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="relative z-10 -mx-2 mt-1 flex flex-wrap gap-0.5 pl-[2.125rem] [@media(pointer:coarse)]:pl-8">
                     {(() => {
                       const terminalLabel = text("终端", "Terminal");
                       const logAttention = needsLogAttention(task);
@@ -2226,7 +2307,7 @@ export function TasksPage() {
                           </Button>
                         ) : null}
                         <MoreActionsMenu
-                          canEdit={getTaskEditableState() !== false}
+                          canEdit={getTaskEditableState(getRuntimeSettings().apiBaseUrl) !== false}
                           isPinned={isTaskPinned(pinnedTaskIds, task)}
                           open={moreMenu?.taskId === taskRowId(task)}
                           promoteLog={logAttention}
@@ -2258,24 +2339,68 @@ export function TasksPage() {
             ref={tableRegionCallbackRef}
             label={text("任务实例表格", "Task instances table")}
           >
-            <table className="w-max min-w-full table-auto border-collapse text-sm">
+            <table
+              className="min-w-full table-fixed border-collapse text-sm"
+              style={{ width: table.getTotalSize() }}
+            >
               <thead className="bg-app-panel text-left text-xs text-app-muted">
                 {table.getHeaderGroups().map((headerGroup) => (
                   <tr key={headerGroup.id}>
-                    {headerGroup.headers.map((header) => (
-                      <th
-                        key={header.id}
-                        scope="col"
-                        className={[
-                          "sticky top-0 z-10 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 font-medium",
-                          isActionsColumn(header.column.id)
-                            ? "sticky right-0 z-20 shadow-stickyColumn"
-                            : "",
-                        ].join(" ")}
-                      >
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                      </th>
-                    ))}
+                    {headerGroup.headers.map((header) => {
+                      const columnId = header.column.id;
+                      const columnSizingRange = taskColumnSizing[columnId as keyof typeof taskColumnSizing];
+                      const canResize = header.column.getCanResize() && Boolean(columnSizingRange);
+                      const actionsColumn = isActionsColumn(columnId);
+                      const label = columnLabels[columnId];
+                      return (
+                        <th
+                          key={header.id}
+                          scope="col"
+                          style={{ width: header.getSize() }}
+                          className={[
+                            "sticky top-0 z-10 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 font-medium",
+                            actionsColumn ? "sticky right-0 z-20 shadow-stickyColumn" : "relative",
+                          ].join(" ")}
+                        >
+                          {flexRender(header.column.columnDef.header, header.getContext())}
+                          {canResize && columnSizingRange ? (
+                            <span
+                              aria-label={text(
+                                `调整${label?.zh ?? columnId}列宽`,
+                                `Resize ${label?.en ?? columnId} column`,
+                              )}
+                              aria-orientation="vertical"
+                              aria-valuemax={columnSizingRange.maxSize}
+                              aria-valuemin={columnSizingRange.minSize}
+                              aria-valuenow={Math.round(header.getSize())}
+                              className="app-task-column-resize"
+                              role="separator"
+                              tabIndex={0}
+                              title={text("拖动调整；双击恢复默认宽度；左右方向键微调", "Drag to resize; double-click to reset; use Left and Right Arrow keys for fine adjustment")}
+                              onMouseDown={header.getResizeHandler()}
+                              onTouchStart={header.getResizeHandler()}
+                              onDoubleClick={() => header.column.resetSize()}
+                              onKeyDown={(event) => {
+                                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                const current = header.column.getSize();
+                                const increment = event.shiftKey ? 48 : 16;
+                                const next = event.key === "Home"
+                                  ? columnSizingRange.minSize
+                                  : event.key === "End"
+                                    ? columnSizingRange.maxSize
+                                    : current + (event.key === "ArrowRight" ? increment : -increment);
+                                setColumnSizing((previous) => ({
+                                  ...previous,
+                                  [columnId]: Math.min(columnSizingRange.maxSize, Math.max(columnSizingRange.minSize, next)),
+                                }));
+                              }}
+                            />
+                          ) : null}
+                        </th>
+                      );
+                    })}
                   </tr>
                 ))}
               </thead>
@@ -2303,25 +2428,29 @@ export function TasksPage() {
                       )}
                       onFocusCapture={() => setActiveRowIndex(virtualRow.index)}
                     >
-                      {row.getVisibleCells().map((cell) => (
-                        <td
-                          key={cell.id}
-                          className={[
-                            "whitespace-nowrap px-3 py-2 align-middle",
-                            isActionsColumn(cell.column.id)
-                              ? [
-                                  "sticky right-0 z-30 shadow-stickyColumn",
-                                  // Row fills are opaque tokens, so the sticky cell repeats its row's fill exactly.
-                                  isTroubleTask(row.original)
-                                    ? "bg-app-rowDanger group-hover:bg-app-rowDangerHover"
-                                    : "bg-app-surface group-hover:bg-app-rowHover",
-                                ].join(" ")
-                              : "",
-                          ].join(" ")}
-                        >
-                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        </td>
-                      ))}
+                      {row.getVisibleCells().map((cell) => {
+                        const actionsColumn = isActionsColumn(cell.column.id);
+                        return (
+                          <td
+                            key={cell.id}
+                            style={{ width: cell.column.getSize() }}
+                            className={[
+                              "overflow-hidden text-ellipsis whitespace-nowrap px-3 py-2 align-middle",
+                              actionsColumn
+                                ? [
+                                    "sticky right-0 z-30 shadow-stickyColumn",
+                                    // Row fills are opaque tokens, so the sticky cell repeats its row's fill exactly.
+                                    isTroubleTask(row.original)
+                                      ? "bg-app-rowDanger group-hover:bg-app-rowDangerHover"
+                                      : "bg-app-surface group-hover:bg-app-rowHover",
+                                  ].join(" ")
+                                : "",
+                            ].join(" ")}
+                          >
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </td>
+                        );
+                      })}
                     </tr>
                   );
                 })}
@@ -2502,7 +2631,7 @@ export function TasksPage() {
           promoteClone={!compactLayout && !compactActions}
           showSshInfo={compactLayout ? needsLogAttention(moreMenuTask) : compactActions}
           isPinned={isTaskPinned(pinnedTaskIds, moreMenuTask)}
-          canEdit={getTaskEditableState() !== false}
+          canEdit={getTaskEditableState(getRuntimeSettings().apiBaseUrl) !== false}
           onClose={closeMoreMenu}
           onLog={setLogTask}
           onClone={openCloneTask}
@@ -2541,7 +2670,13 @@ export function TasksPage() {
             ))}
           </div>
           <div className="flex justify-end gap-2 border-t border-app-border pt-3">
-            <Button variant="secondary" onClick={() => setColumnVisibility(defaultColumnVisibility)}>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setColumnVisibility(defaultColumnVisibility);
+                setColumnSizing(defaultColumnSizing);
+              }}
+            >
               {text("恢复默认", "Restore defaults")}
             </Button>
             <Button onClick={() => setColumnSettingsOpen(false)}>{text("完成", "Done")}</Button>

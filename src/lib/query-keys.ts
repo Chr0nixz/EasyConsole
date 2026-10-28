@@ -25,5 +25,6 @@ export const queryKeys = {
     },
     list: (state: Pick<TaskListQueryState, "page" | "pageSize" | "keyword" | "status" | "sortBy" | "sortDir">) =>
       [...accountRoot(), "tasks", "list", state.page, state.pageSize, state.keyword, state.status, state.sortBy, state.sortDir] as const,
+    log: (id: string | number | undefined) => [...accountRoot(), "tasks", "log", String(id ?? "")] as const,
   },
 };

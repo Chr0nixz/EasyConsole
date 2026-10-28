@@ -15,14 +15,14 @@ import type { PreviewItem } from "./BatchResultDialog";
 
 const MATCH_WINDOW_MS = 30 * 60 * 1000;
 const SCAN_PAGE_SIZE = 100;
-/** "Not created" verdicts scan a few pages so an item on page 2+ cannot flip a live create to retryable. */
+/** Bound lookups; exhausting this budget leaves all items unknown. */
 const SCAN_MAX_PAGES = 3;
 
 export type VerifyUnknownItemsOptions = {
   /** ISO timestamp of the original batch start; the match window anchors here. */
   startedAt?: string;
   /** Fetch task-list pages; injected so tests stay offline. */
-  listTasks: (query: { page: number; page_size: number }) => Promise<{ items: Task[] }>;
+  listTasks: (query: { page: number; page_size: number }) => Promise<{ items: Task[]; total?: number }>;
 };
 
 function taskCreatedAt(task: Task) {
@@ -36,21 +36,32 @@ function remoteTaskId(task: Task) {
   return id === undefined || id === null ? undefined : String(id);
 }
 
-async function scanTasks(options: VerifyUnknownItemsOptions): Promise<Task[]> {
+async function scanTasks(options: VerifyUnknownItemsOptions): Promise<{ items: Task[]; complete: boolean }> {
   const items: Task[] = [];
+  let expectedTotal = 0;
   for (let page = 1; page <= SCAN_MAX_PAGES; page += 1) {
     const result = await options.listTasks({ page, page_size: SCAN_PAGE_SIZE });
     items.push(...result.items);
-    if (result.items.length < SCAN_PAGE_SIZE) break;
+    if (typeof result.total === "number" && Number.isFinite(result.total)) {
+      expectedTotal = Math.max(expectedTotal, result.total);
+    }
+    if (result.items.length < SCAN_PAGE_SIZE) {
+      // A short page normally ends the list, but a larger reported total
+      // means rows are still missing (for example, a backend page-size cap).
+      return { items, complete: items.length >= expectedTotal };
+    }
   }
-  return items;
+  return { items, complete: false };
 }
 
 /**
  * Resolutions for every decidable `unknown` outcome:
  * - exactly one in-window name match → `confirmed-created` (with the remote id);
- * - no name match anywhere in the scanned pages → `confirmed-not-created`;
+ * - no in-window name match in a complete scan → `confirmed-not-created`;
  * - ambiguous matches (several, or an unreadable creation time) → omitted.
+ *
+ * An incomplete scan cannot establish absence or uniqueness, so it resolves
+ * nothing. In particular, hitting the page limit never makes a create retryable.
  *
  * Returns nothing when the batch start time is unavailable: without that
  * anchor an old same-named task cannot be told apart from a fresh create, so
@@ -66,22 +77,21 @@ export async function verifyUnknownCreateItems(
   const started = options.startedAt ? Date.parse(options.startedAt) : Number.NaN;
   if (!Number.isFinite(started)) return [];
 
-  const items = await scanTasks(options);
+  const { items, complete } = await scanTasks(options);
+  if (!complete) return [];
+
   const resolutions: BatchItemResolution[] = [];
   for (const outcome of unknownOutcomes) {
     const expectedName = outcome.item.name.trim();
     if (!expectedName) continue;
-    const matches = items.filter((task) => {
+    const candidates = items.filter((task) => {
       const name = getTaskName(task);
-      if (name !== expectedName && !name.startsWith(expectedName)) return false;
-      const created = taskCreatedAt(task);
-      if (Number.isFinite(created) && Number.isFinite(started)) {
-        return Math.abs(created - started) <= MATCH_WINDOW_MS;
-      }
-      // Unreadable timestamps cannot anchor the window; treat as no match so a
-      // stale same-named task never confirms the create.
-      return false;
+      return name === expectedName || name.startsWith(expectedName);
     });
+    // An undated same-named task could be this create or another candidate.
+    // Ignoring it would incorrectly prove either absence or uniqueness.
+    if (candidates.some((task) => !Number.isFinite(taskCreatedAt(task)))) continue;
+    const matches = candidates.filter((task) => Math.abs(taskCreatedAt(task) - started) <= MATCH_WINDOW_MS);
     if (matches.length === 1) {
       resolutions.push({ key: outcome.item.key, status: "confirmed-created", remoteTaskId: remoteTaskId(matches[0]) });
     } else if (matches.length === 0) {

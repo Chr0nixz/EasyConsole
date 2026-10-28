@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { browserRuntime } from "../lib/runtime";
 import { I18nProvider } from "../lib/i18n";
 import type { Task } from "../lib/types";
 import { TasksPage } from "./TasksPage";
@@ -76,5 +77,43 @@ describe("TasksPage row stability", () => {
 
     expect(logButton.isConnected).toBe(true);
     expect(logButton).toHaveFocus();
+  });
+
+  it("resizes a table column by drag or keyboard and saves its width", async () => {
+    window.localStorage.removeItem("easy-console.tasks.columnSizing");
+    const storageSet = vi.spyOn(browserRuntime.storage, "set");
+    renderPage();
+
+    const resizeHandle = await screen.findByRole("separator", { name: /调整实例名称列宽|Resize Instance name column/i });
+    expect(resizeHandle).toHaveAttribute("aria-valuenow", "240");
+    const selectionHandle = screen.getByRole("separator", { name: /调整选择列宽|Resize Selection column/i });
+    const actionsHandle = screen.getByRole("separator", { name: /调整操作列宽|Resize Actions column/i });
+    expect(selectionHandle).toHaveAttribute("aria-valuenow", "48");
+    expect(actionsHandle).toHaveAttribute("aria-valuenow", "232");
+
+    fireEvent.keyDown(selectionHandle, { key: "ArrowRight" });
+    fireEvent.keyDown(actionsHandle, { key: "ArrowRight" });
+
+    expect(selectionHandle).toHaveAttribute("aria-valuenow", "64");
+    expect(actionsHandle).toHaveAttribute("aria-valuenow", "248");
+    fireEvent.doubleClick(actionsHandle);
+    expect(actionsHandle).toHaveAttribute("aria-valuenow", "232");
+
+    fireEvent.keyDown(resizeHandle, { key: "ArrowRight" });
+
+    expect(resizeHandle).toHaveAttribute("aria-valuenow", "256");
+
+    fireEvent.mouseDown(resizeHandle, { clientX: 100 });
+    fireEvent.mouseMove(document, { clientX: 150 });
+    fireEvent.mouseUp(document, { clientX: 150 });
+
+    expect(resizeHandle).toHaveAttribute("aria-valuenow", "306");
+    await waitFor(() => {
+      expect(storageSet).toHaveBeenCalledWith(
+        "easy-console.tasks.columnSizing",
+        expect.stringContaining('"name":306'),
+      );
+    });
+    storageSet.mockRestore();
   });
 });

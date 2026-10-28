@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
+import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
 import { Button, Panel, SegmentedControl, Select, TableRegion } from "../components/ui";
 import { instanceApi } from "../lib/api";
@@ -15,6 +16,7 @@ import { EXECUTION_LEDGER_ROUTE, useExecutionReviewCount } from "../lib/use-exec
 import { browserRuntime } from "../lib/runtime";
 import { cn } from "../lib/utils";
 import { DEFAULT_TASK_PAGE, DEFAULT_TASK_PAGE_SIZE, serializeTaskListQuery, taskTimestamp } from "../lib/task-list-query";
+import { getLiveTimedReleaseAt, TIMED_RELEASE_CONDITION } from "../lib/task-release-notifications";
 import type { ConsoleSummary, Task } from "../lib/types";
 
 type TimeRange = "day" | "week" | "month";
@@ -90,6 +92,35 @@ function byRecency(tasks: Task[]) {
   return [...tasks].sort((left, right) => taskTimestamp(right, "updated") - taskTimestamp(left, "updated"));
 }
 
+// The whole row is the link target (the name stretches over it), which also gives touch a full-height hit area.
+// A live timed release adds its countdown, since an extension is decided from here as often as from the detail page.
+function DashboardTaskRow({ task, meta }: { task: Task; meta: string }) {
+  const { text } = useI18n();
+  const releaseAt = getLiveTimedReleaseAt(task);
+  return (
+    <li className="relative px-3 py-2.5 transition-colors duration-150 hover:bg-app-panel/60">
+      <div className="flex items-center justify-between gap-3">
+        {/* Two lines before clipping: run names share long prefixes and differ at the end. */}
+        <Link
+          to={`/tasks/${task.id}`}
+          className="line-clamp-2 min-w-0 break-words text-sm font-medium text-app-accent after:absolute after:inset-0 after:content-[''] hover:underline"
+          title={getTaskName(task)}
+          aria-label={text(`查看实例 ${getTaskName(task)} 详情`, `View details for ${getTaskName(task)}`)}
+        >
+          {getTaskName(task)}
+        </Link>
+        <StatusBadge status={task.status} />
+      </div>
+      {meta ? <p className="mt-0.5 truncate text-xs text-app-muted">{meta}</p> : null}
+      {releaseAt !== null ? (
+        <div className="mt-1.5">
+          <ReleaseConditionBadge condition={TIMED_RELEASE_CONDITION} releaseAt={releaseAt} />
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
 function AttentionGroup({
   title,
   href,
@@ -135,26 +166,9 @@ function AttentionGroup({
         <p className="mt-2.5 rounded-lg border border-dashed border-app-border px-3 py-6 text-center text-sm text-app-muted">{emptyLabel}</p>
       ) : (
         <ul className="mt-2.5 divide-y divide-app-border overflow-hidden rounded-lg border border-app-border bg-app-surface shadow-shell">
-          {tasks.slice(0, 8).map((task) => {
-            const meta = taskMetaLine(task, now, locale, text);
-            return (
-              <li key={String(task.id)} className="px-3 py-2.5 transition-colors duration-150 hover:bg-app-panel/60">
-                <div className="flex items-center justify-between gap-3">
-                  {/* Two lines before clipping: run names share long prefixes and differ at the end. */}
-                  <Link
-                    to={`/tasks/${task.id}`}
-                    className="line-clamp-2 min-w-0 break-words text-sm font-medium text-app-accent hover:underline [@media(pointer:coarse)]:py-3"
-                    title={getTaskName(task)}
-                    aria-label={text(`查看实例 ${getTaskName(task)} 详情`, `View details for ${getTaskName(task)}`)}
-                  >
-                    {getTaskName(task)}
-                  </Link>
-                  <StatusBadge status={task.status} />
-                </div>
-                {meta ? <p className="mt-0.5 truncate text-xs text-app-muted">{meta}</p> : null}
-              </li>
-            );
-          })}
+          {tasks.slice(0, 8).map((task) => (
+            <DashboardTaskRow key={String(task.id)} task={task} meta={taskMetaLine(task, now, locale, text)} />
+          ))}
         </ul>
       )}
     </section>
@@ -285,6 +299,44 @@ export function DashboardPage() {
   const runtimeValue = Number(summary.run_time?.[timeRange] ?? 0);
   const costValue = Number(summary.cost_map?.[timeRange] ?? 0);
 
+  const refreshAll = () => {
+    void consoleQuery.refetch();
+    void staticsQuery.refetch();
+  };
+  const rangeControl = (
+    <SegmentedControl
+      className={compactLayout ? "flex-1" : undefined}
+      label={text("时间范围", "Time range")}
+      value={timeRange}
+      options={TIME_RANGES.map((range) => ({ value: range, label: rangeLabel(range, text) }))}
+      optionClassName={compactLayout ? "flex-1 px-3" : "px-3"}
+      onChange={setTimeRange}
+    />
+  );
+  const freshness = lastFetchedAt > 0 ? (
+    <span className="whitespace-nowrap text-xs text-app-muted" title={new Date(lastFetchedAt).toLocaleString(locale)}>
+      {consoleQuery.isFetching || staticsQuery.isFetching
+        ? text("刷新中…", "Refreshing…")
+        : text(`更新于 ${formatRelativeUpdatedAt(lastFetchedAt, Math.max(nowMs, lastFetchedAt), locale)}`, `Updated ${formatRelativeUpdatedAt(lastFetchedAt, Math.max(nowMs, lastFetchedAt), locale)}`)}
+    </span>
+  ) : null;
+  const autoRefreshControl = (
+    <label className="flex items-center gap-1.5 text-xs text-app-muted">
+      <span className="whitespace-nowrap">{text("自动刷新", "Auto refresh")}</span>
+      <Select
+        value={String(autoRefreshMs)}
+        onChange={(event) => changeAutoRefresh(Number(event.target.value))}
+        className="h-8 text-xs"
+      >
+        {AUTO_REFRESH_OPTIONS.map((option) => (
+          <option key={option.value} value={String(option.value)}>
+            {locale === "en-US" ? option.en : option.zh}
+          </option>
+        ))}
+      </Select>
+    </label>
+  );
+
   if (consoleQuery.isLoading) return <DashboardSkeleton label={t("common.loading")} />;
   if (consoleQuery.isError) return <ErrorState error={consoleQuery.error} action={<Button variant="secondary" onClick={() => consoleQuery.refetch()}>{text("重试", "Retry")}</Button>} />;
 
@@ -298,50 +350,41 @@ export function DashboardPage() {
           cost={costValue}
           rangeName={rangeLabel(timeRange, text)}
         />
-        <div className="flex flex-wrap items-center gap-2">
-          <SegmentedControl
-            label={text("时间范围", "Time range")}
-            value={timeRange}
-            options={TIME_RANGES.map((range) => ({ value: range, label: rangeLabel(range, text) }))}
-            optionClassName="px-3"
-            onChange={setTimeRange}
-          />
-          {/* Refresh controls wrap as one unit so the button never strands on its own row. */}
-          <div className="flex items-center gap-2">
-            {lastFetchedAt > 0 ? (
-              <span className="whitespace-nowrap text-xs text-app-muted" title={new Date(lastFetchedAt).toLocaleString(locale)}>
-                {consoleQuery.isFetching || staticsQuery.isFetching
-                  ? text("刷新中…", "Refreshing…")
-                  : text(`更新于 ${formatRelativeUpdatedAt(lastFetchedAt, Math.max(nowMs, lastFetchedAt), locale)}`, `Updated ${formatRelativeUpdatedAt(lastFetchedAt, Math.max(nowMs, lastFetchedAt), locale)}`)}
-              </span>
-            ) : null}
-            <label className="flex items-center gap-1.5 text-xs text-app-muted">
-              <span className="whitespace-nowrap">{text("自动刷新", "Auto refresh")}</span>
-              <Select
-                value={String(autoRefreshMs)}
-                onChange={(event) => changeAutoRefresh(Number(event.target.value))}
-                className="h-8 text-xs"
+        {compactLayout ? (
+          // Phones: the range choice spans the row with refresh in thumb reach beside it,
+          // and the freshness line sits under it as small print rather than a third control row.
+          <div className="w-full space-y-1.5">
+            <div className="flex items-center gap-2">
+              {rangeControl}
+              <Button
+                aria-label={text("刷新", "Refresh")}
+                className="shrink-0 px-0"
+                title={text("刷新", "Refresh")}
+                variant="secondary"
+                onClick={refreshAll}
               >
-                {AUTO_REFRESH_OPTIONS.map((option) => (
-                  <option key={option.value} value={String(option.value)}>
-                    {locale === "en-US" ? option.en : option.zh}
-                  </option>
-                ))}
-              </Select>
-            </label>
-            <Button
-              className="h-8"
-              variant="secondary"
-              onClick={() => {
-                void consoleQuery.refetch();
-                void staticsQuery.refetch();
-              }}
-            >
-              <RefreshCw className={consoleQuery.isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-              {text("刷新", "Refresh")}
-            </Button>
+                <RefreshCw className={consoleQuery.isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"} aria-hidden="true" />
+              </Button>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              {freshness ?? <span />}
+              {autoRefreshControl}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            {rangeControl}
+            {/* Refresh controls wrap as one unit so the button never strands on its own row. */}
+            <div className="flex items-center gap-2">
+              {freshness}
+              {autoRefreshControl}
+              <Button className="h-8" variant="secondary" onClick={refreshAll}>
+                <RefreshCw className={consoleQuery.isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                {text("刷新", "Refresh")}
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       {executionReviewCount > 0 ? (
@@ -412,36 +455,20 @@ export function DashboardPage() {
           <ErrorState error={staticsQuery.error} action={<Button variant="secondary" onClick={() => staticsQuery.refetch()}>{text("重试", "Retry")}</Button>} />
         ) : recentTasks.length > 0 ? (
           compactLayout ? (
-            <div className="divide-y divide-app-border">
+            // Same rows as the attention columns above, so the page reads as one list on a phone.
+            <ul className="divide-y divide-app-border">
               {recentTasks.map((task) => (
-                <article key={String(task.id)} className="space-y-2 px-4 py-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <Link
-                      to={`/tasks/${task.id}`}
-                      className="truncate font-medium text-app-accent hover:underline"
-                      aria-label={text(`查看实例 ${getTaskName(task)} 详情`, `View details for ${getTaskName(task)}`)}
-                    >
-                      {getTaskName(task)}
-                    </Link>
-                    <StatusBadge status={task.status} />
-                  </div>
-                  <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-                    <div>
-                      <dt className="text-app-muted">{text("资源", "Resources")}</dt>
-                      <dd>{task.cpu ?? "-"}C / {task.gpu ?? "-"}GPU / {task.memory ?? "-"}G</dd>
-                    </div>
-                    <div>
-                      <dt className="text-app-muted">{text("节点", "Node")}</dt>
-                      <dd>{getTaskNodeName(task) || "-"}</dd>
-                    </div>
-                    <div className="col-span-2">
-                      <dt className="text-app-muted">{text("费用", "Cost")}</dt>
-                      <dd>{formatCost(task.cost, locale)} ({formatHours(task.use_time, locale)})</dd>
-                    </div>
-                  </dl>
-                </article>
+                <DashboardTaskRow
+                  key={String(task.id)}
+                  task={task}
+                  meta={[
+                    `${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`,
+                    getTaskNodeName(task),
+                    `${formatCost(task.cost, locale)} (${formatHours(task.use_time, locale)})`,
+                  ].filter(Boolean).join(" · ")}
+                />
               ))}
-            </div>
+            </ul>
           ) : (
             <TableRegion label={text("最近任务表格", "Recent tasks table")}>
               <table className="w-full min-w-[720px] text-sm">

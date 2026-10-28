@@ -137,7 +137,7 @@ export function ImagesPage() {
             targetId: image.id,
             error: errorMessage(error, text("默认镜像更新失败", "Failed to update default image")),
           });
-          throw error;
+          toast.error(text("默认镜像更新失败", "Failed to update default image"), errorMessage(error, text("请稍后重试", "Try again later")));
         }
       },
     });
@@ -192,7 +192,7 @@ export function ImagesPage() {
             targetId: image.id,
             error: errorMessage(error, text("镜像删除失败", "Failed to delete image")),
           });
-          throw error;
+          toast.error(text("镜像删除失败", "Failed to delete image"), errorMessage(error, text("请稍后重试", "Try again later")));
         }
       },
     });
@@ -205,7 +205,7 @@ export function ImagesPage() {
   };
 
   const submitEditImage = async () => {
-    if (!editImage) return;
+    if (!editImage || editSaving) return;
     const trimmedName = editName.trim();
     if (!trimmedName) {
       toast.error(text("请填写镜像名称", "Enter an image name"));
@@ -497,11 +497,12 @@ export function ImagesPage() {
       <Dialog
         open={Boolean(editImage)}
         title={text("编辑镜像", "Edit image")}
-        onClose={() => setEditImage(null)}
+        onClose={() => { if (!editSaving) setEditImage(null); }}
         width="max-w-md"
+        describedBy="image-edit-description"
       >
         <form
-          className="space-y-4"
+          className="space-y-4 p-5"
           onSubmit={(event) => {
             event.preventDefault();
             void submitEditImage();
@@ -509,16 +510,16 @@ export function ImagesPage() {
         >
           <label className="block text-sm">
             <span className="mb-1 block font-medium text-app-text">{text("名称", "Name")}</span>
-            <Input value={editName} onChange={(event) => setEditName(event.target.value)} required />
+            <Input className="w-full" value={editName} onChange={(event) => setEditName(event.target.value)} required />
           </label>
           <label className="block text-sm">
             <span className="mb-1 block font-medium text-app-text">{text("说明", "Description")}</span>
-            <Input value={editDescription} onChange={(event) => setEditDescription(event.target.value)} placeholder={text("可选", "Optional")} />
+            <Input className="w-full" value={editDescription} onChange={(event) => setEditDescription(event.target.value)} placeholder={text("可选", "Optional")} />
           </label>
-          <p className="text-xs leading-5 text-app-muted">
+          <p id="image-edit-description" className="text-xs leading-5 text-app-muted">
             {text(
-              "通过镜像更新接口保存；接口行为以后端实际支持为准，失败时会提示具体原因。",
-              "Saved through the image update endpoint; failures surface the backend's reason.",
+              "修改自定义镜像的名称和说明。保存失败时会保留输入，便于重试。",
+              "Change the custom image's name and description. Failed saves keep your input so you can retry.",
             )}
           </p>
           <div className="flex justify-end gap-2">

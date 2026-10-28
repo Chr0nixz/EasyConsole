@@ -1,5 +1,5 @@
 import type { ImportantNotificationEvent } from "./app-settings";
-import { getTaskReleaseCondition, getTaskName } from "./format";
+import { formatSecondsDuration, getTaskReleaseCondition, getTaskName } from "./format";
 import type { Locale } from "./i18n-text";
 import type { Task } from "./types";
 
@@ -19,6 +19,22 @@ export function parseReleaseTime(task: Pick<Task, "releace_time">): number | nul
   if (typeof raw !== "string" || !raw.trim()) return null;
   const parsed = Date.parse(raw.trim().replace(" ", "T"));
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** When a live timed-release task will be released; null for every other task. */
+export function getLiveTimedReleaseAt(task: Task): number | null {
+  if (getTaskReleaseCondition(task) !== TIMED_RELEASE_CONDITION) return null;
+  if (!RELEASABLE_STATUSES.has(Number(task.status))) return null;
+  return parseReleaseTime(task);
+}
+
+/** "40 分钟后释放" — the time left before a timed release, rounded down to the minute. */
+export function formatReleaseCountdown(remainingMs: number, locale: Locale): string {
+  const en = locale === "en-US";
+  if (remainingMs <= 0) return en ? "Release due" : "已到释放时间";
+  if (remainingMs < 60_000) return en ? "Releases within 1 min" : "1 分钟内释放";
+  const left = formatSecondsDuration(remainingMs / 1000, locale);
+  return en ? `Releases in ${left}` : `${left}后释放`;
 }
 
 /** Format epoch ms the way the backend stores release times (local `YYYY-MM-DD HH:mm:ss`). */
@@ -55,9 +71,7 @@ export function getUpcomingTimedReleaseNotification(
   leadMs: number,
   locale: Locale,
 ): TimedReleaseDueNotification | null {
-  if (getTaskReleaseCondition(task) !== TIMED_RELEASE_CONDITION) return null;
-  if (!RELEASABLE_STATUSES.has(Number(task.status))) return null;
-  const releaseAt = parseReleaseTime(task);
+  const releaseAt = getLiveTimedReleaseAt(task);
   if (releaseAt === null) return null;
   const remaining = releaseAt - now;
   if (remaining <= 0 || remaining > leadMs) return null;

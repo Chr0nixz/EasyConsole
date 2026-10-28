@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ToastProvider } from "../components/Toast";
@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   list: vi.fn(),
   system: vi.fn(),
   enqueue: vi.fn(),
+  update: vi.fn(), remove: vi.fn(), confirm: vi.fn(),
 }));
 
 vi.mock("../lib/api", () => ({
@@ -17,6 +18,8 @@ vi.mock("../lib/api", () => ({
     system: (...args: unknown[]) => mocks.system(...args),
     setDefault: vi.fn(),
     download: vi.fn(),
+    updateImage: (...args: unknown[]) => mocks.update(...args),
+    deleteImage: (...args: unknown[]) => mocks.remove(...args),
   },
 }));
 
@@ -33,7 +36,7 @@ vi.mock("../lib/use-download-queue", () => ({
 
 vi.mock("../lib/use-confirm-action", () => ({
   useConfirmAction: () => ({
-    confirm: vi.fn(),
+    confirm: mocks.confirm,
     confirmDialog: null,
   }),
 }));
@@ -63,6 +66,9 @@ describe("ImagesPage", () => {
     mocks.list.mockReset();
     mocks.system.mockReset();
     mocks.enqueue.mockReset();
+    mocks.update.mockReset().mockResolvedValue({});
+    mocks.remove.mockReset().mockResolvedValue({});
+    mocks.confirm.mockReset();
     mocks.list.mockResolvedValue({ items: [{ id: 11, name: "custom-cuda", tag: "latest" }] });
     mocks.system.mockResolvedValue({ items: [{ id: 21, name: "system-base", tag: "v1" }] });
   });
@@ -83,5 +89,55 @@ describe("ImagesPage", () => {
 
     await waitFor(() => expect(screen.getByText("custom images failed")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /重试自定义镜像|Retry custom images/ })).toBeInTheDocument();
+  });
+
+  it("edits only custom images, trims fields, and refreshes after saving", async () => {
+    renderImages();
+    fireEvent.click((await screen.findAllByRole("button", { name: /编辑镜像 custom-cuda|Edit image custom-cuda/ }))[0]);
+    const dialog = screen.getByRole("dialog", { name: /编辑镜像|Edit image/ });
+    fireEvent.change(within(dialog).getByLabelText(/名称|Name/), { target: { value: "  renamed  " } });
+    fireEvent.change(within(dialog).getByLabelText(/说明|Description/), { target: { value: "  details  " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /保存|Save/ }));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledExactlyOnceWith(11, { name: "renamed", description: "details" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /编辑镜像|Edit image/ })).not.toBeInTheDocument());
+    expect(mocks.list.mock.calls.length).toBeGreaterThan(1);
+    expect(screen.queryByRole("button", { name: /编辑镜像 system-base|Edit image system-base/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /删除镜像 system-base|Delete image system-base/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps edit input after backend rejection and permits a corrected retry", async () => {
+    mocks.update.mockRejectedValueOnce(new Error("permission denied"));
+    renderImages();
+    fireEvent.click((await screen.findAllByRole("button", { name: /编辑镜像 custom-cuda|Edit image custom-cuda/ }))[0]);
+    const dialog = screen.getByRole("dialog", { name: /编辑镜像|Edit image/ });
+    fireEvent.change(within(dialog).getByLabelText(/名称|Name/), { target: { value: "retry-image" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /保存|Save/ }));
+    expect(await screen.findByText(/permission denied/)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(/名称|Name/)).toHaveValue("retry-image");
+    fireEvent.click(within(dialog).getByRole("button", { name: /保存|Save/ }));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /编辑镜像|Edit image/ })).not.toBeInTheDocument());
+  });
+
+  it("requires deletion confirmation and refreshes after a successful deletion", async () => {
+    renderImages();
+    fireEvent.click((await screen.findAllByRole("button", { name: /删除镜像 custom-cuda|Delete image custom-cuda/ }))[0]);
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(mocks.confirm).toHaveBeenCalledTimes(1);
+    const options = mocks.confirm.mock.calls[0][0] as { tone: string; run(): Promise<void> };
+    expect(options.tone).toBe("danger");
+    await act(async () => { await options.run(); });
+    expect(mocks.remove).toHaveBeenCalledExactlyOnceWith(11);
+    expect(mocks.list.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("reports a rejected deletion while keeping the image available for retry", async () => {
+    mocks.remove.mockRejectedValueOnce(new Error("image in use"));
+    renderImages();
+    fireEvent.click((await screen.findAllByRole("button", { name: /删除镜像 custom-cuda|Delete image custom-cuda/ }))[0]);
+    const options = mocks.confirm.mock.calls[0][0] as { run(): Promise<void> };
+    await act(async () => { await options.run(); });
+    expect(await screen.findByText("image in use")).toBeInTheDocument();
+    expect(screen.getAllByText("custom-cuda").length).toBeGreaterThan(0);
   });
 });

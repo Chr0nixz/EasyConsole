@@ -3,7 +3,6 @@ import { Copy, Download, Eye, FileText, Folder, FolderOpen, FolderPlus, RefreshC
 import { useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import { EmptyState, ErrorState, FolderOpenIcon, SearchXIcon, TableSkeleton } from "../components/DataState";
-import { MobileLongText } from "../components/MobileLongText";
 import { Button, Dialog, Input, Panel, ProgressBar, Select, TableRegion } from "../components/ui";
 import { useDownloadQueueActions } from "../lib/use-download-queue";
 import { formatBytes } from "../lib/format";
@@ -27,6 +26,7 @@ import { useCompactLayout } from "../lib/use-compact-layout";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
+import { cn } from "../lib/utils";
 
 type StorageSortField = "name" | "size" | "modified" | "type";
 type StorageSortDirection = "asc" | "desc";
@@ -384,46 +384,76 @@ export function StoragePage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-1 text-sm">
-          {crumbs.map((crumb, index) => (
-            <button key={crumb.path} className="rounded px-2 py-1 text-app-muted hover:bg-app-panel hover:text-app-text" onClick={() => setPath(crumb.path)}>
-              {index > 0 ? "/ " : ""}
-              {crumb.label}
-            </button>
-          ))}
+        <div className={cn("flex items-center gap-1 text-sm", compactLayout ? "w-full" : "flex-wrap")}>
+          <div className={cn("flex flex-wrap items-center gap-1", compactLayout && "min-w-0 flex-1")}>
+            {crumbs.map((crumb, index) => (
+              <button key={crumb.path} className="rounded px-2 py-1 text-app-muted hover:bg-app-panel hover:text-app-text [@media(pointer:coarse)]:min-h-11" type="button" onClick={() => setPath(crumb.path)}>
+                {index > 0 ? "/ " : ""}
+                {crumb.label}
+              </button>
+            ))}
+          </div>
+          {/* Phones copy the current path from beside the breadcrumb it names, not from a toolbar row of its own. */}
+          {compactLayout ? (
+            <Button
+              aria-label={text("复制当前路径", "Copy current path")}
+              className="shrink-0 px-0"
+              title={text("复制当前路径", "Copy current path")}
+              type="button"
+              variant="ghost"
+              onClick={() => copyPath(path)}
+            >
+              <Copy className="h-4 w-4" aria-hidden="true" />
+            </Button>
+          ) : null}
         </div>
         <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
-          <Button variant="secondary" onClick={() => copyPath(path)}>
-            <Copy className="h-4 w-4" />
-            {text("复制路径", "Copy path")}
-          </Button>
-          <div className="relative w-full sm:w-auto">
-            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" aria-hidden="true" />
-            <Input
-              aria-label={text("搜索文件或文件夹", "Search files or folders")}
-              className="w-full pl-9 sm:w-52"
-              placeholder={text("搜索文件或文件夹", "Search files or folders")}
-              value={searchKeyword}
-              onChange={(event) => setSearchKeyword(event.target.value)}
-            />
+          {compactLayout ? null : (
+            <Button variant="secondary" onClick={() => copyPath(path)}>
+              <Copy className="h-4 w-4" />
+              {text("复制路径", "Copy path")}
+            </Button>
+          )}
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            <div className="relative min-w-0 flex-1 sm:flex-none">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" aria-hidden="true" />
+              <Input
+                aria-label={text("搜索文件或文件夹", "Search files or folders")}
+                className="w-full pl-9 sm:w-52"
+                placeholder={text("搜索文件或文件夹", "Search files or folders")}
+                value={searchKeyword}
+                onChange={(event) => setSearchKeyword(event.target.value)}
+              />
+            </div>
+            {compactLayout ? (
+              <Button aria-label={text("刷新", "Refresh")} className="shrink-0 px-0" title={text("刷新", "Refresh")} type="button" variant="secondary" onClick={() => query.refetch()}>
+                <RefreshCw className={cn("h-4 w-4", query.isFetching && "animate-spin")} aria-hidden="true" />
+              </Button>
+            ) : null}
           </div>
-          <Select aria-label={text("排序字段", "Sort by")} className="w-32" value={sortField} onChange={(event) => setSortField(event.target.value as StorageSortField)}>
+          <Select aria-label={text("排序字段", "Sort by")} className={compactLayout ? "min-w-0 flex-1" : "w-32"} value={sortField} onChange={(event) => setSortField(event.target.value as StorageSortField)}>
             <option value="name">{text("按名称", "By name")}</option>
             <option value="size">{text("按大小", "By size")}</option>
             <option value="modified">{text("按时间", "By time")}</option>
             <option value="type">{text("按类型", "By type")}</option>
           </Select>
-          <Select aria-label={text("排序方向", "Sort direction")} className="w-28" value={sortDirection} onChange={(event) => setSortDirection(event.target.value as StorageSortDirection)}>
+          <Select aria-label={text("排序方向", "Sort direction")} className={compactLayout ? "w-24" : "w-28"} value={sortDirection} onChange={(event) => setSortDirection(event.target.value as StorageSortDirection)}>
             <option value="asc">{text("升序", "Ascending")}</option>
             <option value="desc">{text("降序", "Descending")}</option>
           </Select>
-          <Button variant="secondary" onClick={() => setMkdirOpen(true)}>
-            <FolderPlus className="h-4 w-4" />
-            {text("新建", "New")}
+          <Button
+            aria-label={compactLayout ? text("新建文件夹", "New folder") : undefined}
+            className={compactLayout ? "shrink-0 px-0" : undefined}
+            title={compactLayout ? text("新建文件夹", "New folder") : undefined}
+            variant="secondary"
+            onClick={() => setMkdirOpen(true)}
+          >
+            <FolderPlus className="h-4 w-4" aria-hidden="true" />
+            {compactLayout ? null : text("新建", "New")}
           </Button>
-          <label className="app-interactive inline-flex h-9 cursor-pointer items-center gap-2 rounded-md bg-app-accent px-3 text-sm font-medium text-app-onAccent hover:brightness-95 [@media(pointer:coarse)]:min-h-11">
-            <Upload className="h-4 w-4" />
-            {text("上传到远程", "Upload to remote")}
+          <label className="app-interactive inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-md bg-app-accent px-3 text-sm font-medium text-app-onAccent hover:brightness-95 [@media(pointer:coarse)]:min-h-11">
+            <Upload className="h-4 w-4" aria-hidden="true" />
+            {compactLayout ? text("上传", "Upload") : text("上传到远程", "Upload to remote")}
             <input className="sr-only" type="file" onChange={(event) => void upload(event)} />
           </label>
           {compactLayout ? null : (
@@ -439,10 +469,12 @@ export function StoragePage() {
             type="file"
             onChange={(event) => void uploadFolder(event)}
           />
-          <Button variant="secondary" onClick={() => query.refetch()}>
-            <RefreshCw className="h-4 w-4" />
-            {text("刷新", "Refresh")}
-          </Button>
+          {compactLayout ? null : (
+            <Button variant="secondary" onClick={() => query.refetch()}>
+              <RefreshCw className="h-4 w-4" />
+              {text("刷新", "Refresh")}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -509,46 +541,49 @@ export function StoragePage() {
                       ? "—"
                       : formatBytes(entrySize);
               return (
-                <article key={entryPath} className="space-y-3 px-3 py-3" aria-labelledby={entryCardId}>
+                // A folder row opens on tap (its name stretches over the row). The path is the breadcrumb
+                // plus the name, so it is copied from the row rather than printed a second time.
+                <article key={entryPath} className="relative px-3 pb-1.5 pt-3" aria-labelledby={entryCardId}>
                   <div className="flex items-start gap-3">
-                    {directory ? <Folder className="mt-0.5 h-4 w-4 shrink-0 text-app-accent" /> : <FileText className="mt-0.5 h-4 w-4 shrink-0 text-app-muted" />}
+                    {directory ? <Folder className="mt-0.5 h-4 w-4 shrink-0 text-app-accent" aria-hidden="true" /> : <FileText className="mt-0.5 h-4 w-4 shrink-0 text-app-muted" aria-hidden="true" />}
                     <div className="min-w-0 flex-1">
-                      <button
-                        id={entryCardId}
-                        className="block max-w-full truncate text-left text-sm font-semibold text-app-text hover:text-app-accent disabled:cursor-default disabled:text-app-text"
-                        disabled={!directory}
-                        onClick={() => setPath(entryPath)}
-                      >
-                        {entry.name}
-                      </button>
-                      <MobileLongText className="mt-1" tone="muted" value={entryPath} copyable mono />
+                      {directory ? (
+                        <button
+                          id={entryCardId}
+                          className="block max-w-full text-left text-sm font-semibold text-app-text wrap-anywhere after:absolute after:inset-0 after:content-[''] hover:text-app-accent [@media(pointer:coarse)]:min-h-0"
+                          title={text("打开远程目录", "Open remote directory")}
+                          type="button"
+                          onClick={() => setPath(entryPath)}
+                        >
+                          {entry.name}
+                        </button>
+                      ) : (
+                        <h3 id={entryCardId} className="text-sm font-semibold text-app-text wrap-anywhere">{entry.name}</h3>
+                      )}
+                      <p className="mt-0.5 text-xs text-app-muted">
+                        <span className="sr-only">{directory ? text("目录", "Directory") : text("文件", "File")} · </span>
+                        {/* An uncalculated folder size is left out rather than shown as a dash. */}
+                        {entrySizeText !== "—" ? (
+                          <>
+                            <span className="app-numeric">{entrySizeText}</span>
+                            <span aria-hidden="true"> · </span>
+                          </>
+                        ) : null}
+                        <span className="app-numeric">{getStorageEntryModified(entry)}</span>
+                      </p>
                     </div>
                     <Button
                       aria-label={text(`复制远程路径 ${entryPath}`, `Copy remote path ${entryPath}`)}
-                      className="h-9 w-9 shrink-0 px-0"
+                      className="relative z-10 -mr-1.5 -mt-1.5 h-8 w-8 shrink-0 px-0"
                       type="button"
                       title={text("复制远程路径", "Copy remote path")}
                       variant="ghost"
                       onClick={() => copyPath(entryPath)}
                     >
-                      <Copy className="h-4 w-4" />
+                      <Copy className="h-4 w-4" aria-hidden="true" />
                     </Button>
                   </div>
-                  <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-                    <div>
-                      <dt className="text-app-muted">{text("类型", "Type")}</dt>
-                      <dd className="mt-0.5 text-app-text">{directory ? text("目录", "Directory") : text("文件", "File")}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-app-muted">{text("大小", "Size")}</dt>
-                      <dd className="app-numeric mt-0.5 text-app-text">{entrySizeText}</dd>
-                    </div>
-                    <div className="col-span-2">
-                      <dt className="text-app-muted">{text("更新时间", "Updated")}</dt>
-                      <dd className="app-numeric mt-0.5 text-app-text">{getStorageEntryModified(entry)}</dd>
-                    </div>
-                  </dl>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="relative z-10 -ml-2 mt-1 flex flex-wrap gap-0.5 pl-7">
                     {directory ? (
                       <>
                         <Button className="h-9 px-2" variant="ghost" title={text("打开远程目录", "Open remote directory")} onClick={() => setPath(entryPath)}>

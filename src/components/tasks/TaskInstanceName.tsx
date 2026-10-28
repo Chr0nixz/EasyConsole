@@ -11,18 +11,27 @@ type TaskInstanceNameProps = {
   taskId?: string | number;
   className?: string;
   compact?: boolean;
+  /**
+   * Stretch the link's hit area over the nearest positioned ancestor, so a whole
+   * mobile card opens the detail page. Controls in that card need `relative z-10`.
+   */
+  stretched?: boolean;
 };
 
-function nameLinkClass(compact: boolean) {
+function nameLinkClass(compact: boolean, stretched: boolean) {
   return [
     // Wrap at hyphens first and mid-word only when a segment cannot fit. On touch screens the
     // padding gives the one-line link a ~40px hit area; the negative margins keep it out of layout.
-    "min-w-0 wrap-anywhere text-app-accent hover:underline [@media(pointer:coarse)]:-my-3 [@media(pointer:coarse)]:py-3",
+    // A stretched link already covers its card, so it needs no padding of its own.
+    "min-w-0 wrap-anywhere text-app-accent hover:underline",
+    stretched
+      ? "after:absolute after:inset-0 after:content-['']"
+      : "[@media(pointer:coarse)]:-my-3 [@media(pointer:coarse)]:py-3",
     compact ? "text-sm font-semibold" : "font-medium",
   ].join(" ");
 }
 
-export function TaskInstanceName({ name, taskId, className = "", compact = false }: TaskInstanceNameProps) {
+export function TaskInstanceName({ name, taskId, className = "", compact = false, stretched = false }: TaskInstanceNameProps) {
   const { text } = useI18n();
   const parsed = useMemo(() => parseTemplateTaskName(name), [name]);
   const [expanded, setExpanded] = useState(false);
@@ -32,7 +41,7 @@ export function TaskInstanceName({ name, taskId, className = "", compact = false
   if (!parsed) {
     if (detailHref) {
       return (
-        <Link to={detailHref} className={[nameLinkClass(compact), className].join(" ")} title={detailLabel} aria-label={detailLabel}>
+        <Link to={detailHref} className={[nameLinkClass(compact, stretched), className].join(" ")} title={detailLabel} aria-label={detailLabel}>
           {name}
         </Link>
       );
@@ -58,13 +67,13 @@ export function TaskInstanceName({ name, taskId, className = "", compact = false
         aria-expanded={expanded}
         aria-label={toggleLabel}
         title={toggleLabel}
-        className="mt-0.5 shrink-0 rounded text-app-muted hover:text-app-text"
+        className={["mt-0.5 shrink-0 rounded text-app-muted hover:text-app-text", stretched ? "relative z-10" : ""].join(" ")}
         onClick={() => setExpanded((current) => !current)}
       >
         {expanded ? <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" /> : <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />}
       </button>
       {detailHref ? (
-        <Link to={detailHref} className={nameLinkClass(compact)} title={detailLabel} aria-label={detailLabel}>
+        <Link to={detailHref} className={nameLinkClass(compact, stretched)} title={detailLabel} aria-label={detailLabel}>
           {displayName}
         </Link>
       ) : (

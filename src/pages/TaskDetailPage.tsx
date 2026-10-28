@@ -18,6 +18,7 @@ import { browserRuntime } from "../lib/runtime";
 import { buildTaskSshInfo } from "../lib/ssh-info";
 import {
   formatReleaseTimeInput,
+  getLiveTimedReleaseAt,
   parseReleaseTime,
   TIMED_RELEASE_CONDITION,
 } from "../lib/task-release-notifications";
@@ -94,7 +95,8 @@ function SummaryField({ label, value, kind = "code", className }: { label: strin
     <div className={cn("min-w-0", className)}>
       <dt className="text-xs text-app-muted">{label}</dt>
       <dd
-        className={cn("mt-0.5 truncate text-app-text", kind === "figure" ? "app-numeric text-sm font-medium" : "font-mono text-xs")}
+        // Touch has no hover title, so long values wrap there instead of hiding behind an ellipsis.
+        className={cn("mt-0.5 truncate text-app-text [@media(pointer:coarse)]:whitespace-normal [@media(pointer:coarse)]:wrap-anywhere", kind === "figure" ? "app-numeric text-sm font-medium" : "font-mono text-xs")}
         title={value}
       >
         {value}
@@ -330,20 +332,23 @@ export function TaskDetailPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <Button variant="ghost" onClick={() => navigate("/tasks")} aria-label={text("返回任务列表", "Back to tasks")}>
+      {/* Phones wrap the name (there is no hover title to read the rest) and keep the back arrow on its line. */}
+      <div className={cn("flex flex-wrap gap-3", compactLayout ? "items-start" : "items-center")}>
+        <Button className={compactLayout ? "-my-2 -ml-2" : undefined} variant="ghost" onClick={() => navigate("/tasks")} aria-label={text("返回任务列表", "Back to tasks")}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="min-w-0 flex-1">
-          <h2 className="truncate text-lg font-semibold tracking-[-0.015em] text-app-text">{getTaskName(task)}</h2>
+          <h2 className={cn("text-lg font-semibold tracking-[-0.015em] text-app-text", compactLayout ? "wrap-anywhere" : "truncate")}>{getTaskName(task)}</h2>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
             <span className="font-mono">#{String(task.id)}</span>
             {secondaryId ? <span className="font-mono">{text(`任务 ID ${secondaryId}`, `Task ID ${secondaryId}`)}</span> : null}
             <StatusBadge status={task.status} />
-            {releaseCondition != null ? <ReleaseConditionBadge condition={releaseCondition} /> : null}
+            {releaseCondition != null ? <ReleaseConditionBadge condition={releaseCondition} releaseAt={getLiveTimedReleaseAt(task)} /> : null}
           </div>
         </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
+        {/* On phones the actions take their own full-width row and grow to fill it, so release and
+            extend are wide thumb targets instead of a ragged wrap. */}
+        <div className={cn("flex shrink-0 flex-wrap items-center gap-2", compactLayout && "w-full *:flex-auto")}>
           {/* After a failure the next step is a corrected rerun, so clone leads there. */}
           <Button type="button" variant={failed ? "primary" : "secondary"} onClick={() => setCloneOpen(true)}>
             <CopyPlus className="h-4 w-4" aria-hidden="true" />
@@ -570,9 +575,9 @@ export function TaskDetailPage() {
             <TaskLogPanel
               task={task}
               toolbarEnd={
-                <Button className="h-8 px-2" type="button" variant="ghost" onClick={() => setLogOpen(true)}>
-                  <Maximize2 className="h-4 w-4" />
-                  {text("放大", "Expand")}
+                <Button className="h-8 px-2" title={text("放大", "Expand")} type="button" variant="ghost" onClick={() => setLogOpen(true)}>
+                  <Maximize2 className="h-4 w-4" aria-hidden="true" />
+                  <span className="max-sm:sr-only">{text("放大", "Expand")}</span>
                 </Button>
               }
             />
@@ -610,11 +615,11 @@ export function TaskDetailPage() {
       <Dialog
         open={extendOpen}
         title={text("延长定时释放", "Extend timed release")}
-        onClose={() => setExtendOpen(false)}
+        onClose={() => { if (!extendReleaseMutation.isPending) setExtendOpen(false); }}
         width="max-w-md"
         describedBy="extend-release-description"
       >
-        <div className="space-y-4">
+        <div className="space-y-4 p-5">
           <p id="extend-release-description" className="text-sm leading-6 text-app-muted">
             {text(
               `当前释放时间 ${String(task.releace_time ?? "-")}。延长会写入新的释放时间；如后端不支持修改会明确报错。`,
@@ -639,7 +644,7 @@ export function TaskDetailPage() {
             {text("新释放时间", "New release time")}: {extendPreview}
           </p>
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setExtendOpen(false)}>
+            <Button disabled={extendReleaseMutation.isPending} type="button" variant="ghost" onClick={() => setExtendOpen(false)}>
               {text("取消", "Cancel")}
             </Button>
             <Button
