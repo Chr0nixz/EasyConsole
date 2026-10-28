@@ -5,9 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use tauri::webview::PageLoadEvent;
 #[cfg(desktop)]
 use tauri::State;
 use tauri::{AppHandle, Emitter, Manager};
+#[cfg(desktop)]
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tauri_plugin_opener::OpenerExt;
 
 #[cfg(desktop)]
@@ -30,11 +33,13 @@ pub mod ssh;
 use ssh::history::{add_ssh_history, clear_ssh_history, list_ssh_history};
 use ssh::host_key::{clear_known_hosts, confirm_known_host, list_known_hosts, remove_known_host};
 use ssh::port_forward::{ssh_start_port_forward, ssh_stop_port_forward};
+use ssh::session::close_sessions_for_window;
 #[cfg(desktop)]
+use ssh::session::{get_ssh_window_request, open_ssh_window, PendingSshWindows};
 use ssh::session::{
-    close_sessions_for_window, get_ssh_window_request, open_ssh_window, PendingSshWindows,
+    open_ssh_session, ssh_ack_output, ssh_close, ssh_gpu_utilization, ssh_resize, ssh_write,
+    SshSessionState,
 };
-use ssh::session::{open_ssh_session, ssh_close, ssh_resize, ssh_write, SshSessionState};
 use ssh::sftp::{
     sftp_cancel, sftp_delete, sftp_download, sftp_list, sftp_mkdir, sftp_register_local_root,
     sftp_rename, sftp_upload,
@@ -64,6 +69,29 @@ pub(crate) fn require_main_window(label: &str) -> Result<(), String> {
         Err(trf!(
             "此操作仅允许从主窗口执行",
             "This operation is only available from the main window"
+        ))
+    }
+}
+
+pub(crate) fn require_main_or_ssh_window(label: &str) -> Result<(), String> {
+    if label == "main" || label.starts_with("ssh-") {
+        Ok(())
+    } else {
+        Err(trf!(
+            "此操作不允许从当前窗口执行",
+            "This operation is not available from this window"
+        ))
+    }
+}
+
+#[cfg(desktop)]
+pub(crate) fn require_tray_menu_window(label: &str) -> Result<(), String> {
+    if label == "tray-menu" {
+        Ok(())
+    } else {
+        Err(trf!(
+            "此操作仅允许从托盘菜单执行",
+            "This operation is only available from the tray menu"
         ))
     }
 }
@@ -1058,7 +1086,12 @@ fn start_desktop_run_due_timer(app: AppHandle) {
 }
 
 #[tauri::command]
-fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
+fn open_external_url(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    url: String,
+) -> Result<(), String> {
+    require_main_or_ssh_window(window.label())?;
     let url = validate_external_url(&url)?;
     app.opener()
         .open_url(url.clone(), None::<&str>)
@@ -1249,7 +1282,13 @@ async fn install_apk(app: AppHandle, path: String) -> Result<String, String> {
 
 #[cfg(desktop)]
 #[tauri::command]
-async fn http_download_to_file(app: AppHandle, url: String, path: String) -> Result<u64, String> {
+async fn http_download_to_file(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    url: String,
+    path: String,
+) -> Result<u64, String> {
+    require_main_window(window.label())?;
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
@@ -1317,47 +1356,71 @@ async fn http_download_to_file(app: AppHandle, url: String, path: String) -> Res
 
 #[cfg(desktop)]
 #[tauri::command]
-fn open_local_path(path: String) -> Result<(), String> {
+fn open_local_path(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+    require_main_window(window.label())?;
     let path = validate_open_target(&path)?;
     open_path_with_system(&path)
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn reveal_local_path(path: String) -> Result<(), String> {
+fn reveal_local_path(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+    require_main_window(window.label())?;
     let path = validate_reveal_target(&path)?;
     reveal_path_with_system(&path)
 }
 
 #[cfg(desktop)]
 #[tauri::command]
+fn reveal_sftp_local_path(
+    state: State<'_, Arc<SshSessionState>>,
+    window: tauri::WebviewWindow,
+    session_id: String,
+    path: String,
+) -> Result<(), String> {
+    require_main_or_ssh_window(window.label())?;
+    let allowed = state.ensure_sftp_local_path_allowed(&window, &session_id, &path)?;
+    let path = validate_reveal_target(&allowed.to_string_lossy())?;
+    reveal_path_with_system(&path)
+}
+
+#[cfg(desktop)]
+#[tauri::command]
 fn set_desktop_close_to_tray(
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<DesktopRuntimeState>>,
     enabled: bool,
 ) -> Result<(), String> {
+    require_main_window(window.label())?;
     set_close_to_tray_state(&state, enabled)
 }
 
 #[cfg(desktop)]
 #[tauri::command]
 fn set_desktop_close_prompt(
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<DesktopRuntimeState>>,
     enabled: bool,
 ) -> Result<(), String> {
+    require_main_window(window.label())?;
     set_close_prompt_state(&state, enabled)
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn cancel_desktop_close_prompt() {}
+fn cancel_desktop_close_prompt(window: tauri::WebviewWindow) -> Result<(), String> {
+    require_main_window(window.label())
+}
 
 #[cfg(desktop)]
 #[tauri::command]
 fn complete_desktop_close_prompt(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<DesktopRuntimeState>>,
     action: String,
 ) -> Result<(), String> {
+    require_main_window(window.label())?;
     match action.as_str() {
         "tray" => {
             hide_main_window(&app);
@@ -1377,29 +1440,46 @@ fn complete_desktop_close_prompt(
 
 #[cfg(desktop)]
 #[tauri::command]
-fn show_desktop_main_window(app: AppHandle) {
+fn show_desktop_main_window(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    require_tray_menu_window(window.label())?;
     hide_tray_menu(&app);
     show_main_window(&app);
+    Ok(())
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn hide_desktop_tray_menu(app: AppHandle) {
+fn hide_desktop_tray_menu(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() != "tray-menu" && window.label() != "main" {
+        return Err(trf!(
+            "此操作不允许从当前窗口执行",
+            "This operation is not available from this window"
+        ));
+    }
     hide_tray_menu(&app);
+    Ok(())
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn run_due_scheduled_tasks(app: AppHandle) {
+fn run_due_scheduled_tasks(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    require_tray_menu_window(window.label())?;
     hide_tray_menu(&app);
     let _ = app.emit(DESKTOP_RUN_DUE_EVENT, ());
+    Ok(())
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn quit_desktop_app(app: AppHandle, state: State<'_, Arc<DesktopRuntimeState>>) {
+fn quit_desktop_app(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<DesktopRuntimeState>>,
+) -> Result<(), String> {
+    require_tray_menu_window(window.label())?;
     set_quit_requested(&state, true);
     app.exit(0);
+    Ok(())
 }
 
 /// Exposes the native runtime kind to the renderer so it can pick capability
@@ -1427,6 +1507,14 @@ pub fn run() {
 
     log::info!("creating Tauri builder");
     let mut builder = tauri::Builder::default().manage(Arc::clone(&ssh_state));
+    {
+        let page_ssh_state = Arc::clone(&ssh_state);
+        builder = builder.on_page_load(move |webview, payload| {
+            if matches!(payload.event(), PageLoadEvent::Started) {
+                close_sessions_for_window(&page_ssh_state, webview.label());
+            }
+        });
+    }
 
     #[cfg(desktop)]
     {
@@ -1442,11 +1530,6 @@ pub fn run() {
             ))
             .plugin(
                 tauri_plugin_global_shortcut::Builder::new()
-                    .with_shortcut("Alt+Shift+E")
-                    .unwrap_or_else(|error| {
-                        log::warn!("failed to register default global shortcut: {error}");
-                        tauri_plugin_global_shortcut::Builder::new()
-                    })
                     .with_handler(|app, _shortcut, event| {
                         if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
                             if let Some(window) = app.get_webview_window("main") {
@@ -1510,6 +1593,11 @@ pub fn run() {
 
             #[cfg(desktop)]
             {
+                // A running installation or another app may own this key.
+                // Losing a convenience shortcut must not prevent startup.
+                if let Err(error) = app.global_shortcut().register("Alt+Shift+E") {
+                    log::warn!("failed to register default global shortcut: {error}");
+                }
                 let (close_to_tray, close_prompt) =
                     read_close_settings(app.handle()).unwrap_or((false, true));
                 if let Err(error) = set_close_to_tray_state(&desktop_state, close_to_tray) {
@@ -1557,7 +1645,9 @@ pub fn run() {
         keychain_remove,
         runtime_platform,
         open_ssh_session,
+        ssh_gpu_utilization,
         ssh_write,
+        ssh_ack_output,
         ssh_resize,
         ssh_close,
         sftp_list,
@@ -1603,6 +1693,8 @@ pub fn run() {
         http_download_to_file,
         #[cfg(desktop)]
         reveal_local_path,
+        #[cfg(desktop)]
+        reveal_sftp_local_path,
         #[cfg(desktop)]
         set_desktop_close_to_tray,
         #[cfg(desktop)]
@@ -1718,6 +1810,77 @@ mod tests {
     /// The active locale is process-global, so tests that touch it must not
     /// run concurrently; tests within a binary run in parallel by default.
     static LOCALE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn ssh_window_capability_excludes_main_app_privileges() {
+        let main: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let ssh: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/ssh-terminal.json")).unwrap();
+        let tray: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/tray-menu.json")).unwrap();
+        assert_eq!(main["windows"], serde_json::json!(["main"]));
+        assert_eq!(ssh["windows"], serde_json::json!(["ssh-*"]));
+        assert_eq!(tray["windows"], serde_json::json!(["tray-menu"]));
+
+        let permissions = ssh["permissions"].as_array().unwrap();
+        for required in [
+            "core:event:allow-listen",
+            "core:event:allow-unlisten",
+            "core:window:allow-close",
+            "dialog:allow-open",
+            "dialog:allow-save",
+            "fs:write-files",
+        ] {
+            assert!(permissions.iter().any(|permission| permission == required));
+        }
+        for forbidden in [
+            "core:default",
+            "fs:default",
+            "http:default",
+            "notification:default",
+            "updater:default",
+            "process:default",
+            "deep-link:default",
+            "autostart:default",
+            "global-shortcut:allow-register",
+        ] {
+            assert!(!permissions.iter().any(|permission| permission == forbidden));
+        }
+        let tray_permissions = tray["permissions"].as_array().unwrap();
+        assert!(tray_permissions
+            .iter()
+            .any(|permission| permission == "core:event:allow-listen"));
+        assert!(tray_permissions
+            .iter()
+            .any(|permission| permission == "core:event:allow-unlisten"));
+        assert!(!tray_permissions
+            .iter()
+            .any(|permission| permission == "core:default"));
+    }
+
+    #[test]
+    fn privileged_window_commands_are_restricted_to_their_owner_window() {
+        assert!(require_main_window("main").is_ok());
+        assert!(require_main_window("ssh-task-1").is_err());
+        assert!(require_main_window("tray-menu").is_err());
+        assert!(require_main_or_ssh_window("main").is_ok());
+        assert!(require_main_or_ssh_window("ssh-task-1").is_ok());
+        assert!(require_main_or_ssh_window("tray-menu").is_err());
+        assert!(require_tray_menu_window("tray-menu").is_ok());
+        assert!(require_tray_menu_window("ssh-task-1").is_err());
+        assert!(can_read_runtime_storage("main", "any-key"));
+        assert!(can_read_runtime_storage("ssh-task-1", I18N_STORAGE_KEY));
+        assert!(can_read_runtime_storage("tray-menu", I18N_STORAGE_KEY));
+        assert!(!can_read_runtime_storage(
+            "ssh-task-1",
+            "easy-console.settings"
+        ));
+        assert!(!can_read_runtime_storage(
+            "tray-menu",
+            "easy-console.settings"
+        ));
+    }
 
     #[test]
     fn storage_roundtrips_and_leaves_a_backup_snapshot() {
@@ -1879,6 +2042,7 @@ mod tests {
             Some("current")
         );
     }
+
     #[test]
     fn storage_cas_applies_expected_writes_and_reports_conflicts() {
         let mut data = HashMap::new();

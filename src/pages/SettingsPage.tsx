@@ -118,12 +118,12 @@ function validate(settings: AppSettings, t: (key: TranslationKey) => string) {
   return null;
 }
 
-function applySettings(settings: AppSettings) {
+async function applySettings(settings: AppSettings) {
+  await browserRuntime.setDesktopCloseToTray(settings.desktopCloseToTray);
+  await browserRuntime.setDesktopClosePrompt(settings.desktopClosePrompt);
+  await browserRuntime.setDesktopAutostart(settings.desktopAutostart);
   setRuntimeSettings(settings);
   setApiBaseUrl(settings.apiBaseUrl);
-  void browserRuntime.setDesktopCloseToTray(settings.desktopCloseToTray);
-  void browserRuntime.setDesktopClosePrompt(settings.desktopClosePrompt);
-  void browserRuntime.setDesktopAutostart(settings.desktopAutostart);
 }
 
 const notificationEvents: Array<{ event: ImportantNotificationEvent; zh: string; en: string; descriptionZh: string; descriptionEn: string }> = [
@@ -598,7 +598,6 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     const previousApiBaseUrl = getRuntimeSettings().apiBaseUrl;
     setSaving(true);
     try {
-      applySettings(nextSettings);
       const savedSettings = await saveAccountSettings(browserRuntime.storage, settingsAccountId, nextSettings);
       // The store JSON never contains the SSH default password; persist it in
       // secureStorage alongside the store save. The web runtime's secureStorage
@@ -613,6 +612,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           nextSettings.ssh.defaultPassword,
         );
       }
+      await applySettings(savedSettings);
       if (previousApiBaseUrl !== savedSettings.apiBaseUrl) {
         await queryClient.cancelQueries({ queryKey: queryKeys.images.all });
         await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all });
@@ -670,7 +670,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           saveGenerationRef.current += 1;
           setSaving(true);
           try {
-            applySettings(DEFAULT_APP_SETTINGS);
+            await applySettings(DEFAULT_APP_SETTINGS);
             const store = await readAccountSettingsStore(browserRuntime.storage);
             await writeAccountSettingsStore(browserRuntime.storage, resetAccountAppSettings(store, settingsAccountId));
             // Reset clears the SSH default password everywhere, including the
@@ -1011,8 +1011,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   function addPortForward() {
     const localPort = Number(pfLocalPort);
     const remotePort = Number(pfRemotePort);
-    if (!localPort || localPort < 1 || localPort > 65535) {
-      toast.error(text("请输入有效的本地端口 (1-65535)", "Enter a valid local port (1-65535)"));
+    if (!pfLocalPort.trim() || !Number.isInteger(localPort) || localPort < 0 || localPort > 65535) {
+      toast.error(text("请输入有效的本地端口 (0-65535，0 为自动分配)", "Enter a valid local port (0-65535; 0 assigns an available port)"));
       return;
     }
     if (pfType !== "dynamic") {
@@ -1020,7 +1020,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         toast.error(text("请填写远程主机地址", "Enter a remote host address"));
         return;
       }
-      if (!remotePort || remotePort < 1 || remotePort > 65535) {
+      if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) {
         toast.error(text("请输入有效的远程端口 (1-65535)", "Enter a valid remote port (1-65535)"));
         return;
       }
@@ -1175,7 +1175,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           : JSON.stringify(importBackup.items.settings),
       );
       const nextSettings = getAccountAppSettings(store, settingsAccountId);
-      applySettings(nextSettings);
+      await applySettings(nextSettings);
       setForm(nextSettings);
       setSavedBaseline(normalizeAppSettings(nextSettings));
     }
@@ -1759,6 +1759,10 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                       <div className="min-w-0 flex-1">
                         <div className="font-mono text-app-text">{host.hostPort}</div>
                         <div className="truncate font-mono text-app-muted">{host.fingerprint}</div>
+                        <div className="truncate text-[0.6875rem] text-app-muted">
+                          {host.algorithm ? `${host.algorithm} · ` : ""}
+                          {host.taskId ? text("任务", "Task") + ` ${host.taskId}` : text("任务 ID 未记录", "Task ID not recorded")}
+                        </div>
                       </div>
                       <button className="ml-2 shrink-0 rounded p-1 text-app-muted hover:bg-app-surface hover:text-app-danger" type="button" onClick={() => removeKnownHost(host.hostPort)}>
                         <Trash2 className="h-3.5 w-3.5" />
@@ -1911,7 +1915,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                     </label>
                     <label className="block text-sm">
                       <span className="mb-1 block text-app-muted">{t("settings.sshPortForwardLocalPort")}</span>
-                      <Input type="number" min={1} max={65535} value={pfLocalPort} onChange={(e) => setPfLocalPort(e.target.value)} placeholder="8080" />
+                      <Input type="number" min={0} max={65535} value={pfLocalPort} onChange={(e) => setPfLocalPort(e.target.value)} placeholder="8080" />
+                      <span className="mt-1 block text-xs text-app-muted">{text("填 0 由系统自动分配空闲端口。", "Use 0 to automatically assign an available port.")}</span>
                     </label>
                   </div>
                   {pfType !== "dynamic" ? (
@@ -1952,7 +1957,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                             {rule.type === "local" ? "-L" : rule.type === "remote" ? "-R" : "-D"}
                           </span>
                           <span className="font-mono text-app-text">
-                            {rule.localHost}:{rule.localPort}
+                            {rule.localHost}:{rule.localPort === 0 ? text("自动", "Auto") : rule.localPort}
                             {rule.type !== "dynamic" ? ` → ${rule.remoteHost}:${rule.remotePort}` : ""}
                           </span>
                           {rule.host ? (

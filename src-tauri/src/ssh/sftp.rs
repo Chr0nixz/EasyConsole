@@ -72,19 +72,13 @@ async fn resolve_sftp_path(sftp: &SftpSession, path: &str) -> Result<String, Str
     Ok(path.to_string())
 }
 
-/// SFTP subsystem shared by the session loop and spawned transfer tasks. The
-/// mutex only serializes creation and replacement; the underlying
-/// `SftpSession` multiplexes concurrent requests itself.
+/// SFTP subsystem shared by small operations in the session loop.
 pub type SharedSftpSession = Arc<AsyncMutex<Option<Arc<SftpSession>>>>;
 
-pub async fn ensure_sftp_session<R: Runtime>(
+async fn open_sftp_session_with_config<R: Runtime>(
     session: &client::Handle<EasyConsoleSshClient<R>>,
-    shared: &SharedSftpSession,
+    config: russh_sftp::client::Config,
 ) -> Result<Arc<SftpSession>, String> {
-    let mut guard = shared.lock().await;
-    if let Some(existing) = guard.as_ref() {
-        return Ok(Arc::clone(existing));
-    }
     let sftp_channel = session.channel_open_session().await.map_err(|e| {
         trf!(
             "SFTP 通道打开失败：{e}",
@@ -100,7 +94,7 @@ pub async fn ensure_sftp_session<R: Runtime>(
                 "SFTP: subsystem request failed: {e}"
             )
         })?;
-    let sftp = SftpSession::new(sftp_channel.into_stream())
+    let sftp = SftpSession::new_with_config(sftp_channel.into_stream(), config)
         .await
         .map_err(|e| {
             trf!(
@@ -108,9 +102,46 @@ pub async fn ensure_sftp_session<R: Runtime>(
                 "SFTP: failed to create the session: {e}"
             )
         })?;
-    let sftp = Arc::new(sftp);
+    Ok(Arc::new(sftp))
+}
+
+async fn open_sftp_session<R: Runtime>(
+    session: &client::Handle<EasyConsoleSshClient<R>>,
+) -> Result<Arc<SftpSession>, String> {
+    open_sftp_session_with_config(session, russh_sftp::client::Config::default()).await
+}
+
+pub async fn ensure_sftp_session<R: Runtime>(
+    session: &client::Handle<EasyConsoleSshClient<R>>,
+    shared: &SharedSftpSession,
+) -> Result<Arc<SftpSession>, String> {
+    let mut guard = shared.lock().await;
+    if let Some(existing) = guard.as_ref() {
+        return Ok(Arc::clone(existing));
+    }
+    let sftp = open_sftp_session(session).await?;
     *guard = Some(Arc::clone(&sftp));
     Ok(sftp)
+}
+
+async fn open_transfer_sftp_session<R: Runtime>(
+    session: &client::Handle<EasyConsoleSshClient<R>>,
+    shared: &SharedSftpSession,
+) -> Result<Arc<SftpSession>, String> {
+    // russh channel creation uses the same connection-wide request path as
+    // other session operations. Serialize only channel setup; each transfer
+    // keeps its own SFTP protocol state once initialization completes.
+    let _guard = shared.lock().await;
+    // Independent channels can transfer concurrently; keep each channel's
+    // write acknowledgements ordered to avoid russh-sftp response races.
+    open_sftp_session_with_config(
+        session,
+        russh_sftp::client::Config {
+            max_concurrent_writes: 1,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 /// Drops the shared session after an operation failed on it, so the next
@@ -278,7 +309,7 @@ pub async fn sftp_upload_file<R: Runtime>(
     remote_temp_slot: &AsyncMutex<Option<String>>,
 ) -> Result<SftpTransferOutcome, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let sftp = ensure_sftp_session(session, shared).await?;
+    let sftp = open_transfer_sftp_session(session, shared).await?;
     let mut remote_temp_for_cleanup: Option<String> = None;
     let result = async {
         let remote_path = resolve_sftp_path(&sftp, &remote_path).await?;
@@ -374,22 +405,14 @@ pub async fn sftp_upload_file<R: Runtime>(
     }
     .await;
     match result {
-        Ok((transferred, total)) => {
-            // Retire the SFTP channel with the transfer: reusing it across
-            // transfers raced in russh-sftp (a pending close/status answer
-            // could swallow the next transfer's responses, hanging the
-            // worker). Opening a fresh channel per transfer costs one RTT.
-            drop_shared_sftp_session(shared).await;
-            Ok(SftpTransferOutcome {
-                transfer_id: ctx.transfer_id.clone(),
-                operation: "upload",
-                status: "completed",
-                transferred,
-                total,
-            })
-        }
+        Ok((transferred, total)) => Ok(SftpTransferOutcome {
+            transfer_id: ctx.transfer_id.clone(),
+            operation: "upload",
+            status: "completed",
+            transferred,
+            total,
+        }),
         Err(error) => {
-            drop_shared_sftp_session(shared).await;
             if let Some(temp) = remote_temp_for_cleanup {
                 // Best effort: an aborted half-written temp file must not
                 // linger on the remote side.
@@ -429,7 +452,7 @@ pub async fn sftp_download_file<R: Runtime>(
     cancel: &Arc<AtomicBool>,
 ) -> Result<SftpTransferOutcome, String> {
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-    let sftp = ensure_sftp_session(session, shared).await?;
+    let sftp = open_transfer_sftp_session(session, shared).await?;
     let remote_path = resolve_sftp_path(&sftp, &remote_path).await?;
     let total = sftp
         .metadata(&remote_path)
@@ -615,19 +638,14 @@ pub async fn sftp_download_file<R: Runtime>(
     }
     .await;
     match result {
-        Ok(()) => {
-            // Retire the SFTP channel with the transfer (see the upload path).
-            drop_shared_sftp_session(shared).await;
-            Ok(SftpTransferOutcome {
-                transfer_id: ctx.transfer_id.clone(),
-                operation: "download",
-                status: "completed",
-                transferred: transferred.load(Ordering::Relaxed),
-                total,
-            })
-        }
+        Ok(()) => Ok(SftpTransferOutcome {
+            transfer_id: ctx.transfer_id.clone(),
+            operation: "download",
+            status: "completed",
+            transferred: transferred.load(Ordering::Relaxed),
+            total,
+        }),
         Err(error) => {
-            drop_shared_sftp_session(shared).await;
             // Failure, cancellation, and session death all remove the temp
             // file: nothing below this line resumes from it, so a leftover
             // `.part` would only invite mistaking it for a complete file.
@@ -757,9 +775,9 @@ pub fn sftp_register_local_root(
 }
 
 #[tauri::command]
-pub async fn sftp_upload(
+pub async fn sftp_upload<R: Runtime>(
     state: State<'_, Arc<SshSessionState>>,
-    window: tauri::WebviewWindow,
+    window: tauri::WebviewWindow<R>,
     session_id: String,
     local_path: String,
     remote_path: String,
@@ -773,6 +791,12 @@ pub async fn sftp_upload(
             "The local path is not a file: {local_path}"
         ));
     }
+    let local_path = allowed.into_os_string().into_string().map_err(|_| {
+        trf!(
+            "本地路径包含无效文本",
+            "The local path contains invalid text"
+        )
+    })?;
     send_session_command_with_response(state, &window, &session_id, |response| {
         SshCommand::SftpUpload {
             local_path,
@@ -784,9 +808,9 @@ pub async fn sftp_upload(
 }
 
 #[tauri::command]
-pub async fn sftp_download(
+pub async fn sftp_download<R: Runtime>(
     state: State<'_, Arc<SshSessionState>>,
-    window: tauri::WebviewWindow,
+    window: tauri::WebviewWindow<R>,
     session_id: String,
     remote_path: String,
     local_path: String,
@@ -802,6 +826,25 @@ pub async fn sftp_download(
         return Err(trf!(
             "本地目录不存在：{local_path}",
             "The local directory does not exist: {local_path}"
+        ));
+    }
+    let local_path = allowed.into_os_string().into_string().map_err(|_| {
+        trf!(
+            "本地路径包含无效文本",
+            "The local path contains invalid text"
+        )
+    })?;
+    // The worker and cancellation cleanup derive this exact path from the
+    // canonical destination. Never follow an existing .part symlink.
+    let part_path = format!("{local_path}.part");
+    state.ensure_sftp_local_path_allowed(&window, &session_id, &part_path)?;
+    if std::fs::symlink_metadata(&part_path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(trf!(
+            "本地下载临时文件不能是符号链接",
+            "The local download temp file cannot be a symbolic link"
         ));
     }
     send_session_command_with_response(state, &window, &session_id, |response| {

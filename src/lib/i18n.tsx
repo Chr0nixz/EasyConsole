@@ -448,7 +448,7 @@ const fallbackValue: I18nContextValue = {
 
 const I18nContext = createContext<I18nContextValue>(fallbackValue);
 
-export function I18nProvider({ children }: { children: ReactNode }) {
+export function I18nProvider({ children, syncNative = true }: { children: ReactNode; syncNative?: boolean }) {
   const [locale, setLocaleState] = useState<Locale>(detectInitialLocale);
 
   // Sync the module-level locale during render rather than in an effect.
@@ -470,8 +470,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     document.documentElement.lang = locale;
-    void setNativeLocale(locale);
-  }, [locale]);
+    if (syncNative) void setNativeLocale(locale);
+  }, [locale, syncNative]);
 
   const setLocale = useCallback((nextLocale: Locale) => {
     setLocaleState(nextLocale);

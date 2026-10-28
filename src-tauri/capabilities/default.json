@@ -8,8 +8,7 @@
     "windows"
   ],
   "windows": [
-    "main",
-    "ssh-*"
+    "main"
   ],
   "permissions": [
     "core:default",

@@ -432,15 +432,19 @@ export type RuntimeTransport = {
   openExternal(url: string): void;
   openLocalPath(path: string): Promise<void>;
   revealLocalPath(path: string): Promise<void>;
+  revealSftpLocalPath(sessionId: string, path: string): Promise<void>;
   openSshSession(request: SshConnectionRequest): Promise<string>;
   writeSshSession(sessionId: string, data: string): Promise<void>;
+  acknowledgeSshOutput(sessionId: string, sequence: number): Promise<void>;
   resizeSshSession(sessionId: string, cols: number, rows: number): Promise<void>;
   closeSshSession(sessionId: string): Promise<void>;
+  /** Read-only probe on this window's existing SSH connection, or null if absent. */
+  readTaskGpuUtilization(taskId: string): Promise<number[] | null>;
   onSshSessionEvent(sessionId: string, handler: (event: SshSessionEvent) => void): Promise<() => void>;
   listKnownHosts(): Promise<KnownHostEntry[]>;
   removeKnownHost(hostPort: string): Promise<void>;
   clearKnownHosts(): Promise<void>;
-  confirmKnownHost(promptId: string, accept: boolean): Promise<void>;
+  confirmKnownHost(promptId: string, accept: boolean, confirmChangedKey: boolean): Promise<void>;
   openSystemSshTerminal(request: SshConnectionRequest): Promise<void>;
   openVscodeSsh(request: SshConnectionRequest): Promise<void>;
   /** Lists every VS Code Remote-SSH key this install installed on hosts. */
@@ -454,12 +458,12 @@ export type RuntimeTransport = {
    */
   cleanupLegacyVscodeKey(): Promise<void>;
   /**
-   * Revokes a VS Code Remote-SSH setup. With `removeRemote` the marked key is
-   * removed from the host's `authorized_keys` first; without it only the local
-   * config block and key files are deleted.
+   * Revokes a VS Code Remote-SSH setup. With `removeRemote`, the matching
+   * public key is removed from the host's `authorized_keys` first; without it
+   * only the local config block and key files are deleted.
    */
   revokeVscodeSsh(request: SshConnectionRequest, removeRemote: boolean): Promise<void>;
-  openSshWindow(request: SshConnectionRequest): Promise<void>;
+  openSshWindow(request: SshConnectionRequest, preferences: import("./app-settings").SshTerminalPreferences): Promise<void>;
   /**
    * Registers a user-picked directory as an allowed root for SFTP local
    * paths. Native upload/download reject local paths outside every root
@@ -475,7 +479,8 @@ export type RuntimeTransport = {
   sftpMkdir(sessionId: string, path: string): Promise<void>;
   sftpCancel(sessionId: string, transferId?: string): Promise<void>;
   onSftpProgress(sessionId: string, handler: (progress: SftpProgress) => void): Promise<() => void>;
-  startPortForward(sessionId: string, rule: PortForwardRule): Promise<void>;
+  /** Starts a listener and returns its actual local port (0 requests automatic allocation). */
+  startPortForward(sessionId: string, rule: PortForwardRule): Promise<number>;
   stopPortForward(sessionId: string, ruleId: string): Promise<void>;
   onPortForwardStatus(sessionId: string, handler: (status: PortForwardStatus) => void): Promise<() => void>;
   listSshHistory(): Promise<SshHistoryEntry[]>;
@@ -567,6 +572,8 @@ export type SshSessionEvent = {
   phase?: SshSessionPhase;
   data?: string;
   message?: string;
+  /** Cumulative parse acknowledgement; only present on native output batches. */
+  outputSequence?: number;
 };
 
 export type SshHostKeyPrompt = {
@@ -574,11 +581,21 @@ export type SshHostKeyPrompt = {
   host: string;
   port: number;
   fingerprint: string;
+  previousFingerprint?: string | null;
+  previousTaskId?: string | null;
+  taskId?: string | null;
+  changedKey?: boolean;
+  taskChanged?: boolean;
+  requiresChangedConfirmation?: boolean;
 };
 
 export type KnownHostEntry = {
   hostPort: string;
+  algorithm?: string | null;
+  publicKey?: string | null;
   fingerprint: string;
+  firstTrustedAt?: number;
+  taskId?: string | null;
 };
 
 export type SshCustomColors = {
@@ -610,6 +627,7 @@ export type PortForwardRule = {
   id: string;
   type: PortForwardType;
   localHost: string;
+  /** 0 lets the OS allocate an available local port. */
   localPort: number;
   remoteHost: string;
   remotePort: number;
@@ -624,6 +642,7 @@ export type PortForwardRule = {
 export type PortForwardStatus = {
   ruleId: string;
   active: boolean;
+  localPort?: number;
   error?: string;
 };
 

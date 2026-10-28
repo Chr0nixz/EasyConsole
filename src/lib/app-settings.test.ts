@@ -323,6 +323,21 @@ describe("port forward rule host scoping", () => {
     expect(unscoped[0].host).toBeUndefined();
   });
 
+  it("keeps local port zero for OS-assigned forwarding and rejects out-of-range ports", () => {
+    const rules = normalizeAppSettings({
+      ssh: {
+        ...DEFAULT_SSH_SETTINGS,
+        portForwards: [
+          { id: "auto", ...baseRule, localPort: 0, enabled: true },
+          { id: "invalid", ...baseRule, localPort: 65536, enabled: true },
+        ],
+      },
+    }).ssh.portForwards;
+
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatchObject({ id: "auto", localPort: 0 });
+  });
+
   it("matches unscoped rules against every host and scoped rules exactly, case-insensitively", () => {
     const unscoped = { id: "pf-1", ...baseRule, remotePort: 80, enabled: true } as PortForwardRule;
     const scoped = { id: "pf-2", ...baseRule, remotePort: 80, enabled: true, host: "10.0.0.8" } as PortForwardRule;

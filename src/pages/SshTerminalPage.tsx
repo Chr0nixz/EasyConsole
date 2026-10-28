@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useId, useState } from "react";
 
 import { SshTerminalTab } from "../components/tasks/SshTerminalTab";
+import type { SshTerminalPreferences } from "../lib/app-settings";
 import { useI18n } from "../lib/i18n";
 import type { SshConnectionRequest } from "../lib/types";
 
@@ -66,6 +67,7 @@ export function SshTerminalPage() {
     () => urlSource?.request ?? null,
   );
   const [error, setError] = useState<string | null>(() => urlSource?.error ?? null);
+  const [preferences, setPreferences] = useState<SshTerminalPreferences>();
 
   useEffect(() => {
     let disposed = false;
@@ -74,14 +76,15 @@ export function SshTerminalPage() {
     // `open_ssh_window` call stashed it there before creating this window.
     if (isTauri()) {
       const label = getCurrentWindow().label;
-      invoke<SshConnectionRequest | null>("get_ssh_window_request", { label })
+      invoke<{ request: SshConnectionRequest; preferences: SshTerminalPreferences } | null>("get_ssh_window_request", { label })
         .then((result) => {
           if (disposed || !result) return;
-          if (!result.host) {
+          if (!result.request?.host || !result.preferences) {
             setError(text("连接参数无效", "Invalid connection parameters"));
             return;
           }
-          setRequest(result);
+          setRequest(result.request);
+          setPreferences(result.preferences);
         })
         .catch(() => {
           if (!disposed) setError(text("连接参数获取失败", "Failed to fetch connection parameters"));
@@ -136,6 +139,7 @@ export function SshTerminalPage() {
         request={request}
         tabId={tabId}
         active={true}
+        preferences={preferences}
         onStatusChange={() => {}}
       />
     </div>

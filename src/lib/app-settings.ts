@@ -50,6 +50,8 @@ export type SshSettings = {
   };
 };
 
+export type SshTerminalPreferences = Pick<SshSettings, "portForwards" | "maxHistoryEntries" | "terminal">;
+
 export type AppSettings = {
   apiBaseUrl: string;
   monitorDashboardUrl: string;
@@ -307,11 +309,11 @@ function normalizePortForwardRule(value: unknown, index: number): PortForwardRul
   const id = typeof raw.id === "string" && raw.id ? raw.id : `pf-${index}`;
   const type = normalizePortForwardType(raw.type);
   const localHost = normalizeString(raw.localHost, "127.0.0.1");
-  const localPort = normalizePositiveInteger(raw.localPort, 0);
+  const localPort = raw.localPort == null ? -1 : normalizeNonNegativeInteger(raw.localPort, -1);
   const remoteHost = normalizeString(raw.remoteHost, "");
   const remotePort = normalizePositiveInteger(raw.remotePort, 0);
-  if (localPort === 0) return null;
-  if (type !== "dynamic" && (remoteHost === "" || remotePort === 0)) return null;
+  if (localPort < 0 || localPort > 65535) return null;
+  if (type !== "dynamic" && (remoteHost === "" || remotePort === 0 || remotePort > 65535)) return null;
   const host = typeof raw.host === "string" && raw.host.trim() ? raw.host.trim() : undefined;
   return { id, type, localHost, localPort, remoteHost, remotePort, enabled: raw.enabled === true, host };
 }

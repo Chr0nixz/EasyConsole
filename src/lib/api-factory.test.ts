@@ -58,10 +58,12 @@ function createRuntime(responseData: unknown) {
     openExternal() {},
     async openLocalPath() {},
     async revealLocalPath() {},
+    async revealSftpLocalPath() {},
     async openSshSession() {
       return "session";
     },
     async writeSshSession() {},
+    async acknowledgeSshOutput() {},
     async resizeSshSession() {},
     async closeSshSession() {},
     async onSshSessionEvent() {
@@ -95,7 +97,7 @@ function createRuntime(responseData: unknown) {
     async sftpMkdir() {},
     async sftpCancel() {},
     async onSftpProgress() { return () => {}; },
-    async startPortForward() {},
+    async startPortForward() { return 2222; },
     async stopPortForward() {},
     async onPortForwardStatus() { return () => {}; },
     async listSshHistory() { return []; },
@@ -109,6 +111,7 @@ function createRuntime(responseData: unknown) {
       return false;
     },
     async setDesktopAutostart() {},
+    async readTaskGpuUtilization() { return null; },
     async showDesktopMainWindow() {},
     async hideDesktopTrayMenu() {},
     async runDueScheduledTasks() {},

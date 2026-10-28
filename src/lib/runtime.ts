@@ -1,4 +1,5 @@
 import { isTauri } from "@tauri-apps/api/core";
+import { getActiveAccountScope } from "./account-scope";
 
 import { i18nText, type Locale } from "./i18n-text";
 import { createLayeredSecureStorage } from "./secure-storage";
@@ -37,6 +38,33 @@ const RUNTIME_SOCKET_CLOSED = 3;
  */
 let runtimeKind: RuntimeKind = "web";
 let runtimeKindReady: Promise<void> | null = null;
+const taskSshSessions = new Map<string, { sessionId: string; scope: string }>();
+const pendingGpuProbes = new Map<string, Promise<number[]>>();
+type SshWriteQueue = {
+  tail: Promise<void>;
+  cancelled: Promise<never>;
+  cancel(): void;
+  closed: boolean;
+};
+const sshWriteQueues = new Map<string, SshWriteQueue>();
+const closingSshSessions = new Set<string>();
+
+function sshSessionClosedError() {
+  return new Error(i18nText("SSH 会话已关闭", "The SSH session is closed"));
+}
+
+function clearSshSessionRequests(sessionId: string) {
+  const queue = sshWriteQueues.get(sessionId);
+  if (queue) {
+    queue.closed = true;
+    queue.cancel();
+    sshWriteQueues.delete(sessionId);
+  }
+  pendingGpuProbes.delete(sessionId);
+  for (const [key, entry] of taskSshSessions) {
+    if (entry.sessionId === sessionId) taskSshSessions.delete(key);
+  }
+}
 
 /**
  * Resolve the native runtime kind once. Safe to call multiple times; subsequent
@@ -676,6 +704,7 @@ function bufferSshSessionEvent(event: SshSessionEvent) {
 }
 
 function dispatchSshSessionEvent(event: SshSessionEvent) {
+  if (event.kind === "closed") clearSshSessionRequests(event.sessionId);
   const handler = sshSessionHandlers.get(event.sessionId);
   if (handler) {
     handler(event);
@@ -789,20 +818,69 @@ export const browserRuntime: RuntimeTransport = {
     if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("reveal_local_path", { path });
   },
+  revealSftpLocalPath(sessionId, path) {
+    if (runtimeKind !== "desktop") return Promise.resolve();
+    return invokeTauriCommand("reveal_sftp_local_path", { sessionId, path });
+  },
   async openSshSession(request) {
     await ensureGlobalSshListen();
-    return invokeTauriCommand<string>("open_ssh_session", { request });
+    const scope = getActiveAccountScope().key;
+    const sessionId = await invokeTauriCommand<string>("open_ssh_session", { request });
+    if (request.taskId) taskSshSessions.set(request.taskId, { sessionId, scope });
+    return sessionId;
+  },
+  async readTaskGpuUtilization(taskId) {
+    const session = taskSshSessions.get(taskId);
+    if (runtimeKind !== "desktop" || !session || session.scope !== getActiveAccountScope().key) return null;
+    const pending = pendingGpuProbes.get(session.sessionId);
+    if (pending) return pending;
+    const probe = invokeTauriCommand<number[]>("ssh_gpu_utilization", { sessionId: session.sessionId }).finally(() => {
+      if (pendingGpuProbes.get(session.sessionId) === probe) pendingGpuProbes.delete(session.sessionId);
+    });
+    pendingGpuProbes.set(session.sessionId, probe);
+    return probe;
   },
   writeSshSession(sessionId, data) {
-    return invokeTauriCommand("ssh_write", { sessionId, data });
+    if (closingSshSessions.has(sessionId)) return Promise.reject(sshSessionClosedError());
+    let queue = sshWriteQueues.get(sessionId);
+    if (!queue) {
+      let cancel!: () => void;
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        cancel = () => reject(sshSessionClosedError());
+      });
+      queue = { tail: Promise.resolve(), cancelled, cancel, closed: false };
+      sshWriteQueues.set(sessionId, queue);
+    }
+    const activeQueue = queue;
+    const write = Promise.race([
+      activeQueue.tail.then(() => {
+        if (activeQueue.closed) throw sshSessionClosedError();
+        return invokeTauriCommand("ssh_write", { sessionId, data });
+      }),
+      activeQueue.cancelled,
+    ]);
+    const tail = write.then(() => undefined, () => undefined);
+    activeQueue.tail = tail;
+    void tail.then(() => {
+      if (sshWriteQueues.get(sessionId) === activeQueue && activeQueue.tail === tail) {
+        sshWriteQueues.delete(sessionId);
+      }
+    });
+    return write;
   },
   resizeSshSession(sessionId, cols, rows) {
     return invokeTauriCommand("ssh_resize", { sessionId, cols, rows });
   },
+  acknowledgeSshOutput(sessionId, sequence) {
+    return invokeTauriCommand("ssh_ack_output", { sessionId, sequence });
+  },
   async closeSshSession(sessionId) {
+    closingSshSessions.add(sessionId);
+    clearSshSessionRequests(sessionId);
     try {
       await invokeTauriCommand("ssh_close", { sessionId });
     } finally {
+      closingSshSessions.delete(sessionId);
       clearSshSessionEvents(sessionId);
     }
   },
@@ -833,9 +911,9 @@ export const browserRuntime: RuntimeTransport = {
     if (runtimeKind === "web") return;
     await invokeTauriCommand("clear_known_hosts", {});
   },
-  async confirmKnownHost(promptId, accept) {
+  async confirmKnownHost(promptId, accept, confirmChangedKey) {
     if (runtimeKind === "web") return;
-    await invokeTauriCommand("confirm_known_host", { promptId, accept });
+    await invokeTauriCommand("confirm_known_host", { promptId, accept, confirmChangedKey });
   },
   openSystemSshTerminal(request) {
     return invokeTauriCommand("open_system_ssh_terminal", { request });
@@ -867,7 +945,7 @@ export const browserRuntime: RuntimeTransport = {
     }
     return invokeTauriCommand("revoke_vscode_ssh", { request, removeRemote });
   },
-  openSshWindow(request) {
+  openSshWindow(request, preferences) {
     if (runtimeKind !== "desktop") {
       return Promise.reject(
         new Error(
@@ -875,7 +953,7 @@ export const browserRuntime: RuntimeTransport = {
         ),
       );
     }
-    return invokeTauriCommand("open_ssh_window", { request });
+    return invokeTauriCommand("open_ssh_window", { request, preferences });
   },
   sftpRegisterLocalRoot(sessionId, rootPath) {
     if (runtimeKind === "web") return Promise.resolve();
@@ -923,7 +1001,7 @@ export const browserRuntime: RuntimeTransport = {
   },
   startPortForward(sessionId, rule) {
     if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持端口转发", "Port forwarding is not supported in this environment")));
-    return invokeTauriCommand("ssh_start_port_forward", { sessionId, rule });
+    return invokeTauriCommand<number>("ssh_start_port_forward", { sessionId, rule });
   },
   stopPortForward(sessionId, ruleId) {
     if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持端口转发", "Port forwarding is not supported in this environment")));

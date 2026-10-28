@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::ssh::session::{send_session_command_with_response, SshCommand, SshSessionState};
 use crate::trf;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PortForwardRuleValue {
     pub id: String,
@@ -64,7 +64,19 @@ where
             "SOCKS5: failed to read methods: {e}"
         )
     })?;
-    // Reply: no auth
+    if !methods.contains(&0) {
+        stream.write_all(&[5, 0xff]).await.map_err(|e| {
+            trf!(
+                "SOCKS5 写入方法回复失败：{e}",
+                "SOCKS5: failed to write the method reply: {e}"
+            )
+        })?;
+        return Err(trf!(
+            "SOCKS5 客户端未提供免认证方式",
+            "SOCKS5 client did not offer no-authentication"
+        ));
+    }
+
     stream.write_all(&[5, 0]).await.map_err(|e| {
         trf!(
             "SOCKS5 写入方法回复失败：{e}",
@@ -88,7 +100,7 @@ where
     }
     if header[1] != 1 {
         // Only CONNECT supported
-        let _ = stream.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+        let _ = write_socks5_reply(stream, 7).await;
         return Err(trf!(
             "SOCKS5 仅支持 CONNECT 命令",
             "SOCKS5 supports the CONNECT command only"
@@ -136,7 +148,7 @@ where
             format_socks5_ipv6_host(&addr)
         }
         _ => {
-            let _ = stream.write_all(&[5, 8, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+            let _ = write_socks5_reply(stream, 8).await;
             return Err(trf!(
                 "SOCKS5 不支持的地址类型",
                 "Unsupported SOCKS5 address type"
@@ -152,18 +164,22 @@ where
     })?;
     let dest_port = u16::from_be_bytes(port_buf);
 
-    // Reply: success
+    Ok((dest_host, dest_port))
+}
+
+pub async fn write_socks5_reply<S>(stream: &mut S, status: u8) -> Result<(), String>
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
     stream
-        .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
+        .write_all(&[5, status, 0, 1, 0, 0, 0, 0, 0, 0])
         .await
         .map_err(|e| {
             trf!(
                 "SOCKS5 写入回复失败：{e}",
                 "SOCKS5: failed to write the reply: {e}"
             )
-        })?;
-
-    Ok((dest_host, dest_port))
+        })
 }
 
 #[tauri::command]
@@ -172,7 +188,7 @@ pub async fn ssh_start_port_forward(
     window: tauri::WebviewWindow,
     session_id: String,
     rule: PortForwardRuleValue,
-) -> Result<(), String> {
+) -> Result<u16, String> {
     send_session_command_with_response(state, &window, &session_id, |response| {
         SshCommand::StartPortForward { rule, response }
     })
@@ -224,24 +240,31 @@ mod tests {
     #[tokio::test]
     async fn socks5_handshake_negotiates_no_auth_and_parses_domain_target() {
         let (mut client, mut server) = tokio::io::duplex(128);
-        let handshake = tokio::spawn(async move { socks5_handshake(&mut server).await });
-
         client.write_all(&[5, 1, 0]).await.unwrap();
         let mut method_reply = [0u8; 2];
-        client.read_exact(&mut method_reply).await.unwrap();
+        let (host, port) = tokio::join!(socks5_handshake(&mut server), async {
+            client.read_exact(&mut method_reply).await.unwrap();
+            client
+                .write_all(&[
+                    5, 1, 0, 3, 7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0, 80,
+                ])
+                .await
+                .unwrap();
+        })
+        .0
+        .unwrap();
         assert_eq!(method_reply, [5, 0]);
-
-        let mut request = vec![5, 1, 0, 3, 7];
-        request.extend_from_slice(b"example");
-        request.extend_from_slice(&80u16.to_be_bytes());
-        client.write_all(&request).await.unwrap();
-
         let mut connect_reply = [0u8; 10];
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            client.read_exact(&mut connect_reply),
+        )
+        .await
+        .is_err());
+        write_socks5_reply(&mut server, 0).await.unwrap();
         client.read_exact(&mut connect_reply).await.unwrap();
         assert_eq!(connect_reply, [5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
-
-        let target = handshake.await.unwrap().unwrap();
-        assert_eq!(target, ("example".to_string(), 80));
+        assert_eq!((host, port), ("example".to_string(), 80));
     }
 
     #[tokio::test]
@@ -263,6 +286,18 @@ mod tests {
         client.read_exact(&mut reply).await.unwrap();
         assert_eq!(reply[1], 7);
 
+        assert!(handshake.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn socks5_handshake_rejects_unoffered_authentication_methods() {
+        let (mut client, mut server) = tokio::io::duplex(128);
+        let handshake = tokio::spawn(async move { socks5_handshake(&mut server).await });
+
+        client.write_all(&[5, 1, 2]).await.unwrap();
+        let mut method_reply = [0u8; 2];
+        client.read_exact(&mut method_reply).await.unwrap();
+        assert_eq!(method_reply, [5, 0xff]);
         assert!(handshake.await.unwrap().is_err());
     }
 }

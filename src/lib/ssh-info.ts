@@ -27,8 +27,18 @@ function firstText(...values: unknown[]) {
   return "";
 }
 
-const SSH_HOST_PATTERN = /^[\w.:[\]-]+$/;
-const SSH_USERNAME_PATTERN = /^[\w.-]+$/;
+function firstSecret(...values: unknown[]) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const secret = String(value);
+    const trimmed = secret.trim();
+    if (trimmed && trimmed !== "None") return secret;
+  }
+  return "";
+}
+
+const SSH_HOST_PATTERN = /^(?!-)[\w.:[\]-]+$/;
+const SSH_USERNAME_PATTERN = /^(?!-)[\w.-]+$/;
 
 /**
  * Quotes one shell word for the copyable command text. Host/username/port that
@@ -55,7 +65,7 @@ export function formatSshCommand(input: SshCommandInput): string | null {
   if (!host || host === "-") return null;
   if (!SSH_HOST_PATTERN.test(host)) return null;
   const username = input.username?.trim();
-  if (username && username !== "-" && !SSH_USERNAME_PATTERN.test(username)) return null;
+  if (username && !SSH_USERNAME_PATTERN.test(username)) return null;
   const port = input.port?.trim();
   if (port && port !== "-" && findSshPortIssue(port)) return null;
   const login =
@@ -85,8 +95,8 @@ export function buildTaskSshInfo(task: Task, options?: BuildTaskSshInfoOptions):
   const username = firstText(task.ssh_username, task.ssh_user, task.login_user, defaultUsername);
   // Platform instances use settings defaultPassword, then console login username.
   const defaultPassword = getRuntimeSettings().ssh.defaultPassword;
-  const taskPassword = firstText(task.ssh_password, task.password);
-  const settingsPassword = firstText(defaultPassword);
+  const taskPassword = firstSecret(task.ssh_password, task.password);
+  const settingsPassword = firstSecret(defaultPassword);
   const loginNamePassword = firstText(options?.loginUsername);
   const password = taskPassword || settingsPassword || loginNamePassword || "-";
   const passwordKind: TaskSshPasswordKind = taskPassword
@@ -147,7 +157,7 @@ export function resolveSshConnectionRequest(
     host: input.host.trim(),
     port,
     username,
-    password: input.password?.trim() || undefined,
+    password: input.password?.trim() ? input.password : undefined,
     cols: Math.max(1, Math.trunc(options?.cols ?? input.cols ?? ssh.defaultCols)),
     rows: Math.max(1, Math.trunc(options?.rows ?? input.rows ?? ssh.defaultRows)),
     connectTimeoutSec: input.connectTimeoutSec ?? ssh.connectTimeoutSec,

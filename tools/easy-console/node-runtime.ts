@@ -178,11 +178,17 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     async revealLocalPath() {
       return unsupported("Local path reveal");
     },
+    async revealSftpLocalPath() {
+      return unsupported("SFTP local path reveal");
+    },
     async openSshSession() {
       return unsupported("SSH session");
     },
     async writeSshSession() {
       return unsupported("SSH session write");
+    },
+    async acknowledgeSshOutput() {
+      return unsupported("SSH output acknowledgement");
     },
     async resizeSshSession() {
       return unsupported("SSH session resize");
@@ -273,6 +279,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
       return false;
     },
     async setDesktopAutostart() {},
+    async readTaskGpuUtilization() { return null; },
     async showDesktopMainWindow() {},
     async hideDesktopTrayMenu() {},
     async runDueScheduledTasks() {},
