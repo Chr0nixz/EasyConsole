@@ -35,7 +35,7 @@ The original web console cannot truthfully offer these, because each depends on 
 - The backend is a lab console reachable only over plain HTTP. The desktop and web app accept remote `http://` as an explicit lab exception and keep a visible warning in Settings; the CLI/MCP refuse it unless the user opts in.
 - Several accounts can be saved and switched. Queries, auth state, SSH defaults, and local automation are scoped to the account that owns them.
 - The Android app runs the same renderer in a compact layout with a bottom bar and in-app updates. It is a companion: check status, receive reminders, release or extend an instance, and reach a terminal in an emergency. Heavy work goes back to the desktop.
-- CLI/MCP keep their own config (`%USERPROFILE%\.easy-console\config.json` by default) and their own local storage; desktop templates and presets reach them only through export and import.
+- CLI/MCP keep their own config and credentials (`%USERPROFILE%\.easy-console\config.json` by default), while matching desktop and sidecar builds share templates, presets, plans, non-secret settings and default logs through the per-key local store. Sidecar-created plans need desktop owner review before automatic execution.
 
 ## Current Product Surfaces
 
@@ -56,6 +56,7 @@ The original web console cannot truthfully offer these, because each depends on 
 - Terminal access exists only for running instances; logs exist from the moment an instance starts.
 - Core terms follow `I18N_GUIDELINES.md`: 任务实例 / 实例 (instance), 释放实例 (release), 定时任务 (local scheduled creation), 实例模板 (instance template), 克隆 (clone).
 - Not yet verified against the real backend: image update and delete, timed-release extension by PATCH, GPU sampling and monitor field units, and Windows wake across reboots and sleep. Candidate features under discussion are tracked in `PROJECT_REVIEW_2026-10-25.md` and are not commitments.
+- Idle auto-release, Windows scheduled wake, image update/delete and timed-release extension are labelled **experimental** in the interface and documentation until their live acceptance gates pass. Auto-release confirmations explicitly state that container-local data is destroyed. The [CLI/MCP contract](CLI_MCP_CONTRACT.md) separates stable interfaces from experimental task/image editing and preserves published entrypoints for 1.x.
 
 ## Brand Commitments
 

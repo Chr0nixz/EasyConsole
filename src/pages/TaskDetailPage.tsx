@@ -9,7 +9,7 @@ import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { ReleaseConfirmDescription } from "../components/tasks/ReleaseConfirmDescription";
 import { TaskLogPanel } from "../components/tasks/TaskLogPanel";
 import { TaskSshPanel } from "../components/tasks/TaskSshPanel";
-import { Button, Dialog, Panel, Select } from "../components/ui";
+import { Button, Dialog, Panel, Select, SettingTag } from "../components/ui";
 import { instanceApi } from "../lib/api";
 import { formatCost, formatSecondsDuration, getTaskName, getTaskNodeName, getTaskReleaseCondition } from "../lib/format";
 import { useI18n } from "../lib/i18n";
@@ -620,10 +620,11 @@ export function TaskDetailPage() {
         describedBy="extend-release-description"
       >
         <div className="space-y-4 p-5">
+          <SettingTag>{text("实验性", "Experimental")}</SettingTag>
           <p id="extend-release-description" className="text-sm leading-6 text-app-muted">
             {text(
-              `当前释放时间 ${String(task.releace_time ?? "-")}。延长会写入新的释放时间；如后端不支持修改会明确报错。`,
-              `Current release time ${String(task.releace_time ?? "-")}. Extending writes a new release time; an unsupported backend reports a clear error.`,
+              `实验性操作，尚待真实环境验证。当前释放时间 ${String(task.releace_time ?? "-")}。延长会写入新的释放时间；如后端不支持修改会明确报错。`,
+              `Experimental operation awaiting real-environment validation. Current release time ${String(task.releace_time ?? "-")}. Extending writes a new release time; an unsupported backend reports a clear error.`,
             )}
           </p>
           <label className="block text-sm">

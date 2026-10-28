@@ -31,7 +31,7 @@ import { Link } from "react-router-dom";
 
 import { LanguageSwitch } from "../components/LanguageSwitch";
 import { ThemeSwitch } from "../components/ThemeSwitch";
-import { Button, Dialog, Input, Panel, Select } from "../components/ui";
+import { Button, Dialog, Input, Panel, Select, SettingTag } from "../components/ui";
 import { authApi, getTransportBlockReason, setApiBaseUrl } from "../lib/api";
 import { IDLE_REMINDER_WINDOW_OPTIONS } from "../lib/idle-instance-reminder";
 import { ScheduledWakeSettings } from "../components/ScheduledWakeSettings";
@@ -2289,18 +2289,21 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         </div>
         {browserRuntime.isDesktop ? (
           <label className="flex items-start gap-3 border-t border-app-border px-4 py-3 text-sm">
-            <input className="mt-1" type="checkbox" checked={form.idleAutoRelease} onChange={(event) => {
+            <input className="mt-1" type="checkbox" checked={form.idleAutoRelease} aria-labelledby="idle-auto-release-label" aria-describedby="idle-auto-release-help" onChange={(event) => {
               if (!event.target.checked) { setForm((value) => ({ ...value, idleAutoRelease: false })); return; }
               confirm({
-                title: text("开启闲置自动释放", "Enable idle auto-release"),
-                description: text("保存后，对当前账号的运行中实例生效。需已连接 SSH，全部已分配 GPU 持续低负载达到完整判定窗口，同时 CPU 低负载、网络零流量。释放不可撤销，请确保工作已保存。", "After saving, applies to running instances of this account. Requires SSH, low utilization on every allocated GPU for the full window, low CPU, and zero network traffic. Release cannot be undone; save your work first."),
-                confirmLabel: text("开启", "Enable"), tone: "danger",
+                title: text("开启闲置自动释放（实验性）", "Enable Idle Auto-release (Experimental)"),
+                description: text("保存后，对当前账号的运行中实例生效。需已连接 SSH，全部已分配 GPU 持续低负载达到完整判定窗口，同时 CPU 低负载、网络零流量。释放会停止计费并销毁容器内的数据，无法撤销；请先备份。", "After saving, applies to running instances of this account. Requires SSH, low utilization on every allocated GPU for the full window, low CPU, and zero network traffic. Release stops billing and destroys container-local data. It cannot be undone; back up your work first."),
+                confirmLabel: text("开启自动释放", "Enable Auto-release"), tone: "danger",
                 run: () => setForm((value) => ({ ...value, idleAutoRelease: true })),
               });
             }} />
             <span>
-              <span className="block font-medium">{text("闲置时自动释放", "Auto-release idle instances")}</span>
-              <span className="mt-1 block text-xs leading-5 text-app-muted">{text("默认关闭。需在主窗口保持 SSH 连接并完成连续 GPU 采样；采样中断、结果未知或账号切换时不会释放。", "Off by default. Keep SSH connected in the main window for continuous GPU sampling. Sampling gaps, unknown results or account changes prevent release.")}</span>
+              <span className="flex flex-wrap items-center gap-2 font-medium">
+                <span id="idle-auto-release-label">{text("闲置时自动释放", "Auto-release idle instances")}</span>
+                <SettingTag>{text("实验性", "Experimental")}</SettingTag>
+              </span>
+              <span id="idle-auto-release-help" className="mt-1 block text-xs leading-5 text-app-muted">{text("默认关闭。自动释放会销毁容器内的数据，无法撤销，请先备份。需在主窗口保持 SSH 连接并完成连续 GPU 采样；采样中断、结果未知或账号切换时不会释放。", "Off by default. Auto-release destroys container-local data and cannot be undone; back up your work first. Keep SSH connected in the main window for continuous GPU sampling. Sampling gaps, unknown results or account changes prevent release.")}</span>
             </span>
           </label>
         ) : null}

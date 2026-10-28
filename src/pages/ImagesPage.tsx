@@ -162,8 +162,8 @@ export function ImagesPage() {
     confirm({
       title: text("确认删除镜像", "Confirm Image Deletion"),
       description: text(
-        `将删除自定义镜像 ${imageName(image)}。使用该镜像创建实例的能力将一并移除，此操作不可从 EasyConsole 撤销。`,
-        `Delete the custom image ${imageName(image)}. Instances can no longer be created from it; EasyConsole cannot undo this.`,
+        `实验性操作。将删除自定义镜像 ${imageName(image)}。使用该镜像创建实例的能力将一并移除，此操作不可从 EasyConsole 撤销。请先在测试镜像上验证。`,
+        `Experimental operation. Delete the custom image ${imageName(image)}. Instances can no longer be created from it; EasyConsole cannot undo this. Verify on a test image first.`,
       ),
       confirmLabel: text("删除镜像", "Delete image"),
       tone: "danger",
@@ -293,6 +293,11 @@ export function ImagesPage() {
             <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
             {text("刷新", "Refresh")}
           </Button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-app-border px-4 py-2 text-xs leading-5 text-app-muted">
+          <SettingTag>{text("实验性", "Experimental")}</SettingTag>
+          <span>{text("镜像编辑与删除尚待真实环境验证，请先使用测试镜像。", "Image editing and deletion await real-environment validation. Use test images first.")}</span>
         </div>
 
         {isLoading ? (
@@ -518,8 +523,8 @@ export function ImagesPage() {
           </label>
           <p id="image-edit-description" className="text-xs leading-5 text-app-muted">
             {text(
-              "修改自定义镜像的名称和说明。保存失败时会保留输入，便于重试。",
-              "Change the custom image's name and description. Failed saves keep your input so you can retry.",
+              "实验性操作。修改自定义镜像的名称和说明，请先在测试镜像上验证。保存失败时会保留输入，便于重试。",
+              "Experimental operation. Change the custom image's name and description; verify on a test image first. Failed saves keep your input so you can retry.",
             )}
           </p>
           <div className="flex justify-end gap-2">

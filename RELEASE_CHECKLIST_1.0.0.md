@@ -57,6 +57,12 @@
 | 三个 workflow 的 YAML / Action 引用校验 | YAML 解析通过；29 个 SHA、4 处显式 stable，Android PR 触发开启 |
 | `git diff --check` | 通过 |
 
+### 2026-10-29 契约与发布准备检查
+
+CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执行全套本地检查：版本仍为 0.4.27；app / tools typecheck、lint（37 warnings / 0 errors）、117 个文件的 882 项测试、`build:desktop`（两份 sidecar）以及 cargo check / fmt / clippy 均通过。覆盖率门槛通过：lines 65.61%、statements 63.11%、functions 55.76%、branches 56.74%。54 个 MCP 工具的参数与契约表逐一核对，无缺项；三个工作流 YAML 解析通过，29 处 Action 仍固定 SHA，4 处 stable 显式指定。
+
+先前文档提交 `5c59732` 的 [三平台 CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40713157486) 和 [Android CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40713157607) 也已成功。macOS 首次未分配到 runner，重跑后通过。本次后续提交的远程 CI 与打包演练结果另行记录，不以上述旧提交替代。
+
 ## 2. 0.5.0：承载本地存储迁移
 
 这批改动把桌面本地存储从单个 `runtime-storage.json` 改成 `runtime-storage.d/` 按 key 分文件，CLI/MCP 也改为共享这份存储。迁移出错的后果是设置、账号、模板、定时任务、执行台账全部丢失，所以不能让 1.0 成为第一个执行迁移的版本。
@@ -125,8 +131,8 @@
 
 ### 3.5 功能成熟度
 
-- [ ] 下面这些功能在第 5.2 节真实验证通过之前，在界面和文档里标"实验性"：闲置自动释放、Windows 计划唤起、镜像更新与删除、定时释放延期（PATCH）。验证通过后再去掉标记。
-- [ ] 闲置自动释放保持默认关闭。开启时的说明要写清楚：会释放实例，并销毁容器内的数据。
+- [x] 下面这些功能在第 5.2 节真实验证通过之前，在界面和文档里标"实验性"：闲置自动释放、Windows 计划唤起、镜像更新与删除、定时释放延期（PATCH）。验证通过后再去掉标记。证据：2026-10-29 Settings / ScheduledWakeSettings / Images / TaskDetail 与 PRODUCT.md；32 项相关测试通过，中文与英文桌面/375px 模拟渲染检查通过，无溢出；真实环境项目保持待办。
+- [x] 闲置自动释放保持默认关闭。开启时的说明要写清楚：会释放实例，并销毁容器内的数据。证据：2026-10-29 默认值测试保留；设置帮助和独立开启确认明确数据销毁、不可撤销与先备份；模拟渲染取消确认后仍未勾选。未开启设置或执行真实释放。
 
 ## 4. 发布链路
 
