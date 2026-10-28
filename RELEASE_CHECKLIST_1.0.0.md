@@ -35,7 +35,7 @@
 
 - [x] 按主题拆成几次提交，例如：按 key 存储与跨进程锁（含 CLI/MCP 共享存储）；SSH 审阅修复；GPU 闲置检测与自动释放；定时任务唤起与错过执行策略；MCP resources；测试与覆盖率门槛；文档。证据：`c6302c5` 存储与归属、`48aac9e` SSH、`86e56d2` 闲置检测、`ed65a7e` 计划唤起、`6473dcd` MCP resources、`9198741` 任务/日志/存储流程、`b4ac834` CI 与覆盖率；文档在本提交统一落盘。
 - [x] 最终提交状态通过 [AGENTS.md](AGENTS.md) 规定的全套本地检查。证据：2026-10-28 Windows 本地检查记录如下；代码保持 0.4.27，尚未制作候选安装包。
-- [ ] 推送后 CI 三个平台（Windows、macOS arm64、Linux）全绿，包括覆盖率门槛、`cargo test --lib` 和 `ssh_integration`；Android CI 全绿。
+- [x] 推送后 CI 三个平台（Windows、macOS arm64、Linux）全绿，包括覆盖率门槛、`cargo test --lib` 和 `ssh_integration`；Android CI 全绿。证据：提交 `9d8d365` 的 [三平台 CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40703157977) 与 [Android CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40703158159) 均成功；Unix 额外 SFTP 符号链接用例通过，Android debug APK 构建通过。正式签名和设备升级仍未验收。
 - [x] 对照 [SSH_REVIEW_2026-10-27.md](SSH_REVIEW_2026-10-27.md) 第 7 节第 1、2 批的完成标准逐项核对。从代码看，SSH-P1-06/07/08、P2-12、P2-15、P3-13 已有对应改动；P2-13、P2-14 和其余 P3 需逐项确认。每一项要么有自动化测试，要么列入第 5.3 节的真机回归。证据：2026-10-28 [逐项复核记录（第 8 节）](SSH_REVIEW_2026-10-27.md#8-2026-10-28-发布准备复核)，35 项 Windows SSH 集成测试通过；真机项目继续保留。
 
 ### 2026-10-28 本地检查记录
@@ -52,7 +52,7 @@
 | `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | 通过 |
 | `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` | 通过；额外启用 `ssh-test-internals` 的 clippy 也通过 |
 | `cargo test --manifest-path src-tauri/Cargo.toml --lib` | 84 项通过，1 项修改 OS 计划任务的测试按配置忽略；含 CI 暴露的 SFTP 测试服务器路径回归 |
-| `cargo test --manifest-path src-tauri/Cargo.toml --features ssh-test-internals --test ssh_integration` | Windows 35 项通过；Unix 额外符号链接用例等待 CI |
+| `cargo test --manifest-path src-tauri/Cargo.toml --features ssh-test-internals --test ssh_integration` | Windows 35 项通过；Linux / macOS 的额外符号链接用例也已在上述 CI 通过 |
 | Android arm64 `cargo check --target aarch64-linux-android`（在 `src-tauri/`，NDK 27） | 通过，未构建 APK、未做真机验收 |
 | 三个 workflow 的 YAML / Action 引用校验 | YAML 解析通过；29 个 SHA、4 处显式 stable，Android PR 触发开启 |
 | `git diff --check` | 通过 |
@@ -63,11 +63,13 @@
 
 ### 2.1 准备旧数据
 
+执行步骤与结果表见 [0.4.27 → 0.5.0 升级验收材料](UPGRADE_ACCEPTANCE_0.5.0.md)。2026-10-28 当前只完成代码、CI 和材料准备；以下安装包与真实环境项目仍未执行。对照实际 `v0.4.27` tag，该版本没有资源预设、执行台账、变更清单或闲置提醒；这些项目在升级后创建并验证持久化，不算旧数据迁移项。
+
 - [ ] 在一台干净的 Windows 上安装 0.4.27，造一份完整的本地数据：
   - 多个已保存账号，其中至少一个开启"记住密码"；
-  - 运行时 URL、通知与闲置提醒设置；
-  - 实例模板、资源预设；
-  - 定时任务（启用、暂停、已执行各至少一个）、执行台账、变更清单、运行日志；
+  - 运行时 URL、通知、语言与 SSH 设置；
+  - 实例模板；
+  - 定时任务（启用、暂停、已执行各至少一个）、运行日志；
   - SSH 默认密码、VS Code 授权主机、已信任的主机密钥。
 - [ ] 同一台机器上保留一份旧版 CLI 数据（`%USERPROFILE%\.easy-console\` 下的 `local-data.json` 和运行日志）。
 
@@ -77,6 +79,7 @@
 - [ ] 应用数据目录下生成 `runtime-storage.d/`；旧 `runtime-storage.json` 保留为快照，内容未被修改。
 - [ ] 运行新版 CLI：旧 CLI 数据只导入共享存储中不存在的 key，源文件不变，写入迁移标记；再次运行不重复导入。
 - [ ] 桌面开着时用 CLI 创建模板，桌面不重启就能看到；MCP resource 能读到桌面刚建的模板。
+- [ ] 升级后创建资源预设、执行台账与变更清单，修改闲置提醒设置，退出再启动后仍可读取；自动释放仍默认关闭。按验收材料另外核对导出备份未覆盖的数据，不能只用备份 JSON 判断迁移完整。
 - [ ] 大文件上传期间强制结束进程，再次启动后数据完整，或能从 `.bak` 恢复，不会静默清空。
 - [ ] macOS 和 Linux 各走一次 0.4.27 → 0.5.0 自动更新，数据迁移和钥匙串读取正常。
 - [ ] Android 从 0.4.27 应用内更新到 0.5.0 成功（对应 [MOBILE_REVIEW.md](MOBILE_REVIEW.md) 的 MOB-15）。
@@ -131,7 +134,7 @@
 - [ ] Windows Authenticode 签名：必须明确决定做不做，签名本身可选。不做的话，在 README 的安装说明里写明 SmartScreen 提示和放行方式。
 - [ ] macOS 公证：同上。不做的话，写明被 Gatekeeper 拦截后怎么打开。
 - [ ] [release.yml](.github/workflows/release.yml) 没有设置 `releaseBody`。确认 1.0 发布说明怎样进入 GitHub Release 正文和应用内的更新提示。
-- [ ] 确认 Android `versionCode` 单调递增（tauri.conf.json 未显式设置时，由版本号推导）。1.0.0 的 `versionCode` 必须高于 0.9.x，否则无法覆盖安装。
+- [x] 确认 Android `versionCode` 单调递增（tauri.conf.json 未显式设置时，由版本号推导）。1.0.0 的 `versionCode` 必须高于 0.9.x，否则无法覆盖安装。证据：2026-10-28 核对已安装 Tauri CLI schema、`tauri-utils` 2.9.2 与 Gradle 配置，未设置覆盖或自动递增；`0.4.27=4027 < 0.5.0=5000 < 0.9.0=9000 ≤ 0.9.999=9999 < 1.0.0=1000000`。版本规划与正式 APK 复核项见 [升级验收材料](UPGRADE_ACCEPTANCE_0.5.0.md#android-版本号核对)。
 
 ## 5. 真实环境验收（0.9.x 安装包）
 
@@ -205,7 +208,7 @@
 下面这些都值得做，但属于内部改动或新功能，1.0 之后随时可以做，不应挤进发版窗口：
 
 - 拆分 `TasksPage.tsx`（2608 行）和 `SettingsPage.tsx`（2472 行）。
-- 清理 39 个 lint 警告；ratchet 照常只降不升。
+- 清理剩余 37 个 lint 警告；ratchet 照常只降不升。
 - 让 `.mjs` 构建脚本进入 lint 和类型检查；启用类型感知规则（如 `no-floating-promises`）。
 - 实时日志的增量传输（10-25 审阅 P2-5，依赖后端接口能力）。
 - SSH 审阅第 6 节的新功能：一键打开 Jupyter / TensorBoard（F-01）、持久会话与自动重连（F-02）、SSH 与任务生命周期联动（F-03）等。

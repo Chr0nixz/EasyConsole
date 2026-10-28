@@ -266,8 +266,11 @@ For GitHub Actions releases, copy the private key content into `TAURI_SIGNING_PR
 
 GitHub Actions workflows live in `.github/workflows/`:
 
-- `ci.yml`: runs on pull requests and pushes to `main`/`master`; verifies Windows, macOS, and Linux with version consistency, typecheck, tool typecheck, lint, tests, rustfmt, clippy, desktop input build, Tauri shell check, and sidecar artifact upload.
-- `release.yml`: runs on `v*` tags or manual dispatch; verifies the project (including rustfmt/clippy), builds Windows, macOS, and Linux Tauri desktop bundles serially, creates a draft GitHub release, signs updater artifacts, and uploads sidecar plus desktop artifacts.
+- `ci.yml`: runs on pull requests and pushes to `main`/`master`; verifies Windows, macOS arm64, and Linux with version consistency, app/tools typechecks, lint, coverage gates, rustfmt, clippy, Rust unit/storage interoperability tests, SSH integration tests, desktop input build, Tauri shell check, and sidecar artifact upload.
+- `android-ci.yml`: runs on pull requests, pushes to `main`/`master`, and manual dispatch; checks the app and tools, builds desktop inputs, and builds an Android aarch64 debug APK. This does not verify production signing or upgrades of installed release APKs.
+- `release.yml`: runs on `v*` tags or manual dispatch; verifies the project (including rustfmt/clippy), builds Windows, Linux, and macOS arm64/x64 desktop bundles serially, signs updater artifacts, then builds signed Android aarch64/x86_64 release APKs. A tag run publishes the GitHub release directly; a manual run creates a `manual-N` draft prerelease for rehearsal. Draft prereleases do not reach clients using the production `releases/latest/download/latest.json` endpoint.
+
+Release gates and evidence are tracked in [RELEASE_CHECKLIST_1.0.0.md](RELEASE_CHECKLIST_1.0.0.md). Use [UPGRADE_ACCEPTANCE_0.5.0.md](UPGRADE_ACCEPTANCE_0.5.0.md) for the pending 0.4.27 → 0.5.0 installer and local-data migration acceptance; successful CI does not replace those checks.
 
 Create a release by pushing a version tag:
 
