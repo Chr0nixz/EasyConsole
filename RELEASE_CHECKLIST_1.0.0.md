@@ -108,7 +108,7 @@
 
 ## 4. 发布链路
 
-- [ ] 把三个 workflow 里的第三方 Action 固定到 commit SHA，并保留版本注释。重点是持有签名私钥的 [release.yml](.github/workflows/release.yml)，涉及 `actions/checkout@v4`、`actions/setup-node@v4`、`actions/setup-java@v4`、`actions/cache@v4`、`actions/upload-artifact@v4`、`dtolnay/rust-toolchain@stable`、`Swatinem/rust-cache@v2`、`android-actions/setup-android@v4`、`tauri-apps/tauri-action@action-v0.6.2`。`dtolnay/rust-toolchain` 固定 SHA 后，要显式传 `toolchain: stable`。Dependabot 仍能更新固定了 SHA 的引用。
+- [x] 把三个 workflow 里的第三方 Action 固定到 commit SHA，并保留版本注释。重点是持有签名私钥的 [release.yml](.github/workflows/release.yml)，涉及 `actions/checkout@v4`、`actions/setup-node@v4`、`actions/setup-java@v4`、`actions/cache@v4`、`actions/upload-artifact@v4`、`dtolnay/rust-toolchain@stable`、`Swatinem/rust-cache@v2`、`android-actions/setup-android@v4`、`tauri-apps/tauri-action@action-v0.6.2`。`dtolnay/rust-toolchain` 固定 SHA 后，要显式传 `toolchain: stable`。Dependabot 仍能更新固定了 SHA 的引用。证据：2026-10-28 从各官方仓库的 tag/branch 解析 commit（含 annotated tag 解引用）；三个 YAML 解析通过，29 处 Action 引用均为 40 位 SHA，4 处 Rust setup 均显式指定 stable。
 - [ ] Windows Authenticode 签名：必须明确决定做不做，签名本身可选。不做的话，在 README 的安装说明里写明 SmartScreen 提示和放行方式。
 - [ ] macOS 公证：同上。不做的话，写明被 Gatekeeper 拦截后怎么打开。
 - [ ] [release.yml](.github/workflows/release.yml) 没有设置 `releaseBody`。确认 1.0 发布说明怎样进入 GitHub Release 正文和应用内的更新提示。

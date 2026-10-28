@@ -9,6 +9,7 @@ import { getActiveAccountScope, resetAccountScope } from "./account-scope";
 import { AuthProvider } from "./auth-context";
 import type { AuthState } from "./auth-state";
 import { I18nProvider } from "./i18n";
+import { decryptPassword, encryptPassword } from "./password-crypto";
 import { SAVED_ACCOUNTS_STORAGE_KEY, parseSavedAccounts, stringifySavedAccounts, type SavedLoginAccount } from "./saved-accounts";
 import { useAuth } from "./use-auth";
 
@@ -131,9 +132,9 @@ describe("AuthProvider token refresh", () => {
     renderAuthProvider();
     await waitFor(() => expect(stateRef.current?.ready).toBe(true));
 
-    const taskPromise = apiClient.get("/instance/task");
-
-    await expect(taskPromise).resolves.toEqual({ items: [] });
+    await act(async () => {
+      await expect(apiClient.get("/instance/task")).resolves.toEqual({ items: [] });
+    });
     expect(apiClient.getToken()).toBe("Bearer new-A");
     expect(window.localStorage.getItem(TOKEN_STORAGE_KEY)).toBe("Bearer new-A");
     await waitFor(() => expect(stateRef.current?.token).toBe("Bearer new-A"));
@@ -279,5 +280,69 @@ describe("AuthProvider token refresh", () => {
     expect(stateRef.current?.restoringSession).toBe(false);
     expect(stateRef.current?.token).toBe("Bearer old-A");
     expect(getActiveAccountScope().key).toContain("alice");
+  });
+
+  it("silently signs in with a remembered password when the saved token expires", async () => {
+    const encryptedPassword = await encryptPassword("local-test-password");
+    seedSession("Bearer old-A", [{ ...makeAccount("alice", "alice", "Bearer old-A"), encryptedPassword }]);
+    handleRequest = (url, auth) => {
+      if (url.pathname.endsWith("/user/userinfo")) return auth === "Bearer new-A" ? envelope(USERS_BY_TOKEN[auth]) : unauthorized();
+      if (url.pathname.endsWith("/user/refresh_token")) return unauthorized();
+      if (url.pathname.endsWith("/user/token")) return envelope("Bearer new-A");
+      return envelope(null);
+    };
+    renderAuthProvider();
+
+    await waitFor(() => expect(stateRef.current?.user?.username).toBe("alice"));
+    expect(stateRef.current?.token).toBe("Bearer new-A");
+    expect(stateRef.current?.restoringSession).toBe(false);
+    expect(getActiveAccountScope().key).toContain("alice");
+    const saved = parseSavedAccounts(window.localStorage.getItem(SAVED_ACCOUNTS_STORAGE_KEY));
+    expect(saved[0].token).toBe("Bearer new-A");
+    expect(saved[0].encryptedPassword).not.toBe(encryptedPassword);
+    expect(await decryptPassword(saved[0].encryptedPassword!)).toBe("local-test-password");
+    expect(window.localStorage.getItem(SAVED_ACCOUNTS_STORAGE_KEY)).not.toContain("local-test-password");
+    const logins = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/user/token"));
+    expect(logins).toHaveLength(1);
+    expect(JSON.parse(String(logins[0][1]?.body))).toMatchObject({ username: "alice", password: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  });
+
+  it.each([undefined, "malformed-encrypted-password"])("returns to password sign-in when the token expires without a usable remembered password (%s)", async (encryptedPassword) => {
+    seedSession("Bearer old-A", [{ ...makeAccount("alice", "alice", "Bearer old-A"), encryptedPassword }]);
+    handleRequest = () => unauthorized();
+    renderAuthProvider();
+
+    await waitFor(() => {
+      expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith("/user/userinfo"))).toBe(true);
+      expect(stateRef.current?.ready).toBe(true);
+      expect(stateRef.current?.restoringSession).toBe(false);
+      expect(stateRef.current?.token).toBeNull();
+      expect(apiClient.getToken()).toBeNull();
+    });
+    expect(stateRef.current?.user).toBeNull();
+    expect(apiClient.getToken()).toBeNull();
+    expect(getActiveAccountScope().key).toBe("anonymous");
+    expect(parseSavedAccounts(window.localStorage.getItem(SAVED_ACCOUNTS_STORAGE_KEY))).toHaveLength(1);
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith("/user/token"))).toBe(false);
+  });
+
+  it("retains the saved account for correction when remembered-password sign-in is rejected", async () => {
+    const encryptedPassword = await encryptPassword("local-test-password");
+    seedSession("Bearer old-A", [{ ...makeAccount("alice", "alice", "Bearer old-A"), encryptedPassword }]);
+    handleRequest = () => unauthorized();
+    renderAuthProvider();
+
+    await waitFor(() => {
+      expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/user/token"))).toHaveLength(1);
+      expect(stateRef.current?.ready).toBe(true);
+      expect(stateRef.current?.restoringSession).toBe(false);
+      expect(stateRef.current?.token).toBeNull();
+      expect(apiClient.getToken()).toBeNull();
+    });
+    expect(stateRef.current?.user).toBeNull();
+    expect(apiClient.getToken()).toBeNull();
+    expect(window.localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
+    expect(parseSavedAccounts(window.localStorage.getItem(SAVED_ACCOUNTS_STORAGE_KEY))[0]).toMatchObject({ username: "alice", encryptedPassword });
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/user/token"))).toHaveLength(1);
   });
 });

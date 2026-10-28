@@ -1,0 +1,12 @@
+{
+  "identifier": "com.easyconsole.acceptance",
+  "productName": "EasyConsole Acceptance",
+  "build": {
+    "devUrl": "http://127.0.0.1:1429",
+    "beforeDevCommand": "node --import tsx tools/acceptance/dev-renderer.ts"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "EasyConsole Acceptance", "width": 1280, "height": 820, "minWidth": 1024, "minHeight": 640 }]
+  },
+  "bundle": { "active": false }
+}
