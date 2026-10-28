@@ -139,7 +139,7 @@ CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执
 - [x] 把三个 workflow 里的第三方 Action 固定到 commit SHA，并保留版本注释。重点是持有签名私钥的 [release.yml](.github/workflows/release.yml)，涉及 `actions/checkout@v4`、`actions/setup-node@v4`、`actions/setup-java@v4`、`actions/cache@v4`、`actions/upload-artifact@v4`、`dtolnay/rust-toolchain@stable`、`Swatinem/rust-cache@v2`、`android-actions/setup-android@v4`、`tauri-apps/tauri-action@action-v0.6.2`。`dtolnay/rust-toolchain` 固定 SHA 后，要显式传 `toolchain: stable`。Dependabot 仍能更新固定了 SHA 的引用。证据：2026-10-28 从各官方仓库的 tag/branch 解析 commit（含 annotated tag 解引用）；三个 YAML 解析通过，29 处 Action 引用均为 40 位 SHA，4 处 Rust setup 均显式指定 stable。
 - [ ] Windows Authenticode 签名：必须明确决定做不做，签名本身可选。不做的话，在 README 的安装说明里写明 SmartScreen 提示和放行方式。
 - [ ] macOS 公证：同上。不做的话，写明被 Gatekeeper 拦截后怎么打开。
-- [ ] [release.yml](.github/workflows/release.yml) 没有设置 `releaseBody`。确认 1.0 发布说明怎样进入 GitHub Release 正文和应用内的更新提示。
+- [x] [release.yml](.github/workflows/release.yml) 没有设置 `releaseBody`。确认 1.0 发布说明怎样进入 GitHub Release 正文和应用内的更新提示。证据：2026-10-29 [正文来源约定](docs/releases/README.md)，按版本读取正文并通过 releaseBody 传给固定 tauri-action，同时进入 latest.json.notes；桌面 update.body / Android Release body 进入更新提示。11 项生成器测试通过：正式 tag 缺正文拒绝发布，手动 dispatch 即使来自 tag 也保持草稿，releaseCommitish 固定源码 SHA；实物演练仍见 2.3。
 - [x] 确认 Android `versionCode` 单调递增（tauri.conf.json 未显式设置时，由版本号推导）。1.0.0 的 `versionCode` 必须高于 0.9.x，否则无法覆盖安装。证据：2026-10-28 核对已安装 Tauri CLI schema、`tauri-utils` 2.9.2 与 Gradle 配置，未设置覆盖或自动递增；`0.4.27=4027 < 0.5.0=5000 < 0.9.0=9000 ≤ 0.9.999=9999 < 1.0.0=1000000`。版本规划与正式 APK 复核项见 [升级验收材料](UPGRADE_ACCEPTANCE_0.5.0.md#android-版本号核对)。
 
 ## 5. 真实环境验收（0.9.x 安装包）
@@ -199,6 +199,8 @@ CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执
 - [x] SKILL.md 的工具清单和稳定性分级与第 3.2 节一致。证据：2026-10-29 全 54 工具清单保留，stable/experimental、确认门、JSON 输出与共享资源边界与 CLI_MCP_CONTRACT.md 一致。
 - [ ] 1.0 发布说明写成产品全貌，不写成增量列表，包括：主要能力；从 0.4.x 升级的须知（数据迁移、是否支持降级）；1.x 的兼容性承诺（第 3 节的契约）；已知限制（非官方客户端、接口为逆向整理、实验性功能）。
 - [ ] （可选）把根目录的审阅与验收报告移到 `docs/reviews/`，同步更新 PRODUCT.md、AGENTS.md 和本清单里的链接。
+
+2026-10-29 已准备 [1.0 产品全貌草案](RELEASE_NOTES_1.0.0_DRAFT.md)，包含上述四类内容；尚未加入自动发布目录，待真实验收后填写最终结论，不能据此勾选最终发布说明。
 
 ## 7. 发布 1.0.0
 

@@ -14,6 +14,8 @@ jobs:
     name: Release ${{ matrix.artifact-suffix }}
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
+    outputs:
+      release_tag: ${{ steps.release_metadata.outputs.tag }}
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -83,6 +85,10 @@ jobs:
       - name: Check versions
         run: npm run version:check
 
+      - name: Prepare release notes and publication mode
+        id: release_metadata
+        run: node --import tsx tools/easy-console/release-metadata.ts
+
       - name: Typecheck app
         run: npm run typecheck
 
@@ -111,10 +117,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}
-          releaseName: EasyConsole ${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}
-          releaseDraft: ${{ github.ref_type != 'tag' }}
-          prerelease: ${{ github.ref_type != 'tag' }}
+          tagName: ${{ steps.release_metadata.outputs.tag }}
+          releaseName: ${{ steps.release_metadata.outputs.name }}
+          releaseBody: ${{ steps.release_metadata.outputs.body }}
+          releaseDraft: ${{ steps.release_metadata.outputs.draft }}
+          prerelease: ${{ steps.release_metadata.outputs.prerelease }}
+          releaseCommitish: ${{ github.sha }}
           updaterJsonPreferNsis: true
           retryAttempts: 3
           args: ${{ matrix.args }}
@@ -255,8 +263,9 @@ jobs:
       - name: Upload APK to GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.release-desktop.outputs.release_tag }}
         run: |
-          TAG="${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}"
+          TAG="$RELEASE_TAG"
           cp "$ANDROID_RELEASE_APK" "EasyConsole-${TAG}-android-${{ matrix.target }}.apk"
           gh release upload "$TAG" "EasyConsole-${TAG}-android-${{ matrix.target }}.apk" --clobber
 
