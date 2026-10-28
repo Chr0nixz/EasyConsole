@@ -81,29 +81,35 @@ export type EasyConsoleMcpDeps = {
 
 const idSchema = z.union([z.string(), z.number()]);
 const optionalQuerySchema = z.record(z.string(), z.unknown()).optional();
+const numericInput = (minimum: number, integer: boolean, inclusive = true) =>
+  z.union([z.number(), z.string().trim().min(1)]).refine((value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && (!integer || Number.isInteger(number)) &&
+      (inclusive ? number >= minimum : number > minimum);
+  }, "Invalid resource quantity");
 
 /**
  * Known create/update payload fields, typed as narrowly as the shared
  * CreateTaskPayload type. `passthrough` keeps unknown backend fields working
- * (the live API is only partially verified), but typos in known field names
- * and wrong value kinds are now rejected at the tool boundary instead of
+ * (the live API is only partially verified), but invalid quantities and wrong
+ * value kinds for known fields are rejected at the tool boundary instead of
  * surfacing as backend errors.
  */
 const taskPayloadFields = {
   price: z.union([z.string(), z.number()]).optional(),
-  cpu: z.union([z.string(), z.number()]).optional(),
-  gpu: z.union([z.string(), z.number()]).optional(),
-  memory: z.union([z.string(), z.number()]).optional(),
+  cpu: numericInput(0, false, false).optional(),
+  gpu: numericInput(0, true).optional(),
+  memory: numericInput(1, true).optional(),
   img: z.union([z.string(), z.number()]).optional(),
   storage_path: z.string().optional(),
   mount_path: z.string().optional(),
-  releace_conditions: z.union([z.number(), z.string()]).optional(),
+  releace_conditions: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal("1"), z.literal("2"), z.literal("3")]).optional(),
   releace_time: z.string().optional(),
   work_directory: z.string().optional(),
   script_path: z.string().optional(),
 };
-const createTaskPayloadSchema = z.object({ name: z.string().min(1), ...taskPayloadFields }).passthrough();
-const updateTaskPayloadSchema = z.object({ name: z.string().min(1).optional(), ...taskPayloadFields }).passthrough();
+const createTaskPayloadSchema = z.object({ name: z.string().trim().min(1), ...taskPayloadFields }).passthrough();
+const updateTaskPayloadSchema = z.object({ name: z.string().trim().min(1).optional(), ...taskPayloadFields }).passthrough();
 
 function asId(value: unknown): JsonId {
   if (typeof value === "string" || typeof value === "number") return value;

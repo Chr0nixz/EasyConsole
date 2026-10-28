@@ -93,6 +93,14 @@ function createFakeContext(overrides: Record<string, unknown> = {}) {
 }
 
 describe("easy-console MCP tools", () => {
+  it.each([
+    { name: " " }, { cpu: 0 }, { cpu: "bad" }, { gpu: -1 }, { gpu: 1.5 },
+    { memory: 0 }, { memory: "1.2" }, { releace_conditions: 9 },
+  ])("rejects invalid task quantities before mutation: %j", async (invalid) => {
+    await expect(invokeMcpToolDefinition(getTool("easyconsole_task_create"), createFakeContext(), {
+      payload: { name: "train", ...invalid }, confirm: true,
+    })).rejects.toThrow();
+  });
   it("validates tool input with zod schemas", async () => {
     await expect(invokeMcpToolDefinition(getTool("easyconsole_task_log"), createFakeContext(), {})).rejects.toThrow();
   });
