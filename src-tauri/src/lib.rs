@@ -24,6 +24,8 @@ use {
 mod i18n;
 mod runtime_storage;
 mod runtime_storage_lock;
+#[cfg(target_os = "windows")]
+mod scheduled_wake;
 /// SSH internals. Everything here is implementation detail for the packaged
 /// app; `pub` only so `tests/ssh_integration.rs` can drive it against a local
 /// mock server.
@@ -1482,6 +1484,31 @@ fn quit_desktop_app(
     Ok(())
 }
 
+#[cfg(desktop)]
+#[tauri::command]
+async fn desktop_scheduled_wake(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    enabled: Option<bool>,
+) -> Result<Option<bool>, String> {
+    require_main_window(window.label())?;
+    #[cfg(target_os = "windows")]
+    {
+        let path = app_data_file(&app, "runtime-storage.json")?;
+        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || {
+            scheduled_wake::configure(&exe, &path, enabled).map(Some)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, enabled);
+        Ok(None)
+    }
+}
+
 /// Exposes the native runtime kind to the renderer so it can pick capability
 /// flags without relying on `isTauri()` alone (which is true on mobile too).
 #[tauri::command]
@@ -1709,6 +1736,8 @@ pub fn run() {
         hide_desktop_tray_menu,
         #[cfg(desktop)]
         run_due_scheduled_tasks,
+        #[cfg(desktop)]
+        desktop_scheduled_wake,
         #[cfg(desktop)]
         quit_desktop_app
     ]);

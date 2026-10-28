@@ -34,6 +34,7 @@ import { ThemeSwitch } from "../components/ThemeSwitch";
 import { Button, Dialog, Input, Panel, Select } from "../components/ui";
 import { authApi, getTransportBlockReason, setApiBaseUrl } from "../lib/api";
 import { IDLE_REMINDER_WINDOW_OPTIONS } from "../lib/idle-instance-reminder";
+import { ScheduledWakeSettings } from "../components/ScheduledWakeSettings";
 import {
   DEFAULT_APP_SETTINGS,
   DEFAULT_CUSTOM_COLORS,
@@ -1431,7 +1432,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               </span>
             </label>
           </div>
-        </Panel>
+            <ScheduledWakeSettings />
+          </Panel>
       ) : null}
 
       {browserRuntime.supportsUpdater ? (

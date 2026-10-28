@@ -494,6 +494,8 @@ export type RuntimeTransport = {
   /** OS-level launch-on-login (desktop only); reports false elsewhere. */
   getDesktopAutostart(): Promise<boolean>;
   setDesktopAutostart(enabled: boolean): Promise<void>;
+  /** OS scheduled wake. null means this platform does not support it. */
+  desktopScheduledWake(enabled?: boolean): Promise<boolean | null>;
   showDesktopMainWindow(): Promise<void>;
   hideDesktopTrayMenu(): Promise<void>;
   runDueScheduledTasks(): Promise<void>;

@@ -125,6 +125,7 @@ function createRuntime() {
       return false;
     },
     async setDesktopAutostart() {},
+    async desktopScheduledWake() { return null; },
     async readTaskGpuUtilization() { return null; },
     async showDesktopMainWindow() {},
     async hideDesktopTrayMenu() {},

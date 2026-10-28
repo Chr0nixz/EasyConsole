@@ -280,6 +280,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
     },
     async setDesktopAutostart() {},
     async readTaskGpuUtilization() { return null; },
+    async desktopScheduledWake() { return null; },
     async showDesktopMainWindow() {},
     async hideDesktopTrayMenu() {},
     async runDueScheduledTasks() {},

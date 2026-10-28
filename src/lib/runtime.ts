@@ -1084,6 +1084,10 @@ export const browserRuntime: RuntimeTransport = {
     if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand(enabled ? "plugin:autostart|enable" : "plugin:autostart|disable", {});
   },
+  desktopScheduledWake(enabled) {
+    if (runtimeKind !== "desktop") return Promise.resolve(null);
+    return invokeTauriCommand<boolean | null>("desktop_scheduled_wake", { enabled: enabled ?? null });
+  },
   showDesktopMainWindow() {
     if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("show_desktop_main_window", {});
