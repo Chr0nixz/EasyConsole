@@ -33,7 +33,7 @@
 
 起始状态：main 上有 95 个文件、约 +5.2k / −1.2k 行改动尚未提交，其中包括本地存储迁移和 SSH 审阅的修复，都还没在远程 CI 上跑过。发布准备工作在 `codex/release-readiness-1-0` 分支推进。
 
-- [ ] 按主题拆成几次提交，例如：按 key 存储与跨进程锁（含 CLI/MCP 共享存储）；SSH 审阅修复；GPU 闲置检测与自动释放；定时任务唤起与错过执行策略；MCP resources；测试与覆盖率门槛；文档。
+- [x] 按主题拆成几次提交，例如：按 key 存储与跨进程锁（含 CLI/MCP 共享存储）；SSH 审阅修复；GPU 闲置检测与自动释放；定时任务唤起与错过执行策略；MCP resources；测试与覆盖率门槛；文档。证据：`c6302c5` 存储与归属、`48aac9e` SSH、`86e56d2` 闲置检测、`ed65a7e` 计划唤起、`6473dcd` MCP resources、`9198741` 任务/日志/存储流程、`b4ac834` CI 与覆盖率；文档在本提交统一落盘。
 - [ ] 最终提交状态通过 [AGENTS.md](AGENTS.md) 规定的全套本地检查。
 - [ ] 推送后 CI 三个平台（Windows、macOS arm64、Linux）全绿，包括覆盖率门槛、`cargo test --lib` 和 `ssh_integration`；Android CI 全绿。
 - [x] 对照 [SSH_REVIEW_2026-10-27.md](SSH_REVIEW_2026-10-27.md) 第 7 节第 1、2 批的完成标准逐项核对。从代码看，SSH-P1-06/07/08、P2-12、P2-15、P3-13 已有对应改动；P2-13、P2-14 和其余 P3 需逐项确认。每一项要么有自动化测试，要么列入第 5.3 节的真机回归。证据：2026-10-28 [逐项复核记录（第 8 节）](SSH_REVIEW_2026-10-27.md#8-2026-10-28-发布准备复核)，35 项 Windows SSH 集成测试通过；真机项目继续保留。
@@ -74,7 +74,7 @@
 ### 3.1 Sidecar 布局
 
 - [ ] 决定是否把 `easy-console-cli`（约 58MB）和 `easy-console-mcp`（约 60MB）合并成一个按子命令分派的可执行文件。合并能让 sidecar 体积减半；但 MCP 客户端配置里写的是可执行文件路径，1.0 之后再合并会让所有已有配置失效。要合就在这一阶段合。
-- [ ] 修正文档里的可执行文件名：[SKILL.md:43](skills/easy-console-ai/SKILL.md:43) 和 [SKILL.md:57](skills/easy-console-ai/SKILL.md:57) 写的是 `easy-console.exe`，实际打包的是 `easy-console-cli`（见 [README.md:186](README.md:186)）。
+- [x] 修正文档里的可执行文件名：[SKILL.md](skills/easy-console-ai/SKILL.md) 的命令替换说明和二进制清单统一为 `easy-console-cli.exe` / `easy-console-cli`，与 README 和 sidecar 构建输出一致。证据：2026-10-28 文档及 `build:desktop` 产物名核对。
 - [ ] 写明各平台安装后 sidecar 的实际路径，MCP 接入示例直接使用这个路径。
 
 ### 3.2 CLI / MCP 接口

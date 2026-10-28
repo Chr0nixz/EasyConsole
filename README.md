@@ -85,7 +85,20 @@ EASY_CONSOLE_MONITOR_DASHBOARD_URL=http://116.172.93.164:33000/d/da7c4fef-70c7-4
 EASY_CONSOLE_TOKEN=Bearer ...
 EASY_CONSOLE_CONFIG=D:\path\to\config.json
 EASY_CONSOLE_ALLOW_INSECURE_HTTP=1
+EASY_CONSOLE_LOCAL_DATA_PATH=D:\path\to\runtime-storage.json
 ```
+
+CLI/MCP templates, schedules, non-secret settings, and default run logs share the desktop app-data store:
+
+| Platform | Default shared directory |
+|---|---|
+| Windows | `%APPDATA%\com.easyconsole.desktop\runtime-storage.d\` |
+| macOS | `~/Library/Application Support/com.easyconsole.desktop/runtime-storage.d/` |
+| Linux | `$XDG_DATA_HOME/com.easyconsole.desktop/runtime-storage.d/`, or `~/.local/share/com.easyconsole.desktop/runtime-storage.d/` |
+
+Existing `%USERPROFILE%\.easy-console\local-data.json` values are copied only into missing desktop keys; existing values and deletion records take precedence. The source file stays unchanged. `EASY_CONSOLE_LOCAL_DATA_PATH` overrides the sidecar store anchor only: choose the desktop's `runtime-storage.json` for sharing, or another path for isolated sidecar data. Legacy `run-logs.json` is merged once; `--run-log-path` / `EASY_CONSOLE_RUN_LOG_PATH` selects a separate log file.
+
+Credentials remain in the CLI-local `credential-data.d/` beside its config and do not sync with the desktop keychain. Sidecars do not run schedules automatically; plans created there have an unverified owner and require review in the desktop app before automatic execution. A confirmed CLI/MCP manual run verifies a known plan owner against the token's username and API realm. Reopen local-data pages to reload sidecar changes. Use matching desktop and sidecar builds for shared access: older desktop releases only have an in-process storage lock.
 
 The CLI and MCP server reject remote cleartext HTTP by default. Production and externally reachable environments should use HTTPS or a local secure tunnel (`http://127.0.0.1:...`). The plain-HTTP lab console is an explicitly accepted exception: pass `--allow-insecure-http` or set `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` to opt in.
 
@@ -150,9 +163,14 @@ Available MCP tools include task list/log/create/release/delete, storage list/re
 
 ## Desktop Runtime
 
+- Idle reminders use CPU/network metrics, plus real GPU utilization sampled with `nvidia-smi` over an existing in-app SSH connection in the main window. Auto-release is off by default and requires explicit opt-in, a full continuous sampling window for every allocated GPU, fresh low CPU metrics, zero network traffic, and the same signed-in account/API realm. Missing samples never authorize release; uncertain release results are recorded and never automatically retried.
+- On Windows, Settings → Window & Startup can register an opt-in Task Scheduler wake-up. It checks the desktop's local plans every minute and starts the app when a pending plan is due. It requires an interactive OS login and valid console credentials; the desktop runner still checks ownership and missed-run policy. Turning it off removes the OS task. Other platforms keep launch-at-login/tray behavior.
+- Task editing and release extension use PATCH only. PUT on the same task route is the original console's release operation and is never used as an editing fallback. A backend without PATCH support reports an unsupported operation.
+
 The desktop app is built with Tauri 2 and is the primary product target. Web code talks to `src/lib/runtime.ts`; Tauri-specific commands live in `src-tauri/src/lib.rs`.
 
-- Storage settings and saved tokens are persisted in the Tauri app data directory and fall back to browser storage if a command fails.
+- Runtime settings, templates, schedules, and logs use per-key files under the Tauri app data directory's `runtime-storage.d/`, with atomic writes, backups, cross-window compare-and-swap, and a cross-process lock shared with the CLI/MCP sidecars. CLI/MCP use the same store for non-secret local data; saved credentials remain in a separate sidecar store or the desktop OS keychain. Browser storage remains a fallback if native commands fail.
+- Existing `runtime-storage.json` data migrates automatically in the background. The old JSON and its backup remain as migration snapshots; later changes live in `runtime-storage.d/`. Use Settings export/import for current backups and transfers, including before downgrading to a release that only reads the old JSON.
 - HTTP and WebSocket calls use Tauri plugins in desktop and browser APIs on the web.
 - System notifications use the Tauri notification plugin on desktop and the browser Notification API on the web.
 - Desktop task SSH actions include in-app SSH auto-login, opening a system terminal, and configuring/opening VS Code Remote-SSH. Web runtime only exposes copyable SSH details and WebSSH.
@@ -289,5 +307,7 @@ npm.cmd run build:web
 npm.cmd run build:desktop
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
+
+`npm.cmd run test:coverage` runs the same suite with V8 coverage and the checked-in thresholds. CI runs it on Windows, macOS, and Linux and uploads HTML and JSON summaries. Coverage includes all application and CLI/MCP TypeScript sources, including untested files; tests and declarations are excluded. Global and critical-module thresholds are baseline floors that may only increase.
 
 Live verification still needs a real test account. Validate exact request and response fields for task creation, storage upload completion, and image actions before marking those flows complete.

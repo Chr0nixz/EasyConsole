@@ -40,7 +40,7 @@ Login through stdin so passwords are not left in shell history:
 "password" | npm.cmd run ec -- login --username USERNAME --password-stdin
 ```
 
-If the repo is packaged as desktop binaries, replace `npm.cmd run ec --` with `easy-console.exe`.
+If the repo is packaged as desktop binaries, replace `npm.cmd run ec --` with `easy-console-cli.exe` on Windows (`easy-console-cli` on macOS/Linux).
 
 ## MCP Usage
 
@@ -54,7 +54,7 @@ Packaged deployments should point the AI client at `easy-console-mcp.exe`. The T
 
 ```text
 EasyConsole.exe
-easy-console.exe
+easy-console-cli.exe
 easy-console-mcp.exe
 ```
 
@@ -71,7 +71,14 @@ Use these tools by intent (all 54 registered tools):
 - Backup: `easyconsole_backup_export`, `easyconsole_backup_import`.
 - Run logs: `easyconsole_run_log_list`, `easyconsole_run_log_export`, `easyconsole_run_log_clear`.
 
-CLI/MCP schedules are local records only: they are never executed automatically — run them with `easyconsole_schedule_run` (or the desktop app).
+Schedules are shared local records. The CLI/MCP sidecar never executes them automatically; `easyconsole_schedule_run` requires explicit confirmation and checks a known owner's account against the authenticated token. New sidecar plans have an unverified owner, so review them in the desktop app before enabling automatic execution.
+
+Read-only MCP resources expose the shared local template and resource-preset collections:
+
+- `easyconsole://local/templates` and `easyconsole://local/templates/{id}`.
+- `easyconsole://local/resource-presets` and `easyconsole://local/resource-presets/{id}`.
+
+Discover item URIs with `resources/list`; percent-encode item IDs. Resources read fresh shared local data without requiring remote authentication. Existing CLI/MCP `local-data.json` values are copied only into missing desktop keys and the source remains unchanged. CLI/MCP credentials stay in a separate local store and do not sync with the desktop keychain. The Windows scheduled wake-up operates on desktop plans only; plans created by CLI/MCP have an unverified owner and require review in the desktop app before automatic execution. Shared access requires the updated desktop and sidecars, since older desktop releases do not participate in the file lock.
 
 For mutating MCP tools, pass `confirm: true` only after the user has clearly requested execution. Without it, the tool returns a dry-run payload.
 

@@ -59,7 +59,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 Use `npm.cmd run build` for the web-only production build. Use `npm.cmd run build:desktop` for Tauri build inputs; it builds sidecars, typechecks the app, and runs Vite. Use `npm.cmd run tauri:build` when an actual desktop bundle or installer is required. When time is limited, prioritize desktop input build and Tauri shell checks over web-only verification.
 
-`lint` runs with `--max-warnings=39`, which is a ratchet rather than a target. The number may only go down: when you remove warnings, lower it in the same commit. Never raise it to make a build pass -- fix the new warning instead. Remaining warnings are `react-hooks/set-state-in-effect`, `react-refresh/only-export-components`, `react-hooks/exhaustive-deps`, and `react-hooks/incompatible-library`.
+`lint` runs with `--max-warnings=37`, which is a ratchet rather than a target. The number may only go down: when you remove warnings, lower it in the same commit. Never raise it to make a build pass -- fix the new warning instead. Remaining warnings are `react-hooks/set-state-in-effect`, `react-refresh/only-export-components`, `react-hooks/exhaustive-deps`, and `react-hooks/incompatible-library`.
 
 For `react-refresh/only-export-components` in context files, follow the existing split used by `use-toast.ts` and `use-download-queue.ts`: contexts, hooks, and plain helpers live in a `use-*.ts` file, and the `*Provider` component stays in its own file. That removes the warning instead of suppressing it.
 
@@ -130,6 +130,8 @@ Do not commit real account credentials, tokens, or live test secrets.
 - `src/components/*`: shared UI and feature dialogs.
 - `tools/easy-console/*`: Node runtime, CLI, MCP server/tools, and sidecar build scripts.
 - `src-tauri/src/lib.rs`: Tauri commands for app storage, external links, system terminal SSH, VS Code Remote-SSH setup, and in-app SSH sessions.
+- `src-tauri/src/runtime_storage.rs` and `src-tauri/src/runtime_storage_lock.rs`: per-key runtime persistence, legacy JSON migration, per-key backups/tombstones, disk-backed CAS, and the cross-process `.lock` directory protocol shared with Node sidecars.
+- `tools/easy-console/local-data-store.ts`: Node implementation of the Tauri per-key store, lock protocol, legacy CLI JSON migration, and separate local credential storage. CLI/MCP use the desktop app-data path by default; `EASY_CONSOLE_LOCAL_DATA_PATH` overrides the shared store anchor.
 
 Avoid Node-only APIs in renderer code. If a feature needs platform behavior, design the Tauri command/runtime boundary first, then add browser and Node fallbacks only when they are useful and clean. Do not call browser, Tauri, or Node globals directly from page code.
 
@@ -164,7 +166,7 @@ Avoid Node-only APIs in renderer code. If a feature needs platform behavior, des
 - Run logs are local, pruned by count and age, and redact sensitive metadata keys.
 - Important task status changes can trigger app toasts or system notifications for success, failure, and abnormal states.
 - Desktop SSH supports in-app SSH via `russh`, opening a system terminal, and VS Code Remote-SSH setup. The web app only exposes copyable SSH details and WebSSH.
-- Tauri storage is persisted in app data through `runtime-storage.json`, with browser localStorage fallback on command failures.
+- Tauri and CLI/MCP runtime storage use per-key files under app data's `runtime-storage.d/`, with atomic writes, per-key backups, CAS, and a shared cross-process `.lock` protocol. Old `runtime-storage.json` and CLI `local-data.json` files are retained as migration snapshots; CLI credentials stay outside the shared store. Browser localStorage remains the fallback on command failures.
 - Tauri uses `HashRouter`; the web build uses `BrowserRouter`.
 - Desktop parity is more important than browser parity for new workflows. Browser behavior may be read-only, degraded, or hidden when there is no honest equivalent for a desktop capability.
 
