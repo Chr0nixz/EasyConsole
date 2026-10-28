@@ -1,186 +1,141 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-import { I18N_STORAGE_KEY, I18nProvider } from "../lib/i18n";
-import { DEFAULT_NOTIFICATION_PREFERENCES, setRuntimeSettings } from "../lib/app-settings";
+import { DEFAULT_APP_SETTINGS, setRuntimeSettings } from "../lib/app-settings";
+import { makeAccountScope, resetAccountScope, setActiveAccountScope } from "../lib/account-scope";
+import { I18nProvider } from "../lib/i18n";
 import { browserRuntime } from "../lib/runtime";
 import { taskSnapshotQueryKey } from "../lib/task-snapshot-query";
-import type { MonitorIndexResponse, Task } from "../lib/types";
-import { ToastProvider } from "./Toast";
+import { ToastContext } from "../lib/use-toast";
 
 const mocks = vi.hoisted(() => ({
-  items: [] as Task[],
-  monitorIndex: vi.fn(),
+  token: "Bearer local", now: 0, monitor: vi.fn(), release: vi.fn(), notify: vi.fn(), success: vi.fn(), error: vi.fn(),
+  task: { id: 42, task_id: "pod42", name: "local", status: 2, gpu: 2, create_time: "2026-10-27" },
 }));
-
-vi.mock("../lib/fetch-all-tasks", () => ({
-  fetchAllTasks: () =>
-    Promise.resolve({
-      items: mocks.items,
-      total: mocks.items.length,
-      raw: null,
-      pagesFetched: 1,
-      timedOut: false,
-    }),
-}));
-
 vi.mock("../lib/api", () => ({
-  instanceApi: {
-    monitorIndex: (...args: unknown[]) => mocks.monitorIndex(...args),
-  },
+  apiClient: { getToken: () => mocks.token, getBaseUrl: () => "http://local/api" },
+  instanceApi: { monitorIndex: (...args: unknown[]) => mocks.monitor(...args), operateTask: (...args: unknown[]) => mocks.release(...args) },
 }));
-
-vi.mock("../lib/use-auth", () => ({
-  useAuth: () => ({
-    token: "Bearer test",
-    user: { username: "alice" },
-    ready: true,
-    restoringSession: false,
-    savedAccounts: [],
-  }),
-}));
-
+vi.mock("../lib/fetch-all-tasks", () => ({ fetchAllTasks: async () => ({ items: [mocks.task], total: 1, raw: null }) }));
+vi.mock("../lib/use-auth", () => ({ useAuth: () => ({ token: mocks.token, user: { username: "alice" } }) }));
 import { IdleInstanceWatcher } from "./IdleInstanceWatcher";
 
-/** Seven samples every 10 minutes: a full hour of quiet CPU. */
-function quietMetrics(): MonitorIndexResponse {
-  const now = Date.now();
-  const data = Array.from({ length: 7 }, (_, index) => ({
-    timestamp: now - (6 - index) * 10 * 60_000,
-    value: 1,
-  }));
-  return { cpu: [{ name: "cpu", data }], network: [{ name: "net", data: data.map((point) => ({ ...point, value: 0 })) }] };
+const toast = { notify: mocks.notify, success: mocks.success, error: mocks.error, info: vi.fn() };
+let client: QueryClient;
+function renderWatcher() {
+  return render(<MemoryRouter><I18nProvider><ToastContext.Provider value={toast}><QueryClientProvider client={client}><IdleInstanceWatcher /></QueryClientProvider></ToastContext.Provider></I18nProvider></MemoryRouter>);
 }
-
-function busyMetrics(): MonitorIndexResponse {
-  const now = Date.now();
-  const data = Array.from({ length: 7 }, (_, index) => ({
-    timestamp: now - (6 - index) * 10 * 60_000,
-    value: 80,
-  }));
-  return { cpu: [{ name: "cpu", data }] };
-}
-
-function runningTask(): Task {
-  return { id: 1, task_id: "task-1", name: "train", status: 2 } as Task;
-}
-
-function renderWatcher(client: QueryClient) {
-  return render(
-    <MemoryRouter>
-      <I18nProvider>
-        <ToastProvider>
-          <QueryClientProvider client={client}>
-            <IdleInstanceWatcher />
-          </QueryClientProvider>
-        </ToastProvider>
-      </I18nProvider>
-    </MemoryRouter>,
-  );
-}
-
-/** Publishes a fresh snapshot so the watcher effect re-runs past its throttle. */
-async function publishSnapshot(client: QueryClient, items: Task[], advanceMs: number) {
+async function tick() {
+  mocks.now += 60_001;
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(advanceMs);
-  });
-  mocks.items = items;
-  await act(async () => {
-    client.setQueryData(taskSnapshotQueryKey(), { items, total: items.length, raw: null, pagesFetched: 1, timedOut: false });
-    await Promise.resolve();
-  });
-  await act(async () => {
-    await Promise.resolve();
+    client.setQueryData(taskSnapshotQueryKey(), { items: [{ ...mocks.task }], total: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
-describe("IdleInstanceWatcher", () => {
-  let client: QueryClient;
-  let notifySystem: ReturnType<typeof vi.spyOn>;
-
+describe("idle watcher acceptance", () => {
   beforeEach(() => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    window.localStorage.clear();
-    window.localStorage.setItem(I18N_STORAGE_KEY, "zh-CN");
-    setRuntimeSettings({});
-    mocks.items = [];
-    mocks.monitorIndex.mockReset();
+    vi.clearAllMocks();
+    localStorage.clear();
+    mocks.now = Date.parse("2026-10-27T00:00:00Z");
+    mocks.token = "Bearer local";
+    mocks.task.status = 2;
+    vi.spyOn(Date, "now").mockImplementation(() => mocks.now);
+    vi.spyOn(browserRuntime, "isDesktop", "get").mockReturnValue(true);
+    vi.spyOn(browserRuntime, "readTaskGpuUtilization").mockResolvedValue([0, 0]);
+    mocks.release.mockResolvedValue({});
+    mocks.monitor.mockImplementation(async () => {
+      const data = Array.from({ length: 121 }, (_, index) => ({ timestamp: mocks.now - index * 60_000, value: 0 }));
+      return { cpu: [{ data }], network: [{ data }] };
+    });
+    setActiveAccountScope(makeAccountScope("alice", "alice", "http://local/api"));
+    setRuntimeSettings({ ...DEFAULT_APP_SETTINGS, idleReminderWindowMs: 30 * 60_000, idleAutoRelease: true, notificationPreferences: { ...DEFAULT_APP_SETTINGS.notificationPreferences, "task.idle": "app" } });
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    notifySystem = vi.spyOn(browserRuntime, "notifySystem").mockResolvedValue("shown");
+  });
+  afterEach(() => { cleanup(); client.clear(); vi.restoreAllMocks(); localStorage.clear(); resetAccountScope(); setRuntimeSettings(DEFAULT_APP_SETTINGS); });
+
+  it("never releases with missing GPU data, and a busy device suppresses idle reminders", async () => {
+    vi.mocked(browserRuntime.readTaskGpuUtilization).mockResolvedValueOnce([0, 80]).mockResolvedValue(null);
+    renderWatcher();
+    await waitFor(() => expect(mocks.monitor).toHaveBeenCalledTimes(1));
+    expect(mocks.notify).not.toHaveBeenCalled();
+    await tick();
+    await waitFor(() => expect(mocks.notify).toHaveBeenCalledTimes(1));
+    mocks.now += 31 * 60_000;
+    await tick();
+    expect(mocks.release).not.toHaveBeenCalled();
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.restoreAllMocks();
-    window.localStorage.clear();
+  it("starts watching immediately after saving an enabled preference", async () => {
+    setRuntimeSettings({ ...DEFAULT_APP_SETTINGS, notificationPreferences: { ...DEFAULT_APP_SETTINGS.notificationPreferences, "task.idle": "off" } });
+    renderWatcher();
+    await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+    expect(mocks.monitor).not.toHaveBeenCalled();
+    act(() => setRuntimeSettings({ ...DEFAULT_APP_SETTINGS, idleAutoRelease: true }));
+    await waitFor(() => expect(mocks.monitor).toHaveBeenCalledTimes(1));
   });
 
-  it("warns once for an idle running instance and stays quiet afterwards", async () => {
-    mocks.items = [runningTask()];
-    mocks.monitorIndex.mockResolvedValue(quietMetrics());
-    renderWatcher(client);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-    expect(mocks.monitorIndex).toHaveBeenCalledTimes(1);
-    expect(notifySystem).toHaveBeenCalledTimes(1);
-    expect(notifySystem).toHaveBeenCalledWith(expect.objectContaining({ title: "实例可能闲置" }));
-
-    // Still idle on later checks (past the 60s throttle): the same episode
-    // must not re-warn.
-    await publishSnapshot(client, [runningTask()], 121_000);
-    expect(mocks.monitorIndex.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(notifySystem).toHaveBeenCalledTimes(1);
+  it("requires the full sampling window, releases once, and persists the attempt", async () => {
+    renderWatcher();
+    await waitFor(() => expect(mocks.notify).toHaveBeenCalledTimes(1));
+    expect(mocks.release).not.toHaveBeenCalled();
+    for (let minute = 1; minute < 30; minute++) await tick();
+    expect(mocks.release).not.toHaveBeenCalled();
+    await tick();
+    await waitFor(() => expect(mocks.release).toHaveBeenCalledExactlyOnceWith(42));
+    await tick();
+    expect(mocks.release).toHaveBeenCalledTimes(1);
+    expect(mocks.success).toHaveBeenCalled();
   });
 
-  it("re-arms after the instance becomes active again", async () => {
-    mocks.items = [runningTask()];
-    // The 121s advance can trigger several checks per round, so the metrics
-    // follow a switchable current value rather than a call-ordinal chain.
-    let current: MonitorIndexResponse = quietMetrics();
-    mocks.monitorIndex.mockImplementation(() => Promise.resolve(current));
-    renderWatcher(client);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-    expect(notifySystem).toHaveBeenCalledTimes(1);
-
-    current = busyMetrics();
-    await publishSnapshot(client, [runningTask()], 121_000);
-    expect(notifySystem).toHaveBeenCalledTimes(1);
-
-    current = quietMetrics();
-    await publishSnapshot(client, [runningTask()], 121_000);
-    expect(notifySystem).toHaveBeenCalledTimes(2);
+  it("does not notify or release when the account changes during a metrics request", async () => {
+    let resolve!: (data: unknown) => void;
+    mocks.monitor.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    renderWatcher();
+    await waitFor(() => expect(mocks.monitor).toHaveBeenCalledTimes(1));
+    mocks.token = "Bearer switched";
+    setActiveAccountScope(makeAccountScope("bob", "bob", "http://local/api"));
+    await act(async () => { resolve({ cpu: [], network: [] }); await new Promise((done) => setTimeout(done, 0)); });
+    expect(browserRuntime.readTaskGpuUtilization).not.toHaveBeenCalled();
+    expect(mocks.notify).not.toHaveBeenCalled();
+    expect(mocks.release).not.toHaveBeenCalled();
   });
 
-  it("does not poll metrics when the idle preference is off", async () => {
-    mocks.items = [runningTask()];
-    setRuntimeSettings({
-      notificationPreferences: { ...DEFAULT_NOTIFICATION_PREFERENCES, "task.idle": "off" },
-    });
-    renderWatcher(client);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-    await publishSnapshot(client, [runningTask()], 0);
-    expect(mocks.monitorIndex).not.toHaveBeenCalled();
-    expect(notifySystem).not.toHaveBeenCalled();
+  it("warns once per idle episode and re-arms after CPU activity", async () => {
+    const quiet = mocks.monitor.getMockImplementation()!;
+    let busy = false;
+    mocks.monitor.mockImplementation(async () => busy
+      ? { cpu: [{ data: [{ timestamp: mocks.now, value: 80 }] }] }
+      : quiet());
+    renderWatcher();
+    await waitFor(() => expect(mocks.notify).toHaveBeenCalledTimes(1));
+    await tick();
+    expect(mocks.notify).toHaveBeenCalledTimes(1);
+    busy = true;
+    await tick();
+    expect(mocks.notify).toHaveBeenCalledTimes(1);
+    busy = false;
+    await tick();
+    await waitFor(() => expect(mocks.notify).toHaveBeenCalledTimes(2));
   });
 
   it("ignores tasks that are not running", async () => {
-    mocks.items = [{ ...runningTask(), status: 4 } as Task];
-    renderWatcher(client);
+    mocks.task.status = 4;
+    renderWatcher();
+    await tick();
+    expect(mocks.monitor).not.toHaveBeenCalled();
+    expect(mocks.release).not.toHaveBeenCalled();
+  });
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-    await publishSnapshot(client, mocks.items, 121_000);
-    expect(mocks.monitorIndex).not.toHaveBeenCalled();
+  it("falls back to an app notification if system delivery fails", async () => {
+    setRuntimeSettings({ ...DEFAULT_APP_SETTINGS, idleReminderWindowMs: 30 * 60_000 });
+    const notify = vi.spyOn(browserRuntime, "notifySystem").mockRejectedValue(new Error("notification service offline"));
+    renderWatcher();
+    await waitFor(() => expect(mocks.notify).toHaveBeenCalledTimes(1));
+    expect(notify).toHaveBeenCalledTimes(1);
+    await tick();
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(mocks.release).not.toHaveBeenCalled();
   });
 });

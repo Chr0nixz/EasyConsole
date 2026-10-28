@@ -61,6 +61,7 @@ describe("app settings", () => {
       missedScheduleGraceMs: 10 * 60_000,
       timedReleaseReminderLeadMs: 10 * 60_000,
       idleReminderWindowMs: 120 * 60_000,
+      idleAutoRelease: false,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
       desktopAutostart: false,
@@ -89,6 +90,7 @@ describe("app settings", () => {
       missedScheduleGraceMs: 10 * 60_000,
       timedReleaseReminderLeadMs: 10 * 60_000,
       idleReminderWindowMs: 120 * 60_000,
+      idleAutoRelease: false,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
       desktopAutostart: false,
@@ -116,6 +118,13 @@ describe("app settings", () => {
         "task.idle": "system",
       },
     });
+  });
+
+  it("requires an explicit boolean opt-in for idle auto-release", () => {
+    expect(parseAppSettings("{}").idleAutoRelease).toBe(false);
+    expect(parseAppSettings('{"idleAutoRelease":"true"}').idleAutoRelease).toBe(false);
+    expect(parseAppSettings('{"idleAutoRelease":1}').idleAutoRelease).toBe(false);
+    expect(parseAppSettings('{"idleAutoRelease":true}').idleAutoRelease).toBe(true);
   });
 
   it("normalizes run log retention fields", () => {

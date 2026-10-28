@@ -69,6 +69,8 @@ export type AppSettings = {
   timedReleaseReminderLeadMs: number;
   /** CPU/network heuristics window for idle-instance reminders. Default 120 minutes. */
   idleReminderWindowMs: number;
+  /** Explicit opt-in; only a full, continuous SSH GPU sampling window can release. */
+  idleAutoRelease: boolean;
   desktopCloseToTray: boolean;
   desktopClosePrompt: boolean;
   /** Launch the desktop app at OS login (applied to the autostart plugin). */
@@ -187,6 +189,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   missedScheduleGraceMs: DEFAULT_MISSED_SCHEDULE_GRACE_MS,
   timedReleaseReminderLeadMs: DEFAULT_TIMED_RELEASE_LEAD_MS,
   idleReminderWindowMs: DEFAULT_IDLE_REMINDER_WINDOW_MS,
+  idleAutoRelease: false,
   desktopCloseToTray: false,
   desktopClosePrompt: true,
   desktopAutostart: false,
@@ -196,6 +199,12 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 };
 
 let runtimeSettings: AppSettings = DEFAULT_APP_SETTINGS;
+const runtimeSettingsListeners = new Set<() => void>();
+
+export function subscribeRuntimeSettings(listener: () => void) {
+  runtimeSettingsListeners.add(listener);
+  return () => { runtimeSettingsListeners.delete(listener); };
+}
 
 function trimSlash(value: string) {
   return value.trim().replace(/\/+$/, "");
@@ -391,6 +400,7 @@ export function normalizeAppSettings(settings: Partial<AppSettings>): AppSetting
     missedScheduleGraceMs: normalizeMissedScheduleGrace(settings.missedScheduleGraceMs),
     timedReleaseReminderLeadMs: normalizeTimedReleaseLead(settings.timedReleaseReminderLeadMs),
     idleReminderWindowMs: normalizeIdleReminderWindow(settings.idleReminderWindowMs),
+    idleAutoRelease: settings.idleAutoRelease === true,
     desktopCloseToTray: settings.desktopCloseToTray === true,
     desktopClosePrompt: settings.desktopClosePrompt !== false,
     desktopAutostart: settings.desktopAutostart === true,
@@ -582,6 +592,7 @@ export function resetAccountAppSettings(store: AccountSettingsStore, accountId: 
 
 export function setRuntimeSettings(settings: Partial<AppSettings>) {
   runtimeSettings = normalizeAppSettings(settings);
+  for (const listener of runtimeSettingsListeners) listener();
 }
 
 export function getRuntimeSettings() {

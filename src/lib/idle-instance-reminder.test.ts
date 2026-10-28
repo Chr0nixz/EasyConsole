@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   evaluateIdleInstance,
   getIdleInstanceReminder,
+  hasFreshIdleMetrics,
   IDLE_CPU_THRESHOLD_PERCENT,
   IDLE_NETWORK_THRESHOLD_BPS,
 } from "./idle-instance-reminder";
@@ -23,6 +24,15 @@ function series(values: number[], unit: "s" | "ms" = "ms", stepMs = 10 * 60_000)
 }
 
 describe("evaluateIdleInstance", () => {
+  it("checks every CPU/network series and requires fresh zero-network evidence for auto-release", () => {
+    const quiet = series([0, 0, 0, 0, 0, 0, 0]);
+    expect(evaluateIdleInstance({ cpu: [quiet, series([0, 0, 0, 0, 0, 0, 80])] }, NOW, WINDOW_MS)).toBe("active");
+    expect(evaluateIdleInstance({ cpu: [quiet], network: [quiet, series([0, 0, 0, 0, 0, 0, 1_000_000])] }, NOW, WINDOW_MS)).toBe("active");
+    expect(hasFreshIdleMetrics({ cpu: [quiet], network: [quiet] }, NOW, WINDOW_MS)).toBe(true);
+    expect(hasFreshIdleMetrics({ cpu: [quiet] }, NOW, WINDOW_MS)).toBe(false);
+    expect(hasFreshIdleMetrics({ cpu: [quiet], network: [series([0, 0, 0, 0, 0, 0, 1])] }, NOW, WINDOW_MS)).toBe(false);
+    expect(hasFreshIdleMetrics({ cpu: [quiet], network: [quiet] }, NOW + 120_000, WINDOW_MS)).toBe(false);
+  });
   it("marks all-low series as idle (seconds and milliseconds timestamps)", () => {
     // Seven samples every 10 minutes span the full hour.
     expect(evaluateIdleInstance({ cpu: [series([1, 2, 1, 0, 1, 2, 1])], network: [series([0, 512, 0, 0, 0, 0, 0])] }, NOW, WINDOW_MS)).toBe("idle");

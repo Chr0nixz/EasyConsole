@@ -159,8 +159,8 @@ const notificationEvents: Array<{ event: ImportantNotificationEvent; zh: string;
     event: "task.idle",
     zh: "实例可能闲置",
     en: "Instance may be idle",
-    descriptionZh: "运行中实例的 CPU 与网络持续偏低时提醒。平台接口不提供 GPU 利用率，属启发式判断，仅提醒不会自动释放。",
-    descriptionEn: "Reminds when a running instance's CPU and network stay low. The platform exposes no GPU utilization, so this is a heuristic — it never releases anything.",
+    descriptionZh: "持续低负载时提醒。已连接 SSH 后会一并采样 GPU；自动释放需单独开启。",
+    descriptionEn: "Reminds about sustained low activity. A connected SSH session also supplies GPU samples; auto-release requires a separate opt-in.",
   },
 ];
 
@@ -458,7 +458,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     if (
       JSON.stringify(normalized.notificationPreferences) !== JSON.stringify(savedBaseline.notificationPreferences) ||
       normalized.timedReleaseReminderLeadMs !== savedBaseline.timedReleaseReminderLeadMs ||
-      normalized.idleReminderWindowMs !== savedBaseline.idleReminderWindowMs
+      normalized.idleReminderWindowMs !== savedBaseline.idleReminderWindowMs ||
+      normalized.idleAutoRelease !== savedBaseline.idleAutoRelease
     ) {
       groups.push(groupLabels.notifications);
     }
@@ -1380,7 +1381,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         <Panel>
           <SectionHeader
             icon={PanelTopClose}
-            title={text("窗口与启动", "Window & Startup")}
+              title={text("窗口与启动", "Window & Startup")}
             description={text("控制桌面端关闭确认、托盘行为和开机自启。", "Control close confirmation, tray behavior, and launch at login on desktop.")}
           />
           <div className="grid gap-3 p-4 sm:grid-cols-2">
@@ -2268,7 +2269,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           <div className="min-w-0">
             <div className="text-sm font-medium text-app-text">{text("闲置判定窗口", "Idle detection window")}</div>
             <p className="mt-0.5 text-xs leading-5 text-app-muted">
-              {text("CPU 与网络持续低于阈值的时长达到该窗口才提醒。仅对“实例可能闲置”生效。", "Reminds only after CPU and network stay below the thresholds for this long. Only affects “Instance may be idle”.")}
+              {text("已连接 SSH 时采样 GPU 利用率；没有 GPU 数据时仅依据 CPU／网络提醒。", "Samples GPU utilization through an existing SSH connection; falls back to CPU/network reminders when GPU data is unavailable.")}
             </p>
           </div>
           <Select
@@ -2284,6 +2285,23 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             ))}
           </Select>
         </div>
+        {browserRuntime.isDesktop ? (
+          <label className="flex items-start gap-3 border-t border-app-border px-4 py-3 text-sm">
+            <input className="mt-1" type="checkbox" checked={form.idleAutoRelease} onChange={(event) => {
+              if (!event.target.checked) { setForm((value) => ({ ...value, idleAutoRelease: false })); return; }
+              confirm({
+                title: text("开启闲置自动释放", "Enable idle auto-release"),
+                description: text("保存后，对当前账号的运行中实例生效。需已连接 SSH，全部已分配 GPU 持续低负载达到完整判定窗口，同时 CPU 低负载、网络零流量。释放不可撤销，请确保工作已保存。", "After saving, applies to running instances of this account. Requires SSH, low utilization on every allocated GPU for the full window, low CPU, and zero network traffic. Release cannot be undone; save your work first."),
+                confirmLabel: text("开启", "Enable"), tone: "danger",
+                run: () => setForm((value) => ({ ...value, idleAutoRelease: true })),
+              });
+            }} />
+            <span>
+              <span className="block font-medium">{text("闲置时自动释放", "Auto-release idle instances")}</span>
+              <span className="mt-1 block text-xs leading-5 text-app-muted">{text("默认关闭。需在主窗口保持 SSH 连接并完成连续 GPU 采样；采样中断、结果未知或账号切换时不会释放。", "Off by default. Keep SSH connected in the main window for continuous GPU sampling. Sampling gaps, unknown results or account changes prevent release.")}</span>
+            </span>
+          </label>
+        ) : null}
       </Panel>
     </SettingsGroup>
 

@@ -13,7 +13,8 @@ export const IDLE_REMINDER_WINDOW_OPTIONS = [
 /**
  * Heuristic thresholds. `monitor_index` exposes no GPU utilization (the
  * original console's monitor view is CPU/memory/network only), so idleness is
- * judged from CPU percent and network rate. The network unit is unverified;
+ * inferred from CPU percent and network rate here. Actual GPU samples are
+ * collected separately over an existing SSH session. The network unit is unverified;
  * the constant assumes bytes/s and is deliberately generous.
  */
 export const IDLE_CPU_THRESHOLD_PERCENT = 5;
@@ -63,19 +64,22 @@ export function evaluateIdleInstance(
   nowMs: number,
   windowMs: number,
 ): IdleEvaluation {
-  const cpuPoints = windowedPoints(Array.isArray(metrics.cpu) ? metrics.cpu[0] : undefined, nowMs, windowMs);
-  if (cpuPoints.length < 2) return "unknown";
-  const span = cpuPoints[cpuPoints.length - 1]!.timestampMs - cpuPoints[0]!.timestampMs;
-  if (span < windowMs * MIN_COVERAGE_RATIO) return "unknown";
-  if (cpuPoints.some((point) => point.value > IDLE_CPU_THRESHOLD_PERCENT)) return "active";
-
-  const networkPoints = windowedPoints(
-    Array.isArray(metrics.network) ? metrics.network[0] : undefined,
-    nowMs,
-    windowMs,
-  );
-  if (networkPoints.some((point) => point.value > IDLE_NETWORK_THRESHOLD_BPS)) return "active";
+  const cpu = (Array.isArray(metrics.cpu) ? metrics.cpu : []).map((series) => windowedPoints(series, nowMs, windowMs));
+  const network = (Array.isArray(metrics.network) ? metrics.network : []).map((series) => windowedPoints(series, nowMs, windowMs));
+  if (cpu.some((points) => points.some((point) => point.value > IDLE_CPU_THRESHOLD_PERCENT))) return "active";
+  if (network.some((points) => points.some((point) => point.value > IDLE_NETWORK_THRESHOLD_BPS))) return "active";
+  if (!cpu.length || cpu.some((points) => points.length < 2 || points.at(-1)!.timestampMs - points[0].timestampMs < windowMs * MIN_COVERAGE_RATIO)) return "unknown";
   return "idle";
+}
+
+/** Auto-release additionally needs current observations of both CPU and network. */
+export function hasFreshIdleMetrics(metrics: Pick<MonitorIndexResponse, "cpu" | "network">, now: number, windowMs: number) {
+  return [metrics.cpu, metrics.network].every((series, index) => Array.isArray(series) && series.length > 0 && series.every((item) => {
+    const points = windowedPoints(item, now, windowMs);
+    // Network units are unverified. Require zero for automatic actions, so
+    // the reminder's generous heuristic threshold cannot authorize release.
+    return points.length >= 2 && now - points.at(-1)!.timestampMs <= 90_000 && points.every((point) => point.value >= 0 && (index !== 1 || point.value === 0));
+  }));
 }
 
 export type IdleInstanceReminder = {
@@ -86,7 +90,7 @@ export type IdleInstanceReminder = {
   tag: string;
 };
 
-export function getIdleInstanceReminder(task: Task, locale: Locale): IdleInstanceReminder {
+export function getIdleInstanceReminder(task: Task, locale: Locale, verifiedGpu = false): IdleInstanceReminder {
   const en = locale === "en-US";
   const name = getTaskName(task);
   const routeId = String(task.id ?? task.task_id);
@@ -95,7 +99,11 @@ export function getIdleInstanceReminder(task: Task, locale: Locale): IdleInstanc
     routeId,
     name,
     title: en ? "Instance may be idle" : "实例可能闲置",
-    body: en
+    body: verifiedGpu
+      ? (en
+        ? `${name}: GPU utilization, CPU and network have stayed low. GPU data was sampled through the connected SSH session.`
+        : `${name}：GPU 利用率、CPU 与网络持续偏低。GPU 数据来自已连接的 SSH 会话采样。`)
+      : en
       ? `${name}: CPU and network have stayed low. The platform exposes no GPU utilization, so this is a heuristic — check the monitor before releasing.`
       : `${name}：CPU 与网络持续偏低。平台接口不提供 GPU 利用率，此为启发式判断，释放前请先查看监控确认。`,
     tag: `easy-console-idle-${taskId}`,
