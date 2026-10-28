@@ -469,4 +469,6 @@ Node 侧需要引入 SSH 库（例如 `ssh2`），并和桌面应用共用已知
 | SSH-P3-12 | `ssh_write` 注释归位；代码核对通过，无运行行为变更 | 无独立实测要求 |
 | SSH-P3-13 | Debug 中的密码/口令脱敏；`connection_request_debug_redacts_password_and_key_passphrase` | 无独立实测要求 |
 
-本地 Windows 自动化结果：前端/工具 116 个文件、856 项通过；覆盖率门槛通过（lines 65.09%、statements 62.61%、functions 55.36%、branches 56.45%）；Rust 单元测试 83 项通过、1 项系统计划任务测试按配置忽略；SSH 集成测试 35 项通过。typecheck、typecheck:tools、lint（37 warnings、0 errors）、桌面输入构建均通过。最终本地检查记录见发布清单。
+本地 Windows 自动化结果：前端/工具 116 个文件、856 项通过；覆盖率门槛通过（lines 65.09%、statements 62.61%、functions 55.36%、branches 56.45%）；Rust 单元测试 84 项通过、1 项系统计划任务测试按配置忽略；SSH 集成测试 35 项通过。typecheck、typecheck:tools、lint（37 warnings、0 errors）、桌面输入构建均通过。最终本地检查记录见发布清单。
+
+首轮 Linux CI 暴露测试服务器 `realpath` 的平台差异：返回本地临时目录后，Unix 上再次映射远端根目录，导致四个 SFTP 用例找不到文件。现统一使用虚拟 POSIX 根目录；新增 `sftp_realpath_uses_remote_paths_independent_of_the_host_os` 验证家目录与后续路径解析，Windows SFTP 回归通过。产品 SFTP 路径解析没有为绕过测试而修改；跨平台重跑结果见发布清单。

@@ -417,15 +417,23 @@ impl TestSftpHandler {
     }
 
     fn resolve(&self, path: &str) -> PathBuf {
+        self.root
+            .join(Self::remote_path(path).trim_start_matches('/'))
+    }
+
+    fn remote_path(path: &str) -> String {
         let path = path.replace('\\', "/");
-        if path == "/" || path == "~" || path == "~/" {
-            return self.root.clone();
+        let mut components = Vec::new();
+        for component in path.trim_start_matches("~/").split('/') {
+            match component {
+                "" | "." | "~" => {}
+                ".." => {
+                    components.pop();
+                }
+                part => components.push(part),
+            }
         }
-        let stripped = path
-            .strip_prefix("~/")
-            .or_else(|| path.strip_prefix('/'))
-            .unwrap_or(&path);
-        self.root.join(stripped)
+        format!("/{}", components.join("/"))
     }
 
     fn ok(id: u32) -> Status {
@@ -651,7 +659,10 @@ impl russh_sftp::server::Handler for TestSftpHandler {
     async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
         Ok(Name {
             id,
-            files: vec![File::dummy(self.resolve(&path).to_string_lossy())],
+            // The protocol sees a virtual POSIX filesystem. Returning the
+            // host's fixture directory makes Unix clients send /tmp/... back
+            // here, which resolve() would incorrectly root a second time.
+            files: vec![File::dummy(Self::remote_path(&path))],
         })
     }
 
@@ -740,4 +751,36 @@ pub fn generate_key_pair(dir: &Path, name: &str, passphrase: &str) -> (PathBuf, 
 pub fn load_host_key(path: &Path) -> PrivateKey {
     russh::keys::load_secret_key(path.to_string_lossy().as_ref(), None)
         .expect("test host key must load")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use russh_sftp::server::Handler;
+
+    #[tokio::test]
+    async fn sftp_realpath_uses_remote_paths_independent_of_the_host_os() {
+        let root = tempfile::tempdir().unwrap();
+        let mut handler = TestSftpHandler::new(
+            root.path().to_path_buf(),
+            None,
+            false,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let home = handler.realpath(1, ".".into()).await.unwrap();
+        assert_eq!(home.files[0].filename, "/");
+        let file = handler
+            .realpath(2, "~/folder/../file.bin".into())
+            .await
+            .unwrap();
+        assert_eq!(file.files[0].filename, "/file.bin");
+        assert_eq!(
+            handler.resolve(&file.files[0].filename),
+            root.path().join("file.bin")
+        );
+        assert_eq!(
+            handler.resolve("/../file.bin"),
+            root.path().join("file.bin")
+        );
+    }
 }

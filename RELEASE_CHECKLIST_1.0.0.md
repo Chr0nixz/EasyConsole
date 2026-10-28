@@ -51,7 +51,7 @@
 | `cargo check --manifest-path src-tauri/Cargo.toml` | 通过 |
 | `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | 通过 |
 | `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` | 通过；额外启用 `ssh-test-internals` 的 clippy 也通过 |
-| `cargo test --manifest-path src-tauri/Cargo.toml --lib` | 83 项通过，1 项修改 OS 计划任务的测试按配置忽略 |
+| `cargo test --manifest-path src-tauri/Cargo.toml --lib` | 84 项通过，1 项修改 OS 计划任务的测试按配置忽略；含 CI 暴露的 SFTP 测试服务器路径回归 |
 | `cargo test --manifest-path src-tauri/Cargo.toml --features ssh-test-internals --test ssh_integration` | Windows 35 项通过；Unix 额外符号链接用例等待 CI |
 | Android arm64 `cargo check --target aarch64-linux-android`（在 `src-tauri/`，NDK 27） | 通过，未构建 APK、未做真机验收 |
 | 三个 workflow 的 YAML / Action 引用校验 | YAML 解析通过；29 个 SHA、4 处显式 stable，Android PR 触发开启 |
