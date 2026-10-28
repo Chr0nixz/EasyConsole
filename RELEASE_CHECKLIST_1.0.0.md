@@ -106,7 +106,7 @@
 
 ### 3.3 本地数据格式
 
-- [ ] 定稿并记录各格式的当前版本：存储 manifest v1；本地备份 `LOCAL_DATA_BACKUP_VERSION = 1`（[local-data-backup.ts](src/lib/local-data-backup.ts)）；备份加密格式 `version: 1`（[backup-crypto.ts](src/lib/backup-crypto.ts)）；桌面与 sidecar 共用的 `.lock` 目录协议。1.x 内只做向前迁移。
+- [x] 定稿并记录各格式的当前版本：存储 manifest v1；本地备份 `LOCAL_DATA_BACKUP_VERSION = 1`（[local-data-backup.ts](src/lib/local-data-backup.ts)）；备份加密格式 `version: 1`（[backup-crypto.ts](src/lib/backup-crypto.ts)）；桌面与 sidecar 共用的 `.lock` 目录协议。1.x 内只做向前迁移。证据：2026-10-28 [格式与兼容约定](LOCAL_DATA_FORMATS.md)，已逐项核对 Rust、Node 和备份源码；安装包迁移及旧备份 fixture 保持待办。
 - [ ] 把第 2 节造的 0.4.27 数据脱敏后存为测试 fixture，加一条"旧版数据迁移到当前版本"的回归测试。
 - [ ] 1.0 能导入 0.4.x 导出的本地备份。
 
@@ -114,9 +114,9 @@
 
 1.0 之后改动下面任何一项，已安装的用户都会失去本地数据、凭据或自动更新。确认现值，并写进 [AGENTS.md](AGENTS.md)：
 
-- [ ] 应用标识 `com.easyconsole.desktop`：它决定应用数据目录和钥匙串服务名 `easy-console`。
-- [ ] 更新器公钥和更新地址（[tauri.conf.json](src-tauri/tauri.conf.json) 的 `plugins.updater`）。
-- [ ] deep link scheme `easyconsole://`。
+- [x] 应用标识 `com.easyconsole.desktop`：它决定应用数据目录和钥匙串服务名 `easy-console`。证据：2026-10-28 核对 Tauri 配置、native keychain 与 Node 路径解析，现值及 1.x 约束已写入 AGENTS.md。
+- [x] 更新器公钥和更新地址（[tauri.conf.json](src-tauri/tauri.conf.json) 的 `plugins.updater`）。证据：2026-10-28 完整公钥与 endpoint 已逐字记录到 AGENTS.md；私钥备份验证仍为下方独立待办。
+- [x] deep link scheme `easyconsole://`。证据：2026-10-28 与 Tauri deep-link 配置核对，已写入 AGENTS.md。
 - [ ] Android 包名和签名证书。
 - [ ] `TAURI_SIGNING_PRIVATE_KEY` 及其口令、Android keystore 及其口令都已离线备份，并实际验证过备份可用。私钥丢失后，已安装的客户端再也收不到自动更新。
 

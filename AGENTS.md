@@ -99,6 +99,17 @@ Packaged desktop builds currently allow remote cleartext `http://` / `ws://` (la
 
 Do not commit real account credentials, tokens, or live test secrets.
 
+## Release identity and compatibility
+
+The following production identity values are fixed for 1.x. Do not change them as routine cleanup; changing them can disconnect installed clients from their data, keychain, deep links or updates. Isolated acceptance builds may continue to use a separate test identifier.
+
+- App identifier: `com.easyconsole.desktop`; default keychain service: `easy-console`. Keep existing app-data paths and sidecar path resolution compatible.
+- Deep link scheme: `easyconsole://`.
+- Updater endpoint: `https://github.com/Chr0nixz/EasyConsole/releases/latest/download/latest.json`.
+- Updater public key in `src-tauri/tauri.conf.json`: `dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIyNjBFRTlCRkIwQzAwREQKUldUZEFBejdtKzVnSW1UYWpiOWVnYWFhV2hxN2daWGJnaWpsVVA4bG55RXFlcTJJQ3Vya1VGQmIK`. Never replace it without a separately verified migration for installed clients.
+- Android release application ID: `com.easyconsole.desktop`; debug uses `.debug`. Production signing-certificate identity and offline signing-key backup verification remain release gates; do not infer them from debug builds.
+- Local storage, backups and the shared directory-lock protocol follow [LOCAL_DATA_FORMATS.md](LOCAL_DATA_FORMATS.md). 1.x changes must preserve forward migration and old backup import; never silently overwrite an unknown format.
+
 ## Architecture
 
 - `src/lib/transport-security.ts`: URL transport classification; packaged app does not block remote cleartext by default (CLI/MCP still opt-in).
