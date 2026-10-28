@@ -1,4 +1,5 @@
-import { mutateScheduledTasks, scheduleNextRun, STALE_LEASE_MS, resetStaleRunningTasks, updateScheduledTask } from "./scheduled-tasks";
+import { holdScheduledTaskForReview, LEGACY_SCHEDULED_TASK_OWNER_KEY, mutateScheduledTasks, scheduledTaskOwnerMismatch, scheduleNextRun, STALE_LEASE_MS, resetStaleRunningTasks, updateScheduledTask } from "./scheduled-tasks";
+import type { AccountScope } from "./account-scope";
 import { applyScheduledReleasePolicy } from "./scheduled-release";
 import { isNetworkError } from "./api-client";
 import {
@@ -140,6 +141,10 @@ function isFreshLease(task: ScheduledTask, now: Date, staleMs: number) {
 export type ExecuteScheduledTaskDeps = {
   createTask: (payload: CreateTaskPayload) => Promise<unknown>;
   preparePayload?: (payload: CreateTaskPayload) => Promise<CreateTaskPayload>;
+  /** Check ownership under the claim lock and recheck the session before the remote create. */
+  getAccountScope?: () => AccountScope;
+  /** Explicit CLI/MCP runs may execute an unowned legacy plan; known foreign owners are always checked. */
+  allowLegacyOwner?: boolean;
   /**
    * User-initiated run (page "Run now" / CLI). Claims even when the row is not
    * pending. Auto-runners must leave this unset so failed/needs_review rows are
@@ -263,7 +268,7 @@ async function recordExecutionOutcome(
   trigger: ExecutionTrigger,
   startedAt: string,
   outcome: ExecutionLedgerEntry["outcome"],
-  extra: { remoteTaskId?: string; error?: string } = {},
+  extra: { remoteTaskId?: string; error?: string; accountScope?: AccountScope } = {},
 ): Promise<void> {
   try {
     await appendExecutionLedgerEntry(
@@ -272,7 +277,9 @@ async function recordExecutionOutcome(
         scheduledTaskId: leased.id,
         scheduledTaskName: leased.name,
         trigger,
-        ...activeExecutionAccount(),
+        ...(extra.accountScope
+          ? { accountKey: extra.accountScope.key, accountDisplayName: extra.accountScope.displayName }
+          : activeExecutionAccount()),
         startedAt,
         finishedAt: new Date().toISOString(),
         outcome,
@@ -299,6 +306,7 @@ export async function executeScheduledTask(
   const now = deps.now ?? new Date();
   const staleMs = deps.staleMs ?? STALE_LEASE_MS;
   const force = deps.force === true;
+  const accountScope = deps.getAccountScope?.();
 
   type Claim =
     | { kind: "skipped"; reason: ExecuteScheduledTaskSkipReason; task: ScheduledTask }
@@ -313,6 +321,15 @@ export async function executeScheduledTask(
     if (isFreshLease(latest, now, staleMs)) {
       claim = { kind: "skipped", reason: "in-flight", task: latest };
       return current;
+    }
+
+    const manualLegacyRun = force && deps.trigger === "cli" && deps.allowLegacyOwner === true
+      && (!latest.owner || latest.owner.key === LEGACY_SCHEDULED_TASK_OWNER_KEY);
+    const mismatch = accountScope && !manualLegacyRun && scheduledTaskOwnerMismatch(latest, accountScope);
+    if (mismatch) {
+      const reviewed = holdScheduledTaskForReview(latest, mismatch.reason, now);
+      claim = { kind: "skipped", reason: "not-runnable", task: reviewed };
+      return updateScheduledTask(current, reviewed);
     }
 
     if (latest.status === "running") {
@@ -360,6 +377,14 @@ export async function executeScheduledTask(
   try {
     const releaseAdjustedPayload = applyScheduledReleasePolicy(leased.payload, leased.scheduleTime);
     const prepared = deps.preparePayload ? await deps.preparePayload(releaseAdjustedPayload) : releaseAdjustedPayload;
+    if (accountScope && deps.getAccountScope?.().key !== accountScope.key) {
+      const reviewed = holdScheduledTaskForReview(leased, i18nText(
+        "准备执行期间账号已切换，未提交实例创建。请确认账号后恢复计划。",
+        "The account changed while preparing this run; no instance was submitted. Confirm the account and resume the plan.",
+      ));
+      await tryPersistTaskState(storage, reviewed);
+      return { skipped: true, reason: "not-runnable", task: reviewed };
+    }
     const result = await deps.createTask(prepared);
     const remoteTaskId = extractRemoteTaskId(result);
 
@@ -372,13 +397,14 @@ export async function executeScheduledTask(
     };
     try {
       const completed = await persistCompletionWithRetry(storage, withRemote, now, deps);
-      await recordExecutionOutcome(storage, leased, trigger, startedAt, "completed", { remoteTaskId });
+      await recordExecutionOutcome(storage, leased, trigger, startedAt, "completed", { remoteTaskId, accountScope });
       return { skipped: false, outcome: "completed", task: completed, remoteTaskId, result };
     } catch (persistError) {
       const review = persistFailureReview(withRemote, persistError, now);
       await tryPersistTaskState(storage, review);
       await recordExecutionOutcome(storage, leased, trigger, startedAt, "local-persist-failed", {
         remoteTaskId,
+        accountScope,
         error: errorMessageOf(persistError),
       });
       return { skipped: false, outcome: "local-persist-failed", task: review, remoteTaskId, result };
@@ -393,6 +419,7 @@ export async function executeScheduledTask(
       : failScheduledExecution(leased, error instanceof Error ? error.message : String(error), now);
     await tryPersistTaskState(storage, failed);
     await recordExecutionOutcome(storage, leased, trigger, startedAt, networkFailed ? "unknown" : "failed", {
+      accountScope,
       error: errorMessageOf(error),
     });
     throw error;

@@ -875,7 +875,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
 
   const schedule = program
     .command("schedule")
-    .description("Local scheduled task operations (tasks are never executed automatically; run them with `schedule run`)");
+    .description("Shared local scheduled task operations (the sidecar never runs plans automatically; use `schedule run` or the desktop runner)");
   const scheduleList = schedule.command("list").description("List local scheduled tasks");
   scheduleList.action(run(scheduleList, (context) => listScheduledTasks(context.storage)));
 
@@ -955,7 +955,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   scheduleRun.action((taskId: string) =>
     run(scheduleRun, (context) => {
       const options = scheduleRun.opts<{ yes?: boolean }>();
-      return runScheduledTask(context.storage, context.api, taskId, options.yes);
+      return runScheduledTask(context.storage, context.api, taskId, options.yes, context.resolveAccountScope);
     })(),
   );
 
@@ -982,7 +982,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       if (includeSecrets && !options.output) {
         throw new Error("--include-secrets requires --output <file>; refusing to write credentials to stdout.");
       }
-      const data = await exportBackup(context.storage, includeSecrets);
+      const data = await exportBackup(context.storage, includeSecrets, context.credentialStorage ?? context.storage);
       if (!options.output) return data;
 
       const { writeFile, chmod } = await import("node:fs/promises");
@@ -1013,7 +1013,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       if (!options.includeSecrets && sections.some((section) => secretBackupSections.includes(section))) {
         throw new Error("Importing token/savedAccounts overwrites local credentials; pass --include-secrets to allow it.");
       }
-      return importBackup(context.storage, backupText, sections, options.yes);
+      return importBackup(context.storage, backupText, sections, options.yes, context.credentialStorage ?? context.storage);
     })(),
   );
 

@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 import { buildMonitorDashboardUrl, DEFAULT_MONITOR_DASHBOARD_URL } from "../../src/lib/monitor-dashboard-core";
 import type { EasyConsoleApi } from "../../src/lib/api-factory";
+import type { AccountScope } from "../../src/lib/account-scope";
 import { runBatch, type BatchItemOutcome } from "../../src/lib/batch-runner";
 import { fetchAllTasks } from "../../src/lib/fetch-all-tasks";
 import { getStatusText } from "../../src/lib/format";
@@ -870,15 +871,24 @@ export async function resumeScheduledTaskRecord(storage: RuntimeStorage, taskId:
   });
 }
 
-export async function runScheduledTask(storage: RuntimeStorage, api: EasyConsoleApi, taskId: string, confirm?: boolean) {
+export async function runScheduledTask(
+  storage: RuntimeStorage,
+  api: EasyConsoleApi,
+  taskId: string,
+  confirm?: boolean,
+  resolveAccountScope?: () => Promise<AccountScope>,
+) {
   const items = await loadScheduledTasks(storage);
   const task = items.find((item) => item.id === taskId);
   if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
   return maybeMutate("schedule.run", { taskId, taskName: task.name, executionKey: `${task.id}@${task.scheduleTime}` }, confirm, async () => {
+    const scope = await resolveAccountScope?.();
     const executed = await executeScheduledTask(storage, taskId, {
       createTask: (payload) => api.instanceApi.createTask(payload),
       trigger: "cli",
       force: true,
+      getAccountScope: scope ? () => scope : undefined,
+      allowLegacyOwner: true,
     });
     if (executed.skipped) {
       return {
@@ -905,14 +915,21 @@ export async function deleteScheduledTask(storage: RuntimeStorage, taskId: strin
 
 // === Local data: Backup ===
 
-export async function exportBackup(storage: RuntimeStorage, includeSecrets: boolean) {
-  return exportLocalDataBackup(storage, includeSecrets);
+export async function exportBackup(storage: RuntimeStorage, includeSecrets: boolean, credentialStorage = storage) {
+  return exportLocalDataBackup({ storage, credentialStorage }, includeSecrets);
 }
 
-export async function importBackup(storage: RuntimeStorage, backupText: string, sections: LocalDataBackupSection[], confirm?: boolean) {
+export async function importBackup(
+  storage: RuntimeStorage,
+  backupText: string,
+  sections: LocalDataBackupSection[],
+  confirm?: boolean,
+  credentialStorage = storage,
+) {
   const backup = parseLocalDataBackup(backupText);
   return maybeMutate("backup.import", { sections, includeSecrets: backup.includeSecrets }, confirm, () =>
-    // An import writes several keys; they must land as one unit.
-    withStorageTransaction(storage, () => importLocalDataBackup(storage, backup, sections)),
+    // Keep shared-key writes from interleaving with other processes. Credential
+    // keys use their own adapter and are never written into the shared store.
+    withStorageTransaction(storage, () => importLocalDataBackup({ storage, credentialStorage }, backup, sections)),
   );
 }

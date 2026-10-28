@@ -128,7 +128,7 @@ function asRecord(value: unknown) {
 }
 
 /**
- * Stamp the confirmed schedule.create outcome: the CLI/MCP store has no
+ * Stamp the confirmed schedule.create outcome: the CLI/MCP sidecar has no
  * runner, so without this note agents assume the task will fire automatically
  * (the desktop app's runner reads a different store entirely).
  */
@@ -136,7 +136,7 @@ function withScheduleAutoRunNote(result: Awaited<ReturnType<typeof createSchedul
   if (result.dryRun) return result;
   return {
     ...result,
-    note: "Local scheduled task persisted. It will NOT run automatically — trigger it with easyconsole_schedule_run (or manage it in the desktop app).",
+    note: "Local scheduled task persisted in the shared store. It will NOT run automatically by the CLI/MCP sidecar. Trigger it with easyconsole_schedule_run, or verify its owner in the desktop app for automatic execution.",
   };
 }
 
@@ -691,7 +691,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       name: "easyconsole_schedule_create",
       description:
         "Create a local scheduled task. Requires confirm=true to persist; otherwise returns a dry-run preview. " +
-        "Local scheduled tasks are never executed automatically — run them with easyconsole_schedule_run (or the desktop app).",
+        "Local scheduled tasks are never executed automatically by the CLI/MCP sidecar. They share desktop storage; verify their owner in the desktop app for automatic execution, or use easyconsole_schedule_run.",
       inputSchema: {
         name: z.string(),
         scheduleTime: z.string(),
@@ -718,7 +718,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       name: "easyconsole_schedule_update",
       description:
         "Update a local scheduled task. Requires confirm=true to execute. " +
-        "Local scheduled tasks are never executed automatically — run them with easyconsole_schedule_run (or the desktop app).",
+        "Local scheduled tasks are never executed automatically by the CLI/MCP sidecar. The desktop runner may execute shared plans with a verified owner; use easyconsole_schedule_run for an explicit manual run.",
       inputSchema: {
         taskId: z.string(),
         patch: z.record(z.string(), z.unknown()),
@@ -752,7 +752,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       name: "easyconsole_schedule_resume",
       description:
         "Resume a paused or failed scheduled task. Requires confirm=true to execute. " +
-        "Local scheduled tasks are never executed automatically — run them with easyconsole_schedule_run (or the desktop app).",
+        "Local scheduled tasks are never executed automatically by the CLI/MCP sidecar. The desktop runner may execute shared plans with a verified owner; use easyconsole_schedule_run for an explicit manual run.",
       inputSchema: {
         taskId: z.string(),
         confirm: z.boolean().optional(),
@@ -763,13 +763,13 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_schedule_run",
-      description: "Manually run a scheduled task now. Requires confirm=true to execute.",
+      description: "Manually run a scheduled task now. Requires confirm=true and verifies the authenticated account against a known plan owner. Unowned legacy plans require explicit manual confirmation.",
       inputSchema: {
         taskId: z.string(),
         confirm: z.boolean().optional(),
       },
       handler(context, input) {
-        return runScheduledTask(context.storage, context.api, String(input.taskId), asConfirm(input.confirm));
+        return runScheduledTask(context.storage, context.api, String(input.taskId), asConfirm(input.confirm), context.resolveAccountScope);
       },
     },
     {
@@ -793,7 +793,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
         // No includeSecrets option by design. This is a read-only tool, so it
         // bypasses the mutation confirm gate entirely; letting it return a
         // bearer token would hand credentials to the model with no checkpoint.
-        return exportBackup(context.storage, false);
+        return exportBackup(context.storage, false, context.credentialStorage ?? context.storage);
       },
     },
     {
@@ -813,7 +813,13 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
         if (rejected.length > 0) {
           throw new Error(`Refusing to import credential sections via MCP: ${rejected.join(", ")}. Use the desktop Settings page.`);
         }
-        return importBackup(context.storage, String(input.backupText), sections as never, asConfirm(input.confirm));
+        return importBackup(
+          context.storage,
+          String(input.backupText),
+          sections as never,
+          asConfirm(input.confirm),
+          context.credentialStorage ?? context.storage,
+        );
       },
     },
     {

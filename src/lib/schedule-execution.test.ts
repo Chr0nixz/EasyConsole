@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { makeAccountScope } from "./account-scope";
 import { EXECUTION_LEDGER_STORAGE_KEY, listExecutionLedger } from "./execution-ledger";
 import {
   applyExecutionOutcome,
@@ -99,6 +100,41 @@ function createMemoryStorage(): RuntimeStorage {
 }
 
 describe("executeScheduledTask", () => {
+  it("checks ownership against the latest stored plan even for a forced manual run", async () => {
+    const storage = createMemoryStorage();
+    const owner = makeAccountScope("alice", "Alice", "http://console.example/api");
+    await saveScheduledTasks(storage, [makeTask({ owner })]);
+    let creates = 0;
+    const result = await executeScheduledTask(storage, "sch-1", {
+      createTask: async () => { creates += 1; return { id: "wrong-account" }; },
+      getAccountScope: () => makeAccountScope("bob", "Bob", "http://console.example/api"),
+      force: true,
+    });
+    expect(result).toMatchObject({ skipped: true, reason: "not-runnable", task: { status: "needs_review", owner } });
+    expect((await loadScheduledTasks(storage))[0]).toMatchObject({ status: "needs_review", owner });
+    expect(creates).toBe(0);
+  });
+
+  it("rechecks the account after asynchronous payload preparation before submitting", async () => {
+    const storage = createMemoryStorage();
+    const owner = makeAccountScope("alice", "Alice", "http://console.example/api");
+    await saveScheduledTasks(storage, [makeTask({ owner })]);
+    let active = owner;
+    let creates = 0;
+    const result = await executeScheduledTask(storage, "sch-1", {
+      createTask: async () => { creates += 1; return { id: "wrong-account" }; },
+      getAccountScope: () => active,
+      preparePayload: async (payload) => {
+        active = makeAccountScope("bob", "Bob", "http://console.example/api");
+        return payload;
+      },
+      force: true,
+    });
+    expect(result).toMatchObject({ skipped: true, reason: "not-runnable", task: { status: "needs_review" } });
+    expect((await loadScheduledTasks(storage))[0]).toMatchObject({ status: "needs_review", owner });
+    expect(creates).toBe(0);
+  });
+
   it("recomputes timed release as 24 hours after the current scheduled run", async () => {
     const storage = createMemoryStorage();
     const task = makeTask({

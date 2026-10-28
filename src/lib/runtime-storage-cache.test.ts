@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createCachedWindowStorage,
@@ -304,5 +304,71 @@ describe("cross-window read-modify-write", () => {
 
     await expect(storage.update!("easy-console.k", (raw) => `${raw}-updated`)).resolves.toBe("v1-updated");
     expect(shared.get("easy-console.k")).toBe("v1-updated");
+  });
+});
+
+describe("storage shared with a sidecar", () => {
+  function sharedBackend() {
+    const data = new Map([["key", "v1"]]);
+    const backend: NativeStorageBackend = {
+      get: vi.fn(async (key) => data.get(key) ?? null),
+      set: vi.fn(async (key, value) => { data.set(key, value); }),
+      remove: vi.fn(async (key) => { data.delete(key); }),
+      compareAndSwap: vi.fn(async (key, expected, next) => {
+        const current = data.get(key) ?? null;
+        if (current !== expected) return { updated: false, current };
+        if (next === null) data.delete(key);
+        else data.set(key, next);
+        return { updated: true, current: null };
+      }),
+    };
+    const fallback = memoryStorage();
+    const storage = createCachedWindowStorage({
+      backend, fallback, cacheReads: false, requireCompareAndSwap: true,
+      selfLabel: async () => "main", subscribeChanges: async () => () => {},
+    });
+    return { data, backend, fallback, storage };
+  }
+
+  it("reads sidecar writes without a Tauri window broadcast, including before a no-op updater", async () => {
+    const { storage, data } = sharedBackend();
+    expect(await storage.get("key")).toBe("v1");
+    data.set("key", "sidecar");
+    expect(await storage.get("key")).toBe("sidecar");
+    data.set("key", "new-sidecar-value");
+    expect(await storage.update!("key", (raw) => raw)).toBe("new-sidecar-value");
+  });
+
+  it("propagates a failed CAS instead of issuing a blind write", async () => {
+    const { storage, backend, data, fallback } = sharedBackend();
+    vi.mocked(backend.compareAndSwap).mockRejectedValue(new Error("local store locked"));
+    await expect(storage.update!("key", () => "replacement")).rejects.toThrow("local store locked");
+    expect(data.get("key")).toBe("v1");
+    expect(backend.set).not.toHaveBeenCalled();
+    expect(await fallback.get("key")).toBeNull();
+  });
+
+  it("does not overwrite a sidecar write while migrating an old browser fallback", async () => {
+    const { storage, backend, fallback, data } = sharedBackend();
+    await fallback.set("key", "old-browser-copy");
+    vi.mocked(backend.get).mockImplementationOnce(async () => {
+      data.set("key", "new-sidecar-copy");
+      return null;
+    });
+    expect(await storage.get("key")).toBe("new-sidecar-copy");
+    expect(data.get("key")).toBe("new-sidecar-copy");
+    expect(backend.set).not.toHaveBeenCalled();
+    expect(await fallback.get("key")).toBeNull();
+  });
+
+  it("discards an old browser copy when native storage reports an existing tombstone", async () => {
+    const { storage, backend, fallback, data } = sharedBackend();
+    data.delete("key");
+    await fallback.set("key", "deleted-plan-copy");
+    vi.mocked(backend.compareAndSwap).mockResolvedValue({ updated: false, current: null });
+    expect(await storage.get("key")).toBeNull();
+    expect(backend.compareAndSwap).toHaveBeenCalledWith("key", null, "deleted-plan-copy", true);
+    expect(backend.set).not.toHaveBeenCalled();
+    expect(await fallback.get("key")).toBeNull();
   });
 });

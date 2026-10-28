@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarCheck, CalendarClock, FolderOpen, Pause, Pencil, Play, Plus, SkipForward, Trash2, X, Zap } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { BatchPreviewDialog } from "../components/batch/BatchPreviewDialog";
@@ -16,6 +16,7 @@ import { ExecutionLedgerPanel } from "../components/scheduled/ExecutionLedgerPan
 import { WorkspaceAccountBanner } from "../components/scheduled/WorkspaceAccountBanner";
 import { Button, Input, Panel, SegmentedControl, Select, StatePill, TableRegion, Textarea, type StateTone } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
+import { getActiveAccountScope } from "../lib/account-scope";
 import { getRuntimeSettings } from "../lib/app-settings";
 import { runBatch } from "../lib/batch-runner";
 import { queryKeys } from "../lib/query-keys";
@@ -46,7 +47,6 @@ import {
   resumeScheduledTask,
   skipMissedScheduleInList,
   sortScheduledTasks,
-  updateScheduledTask,
 } from "../lib/scheduled-tasks";
 import { executeScheduledTask } from "../lib/schedule-execution";
 import { describeRecurrence, previewNextRuns, RecurrenceValidationError, validateRecurrence } from "../lib/task-recurrence";
@@ -163,12 +163,13 @@ function RecurrencePreview({ scheduleTime, recurrence }: { scheduleTime: string;
 }
 
 function formatScheduleTime(value: string) {
-  return value.replace("T", " ").slice(0, 16);
+  return toDateTimeLocalInput(value).replace("T", " ") || value;
 }
 
 function toDateTimeLocalInput(value?: string | null) {
   if (!value) return "";
-  return value.replace(" ", "T").slice(0, 16);
+  const date = new Date(value.replace(" ", "T"));
+  return Number.isNaN(date.getTime()) ? "" : formatDateTimeLocalInput(date).slice(0, 16);
 }
 
 export function ScheduledTasksPage() {
@@ -327,8 +328,11 @@ export function ScheduledTasksPage() {
     return merged;
   }
 
-  async function persistOne(next: ScheduledTask) {
-    await persistWith((current) => updateScheduledTask(current, next));
+  async function persistOne(id: string, updater: (latest: ScheduledTask) => ScheduledTask) {
+    await persistWith((current) => {
+      if (!current.some((item) => item.id === id)) throw new Error(text("定时任务不存在", "Scheduled task not found"));
+      return current.map((latest) => latest.id === id ? updater(latest) : latest);
+    });
   }
 
   async function persistAdd(task: ScheduledTask) {
@@ -477,8 +481,7 @@ export function ScheduledTasksPage() {
   }
 
   const saveMutation = useMutation({
-    mutationFn: async (event: FormEvent) => {
-      event.preventDefault();
+    mutationFn: async () => {
       setFormError(null);
       const payload = buildPayload();
       if (!payload) return null;
@@ -513,8 +516,14 @@ export function ScheduledTasksPage() {
           recurrence,
           status: nextStatus,
           lastError: nextStatus === "pending" ? undefined : existing.lastError,
+          updatedAt: new Date().toISOString(),
         };
-        await persistOne(updated);
+        await persistOne(updated.id, (latest) => {
+          if (latest.status === "running" || latest.status !== existing.status || latest.updatedAt !== existing.updatedAt) {
+            throw new Error(text("计划已在其他窗口更新，请刷新后重新编辑。", "The plan changed in another window. Refresh before editing again."));
+          }
+          return { ...latest, ...updated };
+        });
         return updated;
       }
 
@@ -581,11 +590,14 @@ export function ScheduledTasksPage() {
               },
               trigger: "manual",
               force,
+              getAccountScope: getActiveAccountScope,
             });
             await reload();
             if (result.skipped) {
               if (result.reason === "in-flight") {
                 toast.info(text("定时任务正在执行", "Scheduled task is already running"), target.name);
+              } else if (result.task.lastError) {
+                toast.info(text("定时任务待确认", "Scheduled task needs review"), result.task.lastError);
               }
               return result;
             }
@@ -662,17 +674,25 @@ export function ScheduledTasksPage() {
   }
 
   async function pauseItem(item: ScheduledTask) {
-    const next = pauseScheduledTask(item);
-    if (next === item) return;
-    await persistOne(next);
+    let changed = false;
+    await persistOne(item.id, (latest) => {
+      const next = pauseScheduledTask(latest);
+      changed = next !== latest;
+      return next;
+    });
+    if (!changed) return;
     toast.success(text("定时任务已暂停", "Scheduled task paused"), item.name);
     logPlanChange(item, "scheduledTask.pause", text("定时任务已暂停", "Scheduled task paused"));
   }
 
   async function resumeItem(item: ScheduledTask) {
-    const next = resumeScheduledTask(item);
-    if (next === item) return;
-    await persistOne(next);
+    let changed = false;
+    await persistOne(item.id, (latest) => {
+      const next = resumeScheduledTask(latest);
+      changed = next !== latest;
+      return next;
+    });
+    if (!changed) return;
     toast.success(text("定时任务已恢复", "Scheduled task resumed"), item.name);
     logPlanChange(item, "scheduledTask.resume", text("定时任务已恢复", "Scheduled task resumed"));
   }
@@ -839,7 +859,7 @@ export function ScheduledTasksPage() {
 
       {formOpen ? (
       <Panel>
-        <form id="scheduled-task-form" className="scroll-mt-16 space-y-4 p-4" onSubmit={(event) => saveMutation.mutate(event)}>
+        <form id="scheduled-task-form" className="scroll-mt-16 space-y-4 p-4" onSubmit={(event) => { event.preventDefault(); saveMutation.mutate(); }}>
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm font-semibold">
             <div className="flex items-center gap-2">
               <CalendarClock className="h-4 w-4 text-app-muted" aria-hidden="true" />

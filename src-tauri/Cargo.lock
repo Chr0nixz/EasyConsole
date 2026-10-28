@@ -1458,6 +1458,8 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 name = "easy-console"
 version = "0.4.27"
 dependencies = [
+ "base64 0.22.1",
+ "filetime",
  "futures-util",
  "jni 0.21.1",
  "keyring",
@@ -1467,6 +1469,7 @@ dependencies = [
  "russh-sftp",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

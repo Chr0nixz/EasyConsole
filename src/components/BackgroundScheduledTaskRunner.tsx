@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { instanceApi } from "../lib/api";
+import { getActiveAccountScope } from "../lib/account-scope";
 import { getRuntimeSettings } from "../lib/app-settings";
 import { appendHeldOwnerMismatchEntry } from "../lib/execution-ledger";
 import { useI18n } from "../lib/i18n";
@@ -228,6 +229,7 @@ export function BackgroundScheduledTaskRunner() {
           }
           try {
             const result = await executeScheduledTask(browserRuntime.storage, task.id, {
+              getAccountScope: getActiveAccountScope,
               createTask: (payload) => instanceApi.createTask(payload),
               preparePayload: async (payload) => {
                 const [next] = await maybeAllocateUniqueCreateTaskNames([payload], {

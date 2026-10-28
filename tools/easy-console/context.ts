@@ -1,10 +1,11 @@
 import { ApiClient } from "../../src/lib/api-client";
+import { makeAccountScope, type AccountScope } from "../../src/lib/account-scope";
 import { createEasyConsoleApi, type EasyConsoleApi } from "../../src/lib/api-factory";
 import type { RuntimeStorage, RuntimeTransport } from "../../src/lib/types";
 import { loadEasyConsoleConfig, type EasyConsoleConfig, type EasyConsoleConfigOverrides } from "./config";
-import { createFileLocalStorage, getDefaultLocalDataPath } from "./local-data-store";
+import { createEasyConsoleLocalStorages } from "./local-data-store";
 import { createNodeRuntime } from "./node-runtime";
-import { createFileRunLogStorage, getDefaultRunLogPath } from "./run-log-store";
+import { createFileRunLogStorage, getDefaultRunLogPath, migrateLegacyRunLogs } from "./run-log-store";
 
 export type EasyConsoleContext = {
   api: EasyConsoleApi;
@@ -13,6 +14,8 @@ export type EasyConsoleContext = {
   runLogStorage: RuntimeTransport["storage"];
   runLogPath: string;
   storage: RuntimeStorage;
+  credentialStorage: RuntimeStorage;
+  resolveAccountScope(): Promise<AccountScope>;
 };
 
 export type EasyConsoleContextOptions = EasyConsoleConfigOverrides & {
@@ -24,13 +27,22 @@ export async function createEasyConsoleContext(options: EasyConsoleContextOption
   const config = await loadEasyConsoleConfig(options);
   const client = new ApiClient(options.runtime ?? createNodeRuntime(), config.apiBaseUrl);
   client.setToken(config.token);
-  const localDataPath = getDefaultLocalDataPath(config.configPath);
+  const { storage, credentialStorage, storagePath } = createEasyConsoleLocalStorages(config.configPath);
+  const runLogPath = options.runLogPath || process.env.EASY_CONSOLE_RUN_LOG_PATH || undefined;
+  if (!runLogPath) await migrateLegacyRunLogs(storage, storagePath, getDefaultRunLogPath(config.configPath));
+  const api = createEasyConsoleApi(client);
   return {
-    api: createEasyConsoleApi(client),
+    api,
     client,
     config,
-    runLogPath: options.runLogPath ?? getDefaultRunLogPath(config.configPath),
-    runLogStorage: createFileRunLogStorage(options.runLogPath ?? getDefaultRunLogPath(config.configPath)),
-    storage: createFileLocalStorage(localDataPath),
+    runLogPath: runLogPath ?? storagePath,
+    runLogStorage: runLogPath ? createFileRunLogStorage(runLogPath) : storage,
+    storage,
+    credentialStorage,
+    async resolveAccountScope() {
+      const user = await api.authApi.userInfo();
+      if (!user.username?.trim()) throw new Error("The authenticated username could not be verified; the scheduled task was not run.");
+      return makeAccountScope(user.username, user.name ?? user.username, client.getBaseUrl());
+    },
   };
 }

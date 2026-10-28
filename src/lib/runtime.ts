@@ -100,6 +100,8 @@ export type NativeStorageBackend = {
     key: string,
     expected: string | null,
     next: string | null,
+    /** For fallback migration, a tombstone also counts as an existing record. */
+    migrateIfMissing?: boolean,
   ): Promise<{ updated: boolean; current: string | null }>;
 };
 
@@ -114,6 +116,10 @@ export type CachedWindowStorageOptions = {
   selfLabel(): Promise<string>;
   /** Store used when native commands fail (and for one-time migration reads). */
   fallback: RuntimeStorage;
+  /** Disable cache hits for stores also written by CLI/MCP without window broadcasts. */
+  cacheReads?: boolean;
+  /** Shared stores must fail a failed CAS instead of degrading to a blind write. */
+  requireCompareAndSwap?: boolean;
 };
 
 /** Give up the CAS retry loop after this many cross-window conflicts. */
@@ -167,7 +173,7 @@ export function createCachedWindowStorage(options: CachedWindowStorageOptions): 
 
   const get = async (key: string): Promise<string | null> => {
     ensureSubscription();
-    if (cache.has(key)) {
+    if (options.cacheReads !== false && cache.has(key)) {
       const cached = cache.get(key) ?? null;
       if (cached !== null) return cached;
       // Cached null may be from a prior IPC miss while fallback still holds data.
@@ -186,7 +192,16 @@ export function createCachedWindowStorage(options: CachedWindowStorageOptions): 
       const fallback = await options.fallback.get(key);
       if (fallback !== null) {
         try {
-          await options.backend.set(key, fallback);
+          if (options.requireCompareAndSwap) {
+            const migration = await options.backend.compareAndSwap(key, null, fallback, true);
+            if (!migration.updated) {
+              await options.fallback.remove(key).catch(() => undefined);
+              cacheIfUnchanged(migration.current);
+              return migration.current;
+            }
+          } else {
+            await options.backend.set(key, fallback);
+          }
           await options.fallback.remove(key);
         } catch (migrateError) {
           console.warn("Tauri storage migrate-from-fallback failed.", migrateError);
@@ -242,6 +257,7 @@ export function createCachedWindowStorage(options: CachedWindowStorageOptions): 
       try {
         outcome = await options.backend.compareAndSwap(key, expected, next);
       } catch (error) {
+        if (options.requireCompareAndSwap) throw error;
         // Native CAS unavailable (stale shell build / IPC failure): degrade to
         // the previous plain write rather than failing the whole operation.
         console.warn("Tauri storage compare-and-swap failed; writing without cross-window protection.", error);
@@ -281,11 +297,12 @@ const tauriStorageAdapter: RuntimeStorage = createCachedWindowStorage({
     get: (key) => invokeTauriCommand<string | null>("runtime_storage_get", { key }),
     set: (key, value) => invokeTauriCommand("runtime_storage_set", { key, value }),
     remove: (key) => invokeTauriCommand("runtime_storage_remove", { key }),
-    compareAndSwap: (key, expected, next) =>
+    compareAndSwap: (key, expected, next, migrateIfMissing) =>
       invokeTauriCommand<{ updated: boolean; current: string | null }>("runtime_storage_compare_and_swap", {
         key,
         expected,
         next,
+        migrateIfMissing,
       }),
   },
   subscribeChanges: async (handler) => {
@@ -297,6 +314,9 @@ const tauriStorageAdapter: RuntimeStorage = createCachedWindowStorage({
     return getCurrentWindow().label;
   },
   fallback: localStorageAdapter,
+  // Node sidecars share the files but do not emit Tauri window broadcasts.
+  cacheReads: false,
+  requireCompareAndSwap: true,
 });
 
 // Secure storage uses the OS keychain on desktop (macOS Keychain, Windows
