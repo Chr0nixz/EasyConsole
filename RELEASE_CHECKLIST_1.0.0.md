@@ -119,7 +119,7 @@ CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执
 
 - [x] 定稿并记录各格式的当前版本：存储 manifest v1；本地备份 `LOCAL_DATA_BACKUP_VERSION = 1`（[local-data-backup.ts](src/lib/local-data-backup.ts)）；备份加密格式 `version: 1`（[backup-crypto.ts](src/lib/backup-crypto.ts)）；桌面与 sidecar 共用的 `.lock` 目录协议。1.x 内只做向前迁移。证据：2026-10-28 [格式与兼容约定](LOCAL_DATA_FORMATS.md)，已逐项核对 Rust、Node 和备份源码；安装包迁移及旧备份 fixture 保持待办。
 - [ ] 把第 2 节造的 0.4.27 数据脱敏后存为测试 fixture，加一条"旧版数据迁移到当前版本"的回归测试。
-- [x] 1.0 能导入 0.4.x 导出的本地备份。证据：2026-10-29 [公开 v0.4.27 CLI fixture](tools/acceptance/fixtures/v0.4.27-cli/README.md) 由已发布 MSI 的 CLI 导出；实际当前打包 CLI 的 CI 冒烟验证备份预览不落盘、v1 导入后模板和计划任务字段保留，且旧格式缺少资源预设字段可读。桌面设置页复用同一解析/导入函数；真实桌面安装与交互仍未验收。
+- [x] 1.0 能导入 0.4.x 导出的本地备份。证据：2026-10-29 [公开 v0.4.27 CLI fixture](tools/acceptance/fixtures/v0.4.27-cli/README.md) 由已发布 MSI 的 CLI 导出；当前打包 CLI 冒烟验证备份预览不落盘、v1 导入后模板和计划任务字段保留，且旧格式缺少资源预设字段可读。三平台 [CI run](https://github.com/Chr0nixz/EasyConsole/actions/runs/40845936274) 与 [Android CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40845936262) 在提交 `2629a85` 均通过。桌面设置页复用同一解析/导入函数；真实桌面安装与交互仍未验收。
 
 ### 3.4 不可更改项
 

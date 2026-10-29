@@ -114,6 +114,8 @@ CLI 变更仍先查看 dry-run，确认测试参数后才使用 `--yes`；MCP �
 
 这些结果只验证旧 sidecar 数据结构与当前代码路径。它们不验证当前用户的 `%APPDATA%\com.easyconsole.desktop`、`easy-console` 系统钥匙串、已保存账号、应用内自动更新、实际安装目录或移动设备，因此本节平台状态以及第 1–5 节相应真实验收仍保持“未执行”。禁止把当前日用配置复制到 fixture 或回归测试。
 
+本轮本机验证：`npm.cmd run test` 的 117 个文件、882 项全部通过；app/tools typecheck、lint（37 warnings / 0 errors）、`npm.cmd run build:desktop` 和打包 CLI 备份/迁移冒烟均通过。提交 `2629a85` 的 [Windows/macOS/Linux CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40845936274) 与 [Android CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40845936262) 均通过。源码和构建版本仍是 0.4.27，没有安装或发布 0.5.0；以上不是 U01 或设备验收结果。
+
 ### Android 版本号核对
 
 2026-10-28 已核对当前 Tauri CLI 的 `config.schema.json`、`tauri-utils` 2.9.2 的 Android 配置与 `src-tauri/gen/android/app/build.gradle.kts`。当前未设置 `versionCode` 覆盖，`autoIncrementVersionCode` 保持默认关闭，Gradle 读取 Tauri 生成的 `tauri.android.versionCode`。默认算法为 `major × 1000000 + minor × 1000 + patch`。
