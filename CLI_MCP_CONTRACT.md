@@ -14,9 +14,10 @@
 
 | 包格式 | MCP 入口布局 |
 | --- | --- |
-| Windows NSIS / MSI | 与 `EasyConsole.exe` 同目录的 `easy-console-mcp.exe`；默认目录随安装范围变化 |
+| Windows MSI | `%ProgramFiles%\EasyConsole\easy-console-mcp.exe`，通常为 `C:\Program Files\EasyConsole\easy-console-mcp.exe`；新旧 MSI 目录表均确认与 `EasyConsole.exe` 同目录，自选目录以实际为准 |
+| Windows NSIS | 与 `EasyConsole.exe` 同目录的 `easy-console-mcp.exe`；安装器自选目录仍须安装验收核对 |
 | macOS app | `EasyConsole.app/Contents/MacOS/easy-console-mcp`，例如 `/Applications/EasyConsole.app/Contents/MacOS/easy-console-mcp` |
-| Linux deb / rpm | 系统可执行文件目录中的 `easy-console-mcp`；演练时核对包清单，安装后用 `command -v easy-console-mcp` 确认 |
+| Linux deb / rpm | `/usr/bin/easy-console-mcp`；演练包清单已核对，安装后用 `command -v easy-console-mcp` 确认 |
 | Linux AppImage | AppImage 内的可执行目录；临时挂载路径不能写入长期 MCP 配置。可将同版本 sidecar artifact 解压到固定目录后配置 |
 | 独立 sidecar artifact | 解压目录内的 `easy-console-mcp[.exe]`；保持版本和架构与桌面一致 |
 

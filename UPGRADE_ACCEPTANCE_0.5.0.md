@@ -24,7 +24,7 @@
 2. 使用专门的测试账号、可释放实例、可删除镜像和测试文件。计划任务安排在验收窗口之后；需要“已执行”状态时只运行明确批准的测试计划。数据迁移检查期间保持自动释放关闭。
 3. 从已发布的 `v0.4.27` 安装包开始。隔离配置 `com.easyconsole.acceptance`、开发态运行、直接复制新版文件或导入备份都不能证明默认生产标识的应用内更新。
 4. 确认候选版本身份保持 `com.easyconsole.desktop`、钥匙串服务 `easy-console`、`easyconsole://` 和原更新器公钥/endpoint，参见 [AGENTS.md](AGENTS.md#release-identity-and-compatibility)。不修改默认身份来让测试通过。
-5. 先完成手动 Release 演练，核对四种桌面架构及 Android 两种架构的产物、签名和 updater manifest。`workflow_dispatch` 创建草稿预发布；它不会被生产 `latest` endpoint 选中，因此不能用演练成功代替自动更新验收。
+5. 先从包含新 workflow 的发布准备分支完成手动 Release 演练，核对四种桌面架构及 Android 两种架构的产物、签名和 updater manifest；不手动运行历史版本 tag 的旧 workflow。新逻辑的 `workflow_dispatch` 创建草稿预发布；它不会被生产 `latest` endpoint 选中，因此不能用演练成功代替自动更新验收。
 6. 生产 0.4.27 的更新器固定读取 GitHub latest。执行真实自动更新需要正式发布 0.5.0 并确认 endpoint 已指向该版本；推送版本 tag 会公开发布。本材料不触发 workflow、不推 tag、不改变更新地址。若先使用测试更新源演练，单独记录结果，并保留正式更新源验收项。
 7. 记录签名身份：桌面 updater 签名须能由旧版内置公钥验证；Android 正式包须与旧版签名证书相同。Android CI 的 debug 包不能覆盖正式包，也不能用来确认正式签名备份可用。
 

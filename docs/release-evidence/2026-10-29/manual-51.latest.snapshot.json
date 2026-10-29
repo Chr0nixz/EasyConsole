@@ -1,0 +1,51 @@
+{
+  "version": "0.4.27",
+  "notes": "EasyConsole 打包演练 / Packaging rehearsal\n\nVersion: 0.4.27\nSource: 91c5153bec7b62d2b62cf6dd469bbb78317acaaa\nRun: 51\n\n草稿预发布，不进入生产自动更新。\nDraft prerelease; excluded from production automatic updates.\n\n本次仅验证安装包、签名与更新元数据，不代表升级或真机验收通过。\nThis build validates packaging, signing and updater metadata only; installer upgrades and device acceptance remain separate.",
+  "pub_date": "2026-10-29T04:53:03.299Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUZEFBejdtKzVnSXJWY2FwSlpzY01iVFA2Y1l6UlU2SDBsbkdicGU1YTdQTzZySG1XQ1cwL3pjTHI5WXI4Q2dwUkZXZjlSdWFydkhFVjJTcUNOVkFOMFhQcVVWUitTcHdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjE1MTE5CWZpbGU6RWFzeUNvbnNvbGVfMC40LjI3X3g2NC1zZXR1cC5leGUKODNpYXRDYThwZDdGOFg5OENrdUdoMGJkMjNja0s4eGhZVTFKT09RTjFDNmRwejZCcjdHZWc3U1pjQXRSM0NBNG9pMGpPMkE5UHRmaWxadjF5b3JJRHc9PQo=",
+      "url": "https://github.com/Chr0nixz/EasyConsole/releases/download/manual-51/EasyConsole_0.4.27_x64-setup.exe"
+    },
+    "windows-x86_64-nsis": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUZEFBejdtKzVnSXJWY2FwSlpzY01iVFA2Y1l6UlU2SDBsbkdicGU1YTdQTzZySG1XQ1cwL3pjTHI5WXI4Q2dwUkZXZjlSdWFydkhFVjJTcUNOVkFOMFhQcVVWUitTcHdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjE1MTE5CWZpbGU6RWFzeUNvbnNvbGVfMC40LjI3X3g2NC1zZXR1cC5leGUKODNpYXRDYThwZDdGOFg5OENrdUdoMGJkMjNja0s4eGhZVTFKT09RTjFDNmRwejZCcjdHZWc3U1pjQXRSM0NBNG9pMGpPMkE5UHRmaWxadjF5b3JJRHc9PQo=",
+      "url": "https://github.com/Chr0nixz/EasyConsole/releases/download/manual-51/EasyConsole_0.4.27_x64-setup.exe"
+    },
+    "windows-x86_64-msi": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUZEFBejdtKzVnSWd5by9oSzlLS2V5OGRVaTNpTHlSTG04VVc3UGpIV0x3cjB2UzJjUUZ1cXBKSHNmalUzOC9sVTlwMCszeGZoS0Z6VlovcW5lOW5DU1pRMzV5bmd0SFFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjE1MTE5CWZpbGU6RWFzeUNvbnNvbGVfMC40LjI3X3g2NF9lbi1VUy5tc2kKaEhRU2RtTWtNSGtQS2JZRm93MklqWmZzNXp3MUlZWXR1UWFydGxUVUFvUC9NYkt0WGpwNnh3VXBFSE1RWXdWRC9HTTNTd0pXRVh5QmN6QkpJYjVXQWc9PQo=",
+      "url": "https://github.com/Chr0nixz/EasyConsole/releases/download/manual-51/EasyConsole_0.4.27_x64_en-US.msi"
+    },
+    "linux-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUZEFBejdtKzVnSXZQNzRTYld4MHdDenJDTnNTaW1iOHk3L2paT3B6dFlIYXo0bzgweTVCdVB1WW1Idi90M0d4SnRGWkZxVkJxRjhSMkhZWmRta1M4RVp5VU9TUmdpZXdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjQ5NTYyCWZpbGU6RWFzeUNvbnNvbGVfMC40LjI3X2FtZDY0LkFwcEltYWdlCmpzcWV0Zi9vdHBFbm1CYVRxSG5FRmVZd0hjVDhSRVNMUVZXZGFSSDBFZE1qcllpdTlKN3J3OGY2YkZqNW1jNW11cld1YmdwL0NhR1BFcU96TFF0R0FBPT0K",
+      "url": "https://github.com/Chr0nixz/EasyConsole/releases/download/manual-51/EasyConsole_0.4.27_amd64.AppImage"
+    },
+    "linux-x86_64-appimage": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUZEFBejdtKzVnSXZQNzRTYld4MHdDenJDTnNTaW1iOHk3L2paT3B6dFlIYXo0bzgweTVCdVB1WW1Idi90M0d4SnRGWkZxVkJxRjhSMkhZWmRta1M4RVp5VU9TUmdpZXdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjQ5NTYyCWZpbGU6RWFzeUNvbnNvbGVfMC40LjI3X2FtZDY0LkFwcEltYWdlCmpzcWV0Zi9vdHBFbm1CYVRxSG5FRmVZd0hjVDhSRVNMUVZXZGFSSDBFZE1qcllpdTlKN3J3OGY2YkZqNW1jNW11cld1YmdwL0NhR1BFcU96TFF0R0FBPT0K",
+      "url": "https://github.com/Chr0nixz/EasyConsole/releases/download/manual-51/EasyConsole_0.4.27_amd64.AppImage"
+    },
+    "linux-x86_64-deb": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUZEFBejdtKzVnSWl4akNlcEdzUzMzTm9kbjZreHgyMzFYaUgyWXZ2a2pVWkdtSjNrQ1VjeTFXaktGQkFtSWdBMktqc2xQMzBUalk5Qjd0cS9mY2lpV1FjQVpzMG1tL0E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjQ5NTYyCWZpbGU6RWFzeUNvbnNvbGVfMC40LjI3X2FtZDY0LmRlYgppOFFTb3drK3hGL0cwY0ttNVk2eUp2TXdsTkllWXVlSk9aT3NGU2plR1daSmRTWGQ0YjJJN3g1b0ZPcS9lckZidGlQZUFTOG9NcUk2MkNweHluM1dDUT09Cg==",
+      "url": "https://github.com/Chr0nixz/EasyConsole/releases/download/manual-51/EasyConsole_0.4.27_amd64.deb"
+    },
+    "linux-x86_64-rpm": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUZEFBejdtKzVnSXBqSXFQLzk1bEhiWmRjdUZhbitGOFc0NFZUWXFqY0UrckFWNDE4MW1xQUlQYzlUaGlnWFRCbUJzN1VmdEpTTDE2VmlUZVhTYkVPRTdwSEh4QVAxM1FnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjQ5NTYyCWZpbGU6RWFzeUNvbnNvbGUtMC40LjI3LTEueDg2XzY0LnJwbQpyMFZrWUorZ2tYUGpPVnptUTgrOTd5SlJWZXlQM2Y3bDZBeFBqb296NGo4Si8wVkZlTzlzRmIwY2hMY1VnMzhJeG45WFNkQWxxZHlzWVI3T1k1dUJEZz09Cg==",
+      "url": "https://github.com/Chr0nixz/EasyConsole/releases/download/manual-51/EasyConsole-0.4.27-1.x86_64.rpm"
+    },
+    "darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUZEFBejdtKzVnSWg0am4yMkdRUGk1RkJYblVDdjJyc2Q3VTFuemxLcGgrcE1ZTnAxVGVHWkExQVEvYzBBNjJva2FWNDEwVXIvc25pL2tYUk1EV3dEOGYwT2U5Mi9OMndjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjE5MTgyCWZpbGU6RWFzeUNvbnNvbGUuYXBwLnRhci5negpmWjhxUVNydmdWUmppSzM0WnMxVEljVzhZb3kwTmthSmRFaDVuRkhobDdkVEkvL0c4RmRFVnFEa1lIdjBVV05yY0tCNFRaaU1sMUVPbmNsUDUvTm5BUT09Cg==",
+      "url": "https://github.com/Chr0nixz/EasyConsole/releases/download/manual-51/EasyConsole_aarch64.app.tar.gz"
+    },
+    "darwin-aarch64-app": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUZEFBejdtKzVnSWg0am4yMkdRUGk1RkJYblVDdjJyc2Q3VTFuemxLcGgrcE1ZTnAxVGVHWkExQVEvYzBBNjJva2FWNDEwVXIvc25pL2tYUk1EV3dEOGYwT2U5Mi9OMndjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjE5MTgyCWZpbGU6RWFzeUNvbnNvbGUuYXBwLnRhci5negpmWjhxUVNydmdWUmppSzM0WnMxVEljVzhZb3kwTmthSmRFaDVuRkhobDdkVEkvL0c4RmRFVnFEa1lIdjBVV05yY0tCNFRaaU1sMUVPbmNsUDUvTm5BUT09Cg==",
+      "url": "https://github.com/Chr0nixz/EasyConsole/releases/download/manual-51/EasyConsole_aarch64.app.tar.gz"
+    },
+    "darwin-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUZEFBejdtKzVnSXQrd0I2ZU1sNHQ0K3VJRlM4NGtRYzU5YURMOHBkbldyaStJVnN6c3FsYlpPWVAxUlZUVVVmcFRXU291UE9naW5hZU1QU0hHcWgxa0psZkRVRW5sekE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjIwNjQxCWZpbGU6RWFzeUNvbnNvbGUuYXBwLnRhci5nego0OThHRFRYTERvMitESEY4bGhxWFNWOFdUNHVoZXpsclhPdXFJOEpTKy9hY3htRm9MWnEyUmNjc1gvdDVzMGVJOExnbzhiblNmZkU0UmYreGxSVUZDZz09Cg==",
+      "url": "https://github.com/Chr0nixz/EasyConsole/releases/download/manual-51/EasyConsole_x64.app.tar.gz"
+    },
+    "darwin-x86_64-app": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUZEFBejdtKzVnSXQrd0I2ZU1sNHQ0K3VJRlM4NGtRYzU5YURMOHBkbldyaStJVnN6c3FsYlpPWVAxUlZUVVVmcFRXU291UE9naW5hZU1QU0hHcWgxa0psZkRVRW5sekE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjIwNjQxCWZpbGU6RWFzeUNvbnNvbGUuYXBwLnRhci5nego0OThHRFRYTERvMitESEY4bGhxWFNWOFdUNHVoZXpsclhPdXFJOEpTKy9hY3htRm9MWnEyUmNjc1gvdDVzMGVJOExnbzhiblNmZkU0UmYreGxSVUZDZz09Cg==",
+      "url": "https://github.com/Chr0nixz/EasyConsole/releases/download/manual-51/EasyConsole_x64.app.tar.gz"
+    }
+  }
+}

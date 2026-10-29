@@ -9,6 +9,8 @@
 - 四个桌面矩阵使用同一份正文，Android 使用桌面 job 输出的同一 release tag；草稿指向实际构建的源码 SHA。
 - 正文通过 `releaseBody` 交给固定版本的 tauri-action。该 Action 把同一字符串写入 GitHub Release 正文和 `latest.json.notes`；桌面更新器的 `update.body`、Android 的 Release body 进入应用更新提示。
 
+演练从**包含新 workflow 的发布准备分支**发起。历史 tag 保留当时的旧 workflow；例如 v0.4.27 只按 ref_type 决定公开/草稿，不能把本分支的保护视为对旧 tag 生效。GitHub dispatch 的 [ref 参数可选分支或 tag](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)，因此操作时要明确选择准备分支，不手动运行历史 tag。
+
 本地预览不会创建 Release：
 
 ```powershell

@@ -61,7 +61,7 @@
 
 CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执行全套本地检查：版本仍为 0.4.27；app / tools typecheck、lint（37 warnings / 0 errors）、117 个文件的 882 项测试、`build:desktop`（两份 sidecar）以及 cargo check / fmt / clippy 均通过。覆盖率门槛通过：lines 65.61%、statements 63.11%、functions 55.76%、branches 56.74%。54 个 MCP 工具的参数与契约表逐一核对，无缺项；三个工作流 YAML 解析通过，29 处 Action 仍固定 SHA，4 处 stable 显式指定。
 
-先前文档提交 `5c59732` 的 [三平台 CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40713157486) 和 [Android CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40713157607) 也已成功。macOS 首次未分配到 runner，重跑后通过。本次后续提交的远程 CI 与打包演练结果另行记录，不以上述旧提交替代。
+先前文档提交 `5c59732` 的 [三平台 CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40713157486) 和 [Android CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40713157607) 也已成功，macOS 首次未分配到 runner，重跑后通过。本轮功能源码 `91c5153` 的 [三平台 CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40750384576)、[Android CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40750384903) 与 [六目标 Release 演练](https://github.com/Chr0nixz/EasyConsole/actions/runs/40750407480) 全部成功；演练及清理证据见 [产物记录](RELEASE_REHEARSAL_2026-10-29.md)。后续仅补文档、公开证书指纹与元数据快照。
 
 ## 2. 0.5.0：承载本地存储迁移
 
@@ -93,7 +93,7 @@ CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执
 
 ### 2.3 发布
 
-- [ ] 先用 `workflow_dispatch` 手动跑一次 Release 演练。它会生成 `manual-N` 草稿预发布，不影响团队的自动更新。确认 Windows、Linux、macOS arm64/x64 和 Android 全部出包，`latest.json` 内容正确。演练结束后删除草稿。
+- [x] 先从包含新 workflow 的发布准备分支用 `workflow_dispatch` 手动跑一次 Release 演练，不手动运行历史 tag 的旧 workflow。它会生成 `manual-N` 草稿预发布，不影响团队的自动更新。确认 Windows、Linux、macOS arm64/x64 和 Android 全部出包，`latest.json` 内容正确。演练结束后删除草稿。证据：2026-10-29 [manual-51 / 源码 91c5153](https://github.com/Chr0nixz/EasyConsole/actions/runs/40750407480) 六目标成功，Linux runner 失联后重跑通过；[产物与签名记录](RELEASE_REHEARSAL_2026-10-29.md) 含 11 个安装/更新资产哈希、七个 updater 包验签及两个 APK 证书/ABI 核对，notes 与 Release body 一致；草稿已删除，无遗留 tag，生产 latest 仍为 v0.4.27。此项不替代升级与真机验收。
 - [ ] 推送 `v0.5.0` tag。注意：tag 触发的 Release 会直接公开发布，不经过草稿。
 - [ ] 团队使用 0.5.0 至少一周，没有数据丢失报告。
 
@@ -103,7 +103,7 @@ CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执
 
 - [x] 决定是否把 `easy-console-cli`（约 58MB）和 `easy-console-mcp`（约 60MB）合并成一个按子命令分派的可执行文件。合并能让 sidecar 体积减半；但 MCP 客户端配置里写的是可执行文件路径，1.0 之后再合并会让所有已有配置失效。要合就在这一阶段合。证据：2026-10-29 [CLI/MCP 契约](CLI_MCP_CONTRACT.md) 决定保留两个入口，接受当前体积，1.x 不删除既有可执行文件名；安装路径实物核对仍为下一待办。
 - [x] 修正文档里的可执行文件名：[SKILL.md](skills/easy-console-ai/SKILL.md) 的命令替换说明和二进制清单统一为 `easy-console-cli.exe` / `easy-console-cli`，与 README 和 sidecar 构建输出一致。证据：2026-10-28 文档及 `build:desktop` 产物名核对。
-- [ ] 写明各平台安装后 sidecar 的实际路径，MCP 接入示例直接使用这个路径。
+- [ ] 写明各平台安装后 sidecar 的实际路径，MCP 接入示例直接使用这个路径。准备进度：2026-10-29 已核对 MSI / deb / rpm / 两架构 macOS 的包内路径，README 用 MSI 默认绝对路径给出 MCP 配置；NSIS、自选目录与 AppImage 固定入口仍待安装环境确认，未按包清单推断为安装验收完成。
 
 ### 3.2 CLI / MCP 接口
 
@@ -126,7 +126,7 @@ CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执
 - [x] 应用标识 `com.easyconsole.desktop`：它决定应用数据目录和钥匙串服务名 `easy-console`。证据：2026-10-28 核对 Tauri 配置、native keychain 与 Node 路径解析，现值及 1.x 约束已写入 AGENTS.md。
 - [x] 更新器公钥和更新地址（[tauri.conf.json](src-tauri/tauri.conf.json) 的 `plugins.updater`）。证据：2026-10-28 完整公钥与 endpoint 已逐字记录到 AGENTS.md；私钥备份验证仍为下方独立待办。
 - [x] deep link scheme `easyconsole://`。证据：2026-10-28 与 Tauri deep-link 配置核对，已写入 AGENTS.md。
-- [ ] Android 包名和签名证书。
+- [x] Android 包名和签名证书。证据：2026-10-29 [公开与演练 APK 核对](RELEASE_REHEARSAL_2026-10-29.md)，v0.4.27 与本次正式签名演练的两架构 APK 均为 `com.easyconsole.desktop`、0.4.27 / 4027；apksigner 验证通过，证书 SHA-256 一致，已写入 AGENTS.md。安装覆盖升级与离线密钥恢复仍为独立待办。
 - [ ] `TAURI_SIGNING_PRIVATE_KEY` 及其口令、Android keystore 及其口令都已离线备份，并实际验证过备份可用。私钥丢失后，已安装的客户端再也收不到自动更新。
 
 ### 3.5 功能成熟度
@@ -137,8 +137,8 @@ CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执
 ## 4. 发布链路
 
 - [x] 把三个 workflow 里的第三方 Action 固定到 commit SHA，并保留版本注释。重点是持有签名私钥的 [release.yml](.github/workflows/release.yml)，涉及 `actions/checkout@v4`、`actions/setup-node@v4`、`actions/setup-java@v4`、`actions/cache@v4`、`actions/upload-artifact@v4`、`dtolnay/rust-toolchain@stable`、`Swatinem/rust-cache@v2`、`android-actions/setup-android@v4`、`tauri-apps/tauri-action@action-v0.6.2`。`dtolnay/rust-toolchain` 固定 SHA 后，要显式传 `toolchain: stable`。Dependabot 仍能更新固定了 SHA 的引用。证据：2026-10-28 从各官方仓库的 tag/branch 解析 commit（含 annotated tag 解引用）；三个 YAML 解析通过，29 处 Action 引用均为 40 位 SHA，4 处 Rust setup 均显式指定 stable。
-- [ ] Windows Authenticode 签名：必须明确决定做不做，签名本身可选。不做的话，在 README 的安装说明里写明 SmartScreen 提示和放行方式。
-- [ ] macOS 公证：同上。不做的话，写明被 Gatekeeper 拦截后怎么打开。
+- [x] Windows Authenticode 签名：必须明确决定做不做，签名本身可选。不做的话，在 README 的安装说明里写明 SmartScreen 提示和放行方式。证据：2026-10-29 用户决定 1.0 暂不接入；README 安装说明记录 More info → Run anyway、来源/哈希核对和企业/Smart App Control 可能禁止放行的边界，附 Microsoft 官方依据。updater 签名继续保留。
+- [x] macOS 公证：同上。不做的话，写明被 Gatekeeper 拦截后怎么打开。证据：2026-10-29 用户决定 1.0 暂不接入；README 按 Apple 当前说明记录首次尝试后到 System Settings → Privacy & Security → Open Anyway 为该应用建立例外，不要求关闭全局保护；实际安装冒烟仍见 5.5。
 - [x] [release.yml](.github/workflows/release.yml) 没有设置 `releaseBody`。确认 1.0 发布说明怎样进入 GitHub Release 正文和应用内的更新提示。证据：2026-10-29 [正文来源约定](docs/releases/README.md)，按版本读取正文并通过 releaseBody 传给固定 tauri-action，同时进入 latest.json.notes；桌面 update.body / Android Release body 进入更新提示。11 项生成器测试通过：正式 tag 缺正文拒绝发布，手动 dispatch 即使来自 tag 也保持草稿，releaseCommitish 固定源码 SHA；实物演练仍见 2.3。
 - [x] 确认 Android `versionCode` 单调递增（tauri.conf.json 未显式设置时，由版本号推导）。1.0.0 的 `versionCode` 必须高于 0.9.x，否则无法覆盖安装。证据：2026-10-28 核对已安装 Tauri CLI schema、`tauri-utils` 2.9.2 与 Gradle 配置，未设置覆盖或自动递增；`0.4.27=4027 < 0.5.0=5000 < 0.9.0=9000 ≤ 0.9.999=9999 < 1.0.0=1000000`。版本规划与正式 APK 复核项见 [升级验收材料](UPGRADE_ACCEPTANCE_0.5.0.md#android-版本号核对)。
 
@@ -194,7 +194,7 @@ CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执
 
 ## 6. 文档
 
-- [ ] README 面向新成员：安装、首次登录、本地数据的存放位置、备份与恢复、接入 MCP、HTTP 实验室例外的说明。
+- [x] README 面向新成员：安装、首次登录、本地数据的存放位置、备份与恢复、接入 MCP、HTTP 实验室例外的说明。证据：2026-10-29 新增安装/登录、备份/导入与 MCP 客户端配置入口；说明凭据独立、备份范围、HTTP opt-in，链接各平台数据路径与契约。实际安装和更新验证仍见第 2、5 节；OS 签名/公证策略及系统提示说明见第 4 节。
 - [ ] 按第 5.2 节的结果更新 [PRODUCT.md:58](PRODUCT.md:58) 的"尚未验证"一段。
 - [x] SKILL.md 的工具清单和稳定性分级与第 3.2 节一致。证据：2026-10-29 全 54 工具清单保留，stable/experimental、确认门、JSON 输出与共享资源边界与 CLI_MCP_CONTRACT.md 一致。
 - [ ] 1.0 发布说明写成产品全貌，不写成增量列表，包括：主要能力；从 0.4.x 升级的须知（数据迁移、是否支持降级）；1.x 的兼容性承诺（第 3 节的契约）；已知限制（非官方客户端、接口为逆向整理、实验性功能）。

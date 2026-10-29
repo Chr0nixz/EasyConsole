@@ -8,6 +8,53 @@ Tauri-first desktop control panel for the existing web console API at `http://11
 
 Development priority is the Tauri desktop app and the CLI/MCP sidecars derived from it. The web build remains useful for renderer development, fast debugging, and keeping the UI portable, but product decisions should optimize for the packaged desktop workflow first.
 
+## Install and sign in
+
+Download a published version from [GitHub Releases](https://github.com/Chr0nixz/EasyConsole/releases). The 1.0 preparation branch is not a published 1.0 release; `manual-N` drafts are packaging rehearsals.
+
+| Platform | Package |
+| --- | --- |
+| Windows x64 | `x64-setup.exe` installer, or `x64_en-US.msi` for MSI deployment |
+| macOS | Choose `aarch64.dmg` for Apple Silicon or `x64.dmg` for Intel; open the image and move EasyConsole to Applications |
+| Linux x64 | Use the distribution's package installer for `.deb` / `.rpm`, or mark the `.AppImage` executable and launch it |
+| Android | Install the signed `android-aarch64.apk` on an arm64 device; `android-x86_64.apk` is for matching devices/emulators. Updates must keep the same application ID and certificate |
+
+### Windows and macOS security prompts
+
+The 1.0 distribution decision is to omit Windows Authenticode and Apple notarization. Desktop updater signatures and Android release signing remain enabled; they serve different purposes from operating-system publisher verification. Verify the GitHub release source and the downloaded asset's SHA-256 before accepting a per-app exception.
+
+- **Windows:** an unrecognized-app SmartScreen prompt may show an unknown publisher. Select **More info → Run anyway** only when you trust this download and the option is available. Smart App Control or enterprise policy can block unsigned executables without a user override; ask the device administrator to approve distribution. See [Microsoft's prompt instructions](https://learn.microsoft.com/en-us/troubleshoot/microsoft-edge/development/ie-mode-blocks-addon#check-uac-and-windows-defender-smartscreen-settings) and [reputation/policy explanation](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation).
+- **macOS:** after trying to open EasyConsole, open **System Settings → Privacy & Security → Open Anyway**, confirm the app's identity, then choose **Open**. This creates an exception for that app; availability depends on device policy. Damage or malware alerts require investigation rather than this developer-verification exception. See [Apple's opening instructions](https://support.apple.com/en-us/102445).
+
+### First sign-in
+
+Open EasyConsole, check the API host shown on the sign-in screen, then sign in with your console account. The sign-in screen's API Settings link can change the API and monitor URLs before login. The default lab service uses HTTP; use it on a trusted network, or select an HTTPS endpoint / secure local tunnel. See [transport configuration](#local-credentials).
+
+Saved accounts can use a token only, or opt into **Remember password** for recovery after token expiry. On desktop, saved credentials use the OS keychain. Use the account switcher to change accounts; settings and local automation must stay with their owner. Read the [experimental feature limits](#desktop-runtime) before enabling automation.
+
+## Back up and restore local data
+
+In **Settings → Local Data Backup**, choose **Export** to save ordinary settings, language, templates, presets, schedules and logs. Credentials are excluded by default. To include them, select **Include credentials**, set a backup password and confirm the encrypted export; keep that password separately. Restore with **Import**, enter the password if requested, inspect the available sections and select only those you intend to replace. Importing credentials has an additional confirmation and may require a refresh.
+
+This export does not contain the entire application profile: SSH trust/keys, execution ledgers and change lists need separate migration checks. The [local-data format reference](LOCAL_DATA_FORMATS.md) describes the format and limits; [shared storage paths](#local-credentials) lists the per-platform data directories. CLI credentials live separately under `~/.easy-console/`. Do not commit backups or copy credential stores into a shared repository. Before an upgrade, keep a protected profile snapshot as described in the [0.4.27 → 0.5.0 acceptance material](UPGRADE_ACCEPTANCE_0.5.0.md); an exported JSON alone is not a full migration check.
+
+## Connect an MCP client
+
+Use the matching desktop release's `easy-console-mcp.exe` on Windows or `easy-console-mcp` on macOS/Linux. Locate the installed file and copy its absolute path; see the [sidecar layout contract](CLI_MCP_CONTRACT.md). It contains Node, so the client needs no separate Node installation or arguments. For a client that uses `mcpServers`, this example uses the MSI default path; adjust it for an NSIS/custom installation:
+
+```json
+{
+  "mcpServers": {
+    "easy-console": {
+      "command": "C:\\Program Files\\EasyConsole\\easy-console-mcp.exe",
+      "args": []
+    }
+  }
+}
+```
+
+Authenticate the separate CLI/MCP config using the [stdin login instructions](#local-credentials), then restart the MCP connection. For the default HTTP lab service, add `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` to the client's environment explicitly. Check `easyconsole_user_info` before any remote change. Template/preset resources are local and work without remote authentication. See the [complete tool and compatibility contract](CLI_MCP_CONTRACT.md) and [AI skill](skills/easy-console-ai/SKILL.md).
+
 ## Current Scope
 
 - Login, saved-token account recovery, and user session expiry handling.
@@ -275,7 +322,7 @@ GitHub Actions workflows live in `.github/workflows/`:
 - `android-ci.yml`: runs on pull requests, pushes to `main`/`master`, and manual dispatch; checks the app and tools, builds desktop inputs, and builds an Android aarch64 debug APK. This does not verify production signing or upgrades of installed release APKs.
 - `release.yml`: runs on `v*` tags or manual dispatch; verifies the project (including rustfmt/clippy), builds Windows, Linux, and macOS arm64/x64 desktop bundles serially, signs updater artifacts, then builds signed Android aarch64/x86_64 release APKs. A tag run publishes the GitHub release directly; a manual run creates a `manual-N` draft prerelease for rehearsal. Draft prereleases do not reach clients using the production `releases/latest/download/latest.json` endpoint.
 
-Only a matching version-tag **push** publishes publicly; manual dispatch remains a draft even when started from a tag. Version-specific notes in `docs/releases/<version>.md` supply both the GitHub Release body and updater notes. See [release note preparation](docs/releases/README.md); a public release fails before packaging when its notes are missing.
+In the updated workflow, only a matching version-tag **push** publishes publicly; manual dispatch remains a draft even when started from a tag. Historical tags still contain their old workflows, so start rehearsals from the reviewed preparation branch. Version-specific notes in `docs/releases/<version>.md` supply both the GitHub Release body and updater notes. See [release note preparation](docs/releases/README.md); a public release fails before packaging when its notes are missing.
 
 Release gates and evidence are tracked in [RELEASE_CHECKLIST_1.0.0.md](RELEASE_CHECKLIST_1.0.0.md). Use [UPGRADE_ACCEPTANCE_0.5.0.md](UPGRADE_ACCEPTANCE_0.5.0.md) for the pending 0.4.27 → 0.5.0 installer and local-data migration acceptance; successful CI does not replace those checks.
 
