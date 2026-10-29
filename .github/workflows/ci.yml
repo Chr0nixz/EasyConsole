@@ -108,6 +108,13 @@ jobs:
       - name: Build desktop inputs
         run: npm run build:desktop
 
+      - name: Test packaged CLI backup round-trip
+        shell: bash
+        run: |
+          cli="build/sidecars/easy-console-cli"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then cli="$cli.exe"; fi
+          node --import tsx tools/acceptance/cli-backup-smoke.ts "$cli"
+
       - name: Check Tauri shell
         run: cargo check --manifest-path src-tauri/Cargo.toml
 

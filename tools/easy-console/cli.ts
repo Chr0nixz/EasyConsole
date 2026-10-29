@@ -1,4 +1,5 @@
 import { Command, CommanderError } from "commander";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 
 import type { CreateTaskPayload, ImageCommitPayload, TaskQuery, TaskRecurrence, UnknownRecord } from "../../src/lib/types";
 import { applyEnvToScriptCommand, isValidEnvKey, isValidEnvValue } from "../../src/lib/script-command-env";
@@ -1005,7 +1006,6 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       const data = await exportBackup(context.storage, includeSecrets, context.credentialStorage ?? context.storage);
       if (!options.output) return data;
 
-      const { writeFile, chmod } = await import("node:fs/promises");
       await writeFile(options.output, `${JSON.stringify(data, null, 2)}\n`, "utf8");
       if (process.platform !== "win32") {
         await chmod(options.output, 0o600).catch(() => {});
@@ -1022,7 +1022,6 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   backupImport.action((file: string) =>
     run(backupImport, async (context) => {
       const options = backupImport.opts<{ sections?: string; includeSecrets?: boolean; yes?: boolean }>();
-      const { readFile } = await import("node:fs/promises");
       const backupText = await readFile(file, "utf8");
       const sections: LocalDataBackupSection[] = options.sections
         ? (options.sections.split(",").map((s) => s.trim()).filter(Boolean) as LocalDataBackupSection[])

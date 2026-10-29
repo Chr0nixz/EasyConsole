@@ -20,7 +20,7 @@
 
 ## 1. 环境与发布前置
 
-1. 使用干净的 Windows VM 或专用 Windows 用户，以同一用户完成旧版安装、数据准备、应用内更新和新版 CLI/MCP 验证。另保留 VM 快照用于失败恢复和降级测试。
+1. 有干净测试环境时，使用 Windows VM 或专用 Windows 用户，以同一用户完成旧版安装、数据准备、应用内更新和新版 CLI/MCP 验证，并保留可恢复快照。若没有隔离环境，不要拿现有生产应用目录做升级试验；只运行独立临时目录中的离线迁移与打包 CLI 检查，并将应用安装、生产标识、钥匙串和设备项目保留为未执行。
 2. 使用专门的测试账号、可释放实例、可删除镜像和测试文件。计划任务安排在验收窗口之后；需要“已执行”状态时只运行明确批准的测试计划。数据迁移检查期间保持自动释放关闭。
 3. 从已发布的 `v0.4.27` 安装包开始。隔离配置 `com.easyconsole.acceptance`、开发态运行、直接复制新版文件或导入备份都不能证明默认生产标识的应用内更新。
 4. 确认候选版本身份保持 `com.easyconsole.desktop`、钥匙串服务 `easy-console`、`easyconsole://` 和原更新器公钥/endpoint，参见 [AGENTS.md](AGENTS.md#release-identity-and-compatibility)。不修改默认身份来让测试通过。
@@ -105,6 +105,14 @@ CLI 变更仍先查看 dry-run，确认测试参数后才使用 `--yes`；MCP �
 | macOS arm64 / x64 | 旧版到新版自动更新、迁移与 Keychain、sidecar 路径；各架构安装冒烟另见发布清单 | 未执行 |
 | Linux | 自动更新、迁移、Secret Service 可用时的钥匙串读取；不可用时记录明确的兜底行为 | 未执行 |
 | Android 正式包 | 同包名、同签名证书、递增 versionCode 的应用内覆盖更新；账号及本地设置保留 | 未执行 |
+
+### 2026-10-29 无隔离机器的本地检查
+
+没有虚拟机或独立测试电脑时，只在 `%TEMP%` 下运行独立 CLI 配置、存储和日志；API URL 指向 `.invalid` 域且没有 token。已从公开 v0.4.27 MSI 提取的 CLI 生成无凭据模板、计划任务、日志和 v1 备份 fixture，随后用当前打包 CLI 核对 per-key manifest、旧源不变、迁移标记、重复启动不重复导入及备份 dry-run / 导入。
+
+检查时还复现了已发布 CLI 和当时的打包 CLI 在 `backup export --output` / `backup import` 上的动态导入错误（`ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING`）。当前 CLI 改用静态 Node 文件模块导入；重建后的 Windows sidecar 已通过完整导出、旧版 fixture 导入和新备份往返检查。对应自动化见 [`cli-backup-smoke.ts`](tools/acceptance/cli-backup-smoke.ts) 与 CI。
+
+这些结果只验证旧 sidecar 数据结构与当前代码路径。它们不验证当前用户的 `%APPDATA%\com.easyconsole.desktop`、`easy-console` 系统钥匙串、已保存账号、应用内自动更新、实际安装目录或移动设备，因此本节平台状态以及第 1–5 节相应真实验收仍保持“未执行”。禁止把当前日用配置复制到 fixture 或回归测试。
 
 ### Android 版本号核对
 
