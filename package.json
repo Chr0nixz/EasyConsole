@@ -22,9 +22,10 @@
     "typecheck": "tsc -b --noEmit",
     "typecheck:tools": "tsc -p tsconfig.tools.json --noEmit",
     "version:check": "node tools/easy-console/version-check.mjs",
-    "lint": "eslint . --max-warnings=46",
+    "lint": "eslint . --max-warnings=37",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "bin": {
     "easy-console": "./tools/easy-console/cli-entry.ts"
@@ -57,14 +58,14 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.1.5",
-    "recharts": "^2.15.0",
     "tailwind-merge": "^3.0.1",
-    "zod": "^4.4.3"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@tailwindcss/postcss": "^4.3.0",
     "@tauri-apps/cli": "^2.11.2",
+    "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.2.0",
     "@types/node": "^25.9.1",
@@ -72,6 +73,7 @@
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^6.0.2",
+    "@vitest/coverage-v8": "^4.1.12",
     "@yao-pkg/pkg": "^6.19.0",
     "autoprefixer": "^10.4.20",
     "esbuild": "^0.28.0",

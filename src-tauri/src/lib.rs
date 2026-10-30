@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
+use tauri::webview::PageLoadEvent;
 #[cfg(desktop)]
-use tauri::{Emitter, State};
+use tauri::State;
+use tauri::{AppHandle, Emitter, Manager};
+#[cfg(desktop)]
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tauri_plugin_opener::OpenerExt;
 
 #[cfg(desktop)]
@@ -18,6 +22,10 @@ use {
 };
 
 mod i18n;
+mod runtime_storage;
+mod runtime_storage_lock;
+#[cfg(target_os = "windows")]
+mod scheduled_wake;
 /// SSH internals. Everything here is implementation detail for the packaged
 /// app; `pub` only so `tests/ssh_integration.rs` can drive it against a local
 /// mock server.
@@ -27,11 +35,13 @@ pub mod ssh;
 use ssh::history::{add_ssh_history, clear_ssh_history, list_ssh_history};
 use ssh::host_key::{clear_known_hosts, confirm_known_host, list_known_hosts, remove_known_host};
 use ssh::port_forward::{ssh_start_port_forward, ssh_stop_port_forward};
+use ssh::session::close_sessions_for_window;
 #[cfg(desktop)]
+use ssh::session::{get_ssh_window_request, open_ssh_window, PendingSshWindows};
 use ssh::session::{
-    close_sessions_for_window, get_ssh_window_request, open_ssh_window, PendingSshWindows,
+    open_ssh_session, ssh_ack_output, ssh_close, ssh_gpu_utilization, ssh_resize, ssh_write,
+    SshSessionState,
 };
-use ssh::session::{open_ssh_session, ssh_close, ssh_resize, ssh_write, SshSessionState};
 use ssh::sftp::{
     sftp_cancel, sftp_delete, sftp_download, sftp_list, sftp_mkdir, sftp_register_local_root,
     sftp_rename, sftp_upload,
@@ -50,6 +60,47 @@ use ssh::vscode::{
 #[tauri::command]
 fn set_locale(locale: String) {
     i18n::set_locale(&locale);
+}
+
+const I18N_STORAGE_KEY: &str = "easy-console-language";
+
+pub(crate) fn require_main_window(label: &str) -> Result<(), String> {
+    if label == "main" {
+        Ok(())
+    } else {
+        Err(trf!(
+            "此操作仅允许从主窗口执行",
+            "This operation is only available from the main window"
+        ))
+    }
+}
+
+pub(crate) fn require_main_or_ssh_window(label: &str) -> Result<(), String> {
+    if label == "main" || label.starts_with("ssh-") {
+        Ok(())
+    } else {
+        Err(trf!(
+            "此操作不允许从当前窗口执行",
+            "This operation is not available from this window"
+        ))
+    }
+}
+
+#[cfg(desktop)]
+pub(crate) fn require_tray_menu_window(label: &str) -> Result<(), String> {
+    if label == "tray-menu" {
+        Ok(())
+    } else {
+        Err(trf!(
+            "此操作仅允许从托盘菜单执行",
+            "This operation is only available from the tray menu"
+        ))
+    }
+}
+
+fn can_read_runtime_storage(label: &str, key: &str) -> bool {
+    label == "main"
+        || ((label == "tray-menu" || label.starts_with("ssh-")) && key == I18N_STORAGE_KEY)
 }
 
 /// Localized `format!`. Use this instead of `format!` for every user-facing
@@ -122,8 +173,19 @@ pub fn app_data_file<R: tauri::Runtime>(
     Ok(dir.join(filename))
 }
 
-#[doc(hidden)]
-pub fn load_string_map(path: &Path) -> Result<HashMap<String, String>, String> {
+/// Sidecar paths for the atomic write: `<name>.tmp` stages the new content,
+/// `<name>.bak` snapshots the previous good content.
+fn storage_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("runtime-storage.json");
+    path.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{file_name}{suffix}"))
+}
+
+fn read_string_map_file(path: &Path) -> Result<HashMap<String, String>, String> {
     if !path.exists() {
         return Ok(HashMap::new());
     }
@@ -133,13 +195,56 @@ pub fn load_string_map(path: &Path) -> Result<HashMap<String, String>, String> {
             "Failed to read local data: {error}"
         )
     })?;
-    if text.trim().is_empty() {
-        return Ok(HashMap::new());
-    }
     serde_json::from_str(&text).map_err(|error| {
         trf!(
             "本地数据格式无法识别：{error}",
             "Unrecognized local data format: {error}"
+        )
+    })
+}
+
+#[doc(hidden)]
+pub fn load_string_map(path: &Path) -> Result<HashMap<String, String>, String> {
+    // A missing primary with an existing backup is the crash window of the
+    // previous (rename-based) write algorithm: recover the last good state
+    // from the backup instead of starting from an empty map.
+    if !path.exists() {
+        let bak_path = storage_sidecar_path(path, ".bak");
+        if bak_path.exists() {
+            return read_string_map_file(&bak_path);
+        }
+        return Ok(HashMap::new());
+    }
+    match read_string_map_file(path) {
+        Ok(map) => Ok(map),
+        Err(primary_error) => {
+            let bak_path = storage_sidecar_path(path, ".bak");
+            if !bak_path.exists() {
+                return Err(primary_error);
+            }
+            // Surface the primary error when the backup is unusable too.
+            read_string_map_file(&bak_path).map_err(|_| primary_error)
+        }
+    }
+}
+
+fn write_synced_storage_file(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let mut file = fs::File::create(path).map_err(|error| {
+        trf!(
+            "无法写入本地数据临时文件：{error}",
+            "Failed to write the local data temp file: {error}"
+        )
+    })?;
+    file.write_all(contents).map_err(|error| {
+        trf!(
+            "无法写入本地数据临时文件：{error}",
+            "Failed to write the local data temp file: {error}"
+        )
+    })?;
+    file.sync_all().map_err(|error| {
+        trf!(
+            "无法同步本地数据临时文件：{error}",
+            "Failed to sync the local data temp file: {error}"
         )
     })
 }
@@ -152,47 +257,39 @@ pub fn write_string_map(path: &Path, data: &HashMap<String, String>) -> Result<(
             "Failed to serialize local data: {error}"
         )
     })?;
-    let parent = path.parent().ok_or_else(|| {
-        trf!(
-            "无法定位本地数据目录",
-            "Failed to locate the local data directory"
-        )
-    })?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            trf!(
-                "无法定位本地数据文件名",
-                "Failed to locate the local data file name"
-            )
-        })?;
-    let tmp_path = parent.join(format!("{file_name}.tmp"));
-    let bak_path = parent.join(format!("{file_name}.bak"));
+    let tmp_path = storage_sidecar_path(path, ".tmp");
+    let bak_path = storage_sidecar_path(path, ".bak");
 
-    fs::write(&tmp_path, &text).map_err(|error| {
-        trf!(
-            "无法写入本地数据临时文件：{error}",
-            "Failed to write the local data temp file: {error}"
-        )
-    })?;
-
+    // Fsync both staged files before replacing either live destination.
+    write_synced_storage_file(&tmp_path, text.as_bytes())?;
     if path.exists() {
-        let _ = fs::remove_file(&bak_path);
-        fs::rename(path, &bak_path).map_err(|error| {
+        let previous = fs::read(path).map_err(|error| {
             trf!(
                 "无法备份本地数据：{error}",
                 "Failed to back up local data: {error}"
             )
         })?;
+        // A recovered write must not copy the damaged primary over the last
+        // good backup. Stage the backup separately so its own write failure
+        // also leaves both previous snapshots intact.
+        if serde_json::from_slice::<HashMap<String, String>>(&previous).is_ok() {
+            let bak_tmp_path = storage_sidecar_path(path, ".bak.tmp");
+            write_synced_storage_file(&bak_tmp_path, &previous)?;
+            fs::rename(&bak_tmp_path, &bak_path).map_err(|error| {
+                trf!(
+                    "无法备份本地数据：{error}",
+                    "Failed to back up local data: {error}"
+                )
+            })?;
+        }
     }
 
+    // On Windows std::fs::rename replaces an existing destination atomically.
     match fs::rename(&tmp_path, path) {
         Ok(()) => Ok(()),
         Err(error) => {
-            if bak_path.exists() {
-                let _ = fs::rename(&bak_path, path);
-            }
+            // The live file was never touched; dropping the staged temp file
+            // restores the pre-write state exactly.
             let _ = fs::remove_file(&tmp_path);
             Err(trf!(
                 "无法提交本地数据写入：{error}",
@@ -471,95 +568,341 @@ fn runtime_storage_lock() -> &'static Mutex<()> {
     RUNTIME_STORAGE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Broadcast to every window after a runtime-storage write lands, so other
+/// windows can drop their in-memory cache copy of the written key. `source` is
+/// the originating window's label; each window ignores its own broadcasts
+/// because its cache was already updated synchronously by the write itself.
+const RUNTIME_STORAGE_CHANGED_EVENT: &str = "runtime-storage-changed";
+
+#[derive(Clone, serde::Serialize)]
+struct RuntimeStorageChange<'a> {
+    key: &'a str,
+    source: &'a str,
+}
+
+fn broadcast_runtime_storage_change(app: &AppHandle, source: &str, key: &str) {
+    let _ = app.emit(
+        RUNTIME_STORAGE_CHANGED_EVENT,
+        RuntimeStorageChange { key, source },
+    );
+}
+
+/// Acquire the global storage lock, recovering from poisoning: the state it
+/// guards is fully re-derived from disk on every call, so a panicked previous
+/// holder leaves nothing inconsistent behind — failing every later storage
+/// command until restart would be strictly worse.
+fn lock_runtime_storage() -> std::sync::MutexGuard<'static, ()> {
+    runtime_storage_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Migration and per-key file I/O run on the blocking pool. The global lock
+/// covers the entire operation, including initialization and CAS checks.
 #[tauri::command]
-fn runtime_storage_get(app: AppHandle, key: String) -> Result<Option<String>, String> {
-    let _guard = runtime_storage_lock().lock().map_err(|e| {
+async fn runtime_storage_get(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    key: String,
+) -> Result<Option<String>, String> {
+    if !can_read_runtime_storage(window.label(), &key) {
+        return Err(trf!(
+            "此窗口无权读取该本地数据",
+            "This window is not allowed to read this local data"
+        ));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_runtime_storage();
+        let path = runtime_storage_path(&app)?;
+        let file_guard = runtime_storage_lock::RuntimeStorageFileLock::acquire(&path)?;
+        let result = runtime_storage::RuntimeStore::open(&path)?.get(&key);
+        file_guard.ensure_healthy()?;
+        result
+    })
+    .await
+    .map_err(|e| {
         trf!(
-            "本地数据锁获取失败：{e}",
-            "Failed to acquire the local data lock: {e}"
+            "本地数据读取任务失败：{e}",
+            "Local data read task failed: {e}"
         )
-    })?;
-    let path = runtime_storage_path(&app)?;
-    let data = load_string_map(&path)?;
-    Ok(data.get(&key).cloned())
+    })?
 }
 
 #[tauri::command]
-fn runtime_storage_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
-    let _guard = runtime_storage_lock().lock().map_err(|e| {
+async fn runtime_storage_set(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    require_main_window(window.label())?;
+    let task_app = app.clone();
+    let task_key = key.clone();
+    let changed = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_runtime_storage();
+        let path = runtime_storage_path(&task_app)?;
+        let file_guard = runtime_storage_lock::RuntimeStorageFileLock::acquire(&path)?;
+        let result = runtime_storage::RuntimeStore::open(&path)?.set(&task_key, &value);
+        file_guard.ensure_healthy()?;
+        result
+    })
+    .await
+    .map_err(|e| {
         trf!(
-            "本地数据锁获取失败：{e}",
-            "Failed to acquire the local data lock: {e}"
+            "本地数据写入任务失败：{e}",
+            "Local data write task failed: {e}"
         )
-    })?;
-    let path = runtime_storage_path(&app)?;
-    let mut data = load_string_map(&path)?;
-    data.insert(key, value);
-    write_string_map(&path, &data)
+    })??;
+    if changed {
+        broadcast_runtime_storage_change(&app, window.label(), &key);
+    }
+    Ok(())
 }
 
 #[tauri::command]
-fn runtime_storage_remove(app: AppHandle, key: String) -> Result<(), String> {
-    let _guard = runtime_storage_lock().lock().map_err(|e| {
+async fn runtime_storage_remove(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    key: String,
+) -> Result<(), String> {
+    require_main_window(window.label())?;
+    let task_app = app.clone();
+    let task_key = key.clone();
+    let existed = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_runtime_storage();
+        let path = runtime_storage_path(&task_app)?;
+        let file_guard = runtime_storage_lock::RuntimeStorageFileLock::acquire(&path)?;
+        let result = runtime_storage::RuntimeStore::open(&path)?.remove(&task_key);
+        file_guard.ensure_healthy()?;
+        result
+    })
+    .await
+    .map_err(|e| {
         trf!(
-            "本地数据锁获取失败：{e}",
-            "Failed to acquire the local data lock: {e}"
+            "本地数据写入任务失败：{e}",
+            "Local data write task failed: {e}"
         )
-    })?;
-    let path = runtime_storage_path(&app)?;
-    let mut data = load_string_map(&path)?;
-    data.remove(&key);
-    write_string_map(&path, &data)
+    })??;
+    if existed {
+        broadcast_runtime_storage_change(&app, window.label(), &key);
+    }
+    Ok(())
+}
+
+/// Compare-and-swap over the runtime-storage map: applies `next` (insert or
+/// remove) only when the stored value equals `expected`. Returns `(true, None)`
+/// on success and `(false, Some(current))` on mismatch so the caller can retry
+/// against the authoritative value without a second read.
+#[doc(hidden)]
+pub fn apply_storage_cas(
+    data: &mut HashMap<String, String>,
+    key: &str,
+    expected: Option<&str>,
+    next: Option<&str>,
+) -> (bool, Option<String>) {
+    let current = data.get(key).map(String::as_str);
+    if current != expected {
+        return (false, current.map(ToOwned::to_owned));
+    }
+    match next {
+        Some(value) => {
+            data.insert(key.to_owned(), value.to_owned());
+        }
+        None => {
+            data.remove(key);
+        }
+    }
+    (true, None)
+}
+
+#[derive(serde::Serialize)]
+struct StorageCasOutcome {
+    updated: bool,
+    current: Option<String>,
+}
+
+/// Cross-window-safe read-modify-write primitive. The whole compare-and-swap
+/// over a key's file runs under the global lock, so two windows transforming
+/// the same key cannot silently overwrite each other: the loser gets the fresh value
+/// back (`updated: false`) and retries in JS. `navigator.locks` cannot be
+/// relied on here because webview lock scopes are not guaranteed to be shared
+/// across windows on every platform backend.
+#[tauri::command]
+async fn runtime_storage_compare_and_swap(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    key: String,
+    expected: Option<String>,
+    next: Option<String>,
+    migrate_if_missing: Option<bool>,
+) -> Result<StorageCasOutcome, String> {
+    require_main_window(window.label())?;
+    let task_app = app.clone();
+    let task_key = key.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_runtime_storage();
+        let path = runtime_storage_path(&task_app)?;
+        let file_guard = runtime_storage_lock::RuntimeStorageFileLock::acquire(&path)?;
+        let store = runtime_storage::RuntimeStore::open(&path)?;
+        let (updated, current) = if migrate_if_missing == Some(true) {
+            store.migrate_if_missing(&task_key, next.as_deref())?
+        } else {
+            store.compare_and_swap(&task_key, expected.as_deref(), next.as_deref())?
+        };
+        file_guard.ensure_healthy()?;
+        Ok::<StorageCasOutcome, String>(StorageCasOutcome { updated, current })
+    })
+    .await
+    .map_err(|e| {
+        trf!(
+            "本地数据写入任务失败：{e}",
+            "Local data write task failed: {e}"
+        )
+    })??;
+    if outcome.updated {
+        broadcast_runtime_storage_change(&app, window.label(), &key);
+    }
+    Ok(outcome)
 }
 
 #[cfg(desktop)]
 const KEYCHAIN_SERVICE: &str = "easy-console";
 
 #[cfg(desktop)]
-#[tauri::command]
-fn keychain_get(key: String) -> Result<Option<String>, String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
-        .map_err(|e| format!("keychain entry lookup failed: {e}"))?;
-    match entry.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("keychain get failed: {e}")),
+fn keychain_service(identifier: &str) -> String {
+    if identifier == "com.easyconsole.desktop" {
+        KEYCHAIN_SERVICE.into()
+    } else {
+        format!("{KEYCHAIN_SERVICE}.{identifier}")
     }
+}
+
+/// Keep blocking platform keystore calls off the UI thread. Queue operations
+/// before dispatching them so writes and removals stay ordered. The worker
+/// owns the guard until it finishes, even if its awaiting caller is cancelled.
+#[cfg(desktop)]
+async fn run_keychain_operation<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    static LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+    let guard = Arc::clone(LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(()))))
+        .lock_owned()
+        .await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        operation()
+    })
+    .await
+    .map_err(|e| trf!("系统钥匙串任务失败：{e}", "Keychain task failed: {e}"))?
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn keychain_set(key: String, value: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
-        .map_err(|e| format!("keychain entry lookup failed: {e}"))?;
-    entry
-        .set_password(&value)
-        .map_err(|e| format!("keychain set failed: {e}"))
+async fn keychain_get(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    key: String,
+) -> Result<Option<String>, String> {
+    require_main_window(window.label())?;
+    keychain_get_for_service(keychain_service(&app.config().identifier), key).await
+}
+
+#[cfg(desktop)]
+async fn keychain_get_for_service(service: String, key: String) -> Result<Option<String>, String> {
+    run_keychain_operation(move || {
+        let entry = keyring::Entry::new(&service, &key).map_err(|e| {
+            trf!(
+                "无法访问系统钥匙串：{e}",
+                "keychain entry lookup failed: {e}"
+            )
+        })?;
+        match entry.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(trf!("读取系统钥匙串失败：{e}", "keychain get failed: {e}")),
+        }
+    })
+    .await
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn keychain_remove(key: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
-        .map_err(|e| format!("keychain entry lookup failed: {e}"))?;
-    match entry.delete_credential() {
-        Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(format!("keychain remove failed: {e}")),
-    }
+async fn keychain_set(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    require_main_window(window.label())?;
+    keychain_set_for_service(keychain_service(&app.config().identifier), key, value).await
 }
 
-/// Reads `desktopCloseToTray` and `desktopClosePrompt` from `runtime-storage.json`
-/// in a single file read + parse, instead of two separate passes.
+#[cfg(desktop)]
+async fn keychain_set_for_service(
+    service: String,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    run_keychain_operation(move || {
+        let entry = keyring::Entry::new(&service, &key).map_err(|e| {
+            trf!(
+                "无法访问系统钥匙串：{e}",
+                "keychain entry lookup failed: {e}"
+            )
+        })?;
+        entry
+            .set_password(&value)
+            .map_err(|e| trf!("写入系统钥匙串失败：{e}", "keychain set failed: {e}"))
+    })
+    .await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn keychain_remove(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    key: String,
+) -> Result<(), String> {
+    require_main_window(window.label())?;
+    keychain_remove_for_service(keychain_service(&app.config().identifier), key).await
+}
+
+#[cfg(desktop)]
+async fn keychain_remove_for_service(service: String, key: String) -> Result<(), String> {
+    run_keychain_operation(move || {
+        let entry = keyring::Entry::new(&service, &key).map_err(|e| {
+            trf!(
+                "无法访问系统钥匙串：{e}",
+                "keychain entry lookup failed: {e}"
+            )
+        })?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(()),
+            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(trf!(
+                "删除系统钥匙串凭据失败：{e}",
+                "keychain remove failed: {e}"
+            )),
+        }
+    })
+    .await
+}
+
+/// Reads both close preferences from the current store, or from the legacy
+/// snapshot before migration. Startup never migrates data on the UI thread.
 /// Returns `(close_to_tray, close_prompt)` with defaults `false` and `true`.
 #[cfg(desktop)]
 fn read_close_settings(app: &AppHandle) -> Result<(bool, bool), String> {
     let path = runtime_storage_path(app)?;
-    let data = load_string_map(&path)?;
-    let Some(raw) = data.get(APP_SETTINGS_STORAGE_KEY) else {
+    // Read an atomically published snapshot only. Startup runs on the UI
+    // thread and must not wait on another process's transaction or migrate.
+    let Some(raw) =
+        runtime_storage::RuntimeStore::read_existing_value(&path, APP_SETTINGS_STORAGE_KEY)?
+    else {
         return Ok((false, true));
     };
-    let value = serde_json::from_str::<serde_json::Value>(raw)
+    let value = serde_json::from_str::<serde_json::Value>(&raw)
         .map_err(|error| format!("invalid app settings json: {error}"))?;
     let close_to_tray = value
         .get("desktopCloseToTray")
@@ -745,7 +1088,12 @@ fn start_desktop_run_due_timer(app: AppHandle) {
 }
 
 #[tauri::command]
-fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
+fn open_external_url(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    url: String,
+) -> Result<(), String> {
+    require_main_or_ssh_window(window.label())?;
     let url = validate_external_url(&url)?;
     app.opener()
         .open_url(url.clone(), None::<&str>)
@@ -936,7 +1284,13 @@ async fn install_apk(app: AppHandle, path: String) -> Result<String, String> {
 
 #[cfg(desktop)]
 #[tauri::command]
-async fn http_download_to_file(app: AppHandle, url: String, path: String) -> Result<u64, String> {
+async fn http_download_to_file(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    url: String,
+    path: String,
+) -> Result<u64, String> {
+    require_main_window(window.label())?;
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
@@ -1004,47 +1358,71 @@ async fn http_download_to_file(app: AppHandle, url: String, path: String) -> Res
 
 #[cfg(desktop)]
 #[tauri::command]
-fn open_local_path(path: String) -> Result<(), String> {
+fn open_local_path(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+    require_main_window(window.label())?;
     let path = validate_open_target(&path)?;
     open_path_with_system(&path)
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn reveal_local_path(path: String) -> Result<(), String> {
+fn reveal_local_path(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+    require_main_window(window.label())?;
     let path = validate_reveal_target(&path)?;
     reveal_path_with_system(&path)
 }
 
 #[cfg(desktop)]
 #[tauri::command]
+fn reveal_sftp_local_path(
+    state: State<'_, Arc<SshSessionState>>,
+    window: tauri::WebviewWindow,
+    session_id: String,
+    path: String,
+) -> Result<(), String> {
+    require_main_or_ssh_window(window.label())?;
+    let allowed = state.ensure_sftp_local_path_allowed(&window, &session_id, &path)?;
+    let path = validate_reveal_target(&allowed.to_string_lossy())?;
+    reveal_path_with_system(&path)
+}
+
+#[cfg(desktop)]
+#[tauri::command]
 fn set_desktop_close_to_tray(
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<DesktopRuntimeState>>,
     enabled: bool,
 ) -> Result<(), String> {
+    require_main_window(window.label())?;
     set_close_to_tray_state(&state, enabled)
 }
 
 #[cfg(desktop)]
 #[tauri::command]
 fn set_desktop_close_prompt(
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<DesktopRuntimeState>>,
     enabled: bool,
 ) -> Result<(), String> {
+    require_main_window(window.label())?;
     set_close_prompt_state(&state, enabled)
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn cancel_desktop_close_prompt() {}
+fn cancel_desktop_close_prompt(window: tauri::WebviewWindow) -> Result<(), String> {
+    require_main_window(window.label())
+}
 
 #[cfg(desktop)]
 #[tauri::command]
 fn complete_desktop_close_prompt(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<DesktopRuntimeState>>,
     action: String,
 ) -> Result<(), String> {
+    require_main_window(window.label())?;
     match action.as_str() {
         "tray" => {
             hide_main_window(&app);
@@ -1064,29 +1442,71 @@ fn complete_desktop_close_prompt(
 
 #[cfg(desktop)]
 #[tauri::command]
-fn show_desktop_main_window(app: AppHandle) {
+fn show_desktop_main_window(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    require_tray_menu_window(window.label())?;
     hide_tray_menu(&app);
     show_main_window(&app);
+    Ok(())
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn hide_desktop_tray_menu(app: AppHandle) {
+fn hide_desktop_tray_menu(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() != "tray-menu" && window.label() != "main" {
+        return Err(trf!(
+            "此操作不允许从当前窗口执行",
+            "This operation is not available from this window"
+        ));
+    }
     hide_tray_menu(&app);
+    Ok(())
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn run_due_scheduled_tasks(app: AppHandle) {
+fn run_due_scheduled_tasks(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    require_tray_menu_window(window.label())?;
     hide_tray_menu(&app);
     let _ = app.emit(DESKTOP_RUN_DUE_EVENT, ());
+    Ok(())
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn quit_desktop_app(app: AppHandle, state: State<'_, Arc<DesktopRuntimeState>>) {
+fn quit_desktop_app(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<DesktopRuntimeState>>,
+) -> Result<(), String> {
+    require_tray_menu_window(window.label())?;
     set_quit_requested(&state, true);
     app.exit(0);
+    Ok(())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn desktop_scheduled_wake(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    enabled: Option<bool>,
+) -> Result<Option<bool>, String> {
+    require_main_window(window.label())?;
+    #[cfg(target_os = "windows")]
+    {
+        let path = app_data_file(&app, "runtime-storage.json")?;
+        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || {
+            scheduled_wake::configure(&exe, &path, enabled).map(Some)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, enabled);
+        Ok(None)
+    }
 }
 
 /// Exposes the native runtime kind to the renderer so it can pick capability
@@ -1114,6 +1534,14 @@ pub fn run() {
 
     log::info!("creating Tauri builder");
     let mut builder = tauri::Builder::default().manage(Arc::clone(&ssh_state));
+    {
+        let page_ssh_state = Arc::clone(&ssh_state);
+        builder = builder.on_page_load(move |webview, payload| {
+            if matches!(payload.event(), PageLoadEvent::Started) {
+                close_sessions_for_window(&page_ssh_state, webview.label());
+            }
+        });
+    }
 
     #[cfg(desktop)]
     {
@@ -1123,13 +1551,12 @@ pub fn run() {
             .plugin(tauri_plugin_process::init())
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_deep_link::init())
+            .plugin(tauri_plugin_autostart::init(
+                tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                None,
+            ))
             .plugin(
                 tauri_plugin_global_shortcut::Builder::new()
-                    .with_shortcut("Alt+Shift+E")
-                    .unwrap_or_else(|error| {
-                        log::warn!("failed to register default global shortcut: {error}");
-                        tauri_plugin_global_shortcut::Builder::new()
-                    })
                     .with_handler(|app, _shortcut, event| {
                         if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
                             if let Some(window) = app.get_webview_window("main") {
@@ -1193,6 +1620,11 @@ pub fn run() {
 
             #[cfg(desktop)]
             {
+                // A running installation or another app may own this key.
+                // Losing a convenience shortcut must not prevent startup.
+                if let Err(error) = app.global_shortcut().register("Alt+Shift+E") {
+                    log::warn!("failed to register default global shortcut: {error}");
+                }
                 let (close_to_tray, close_prompt) =
                     read_close_settings(app.handle()).unwrap_or((false, true));
                 if let Err(error) = set_close_to_tray_state(&desktop_state, close_to_tray) {
@@ -1231,6 +1663,7 @@ pub fn run() {
         runtime_storage_get,
         runtime_storage_set,
         runtime_storage_remove,
+        runtime_storage_compare_and_swap,
         #[cfg(desktop)]
         keychain_get,
         #[cfg(desktop)]
@@ -1239,7 +1672,9 @@ pub fn run() {
         keychain_remove,
         runtime_platform,
         open_ssh_session,
+        ssh_gpu_utilization,
         ssh_write,
+        ssh_ack_output,
         ssh_resize,
         ssh_close,
         sftp_list,
@@ -1286,6 +1721,8 @@ pub fn run() {
         #[cfg(desktop)]
         reveal_local_path,
         #[cfg(desktop)]
+        reveal_sftp_local_path,
+        #[cfg(desktop)]
         set_desktop_close_to_tray,
         #[cfg(desktop)]
         set_desktop_close_prompt,
@@ -1299,6 +1736,8 @@ pub fn run() {
         hide_desktop_tray_menu,
         #[cfg(desktop)]
         run_due_scheduled_tasks,
+        #[cfg(desktop)]
+        desktop_scheduled_wake,
         #[cfg(desktop)]
         quit_desktop_app
     ]);
@@ -1397,10 +1836,293 @@ fn handle_desktop_event(
 mod tests {
     use super::*;
 
+    /// The active locale is process-global, so tests that touch it must not
+    /// run concurrently; tests within a binary run in parallel by default.
+    static LOCALE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn ssh_window_capability_excludes_main_app_privileges() {
+        let main: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let ssh: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/ssh-terminal.json")).unwrap();
+        let tray: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/tray-menu.json")).unwrap();
+        assert_eq!(main["windows"], serde_json::json!(["main"]));
+        assert_eq!(ssh["windows"], serde_json::json!(["ssh-*"]));
+        assert_eq!(tray["windows"], serde_json::json!(["tray-menu"]));
+
+        let permissions = ssh["permissions"].as_array().unwrap();
+        for required in [
+            "core:event:allow-listen",
+            "core:event:allow-unlisten",
+            "core:window:allow-close",
+            "dialog:allow-open",
+            "dialog:allow-save",
+            "fs:write-files",
+        ] {
+            assert!(permissions.iter().any(|permission| permission == required));
+        }
+        for forbidden in [
+            "core:default",
+            "fs:default",
+            "http:default",
+            "notification:default",
+            "updater:default",
+            "process:default",
+            "deep-link:default",
+            "autostart:default",
+            "global-shortcut:allow-register",
+        ] {
+            assert!(!permissions.iter().any(|permission| permission == forbidden));
+        }
+        let tray_permissions = tray["permissions"].as_array().unwrap();
+        assert!(tray_permissions
+            .iter()
+            .any(|permission| permission == "core:event:allow-listen"));
+        assert!(tray_permissions
+            .iter()
+            .any(|permission| permission == "core:event:allow-unlisten"));
+        assert!(!tray_permissions
+            .iter()
+            .any(|permission| permission == "core:default"));
+    }
+
+    #[test]
+    fn privileged_window_commands_are_restricted_to_their_owner_window() {
+        assert!(require_main_window("main").is_ok());
+        assert!(require_main_window("ssh-task-1").is_err());
+        assert!(require_main_window("tray-menu").is_err());
+        assert!(require_main_or_ssh_window("main").is_ok());
+        assert!(require_main_or_ssh_window("ssh-task-1").is_ok());
+        assert!(require_main_or_ssh_window("tray-menu").is_err());
+        assert!(require_tray_menu_window("tray-menu").is_ok());
+        assert!(require_tray_menu_window("ssh-task-1").is_err());
+        assert!(can_read_runtime_storage("main", "any-key"));
+        assert!(can_read_runtime_storage("ssh-task-1", I18N_STORAGE_KEY));
+        assert!(can_read_runtime_storage("tray-menu", I18N_STORAGE_KEY));
+        assert!(!can_read_runtime_storage(
+            "ssh-task-1",
+            "easy-console.settings"
+        ));
+        assert!(!can_read_runtime_storage(
+            "tray-menu",
+            "easy-console.settings"
+        ));
+    }
+
+    #[test]
+    fn storage_roundtrips_and_leaves_a_backup_snapshot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        let mut data = HashMap::new();
+        data.insert("alpha".to_string(), "1".to_string());
+        write_string_map(&path, &data).expect("first write");
+
+        data.insert("beta".to_string(), "2".to_string());
+        write_string_map(&path, &data).expect("second write");
+
+        assert_eq!(load_string_map(&path).expect("reload"), data);
+        // The backup still holds the previous good content, not the new one.
+        let bak = load_string_map(&storage_sidecar_path(&path, ".bak")).expect("backup");
+        assert_eq!(bak.get("beta"), None);
+        assert_eq!(bak.get("alpha").map(String::as_str), Some("1"));
+        // The staged temp file never lingers after a committed write.
+        assert!(!storage_sidecar_path(&path, ".tmp").exists());
+    }
+
+    #[test]
+    fn storage_recovers_from_a_corrupt_primary_via_the_backup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        let mut data = HashMap::new();
+        data.insert("alpha".to_string(), "1".to_string());
+        write_string_map(&path, &data).expect("write");
+        data.insert("beta".to_string(), "2".to_string());
+        write_string_map(&path, &data).expect("write");
+
+        // Simulate a torn write: the primary is damaged, the backup holds the
+        // previous good state.
+        fs::write(&path, "{\"alpha\": \"trunc").expect("damage");
+        assert_eq!(
+            load_string_map(&path)
+                .expect("backup recovery")
+                .get("alpha")
+                .map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn storage_recovers_from_a_missing_primary_via_the_backup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        let mut data = HashMap::new();
+        data.insert("alpha".to_string(), "1".to_string());
+        write_string_map(&path, &data).expect("write");
+        data.insert("beta".to_string(), "2".to_string());
+        write_string_map(&path, &data).expect("write");
+
+        // The crash window of the old rename-based algorithm: the primary was
+        // renamed away and never replaced.
+        fs::remove_file(&path).expect("remove primary");
+        let recovered = load_string_map(&path).expect("backup recovery");
+        assert_eq!(recovered.get("alpha").map(String::as_str), Some("1"));
+        assert_eq!(recovered.get("beta"), None);
+    }
+
+    #[test]
+    fn storage_reports_corruption_when_no_backup_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        for damage in ["not json", "", " \n"] {
+            fs::write(&path, damage).expect("damage");
+            assert!(load_string_map(&path).is_err());
+        }
+    }
+
+    #[test]
+    fn storage_treats_a_missing_store_as_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        assert!(load_string_map(&path).expect("fresh start").is_empty());
+    }
+
+    #[test]
+    fn storage_recovers_from_an_empty_primary_via_the_backup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        write_string_map(
+            &path,
+            &HashMap::from([("key".to_string(), "backup".to_string())]),
+        )
+        .unwrap();
+        write_string_map(
+            &path,
+            &HashMap::from([("key".to_string(), "newer".to_string())]),
+        )
+        .unwrap();
+        fs::write(&path, " \n").unwrap();
+        assert_eq!(
+            load_string_map(&path)
+                .unwrap()
+                .get("key")
+                .map(String::as_str),
+            Some("backup")
+        );
+    }
+
+    #[test]
+    fn storage_never_replaces_a_good_backup_with_a_corrupt_primary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        write_string_map(
+            &path,
+            &HashMap::from([("key".to_string(), "backup".to_string())]),
+        )
+        .unwrap();
+        write_string_map(
+            &path,
+            &HashMap::from([("key".to_string(), "newer".to_string())]),
+        )
+        .unwrap();
+        fs::write(&path, [0xff, 0xfe]).unwrap();
+        let mut recovered = load_string_map(&path).unwrap();
+        recovered.insert("another".to_string(), "value".to_string());
+        write_string_map(&path, &recovered).unwrap();
+        fs::write(&path, "broken again").unwrap();
+        assert_eq!(
+            load_string_map(&path)
+                .unwrap()
+                .get("key")
+                .map(String::as_str),
+            Some("backup")
+        );
+    }
+
+    #[test]
+    fn storage_backup_failure_leaves_the_previous_backup_and_primary_untouched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.json");
+        write_string_map(
+            &path,
+            &HashMap::from([("key".to_string(), "backup".to_string())]),
+        )
+        .unwrap();
+        write_string_map(
+            &path,
+            &HashMap::from([("key".to_string(), "current".to_string())]),
+        )
+        .unwrap();
+        let backup_path = storage_sidecar_path(&path, ".bak");
+        let backup = fs::read(&backup_path).unwrap();
+        fs::create_dir(storage_sidecar_path(&path, ".bak.tmp")).unwrap();
+        assert!(write_string_map(
+            &path,
+            &HashMap::from([("key".to_string(), "next".to_string())])
+        )
+        .is_err());
+        assert_eq!(fs::read(backup_path).unwrap(), backup);
+        assert_eq!(
+            load_string_map(&path)
+                .unwrap()
+                .get("key")
+                .map(String::as_str),
+            Some("current")
+        );
+    }
+
+    #[test]
+    fn storage_cas_applies_expected_writes_and_reports_conflicts() {
+        let mut data = HashMap::new();
+        data.insert("k".to_string(), "v1".to_string());
+
+        // Mismatch: report the authoritative value, change nothing.
+        let (updated, current) = apply_storage_cas(&mut data, "k", Some("stale"), Some("v2"));
+        assert!(!updated);
+        assert_eq!(current.as_deref(), Some("v1"));
+        assert_eq!(data.get("k").map(String::as_str), Some("v1"));
+
+        // Match: insert the new value.
+        let (updated, current) = apply_storage_cas(&mut data, "k", Some("v1"), Some("v2"));
+        assert!(updated);
+        assert_eq!(current, None);
+        assert_eq!(data.get("k").map(String::as_str), Some("v2"));
+
+        // Remove via a `None` next when the expectation matches.
+        let (updated, _) = apply_storage_cas(&mut data, "k", Some("v2"), None);
+        assert!(updated);
+        assert!(!data.contains_key("k"));
+
+        // Insert into a missing key with a `None` expectation.
+        let (updated, current) = apply_storage_cas(&mut data, "k", None, Some("fresh"));
+        assert!(updated);
+        assert_eq!(current, None);
+        assert_eq!(data.get("k").map(String::as_str), Some("fresh"));
+
+        // A `Some` expectation against a missing key must conflict, not insert.
+        let (updated, current) = apply_storage_cas(&mut data, "other", Some("x"), Some("y"));
+        assert!(!updated);
+        assert_eq!(current, None);
+        assert!(!data.contains_key("other"));
+    }
+
+    #[test]
+    fn storage_change_broadcast_payload_carries_key_and_source() {
+        let payload = RuntimeStorageChange {
+            key: "easy-console.runLogs",
+            source: "main",
+        };
+        let json = serde_json::to_value(&payload).expect("serialize failed");
+        assert_eq!(json["key"], "easy-console.runLogs");
+        assert_eq!(json["source"], "main");
+    }
+
     /// Kept as a single test because the active locale is process-global and
     /// tests within a binary run concurrently.
     #[test]
     fn locale_selects_the_expected_dictionary() {
+        let _guard = LOCALE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         i18n::set_locale("en-US");
         assert!(i18n::is_english());
         assert_eq!(trf!("结果：{}", "Result: {}", 7), "Result: 7");
@@ -1428,6 +2150,7 @@ mod tests {
     /// round-trip needs a window and is covered by `npm run tauri:dev`.
     #[test]
     fn set_locale_command_updates_the_native_locale() {
+        let _guard = LOCALE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         i18n::set_locale("zh-CN");
         assert!(!i18n::is_english());
 
@@ -1436,5 +2159,127 @@ mod tests {
 
         set_locale("zh-CN".to_string());
         assert!(!i18n::is_english());
+    }
+
+    #[cfg(desktop)]
+    #[tokio::test]
+    async fn keychain_operations_run_off_the_calling_thread() {
+        let caller = std::thread::current().id();
+        let worker = run_keychain_operation(|| Ok(std::thread::current().id()))
+            .await
+            .expect("keychain worker failed");
+        assert_ne!(worker, caller);
+    }
+
+    #[cfg(desktop)]
+    #[tokio::test]
+    async fn keychain_operation_errors_reach_the_caller() {
+        let error = run_keychain_operation(|| Err::<(), _>("keystore unavailable".to_string()))
+            .await
+            .expect_err("the platform error must be returned");
+        assert_eq!(error, "keystore unavailable");
+    }
+
+    #[cfg(desktop)]
+    #[tokio::test]
+    async fn keychain_worker_panic_does_not_block_later_operations() {
+        let error = run_keychain_operation(|| -> Result<(), String> {
+            panic!("test keychain worker panic");
+        })
+        .await
+        .expect_err("the worker panic must become a command error");
+        assert!(error.contains("test keychain worker panic"));
+        run_keychain_operation(|| Ok(()))
+            .await
+            .expect("the queue must still work after a worker panic");
+    }
+
+    #[cfg(desktop)]
+    #[tokio::test]
+    async fn cancelled_keychain_caller_keeps_its_write_ahead_of_removal() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let write_events = Arc::clone(&events);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let write = tokio::spawn(run_keychain_operation(move || {
+            entered_tx.send(()).expect("notify worker started");
+            release_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("release the blocked test write");
+            write_events.lock().unwrap().push("write");
+            Ok(())
+        }));
+        entered_rx.await.expect("wait for test write to start");
+        write.abort();
+        assert!(write
+            .await
+            .expect_err("caller must be cancelled")
+            .is_cancelled());
+
+        let remove_events = Arc::clone(&events);
+        let remove = run_keychain_operation(move || {
+            remove_events.lock().unwrap().push("remove");
+            Ok(())
+        });
+        tokio::pin!(remove);
+        assert!(futures_util::poll!(&mut remove).is_pending());
+        release_tx.send(()).expect("finish test write");
+        remove.await.expect("queued removal failed");
+        assert_eq!(*events.lock().unwrap(), ["write", "remove"]);
+    }
+
+    #[cfg(desktop)]
+    #[tokio::test]
+    async fn keychain_roundtrip_uses_persistent_platform_store() {
+        let key = format!("easy-console-selftest-{}", uuid::Uuid::new_v4());
+
+        // The entry must come from a real OS keystore, not the in-memory mock
+        // keyring falls back to when no platform feature is enabled.
+        let probe =
+            keyring::Entry::new(KEYCHAIN_SERVICE, &key).expect("keyring entry creation failed");
+        if probe.get_credential().is::<keyring::mock::MockCredential>() {
+            panic!("keyring fell back to its in-memory mock keystore; platform keystore features are not enabled");
+        }
+
+        // Headless Linux machines may lack a Secret Service daemon; treat that
+        // as a skip instead of a failure there.
+        match probe.set_password("selftest-probe") {
+            Ok(()) => {
+                probe
+                    .delete_credential()
+                    .expect("keychain probe cleanup failed");
+            }
+            Err(keyring::Error::NoStorageAccess(_) | keyring::Error::PlatformFailure(_))
+                if cfg!(target_os = "linux") =>
+            {
+                eprintln!("skipping keychain roundtrip: no platform keystore available");
+                return;
+            }
+            Err(e) => panic!("keychain probe write failed: {e}"),
+        }
+
+        // Every command call constructs a fresh keyring Entry, so reading back
+        // through the commands exercises the same code path as a restart.
+        // Clean up before asserting so a failing assertion never leaves the
+        // selftest credential behind in the OS keystore.
+        keychain_set_for_service(
+            KEYCHAIN_SERVICE.into(),
+            key.clone(),
+            "selftest-secret".to_string(),
+        )
+        .await
+        .expect("keychain set failed");
+        let stored = keychain_get_for_service(KEYCHAIN_SERVICE.into(), key.clone()).await;
+        let removed = keychain_remove_for_service(KEYCHAIN_SERVICE.into(), key.clone()).await;
+        let after_remove = keychain_get_for_service(KEYCHAIN_SERVICE.into(), key.clone()).await;
+        let removed_again = keychain_remove_for_service(KEYCHAIN_SERVICE.into(), key).await;
+
+        removed.expect("keychain remove failed");
+        removed_again.expect("removing an absent credential must succeed");
+        assert_eq!(
+            stored.expect("keychain get failed").as_deref(),
+            Some("selftest-secret")
+        );
+        assert_eq!(after_remove.expect("keychain get failed"), None);
     }
 }

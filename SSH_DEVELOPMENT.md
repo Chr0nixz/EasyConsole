@@ -1,7 +1,7 @@
 # EasyConsole SSH 开发文档
 
-> 文档状态：开发基线与路线图（Phase 0 止血项与第二批 P2 收尾已完成）
-> 审阅快照：2026-10-05（第二轮迭代后更新）
+> 文档状态：开发基线与路线图（含 2026-10-27 审查后的 P1/P2 修复与部分 P3）
+> 最近整改：2026-10-28；历史迭代记录保留，当前验收边界见第 10 节
 > 产品定位：Tauri 桌面端优先，浏览器端提供降级展示和开发调试能力
 
 本文档专门描述 EasyConsole 的 SSH 能力。内容同时覆盖当前实现审阅、技术约束、待修复问题和后续功能开发计划，供前端、Tauri/Rust、测试和发布工作共同使用。
@@ -83,9 +83,9 @@ SSH 子系统要让用户从任务详情或 SSH 工作区完成以下工作：
 | 任务 SSH 入口 | 可用 | 从任务字段生成连接请求；显示主机、端口、用户名、密码和命令 | 后端字段不稳定时仍需保留原始 JSON；默认端口未完全统一 |
 | 手动打开会话 | 可用 | 主机、端口、用户名、密码；可新增标签 | 手动标签固定使用密码模式，不能直接选择私钥或 Agent |
 | 密码认证 | 可用 | `russh` 密码认证；设置可保存默认密码 | Web 回退不是 OS keychain 级保护；需加强脱敏和生命周期 |
-| 私钥认证 | 部分可用 | Native 支持私钥和可选 passphrase；设置支持路径 | 只支持文件路径；未支持 Agent、证书、keyboard-interactive；`~` 未在 Native 展开 |
-| 主机密钥 | 可用但需产品化 | TOFU、SHA-256 指纹、未知主机确认、变化拒绝、设置中删除 | 使用自定义 JSON，不兼容 OpenSSH `known_hosts` 导入；策略粒度有限 |
-| 交互式终端 | 可用 | xterm、PTY、shell、resize、UTF-8 分片处理、scrollback | 输入通道无界；高吞吐时缺少背压和批量策略 |
+| 私钥认证 | 部分可用 | Native 支持私钥、可选 passphrase、`~` 路径展开及 RSA 签名算法协商；设置支持路径 | 只支持文件路径；未支持 Agent、证书；密码模式支持单次标准 PAM 密码提示，尚无通用交互认证界面 |
+| 主机密钥 | 可用 | TOFU、完整公钥与 SHA-256 指纹、任务感知的密钥变化确认、设置中管理 | 自定义 JSON 兼容旧指纹映射；不支持 OpenSSH `known_hosts` 导入 |
+| 交互式终端 | 可用 | xterm、PTY、shell、resize、UTF-8 分片处理、scrollback；原生有界输入队列与按会话串行发送 | 高吞吐输出仍缺少流控 |
 | 终端体验 | 可用 | 多标签、搜索、滚动跟随、录制、重连历史回放、暗/亮/自定义主题、WebGL 可选 | 页面卸载会结束会话；录制仍是本地内存缓冲；缺少会话中心 |
 | SFTP 浏览 | 可用 | `~` 家目录、目录列表、排序、父目录、路径跳转 | 没有虚拟化、目录缓存、递归树和远端搜索 |
 | SFTP 文件操作 | 可用但需加固 | 上传、下载、删除、重命名、新建目录、覆盖确认、进度、取消 | 上传取消可能留下远端半文件；下载失败可能留下 `.part`；本地路径 IPC 缺少纵深防御 |
@@ -104,7 +104,7 @@ SSH 子系统要让用户从任务详情或 SSH 工作区完成以下工作：
 
 1. **运行时适配边界清晰。** 页面代码通过 `browserRuntime` 调用 Native 能力，避免把 Tauri API 直接散落到页面。
 2. **事件按窗口隔离。** Rust 使用 `emit_to` 将输出、SFTP 进度和主机密钥提示发给所属 Webview，减少跨窗口串流风险。
-3. **主机密钥默认不是无条件接受。** 首次连接要求用户确认，指纹变化会拒绝连接并提示删除记录后重试。
+3. **主机密钥默认不是无条件接受。** 首次连接要求用户确认；密钥变化展示新旧指纹与任务 ID，用户明确确认后才更新记录。VS Code 使用应用维护的 OpenSSH `known_hosts` 文件并启用严格校验；尚无完整公钥的旧指纹记录暂时保留 `accept-new` 兼容。
 4. **输出处理考虑了真实字节流。** UTF-8 多字节字符跨 SSH chunk 时会保留不完整尾部，避免中文输出被替换字符破坏。
 5. **SFTP 已考虑长任务隔离。** 传输在独立任务中执行，进度事件节流到约 100ms，并用 `transferId` 支持精确取消。
 6. **大文件下载已经使用临时文件。** 下载完成后才 rename 到目标路径，减少半成品覆盖正式文件的概率。
@@ -268,8 +268,9 @@ StopForward { ruleId }
 
 - 已知指纹匹配：继续连接。
 - 未知主机：显示主机、端口、算法和 SHA-256 指纹，用户确认后写入。
-- 已知指纹变化：拒绝连接，要求用户在设置中显式删除旧记录后重试。
+- 已知指纹变化：展示新旧指纹和任务 ID，明确确认后才替换；任务 ID 相同或缺失时还必须勾选已通过可信渠道核实。确认命令必须来自提示所属窗口，其他窗口不能确认或消耗该提示。
 - VS Code 无交互流程：未知主机直接拒绝，不能隐式接受。
+- 已确认的完整公钥同步到应用维护的 OpenSSH `known_hosts`，VS Code 使用该文件并启用严格校验。只有旧记录缺少完整公钥时暂时保留 `accept-new` 兼容；旧指纹匹配后升级并保留备份。
 
 后续扩展策略时必须区分“本次接受”和“永久信任”，并为自动化环境提供受控的指纹预置，而不是增加全局 `acceptAnyHostKey` 开关。
 
@@ -323,7 +324,7 @@ StopForward { ruleId }
 | SSH-P2-09 本地路径校验 | `sftp_register_local_root` 允许根注册（canonicalize）；upload/download 校验绝对路径、无 `..`、规范解析（穿透 symlink 与未存在尾巴）后必须落在允许根内；SftpPanel 每次对话框选路径后注册父目录 | 渲染层被注入时不能读/写任意本地文件；单测覆盖相对路径/`..`/根外/symlink 逃逸 | ✅ |
 | SSH-P2-05 命令加固 | `formatSshCommand`/`quoteSshArg`：字段过白名单后裸拼，非法字段拒绝渲染返回 null；TaskSshPanel 接入 `findSshConnectionIssue`（失败禁用入口并提示） | 复制文本永远不含未校验的 API 字段 | ✅ |
 | posix-rename 原子覆盖 | 覆盖提交先尝试 `posix-rename@openssh.com`（独立 RawSftpSession 通道），不支持时回落 remove+rename | mock server 可开关该扩展；集成测试断言扩展路径被实际使用 | ✅ |
-| 旧版 VS Code key 清理 | 撤销远端改用 awk 按注释末字段精确匹配（裸 marker 与 `marker:<suffix>` 一次清除，不伤及其他 key）；本地清理命令删除旧 `easyconsole_vscode_ed25519` 文件并移除引用它的 config 块；设置页提供一次性“清理旧版共享密钥” | 旧版安装的共享 key 可被发现、本地清理；远端条目随对应主机撤销清除 | ✅（远端 awk 路径需真机验证） |
+| 旧版 VS Code key 清理 | 撤销远端通过 awk 匹配算法和公钥 base64，不按注释批量删除；公钥文件缺失时只从已有私钥派生，无法确定公钥则保留本地配置与记录；同目录临时文件筛选成功后原子替换；设置页提供一次性“清理旧版共享密钥” | 保留其他密钥与相同注释的行；失败时不修改原文件；真实主机仍待验收 | ✅（Unix shell 回归测试已加入） |
 | SSH-P2-11 全局会话中心 | `use-ssh-workspace` store + `SshWorkspaceProvider`/`SshWorkspaceGate` 挂载于 AppRoot；`AppSshTerminalDialog` 变为消费全局 store 的单例视口；TasksPage/TaskSshPanel/TerminalDialog 改走 workspace | 路由切换不再杀会话；登出自动关闭全部会话并重置状态；弹窗最小化/恢复、关闭确认、弹独立窗口行为保留 | ✅ |
 
 ### Phase 1：可靠性和认证能力（2-4 个迭代）
@@ -404,6 +405,27 @@ StopForward { ruleId }
 
 ## 10. 当前验证记录和限制
 
+2026-10-28 SSH 审查整改的当前实现：
+
+| 条目 | 当前行为 |
+| --- | --- |
+| SSH-P1-06～08 | 转发先绑定后登记，端口 0 返回实际端口；撤销仅匹配算法和公钥 base64，失败保留原文件及本地记录；xterm `convertEol: false` |
+| SSH-P2-12～15 | 页面重载清理所属会话；连接各阶段可取消；EOF 后继续读取退出码；结构化主机记录、密钥变化就地确认与 VS Code 严格校验 |
+| SSH-P3-03～05 | GPU 探测总期限 5 秒且尝试关闭通道，runtime 合并同一会话的并发探测；保留密码/口令首尾空格；按会话串行写入，关闭或原生 closed 事件取消队列，互不影响其他会话 |
+| SSH-P3-06、07、11～13 | SFTP 传输使用规范路径并校验 `.part`，拒绝失效链接与临时文件符号链接；确认主机密钥前校验窗口归属；拒绝以 `-` 开头的主机/用户名，系统 SSH 目标前加 `--`；修正写入注释并对 Debug 中的密码/口令脱敏 |
+| SSH-P3-01、08 | SOCKS5 仅在远端通道打开后回复成功，失败返回协议错误；每次 SFTP 传输独占一个通道 |
+| SSH-P3-02 | 输出批次携带递增序号，xterm `write` 解析回调确认后释放额度；最多 16 批在途，满额暂停 channel 读取，russh 有界队列继续向 TCP 施加背压；关闭无需等待确认 |
+| SSH-P3-09 | RSA 使用服务端协商的签名算法；密码被拒绝且服务端提供 keyboard-interactive 时回退 PAM，只回答一次标准、不回显的密码提示。OTP、多提示、重复密码、密码修改及部分成功后的额外认证均停止自动回答；认证有总期限且可取消 |
+| SSH-P3-10 | main、ssh-* 和 tray-menu 使用各自 capability 与启动树；共享存储、钥匙串及桌面管理命令校验调用窗口；SSH 弹窗仅取得一次性目标和有限终端设置，SFTP 本地路径继续校验会话授权目录 |
+
+本轮回归覆盖关闭时积压输入取消、跨会话输入隔离、未经授权的主机密钥确认不消耗提示、跨窗口关闭不删除拥有者注册状态或提示、规范路径实际进入传输命令，以及 Debug 脱敏。SFTP 临时符号链接与失效链接用例在 Unix CI 中运行。WSL Ubuntu 已使用源码中的撤销脚本和真实 `/bin/sh` 验证只删除目标公钥、`mktemp` 失败保护和部分筛选写入失败保护；WSL 缺少 GTK/WebKit 开发依赖，未运行完整 Linux Tauri Rust 套件。
+
+发布准备复核的逐项测试与真机边界见 [SSH 审阅第 8 节](SSH_REVIEW_2026-10-27.md#8-2026-10-28-发布准备复核)。终端背压统计包含发送批次、发送字节、在途批次/字节、峰值批次和背压次数；会话结束时写入 debug 日志，集成测试通过内部 `OutputStats` 命令观测。32 KiB 协商包大小、8 KiB 批量触发阈值及最坏 3 倍 UTF-8 替换开销下，每个会话在渲染层待解析的输出小于 2 MiB。
+
+三平台 CI、真实 SSH 主机的连接/SFTP/转发/撤销及 vim/htop/tmux、高峰输出时 UI 线程负载、移动设备与安装包验收仍待执行。OpenSSH `known_hosts` 导入继续按 SSH-P2-10 跟踪。
+
+以下为早期迭代的历史验证记录，数量与阈值仅对应当时的工作树：
+
 第二轮迭代（P2 收尾 + 全局会话中心）完成后，基于当前工作树已执行的验证：
 
 - `npm.cmd run typecheck` / `npm.cmd run typecheck:tools`
@@ -439,10 +461,8 @@ StopForward { ruleId }
 
 本轮实现留存的已知限制（下一迭代候选）：
 
-- SSH-P2-10：自定义 known host 仍为指纹 JSON，不支持 OpenSSH `known_hosts`
-  导入（hashed hostname、`[host]:port`、`@cert-authority`/`@revoked` marker）。
-- 旧版共享 VS Code key 的远端 `authorized_keys` 条目由 awk 按注释末字段精确
-  匹配清除，但该路径无法在 mock server 上自动化，需要在真实主机上验证。
+- SSH-P2-10：已知主机采用兼容旧指纹映射的结构化 JSON，并导出应用管理的 OpenSSH 文件；尚不支持 OpenSSH `known_hosts` 导入（hashed hostname、`[host]:port`、`@cert-authority`/`@revoked` marker）。
+- VS Code 撤销按算法和公钥 base64 精确删除，Unix shell 回归测试覆盖只删目标和失败保护；真实主机上的安装、撤销与旧版密钥清理仍待验证。
 - 全局会话中心目前覆盖应用内多标签；弹出独立窗口（`/ssh-terminal`）仍是
   独立会话，不进入同一会话列表。
 - 全部已完成流程仍缺少真实 SSH 主机与真实移动设备的回归（见下）。
@@ -469,6 +489,6 @@ StopForward { ruleId }
 下一批建议（优先级从高到低）：
 
 1. 真实主机验证：连接、SFTP 上传/下载/覆盖、端口转发、VS Code 撤销与旧版 key 清理（awk 路径）。
-2. SSH-P2-10：OpenSSH `known_hosts` 导入（解析 hashed hostname 与 `[host]:port`、存储结构升级带备份、设置页导入 UI）。
+2. SSH-P2-10：OpenSSH `known_hosts` 导入（解析 hashed hostname 与 `[host]:port`、合并结构化记录并保留备份、设置页导入 UI）。
 3. 自动重连与 SFTP 传输队列（Phase 1 第 4、5 项），两者都依赖现在稳定的会话与传输生命周期。
 4. 认证扩展（SSH Agent / keyboard-interactive / 证书）与 Host Profile，先统一 `AuthMethod`/`AuthProfile` 契约再扩展。

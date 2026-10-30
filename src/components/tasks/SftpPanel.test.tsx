@@ -118,7 +118,7 @@ describe("SftpPanel", () => {
       transferred: 1,
       total: 1,
     });
-    const revealLocalPath = vi.spyOn(browserRuntime, "revealLocalPath").mockResolvedValue(undefined);
+    const revealSftpLocalPath = vi.spyOn(browserRuntime, "revealSftpLocalPath").mockResolvedValue(undefined);
     (save as Mock).mockResolvedValue("/tmp/big.bin");
 
     renderPanel();
@@ -132,7 +132,7 @@ describe("SftpPanel", () => {
     expect(String(title)).toMatch(/下载完成|Download complete/);
     expect(action).toMatchObject({ label: expect.stringMatching(/打开所在文件夹|Open folder/) });
     action.onClick();
-    expect(revealLocalPath).toHaveBeenCalledWith("/tmp/big.bin");
+    expect(revealSftpLocalPath).toHaveBeenCalledWith("session-1", "/tmp/big.bin");
     expect(sftpDownload).toHaveBeenCalledWith("session-1", "~/big.bin", "/tmp/big.bin");
   });
 

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { EmptyState, ErrorState, LoadingState, SearchXIcon } from "../components/DataState";
 import { MobileLongText } from "../components/MobileLongText";
-import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
+import { Button, Dialog, Input, Panel, Select, StatePill, TableRegion } from "../components/ui";
 import { saveBlob } from "../lib/download";
 import {
   clearRunLogs,
@@ -22,6 +22,8 @@ import {
 import { browserRuntime } from "../lib/runtime";
 import { useI18n } from "../lib/i18n";
 import type { Locale } from "../lib/i18n-text";
+import { moveMenuFocus } from "../lib/menu-keys";
+import { claimOverlayKey, useOverlay } from "../lib/overlay-stack";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useToast } from "../lib/use-toast";
 
@@ -60,16 +62,19 @@ function formatDateTime(value: string, locale: Locale) {
   return date.toLocaleString(locale, { hour12: false });
 }
 
-function resultClass(result: RunLogResult) {
-  return result === "success"
-    ? "bg-app-successSoft text-app-success ring-app-successRing"
-    : "bg-app-dangerSoft text-app-danger ring-app-dangerRing";
-}
+const levelLabels: Record<string, { zh: string; en: string }> = {
+  error: { zh: "错误", en: "Error" },
+  warning: { zh: "警告", en: "Warning" },
+  info: { zh: "信息", en: "Info" },
+};
 
-function levelClass(level: RunLogEntry["level"]) {
-  if (level === "error") return "bg-app-dangerSoft text-app-danger ring-app-dangerRing";
-  if (level === "warning") return "bg-app-warningSoft text-app-warning ring-app-warningRing";
-  return "bg-app-infoSoft text-app-info ring-app-infoRing";
+/** Routine info stays plain text; only warnings and errors earn a colored pill. */
+function LevelLabel({ level, locale }: { level: RunLogEntry["level"]; locale: Locale }) {
+  const entry = levelLabels[level];
+  const label = entry ? (locale === "en-US" ? entry.en : entry.zh) : level;
+  if (level === "error") return <StatePill tone="danger">{label}</StatePill>;
+  if (level === "warning") return <StatePill tone="warning">{label}</StatePill>;
+  return <span className="text-xs text-app-muted">{label}</span>;
 }
 
 function withinRange(item: RunLogEntry, range: string) {
@@ -96,6 +101,8 @@ export function RunLogsPage() {
   const [selected, setSelected] = useState<RunLogEntry | null>(null);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
+  const exportTriggerRef = useRef<HTMLButtonElement>(null);
+  const exportMenuLayerRef = useOverlay(exportMenuOpen, "popover");
 
   async function reload() {
     setLoading(true);
@@ -121,9 +128,19 @@ export function RunLogsPage() {
         setExportMenuOpen(false);
       }
     }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape" || !claimOverlayKey(exportMenuLayerRef.current, event)) return;
+      setExportMenuOpen(false);
+      exportTriggerRef.current?.focus();
+    }
     document.addEventListener("pointerdown", onClickOutside);
-    return () => document.removeEventListener("pointerdown", onClickOutside);
-  }, [exportMenuOpen]);
+    document.addEventListener("keydown", onKeyDown);
+    window.setTimeout(() => exportMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus(), 0);
+    return () => {
+      document.removeEventListener("pointerdown", onClickOutside);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [exportMenuLayerRef, exportMenuOpen]);
 
   const advancedFilter = useMemo(() => parseAdvancedQuery(keyword), [keyword]);
   const visibleLogs = useMemo(
@@ -179,16 +196,36 @@ export function RunLogsPage() {
             {text("刷新", "Refresh")}
           </Button>
           <div className="relative" ref={exportMenuRef}>
-            <Button variant="secondary" onClick={() => setExportMenuOpen((open) => !open)}>
-              <Download className="h-4 w-4" />
+            <Button ref={exportTriggerRef} aria-expanded={exportMenuOpen} aria-haspopup="menu" variant="secondary" onClick={() => setExportMenuOpen((open) => !open)}>
+              <Download className="h-4 w-4" aria-hidden="true" />
               {text("导出", "Export")}
-              <ChevronDown className="h-3 w-3" />
+              <ChevronDown className="h-3 w-3" aria-hidden="true" />
             </Button>
             {exportMenuOpen ? (
-              <div className="app-pop-enter absolute right-0 top-full z-30 mt-1 w-40 origin-top-right rounded-lg border border-app-border bg-app-elevated py-1 shadow-popover" role="menu">
-                <button className="block w-full px-3 py-1.5 text-left text-sm hover:bg-app-panel" type="button" onClick={() => exportLogs("json")}>JSON</button>
-                <button className="block w-full px-3 py-1.5 text-left text-sm hover:bg-app-panel" type="button" onClick={() => exportLogs("csv")}>CSV</button>
-                <button className="block w-full px-3 py-1.5 text-left text-sm hover:bg-app-panel" type="button" onClick={() => exportLogs("markdown")}>Markdown</button>
+              <div
+                aria-label={text("导出格式", "Export format")}
+                className="app-pop-enter absolute right-0 top-full z-30 mt-1 w-40 origin-top-right rounded-lg border border-app-border bg-app-elevated py-1 shadow-popover"
+                role="menu"
+                onKeyDown={(event) => {
+                  if (event.key === "Tab") setExportMenuOpen(false);
+                  else moveMenuFocus(event);
+                }}
+              >
+                {([["json", "JSON"], ["csv", "CSV"], ["markdown", "Markdown"]] as const).map(([format, label]) => (
+                  <button
+                    key={format}
+                    className="block w-full px-3 py-1.5 text-left text-sm hover:bg-app-panel focus-visible:-outline-offset-2"
+                    role="menuitem"
+                    tabIndex={-1}
+                    type="button"
+                    onClick={() => {
+                      exportLogs(format);
+                      exportTriggerRef.current?.focus();
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
             ) : null}
           </div>
@@ -200,8 +237,9 @@ export function RunLogsPage() {
       </div>
 
       <Panel className="p-3">
-        <div className="grid gap-2 md:grid-cols-[minmax(12rem,1fr)_9rem_9rem_9rem_9rem_9rem]">
-          <div className="relative">
+        {/* Search gets its own row until there is room for all six controls on one line. */}
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-[minmax(12rem,1fr)_9rem_9rem_9rem_9rem_9rem]">
+          <div className="relative sm:col-span-2 lg:col-span-5 xl:col-span-1">
             <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-app-muted" aria-hidden="true" />
             <Input
               aria-label={text("搜索运行日志", "Search run logs")}
@@ -261,8 +299,8 @@ export function RunLogsPage() {
               <article key={item.id} className="space-y-3 px-3 py-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="app-numeric text-xs text-app-muted">{formatDateTime(item.createdAt, locale)}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-xs ring-1 ${levelClass(item.level)}`}>{item.level}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-xs ring-1 ${resultClass(item.result)}`}>{labelFor(resultLabels, item.result, locale)}</span>
+                  <LevelLabel level={item.level} locale={locale} />
+                  <StatePill tone={item.result === "success" ? "success" : "danger"}>{labelFor(resultLabels, item.result, locale)}</StatePill>
                 </div>
                 <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
                   <div>
@@ -321,12 +359,12 @@ export function RunLogsPage() {
                   <tr key={item.id} className="border-b border-app-border last:border-0 hover:bg-app-panel/60">
                     <td className="app-numeric whitespace-nowrap px-3 py-2 text-app-text">{formatDateTime(item.createdAt, locale)}</td>
                     <td className="whitespace-nowrap px-3 py-2">
-                      <span className={`rounded-full px-2 py-0.5 text-xs ring-1 ${levelClass(item.level)}`}>{item.level}</span>
+                      <LevelLabel level={item.level} locale={locale} />
                     </td>
                     <td className="whitespace-nowrap px-3 py-2">{labelFor(sourceLabels, item.source, locale)}</td>
                     <td className="whitespace-nowrap px-3 py-2 text-app-text">{labelFor(channelLabels, item.channel, locale)}</td>
                     <td className="whitespace-nowrap px-3 py-2">
-                      <span className={`rounded-full px-2 py-0.5 text-xs ring-1 ${resultClass(item.result)}`}>{labelFor(resultLabels, item.result, locale)}</span>
+                      <StatePill tone={item.result === "success" ? "success" : "danger"}>{labelFor(resultLabels, item.result, locale)}</StatePill>
                     </td>
                     <td className="max-w-96 truncate px-3 py-2" title={item.error ?? item.title}>
                       {item.title}

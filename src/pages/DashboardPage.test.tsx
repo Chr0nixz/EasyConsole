@@ -58,10 +58,10 @@ describe("DashboardPage", () => {
     renderDashboard();
 
     await waitFor(() => expect(screen.getByText("statics failed")).toBeInTheDocument());
-    expect(screen.queryByText("暂无最近任务")).not.toBeInTheDocument();
+    expect(screen.queryByText("暂无最近实例")).not.toBeInTheDocument();
     expect(screen.queryByText("没有失败或异常实例")).not.toBeInTheDocument();
     expect(screen.queryByText("没有运行中的实例")).not.toBeInTheDocument();
-    expect(screen.queryByText("没有排队中的实例")).not.toBeInTheDocument();
+    expect(screen.queryByText("没有队列中的实例")).not.toBeInTheDocument();
 
     mocks.statics.mockResolvedValue({ items: [] });
     fireEvent.click(screen.getByRole("button", { name: /重试|Retry/ }));
@@ -75,7 +75,7 @@ describe("DashboardPage", () => {
     expect(await screen.findByRole("status", { name: "正在读取实例状态" })).toBeInTheDocument();
     expect(screen.queryByText("没有失败或异常实例")).not.toBeInTheDocument();
     expect(screen.queryByText("没有运行中的实例")).not.toBeInTheDocument();
-    expect(screen.queryByText("没有排队中的实例")).not.toBeInTheDocument();
+    expect(screen.queryByText("没有队列中的实例")).not.toBeInTheDocument();
   });
 
   it("marks cached instance status as stale after a failed refresh", async () => {
@@ -89,12 +89,33 @@ describe("DashboardPage", () => {
     expect(screen.getByRole("link", { name: /查看实例 demo 详情/ })).toBeInTheDocument();
   });
 
+  it("states the hourly billing rate of running instances", async () => {
+    mocks.statics.mockResolvedValue({ items: [
+      { id: 1, name: "a", status: 2, price: 12 },
+      { id: 2, name: "b", status: 2, price: 6.5 },
+      { id: 3, name: "c", status: 6, price: 99 },
+    ] });
+    renderDashboard();
+
+    expect(await screen.findByText("约 18.50 元/小时")).toBeInTheDocument();
+  });
+
+  it("reads the billing rate as a floor when a running instance has no price", async () => {
+    mocks.statics.mockResolvedValue({ items: [
+      { id: 1, name: "a", status: 2, price: 12 },
+      { id: 2, name: "b", status: 2 },
+    ] });
+    renderDashboard();
+
+    expect(await screen.findByText("至少 12.00 元/小时")).toBeInTheDocument();
+  });
+
   it("shows empty recent-task actions", async () => {
     mocks.statics.mockResolvedValue({ items: [] });
     renderDashboard();
 
-    expect(await screen.findByText(/暂无最近任务|No recent tasks/)).toBeInTheDocument();
+    expect(await screen.findByText(/暂无最近实例|No recent instances/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /去任务实例|Go to tasks/ })).toHaveAttribute("href", "/tasks");
-    expect(screen.getByRole("link", { name: /新建任务|New task/ })).toHaveAttribute("href", "/tasks");
+    expect(screen.getByRole("link", { name: /新建实例|New instance/ })).toHaveAttribute("href", "/tasks");
   });
 });

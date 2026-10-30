@@ -70,7 +70,7 @@ function setMobileRuntime() {
   }
 }
 
-function renderDialog() {
+function renderDialog(status = 2) {
   return render(
     <ToastContext.Provider value={toast}>
       <SshWorkspaceProvider>
@@ -79,6 +79,7 @@ function renderDialog() {
             id: 1,
             task_id: "task-1",
             name: "demo",
+            status,
             ip: "10.0.0.8",
             port: 30222,
             user: { username: "alice" },
@@ -152,5 +153,14 @@ describe("TerminalDialog", () => {
     expect(screen.getByRole("button", { name: "应用内 SSH" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "VS Code" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "系统终端" })).not.toBeInTheDocument();
+  });
+
+  it("says an ended instance cannot be connected to instead of listing empty SSH fields", () => {
+    setDesktopRuntime(true);
+    renderDialog(7);
+
+    expect(screen.getByText("实例已结束，无法连接")).toBeInTheDocument();
+    expect(screen.queryByText("主机")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "应用内 SSH" })).not.toBeInTheDocument();
   });
 });

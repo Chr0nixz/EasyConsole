@@ -1,4 +1,5 @@
 import { isTauri } from "@tauri-apps/api/core";
+import { getActiveAccountScope } from "./account-scope";
 
 import { i18nText, type Locale } from "./i18n-text";
 import { createLayeredSecureStorage } from "./secure-storage";
@@ -37,6 +38,33 @@ const RUNTIME_SOCKET_CLOSED = 3;
  */
 let runtimeKind: RuntimeKind = "web";
 let runtimeKindReady: Promise<void> | null = null;
+const taskSshSessions = new Map<string, { sessionId: string; scope: string }>();
+const pendingGpuProbes = new Map<string, Promise<number[]>>();
+type SshWriteQueue = {
+  tail: Promise<void>;
+  cancelled: Promise<never>;
+  cancel(): void;
+  closed: boolean;
+};
+const sshWriteQueues = new Map<string, SshWriteQueue>();
+const closingSshSessions = new Set<string>();
+
+function sshSessionClosedError() {
+  return new Error(i18nText("SSH 会话已关闭", "The SSH session is closed"));
+}
+
+function clearSshSessionRequests(sessionId: string) {
+  const queue = sshWriteQueues.get(sessionId);
+  if (queue) {
+    queue.closed = true;
+    queue.cancel();
+    sshWriteQueues.delete(sessionId);
+  }
+  pendingGpuProbes.delete(sessionId);
+  for (const [key, entry] of taskSshSessions) {
+    if (entry.sessionId === sessionId) taskSshSessions.delete(key);
+  }
+}
 
 /**
  * Resolve the native runtime kind once. Safe to call multiple times; subsequent
@@ -82,67 +110,242 @@ const localStorageAdapter: RuntimeStorage = {
   },
 };
 
-// Front-end in-memory cache mirror for Tauri storage. Reduces IPC round-trips
-// for hot paths like appendRunLog and scheduled-task persist. The Rust-side
-// Mutex (RUNTIME_STORAGE_LOCK) guarantees correctness; this cache is purely a
-// read optimization.
-const tauriStorageCache = new Map<string, string | null>();
+/**
+ * Native storage operations the cached window adapter is built on. The real
+ * bindings invoke Tauri commands; tests supply a shared fake backend to
+ * simulate two windows against one store.
+ */
+export type NativeStorageBackend = {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  remove(key: string): Promise<void>;
+  /**
+   * Apply `next` (insert or remove when null) only when the stored value still
+   * equals `expected`. On conflict, resolve `{ updated: false, current }` with
+   * the authoritative value so the caller can retry without a second read.
+   */
+  compareAndSwap(
+    key: string,
+    expected: string | null,
+    next: string | null,
+    /** For fallback migration, a tombstone also counts as an existing record. */
+    migrateIfMissing?: boolean,
+  ): Promise<{ updated: boolean; current: string | null }>;
+};
 
-const tauriStorageAdapter: RuntimeStorage = {
-  async get(key) {
-    if (tauriStorageCache.has(key)) {
-      const cached = tauriStorageCache.get(key) ?? null;
+/** Payload of the native cross-window storage-change broadcast. */
+export type StorageChangeBroadcast = { key: string; source: string };
+
+export type CachedWindowStorageOptions = {
+  backend: NativeStorageBackend;
+  /** Subscribe to native storage-change broadcasts; returns an unlisten function. */
+  subscribeChanges(handler: (event: StorageChangeBroadcast) => void): Promise<() => void>;
+  /** This window's label; broadcasts originating here are self-writes. */
+  selfLabel(): Promise<string>;
+  /** Store used when native commands fail (and for one-time migration reads). */
+  fallback: RuntimeStorage;
+  /** Disable cache hits for stores also written by CLI/MCP without window broadcasts. */
+  cacheReads?: boolean;
+  /** Shared stores must fail a failed CAS instead of degrading to a blind write. */
+  requireCompareAndSwap?: boolean;
+};
+
+/** Give up the CAS retry loop after this many cross-window conflicts. */
+export const MAX_STORAGE_CAS_ATTEMPTS = 8;
+
+/**
+ * Window-local storage adapter over a native backend.
+ *
+ * Reduces IPC round-trips via an in-memory cache. Correctness across windows:
+ * every native write broadcasts a change event, and foreign broadcasts
+ * invalidate the matching cache entry (self-writes are ignored — the cache was
+ * already updated synchronously). A per-key epoch counter keeps a late,
+ * stale `get` response from repopulating the cache after an invalidation.
+ *
+ * `update` performs a compare-and-swap loop so two windows running
+ * read-modify-write on the same key cannot silently drop each other's changes:
+ * the native CAS runs under the global storage lock and the losing window
+ * retries its transform against the fresh value.
+ */
+export function createCachedWindowStorage(options: CachedWindowStorageOptions): RuntimeStorage {
+  const cache = new Map<string, string | null>();
+  const epochs = new Map<string, number>();
+  let subscription: Promise<void> | null = null;
+
+  // Lazy so merely importing the module never touches IPC; the first storage
+  // operation registers the listener. Fire-and-forget on purpose: storage must
+  // never block on the subscription, and a broadcast racing the registration
+  // only costs one stale cache read until the next invalidation.
+  const ensureSubscription = () => {
+    if (subscription) return;
+    subscription = (async () => {
+      let selfLabel: string | null = null;
+      try {
+        selfLabel = await options.selfLabel();
+      } catch (error) {
+        // Without our own label every broadcast counts as foreign: correctness
+        // (dropping a stale cache entry) over avoiding churn.
+        console.warn("Failed to resolve this window's label for storage invalidation.", error);
+      }
+      try {
+        await options.subscribeChanges((event) => {
+          if (selfLabel !== null && event.source === selfLabel) return;
+          epochs.set(event.key, (epochs.get(event.key) ?? 0) + 1);
+          cache.delete(event.key);
+        });
+      } catch (error) {
+        console.warn("Failed to subscribe to storage change broadcasts.", error);
+      }
+    })();
+  };
+
+  const get = async (key: string): Promise<string | null> => {
+    ensureSubscription();
+    if (options.cacheReads !== false && cache.has(key)) {
+      const cached = cache.get(key) ?? null;
       if (cached !== null) return cached;
       // Cached null may be from a prior IPC miss while fallback still holds data.
     }
+    const epochAtStart = epochs.get(key) ?? 0;
+    const cacheIfUnchanged = (value: string | null) => {
+      if ((epochs.get(key) ?? 0) === epochAtStart) cache.set(key, value);
+    };
     try {
-      const value = await invokeTauriCommand<string | null>("runtime_storage_get", { key });
+      const value = await options.backend.get(key);
       if (value !== null && value !== undefined) {
-        tauriStorageCache.set(key, value);
+        cacheIfUnchanged(value);
         return value;
       }
-      // IPC succeeded with null — check browser fallback and migrate back to native.
-      const fallback = await localStorageAdapter.get(key);
+      // Native miss — check the fallback store and migrate any copy back to native.
+      const fallback = await options.fallback.get(key);
       if (fallback !== null) {
         try {
-          await invokeTauriCommand("runtime_storage_set", { key, value: fallback });
-          await localStorageAdapter.remove(key);
+          if (options.requireCompareAndSwap) {
+            const migration = await options.backend.compareAndSwap(key, null, fallback, true);
+            if (!migration.updated) {
+              await options.fallback.remove(key).catch(() => undefined);
+              cacheIfUnchanged(migration.current);
+              return migration.current;
+            }
+          } else {
+            await options.backend.set(key, fallback);
+          }
+          await options.fallback.remove(key);
         } catch (migrateError) {
           console.warn("Tauri storage migrate-from-fallback failed.", migrateError);
         }
-        tauriStorageCache.set(key, fallback);
+        cacheIfUnchanged(fallback);
         return fallback;
       }
-      tauriStorageCache.set(key, null);
+      cacheIfUnchanged(null);
       return null;
     } catch (error) {
       console.warn("Tauri storage get failed, falling back to localStorage.", error);
-      return localStorageAdapter.get(key);
+      return options.fallback.get(key);
     }
-  },
-  async set(key, value) {
-    tauriStorageCache.set(key, value);
+  };
+
+  const set = async (key: string, value: string): Promise<void> => {
+    ensureSubscription();
+    cache.set(key, value);
     try {
-      await invokeTauriCommand("runtime_storage_set", { key, value });
+      await options.backend.set(key, value);
       // Clear stale fallback copy after successful native write.
-      await localStorageAdapter.remove(key).catch(() => undefined);
+      await options.fallback.remove(key).catch(() => undefined);
     } catch (error) {
       console.warn("Tauri storage set failed, falling back to localStorage.", error);
-      await localStorageAdapter.set(key, value);
+      await options.fallback.set(key, value);
     }
-  },
-  async remove(key) {
+  };
+
+  const remove = async (key: string): Promise<void> => {
+    ensureSubscription();
     // Tombstone in cache so a later get does not revive stale fallback before native delete lands.
-    tauriStorageCache.set(key, null);
+    cache.set(key, null);
     try {
-      await invokeTauriCommand("runtime_storage_remove", { key });
-      await localStorageAdapter.remove(key);
+      await options.backend.remove(key);
+      await options.fallback.remove(key);
     } catch (error) {
       console.warn("Tauri storage remove failed, falling back to localStorage.", error);
-      await localStorageAdapter.remove(key);
+      await options.fallback.remove(key);
     }
+  };
+
+  const update = async (
+    key: string,
+    updater: (current: string | null) => string | null | Promise<string | null>,
+  ): Promise<string | null> => {
+    ensureSubscription();
+    let expected = await get(key);
+    for (let attempt = 0; attempt < MAX_STORAGE_CAS_ATTEMPTS; attempt += 1) {
+      const next = await updater(expected);
+      if (next === expected) return next; // unchanged: skip the write entirely
+      let outcome: { updated: boolean; current: string | null };
+      const epochAtCasStart = epochs.get(key) ?? 0;
+      try {
+        outcome = await options.backend.compareAndSwap(key, expected, next);
+      } catch (error) {
+        if (options.requireCompareAndSwap) throw error;
+        // Native CAS unavailable (stale shell build / IPC failure): degrade to
+        // the previous plain write rather than failing the whole operation.
+        console.warn("Tauri storage compare-and-swap failed; writing without cross-window protection.", error);
+        if (next === null) {
+          await remove(key);
+          return null;
+        }
+        await set(key, next);
+        return next;
+      }
+      if (outcome.updated) {
+        // A foreign broadcast may have landed between our CAS commit and this
+        // line; only cache when nothing invalidated the key in between.
+        if ((epochs.get(key) ?? 0) === epochAtCasStart) cache.set(key, next);
+        else cache.delete(key);
+        await options.fallback.remove(key).catch(() => undefined);
+        return next;
+      }
+      // Another window won the race; re-apply the transform on the fresh value.
+      expected = outcome.current;
+    }
+    throw new Error(
+      i18nText(
+        `本地数据保存连续 ${MAX_STORAGE_CAS_ATTEMPTS} 次与其他窗口冲突：${key}`,
+        `Local data for "${key}" could not be saved after ${MAX_STORAGE_CAS_ATTEMPTS} cross-window conflicts`,
+      ),
+    );
+  };
+
+  return { get, set, remove, update };
+}
+
+const STORAGE_CHANGED_EVENT = "runtime-storage-changed";
+
+const tauriStorageAdapter: RuntimeStorage = createCachedWindowStorage({
+  backend: {
+    get: (key) => invokeTauriCommand<string | null>("runtime_storage_get", { key }),
+    set: (key, value) => invokeTauriCommand("runtime_storage_set", { key, value }),
+    remove: (key) => invokeTauriCommand("runtime_storage_remove", { key }),
+    compareAndSwap: (key, expected, next, migrateIfMissing) =>
+      invokeTauriCommand<{ updated: boolean; current: string | null }>("runtime_storage_compare_and_swap", {
+        key,
+        expected,
+        next,
+        migrateIfMissing,
+      }),
   },
-};
+  subscribeChanges: async (handler) => {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<StorageChangeBroadcast>(STORAGE_CHANGED_EVENT, (event) => handler(event.payload));
+  },
+  selfLabel: async () => {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    return getCurrentWindow().label;
+  },
+  fallback: localStorageAdapter,
+  // Node sidecars share the files but do not emit Tauri window broadcasts.
+  cacheReads: false,
+  requireCompareAndSwap: true,
+});
 
 // Secure storage uses the OS keychain on desktop (macOS Keychain, Windows
 // Credential Manager, Linux Secret Service) and falls back to tauriStorage when
@@ -189,7 +392,11 @@ function normalizeBody(body: unknown, headers: Record<string, string>) {
   return JSON.stringify(body);
 }
 
-async function readBlobWithProgress(response: Response, onProgress?: (progress: UploadProgress) => void) {
+async function readBlobWithProgress(
+  response: Response,
+  onProgress?: (progress: UploadProgress) => void,
+  onChunk?: () => void,
+) {
   const totalValue = response.headers.get("content-length");
   const total = totalValue ? Number(totalValue) : undefined;
   const knownTotal = total && Number.isFinite(total) && total > 0 ? total : undefined;
@@ -217,6 +424,8 @@ async function readBlobWithProgress(response: Response, onProgress?: (progress: 
     if (!value) continue;
     chunks.push(value as BlobPart);
     loaded += value.byteLength;
+    // Progress proves the connection is alive: reset the idle timeout window.
+    onChunk?.();
 
     if (onProgress) {
       const now = Date.now();
@@ -237,7 +446,22 @@ async function readBlobWithProgress(response: Response, onProgress?: (progress: 
 async function fetchRequest<T = unknown>(request: RuntimeHttpRequest): Promise<RuntimeHttpResponse<T>> {
   const controller = new AbortController();
   const timeoutMs = request.timeoutMs ?? 20_000;
-  const timeout = timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  // JSON/text requests keep one overall timeout. Blob (download) requests
+  // cannot: a large or slow body legitimately takes longer than the timeout
+  // budget. Once headers arrive, the same timer is re-armed per received
+  // chunk, turning it into an idle timeout that only fires when the
+  // connection stops delivering data. `timeoutMs <= 0` disables it entirely.
+  let timeout: number | undefined;
+  const armTimeout = () => {
+    if (timeoutMs <= 0) return;
+    if (timeout !== undefined) window.clearTimeout(timeout);
+    timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  };
+  const disarmTimeout = () => {
+    if (timeout !== undefined) window.clearTimeout(timeout);
+    timeout = undefined;
+  };
+  armTimeout();
   const abortFromCaller = () => controller.abort();
   request.signal?.addEventListener("abort", abortFromCaller, { once: true });
   const headers = { ...(request.headers ?? {}) };
@@ -257,7 +481,9 @@ async function fetchRequest<T = unknown>(request: RuntimeHttpRequest): Promise<R
     const responseType = request.responseType ?? "json";
     let data: unknown;
     if (responseType === "blob") {
-      data = await readBlobWithProgress(response, request.onDownloadProgress);
+      // Headers arrived: restart the timer as the first idle window.
+      armTimeout();
+      data = await readBlobWithProgress(response, request.onDownloadProgress, armTimeout);
     } else if (responseType === "text") {
       data = await response.text();
     } else {
@@ -272,7 +498,7 @@ async function fetchRequest<T = unknown>(request: RuntimeHttpRequest): Promise<R
     };
   } finally {
     request.signal?.removeEventListener("abort", abortFromCaller);
-    if (timeout) window.clearTimeout(timeout);
+    disarmTimeout();
   }
 }
 
@@ -478,6 +704,7 @@ function bufferSshSessionEvent(event: SshSessionEvent) {
 }
 
 function dispatchSshSessionEvent(event: SshSessionEvent) {
+  if (event.kind === "closed") clearSshSessionRequests(event.sessionId);
   const handler = sshSessionHandlers.get(event.sessionId);
   if (handler) {
     handler(event);
@@ -555,6 +782,9 @@ export const browserRuntime: RuntimeTransport = {
   get supportsFileReveal() {
     return runtimeKind === "desktop";
   },
+  get supportsAutostart() {
+    return runtimeKind === "desktop";
+  },
   get isApplePlatform() {
     return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
   },
@@ -588,20 +818,69 @@ export const browserRuntime: RuntimeTransport = {
     if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("reveal_local_path", { path });
   },
+  revealSftpLocalPath(sessionId, path) {
+    if (runtimeKind !== "desktop") return Promise.resolve();
+    return invokeTauriCommand("reveal_sftp_local_path", { sessionId, path });
+  },
   async openSshSession(request) {
     await ensureGlobalSshListen();
-    return invokeTauriCommand<string>("open_ssh_session", { request });
+    const scope = getActiveAccountScope().key;
+    const sessionId = await invokeTauriCommand<string>("open_ssh_session", { request });
+    if (request.taskId) taskSshSessions.set(request.taskId, { sessionId, scope });
+    return sessionId;
+  },
+  async readTaskGpuUtilization(taskId) {
+    const session = taskSshSessions.get(taskId);
+    if (runtimeKind !== "desktop" || !session || session.scope !== getActiveAccountScope().key) return null;
+    const pending = pendingGpuProbes.get(session.sessionId);
+    if (pending) return pending;
+    const probe = invokeTauriCommand<number[]>("ssh_gpu_utilization", { sessionId: session.sessionId }).finally(() => {
+      if (pendingGpuProbes.get(session.sessionId) === probe) pendingGpuProbes.delete(session.sessionId);
+    });
+    pendingGpuProbes.set(session.sessionId, probe);
+    return probe;
   },
   writeSshSession(sessionId, data) {
-    return invokeTauriCommand("ssh_write", { sessionId, data });
+    if (closingSshSessions.has(sessionId)) return Promise.reject(sshSessionClosedError());
+    let queue = sshWriteQueues.get(sessionId);
+    if (!queue) {
+      let cancel!: () => void;
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        cancel = () => reject(sshSessionClosedError());
+      });
+      queue = { tail: Promise.resolve(), cancelled, cancel, closed: false };
+      sshWriteQueues.set(sessionId, queue);
+    }
+    const activeQueue = queue;
+    const write = Promise.race([
+      activeQueue.tail.then(() => {
+        if (activeQueue.closed) throw sshSessionClosedError();
+        return invokeTauriCommand("ssh_write", { sessionId, data });
+      }),
+      activeQueue.cancelled,
+    ]);
+    const tail = write.then(() => undefined, () => undefined);
+    activeQueue.tail = tail;
+    void tail.then(() => {
+      if (sshWriteQueues.get(sessionId) === activeQueue && activeQueue.tail === tail) {
+        sshWriteQueues.delete(sessionId);
+      }
+    });
+    return write;
   },
   resizeSshSession(sessionId, cols, rows) {
     return invokeTauriCommand("ssh_resize", { sessionId, cols, rows });
   },
+  acknowledgeSshOutput(sessionId, sequence) {
+    return invokeTauriCommand("ssh_ack_output", { sessionId, sequence });
+  },
   async closeSshSession(sessionId) {
+    closingSshSessions.add(sessionId);
+    clearSshSessionRequests(sessionId);
     try {
       await invokeTauriCommand("ssh_close", { sessionId });
     } finally {
+      closingSshSessions.delete(sessionId);
       clearSshSessionEvents(sessionId);
     }
   },
@@ -632,9 +911,9 @@ export const browserRuntime: RuntimeTransport = {
     if (runtimeKind === "web") return;
     await invokeTauriCommand("clear_known_hosts", {});
   },
-  async confirmKnownHost(promptId, accept) {
+  async confirmKnownHost(promptId, accept, confirmChangedKey) {
     if (runtimeKind === "web") return;
-    await invokeTauriCommand("confirm_known_host", { promptId, accept });
+    await invokeTauriCommand("confirm_known_host", { promptId, accept, confirmChangedKey });
   },
   openSystemSshTerminal(request) {
     return invokeTauriCommand("open_system_ssh_terminal", { request });
@@ -666,7 +945,7 @@ export const browserRuntime: RuntimeTransport = {
     }
     return invokeTauriCommand("revoke_vscode_ssh", { request, removeRemote });
   },
-  openSshWindow(request) {
+  openSshWindow(request, preferences) {
     if (runtimeKind !== "desktop") {
       return Promise.reject(
         new Error(
@@ -674,7 +953,7 @@ export const browserRuntime: RuntimeTransport = {
         ),
       );
     }
-    return invokeTauriCommand("open_ssh_window", { request });
+    return invokeTauriCommand("open_ssh_window", { request, preferences });
   },
   sftpRegisterLocalRoot(sessionId, rootPath) {
     if (runtimeKind === "web") return Promise.resolve();
@@ -722,7 +1001,7 @@ export const browserRuntime: RuntimeTransport = {
   },
   startPortForward(sessionId, rule) {
     if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持端口转发", "Port forwarding is not supported in this environment")));
-    return invokeTauriCommand("ssh_start_port_forward", { sessionId, rule });
+    return invokeTauriCommand<number>("ssh_start_port_forward", { sessionId, rule });
   },
   stopPortForward(sessionId, ruleId) {
     if (runtimeKind === "web") return Promise.reject(new Error(i18nText("当前环境不支持端口转发", "Port forwarding is not supported in this environment")));
@@ -796,6 +1075,18 @@ export const browserRuntime: RuntimeTransport = {
   completeDesktopClosePrompt(action) {
     if (runtimeKind !== "desktop") return Promise.resolve();
     return invokeTauriCommand("complete_desktop_close_prompt", { action });
+  },
+  getDesktopAutostart() {
+    if (runtimeKind !== "desktop") return Promise.resolve(false);
+    return invokeTauriCommand<boolean>("plugin:autostart|is_enabled", {});
+  },
+  setDesktopAutostart(enabled) {
+    if (runtimeKind !== "desktop") return Promise.resolve();
+    return invokeTauriCommand(enabled ? "plugin:autostart|enable" : "plugin:autostart|disable", {});
+  },
+  desktopScheduledWake(enabled) {
+    if (runtimeKind !== "desktop") return Promise.resolve(null);
+    return invokeTauriCommand<boolean | null>("desktop_scheduled_wake", { enabled: enabled ?? null });
   },
   showDesktopMainWindow() {
     if (runtimeKind !== "desktop") return Promise.resolve();

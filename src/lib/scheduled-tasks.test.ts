@@ -1,14 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { describe, afterEach, expect, it } from "vitest";
 
+import { resetAccountScope, setActiveAccountScope } from "./account-scope";
 import {
+  DEFAULT_MISSED_SCHEDULE_GRACE_MS,
+  LEGACY_SCHEDULED_TASK_OWNER,
+  SCHEDULED_TASKS_STORAGE_KEY,
   createScheduledTask,
+  holdScheduledTaskForReview,
+  isMissedScheduleRun,
   isScheduleDue,
   loadScheduledTasks,
+  missedScheduleSkipNote,
   mutateScheduledTasks,
   normalizeRecurrence,
   pauseScheduledTask,
   resumeScheduledTask,
   saveScheduledTasks,
+  scheduledTaskOwnerMismatch,
+  skipMissedScheduleInList,
+  skipMissedScheduledRun,
   sortScheduledTasks,
   updateScheduledTask,
 } from "./scheduled-tasks";
@@ -161,5 +171,186 @@ describe("scheduled tasks", () => {
     });
     expect(() => isScheduleDue(task, new Date("2026-05-24T12:00:00"))).not.toThrow();
     expect(isScheduleDue(task, new Date("2026-05-24T12:00:00"))).toBe(false);
+  });
+});
+
+describe("missed schedule runs", () => {
+  const now = new Date("2026-05-24T10:31:00");
+  const graceMs = 10 * 60 * 1000;
+
+  it("marks only overdue pending runs as missed", () => {
+    expect(isMissedScheduleRun(makeTask({ scheduleTime: "2026-05-24T10:30", status: "pending" }), now, graceMs)).toBe(false);
+    expect(isMissedScheduleRun(makeTask({ scheduleTime: "2026-05-24T10:20", status: "pending" }), now, graceMs)).toBe(true);
+    expect(isMissedScheduleRun(makeTask({ scheduleTime: "2026-05-24T10:00", status: "done" }), now, graceMs)).toBe(false);
+    expect(isMissedScheduleRun(makeTask({ scheduleTime: "not-a-time", status: "pending" }), now, graceMs)).toBe(false);
+  });
+
+  it("defaults to the 10-minute grace window", () => {
+    expect(DEFAULT_MISSED_SCHEDULE_GRACE_MS).toBe(10 * 60 * 1000);
+    expect(isMissedScheduleRun(makeTask({ scheduleTime: "2026-05-24T10:20", status: "pending" }), now)).toBe(true);
+    expect(isMissedScheduleRun(makeTask({ scheduleTime: "2026-05-24T10:25", status: "pending" }), now)).toBe(false);
+  });
+
+  it("ends a one-shot plan when its missed run is skipped", () => {
+    const skipped = skipMissedScheduledRun(makeTask({ scheduleTime: "2026-05-24T10:00" }), "missed", now);
+    expect(skipped).toMatchObject({ status: "done", lastError: "missed" });
+  });
+
+  it("advances a recurring plan to the next occurrence when skipped", () => {
+    const skipped = skipMissedScheduledRun(
+      makeTask({ scheduleTime: "2026-05-24T10:00", recurrence: { type: "daily" } }),
+      "missed",
+      now,
+    );
+    expect(skipped.status).toBe("pending");
+    expect(Date.parse(skipped.scheduleTime)).toBe(Date.parse("2026-05-25T10:00"));
+    expect(skipped.lastError).toBe("missed");
+  });
+
+  it("records a localized skip note naming the original slot", () => {
+    const note = missedScheduleSkipNote(makeTask({ scheduleTime: "2026-05-24T10:00:00.000Z" }));
+    expect(note).toContain("2026-05-24 10:00");
+    expect(note).toContain("跳过");
+  });
+
+  it("skips a missed pending row through the guarded list helper", () => {
+    const missed = makeTask({ id: "missed", scheduleTime: "2026-05-24T10:00" });
+    const other = makeTask({ id: "other", scheduleTime: "2026-05-25T10:00" });
+
+    const { items, skipped } = skipMissedScheduleInList([missed, other], "missed", now, graceMs);
+
+    expect(skipped).toMatchObject({ id: "missed", status: "done" });
+    expect(skipped?.lastError).toContain("跳过");
+    expect(items.find((item) => item.id === "missed")).toMatchObject({ status: "done" });
+    expect(items.find((item) => item.id === "other")).toEqual(other);
+  });
+
+  it("leaves the list untouched when the latest row was executed elsewhere", () => {
+    // Another window ran the task between the caller's snapshot and the
+    // storage lock; skipping from the stale snapshot would lose the remote id.
+    const executed = makeTask({
+      id: "ran",
+      scheduleTime: "2026-05-24T10:00",
+      status: "done",
+      lastRemoteTaskId: "remote-9",
+      lastRunAt: "2026-05-24T10:00:05.000Z",
+    });
+
+    const { items, skipped } = skipMissedScheduleInList([executed], "ran", now, graceMs);
+
+    expect(skipped).toBeNull();
+    expect(items).toEqual([executed]);
+  });
+
+  it("leaves the list untouched when the latest row was rescheduled into the future", () => {
+    const rescheduled = makeTask({ id: "moved", scheduleTime: "2026-05-24T18:00" });
+
+    const { items, skipped } = skipMissedScheduleInList([rescheduled], "moved", now, graceMs);
+
+    expect(skipped).toBeNull();
+    expect(items).toEqual([rescheduled]);
+  });
+
+  it("leaves the list untouched for an unknown id", () => {
+    const { items, skipped } = skipMissedScheduleInList([], "ghost", now, graceMs);
+    expect(skipped).toBeNull();
+    expect(items).toEqual([]);
+  });
+});
+
+describe("scheduled task owner", () => {
+  afterEach(() => {
+    resetAccountScope();
+  });
+
+  it("migrates ownerless legacy records to the legacy/unknown marker on load", async () => {
+    const storage = createMemoryStorage();
+    const legacy = makeTask({ id: "legacy-1" });
+    expect(legacy.owner).toBeUndefined();
+    await storage.set(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify([legacy]));
+
+    const loaded = await loadScheduledTasks(storage);
+
+    expect(loaded[0]?.owner).toEqual(LEGACY_SCHEDULED_TASK_OWNER);
+    expect(loaded[0]?.owner?.key).toBe("legacy");
+  });
+
+  it("round-trips a recorded owner", async () => {
+    const storage = createMemoryStorage();
+    const owner = { key: "alice@console.example/api", displayName: "Alice" };
+    await saveScheduledTasks(storage, [makeTask({ owner })]);
+
+    const loaded = await loadScheduledTasks(storage);
+
+    expect(loaded[0]?.owner).toEqual(owner);
+  });
+
+  it("stamps the active account on newly created schedules", () => {
+    setActiveAccountScope({ key: "alice@console", displayName: "Alice" });
+    const task = createScheduledTask({ name: "train", scheduleTime: "2026-05-24T10:00", payload: { name: "train" } });
+    expect(task.owner).toEqual({ key: "alice@console", displayName: "Alice" });
+  });
+
+  it("falls back to the legacy owner when created without a signed-in account", () => {
+    const task = createScheduledTask({ name: "train", scheduleTime: "2026-05-24T10:00", payload: { name: "train" } });
+    expect(task.owner).toEqual(LEGACY_SCHEDULED_TASK_OWNER);
+  });
+
+  it("accepts an explicit owner override", () => {
+    setActiveAccountScope({ key: "bob@console", displayName: "Bob" });
+    const task = createScheduledTask({
+      name: "train",
+      scheduleTime: "2026-05-24T10:00",
+      payload: { name: "train" },
+      owner: { key: "alice@console", displayName: "Alice" },
+    });
+    expect(task.owner).toEqual({ key: "alice@console", displayName: "Alice" });
+  });
+
+  it("flags mismatched and legacy owners with a migration reason", () => {
+    setActiveAccountScope({ key: "bob@console", displayName: "Bob" });
+
+    const mismatch = scheduledTaskOwnerMismatch(makeTask({ owner: { key: "alice@console", displayName: "Alice" } }));
+    expect(mismatch?.reason).toContain("Alice");
+    expect(mismatch?.reason).toContain("Bob");
+
+    const legacy = scheduledTaskOwnerMismatch(makeTask({}));
+    expect(legacy?.reason).toBeTruthy();
+
+    expect(scheduledTaskOwnerMismatch(makeTask({ owner: { key: "bob@console", displayName: "Bob" } }))).toBeNull();
+  });
+
+  it("flags every task when nobody is signed in", () => {
+    const reason = scheduledTaskOwnerMismatch(makeTask({ owner: { key: "alice@console", displayName: "Alice" } }));
+    expect(reason?.reason).toBeTruthy();
+  });
+
+  it("adopts the current account when resuming a held task (migration path)", () => {
+    setActiveAccountScope({ key: "bob@console", displayName: "Bob" });
+    const held = makeTask({
+      status: "needs_review",
+      owner: { key: "alice@console", displayName: "Alice" },
+      lastError: "held for review",
+    });
+
+    const resumed = resumeScheduledTask(held);
+
+    expect(resumed.status).toBe("pending");
+    expect(resumed.owner).toEqual({ key: "bob@console", displayName: "Bob" });
+    expect(resumed.lastError).toBeUndefined();
+    expect(scheduledTaskOwnerMismatch(resumed)).toBeNull();
+  });
+
+  it("keeps the stored owner when resuming outside a signed-in session (CLI/MCP)", () => {
+    const owner = { key: "alice@console", displayName: "Alice" };
+    const resumed = resumeScheduledTask(makeTask({ status: "paused", owner }));
+    expect(resumed.owner).toEqual(owner);
+  });
+
+  it("holds a mismatched task for review without executing it", () => {
+    const held = holdScheduledTaskForReview(makeTask({ status: "pending" }), "owner mismatch", new Date("2026-05-24T12:00:00Z"));
+    expect(held.status).toBe("needs_review");
+    expect(held.lastError).toBe("owner mismatch");
+    expect(isScheduleDue(held, new Date("2026-05-24T13:00:00"))).toBe(false);
   });
 });

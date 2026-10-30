@@ -1,4 +1,4 @@
-import { AlertCircle, ArrowUpCircle, CalendarClock, Database, DownloadCloud, ExternalLink, FolderOpen, Image, LayoutDashboard, LogOut, Minimize2, MoreHorizontal, Power, RotateCcw, Save, ScrollText, Search, Server, Settings, SquareStack, WifiOff, X } from "lucide-react";
+import { AlertCircle, ArrowUpCircle, DownloadCloud, ExternalLink, FolderOpen, LogOut, Minimize2, MoreHorizontal, Power, RotateCcw, Save, Search, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState, type RefObject, type UIEvent } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
@@ -7,6 +7,7 @@ import { BackgroundScheduledTaskRunner } from "./BackgroundScheduledTaskRunner";
 import { CommandPalette } from "./CommandPalette";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { TaskNotificationWatcher } from "./TaskNotificationWatcher";
+import { IdleInstanceWatcher } from "./IdleInstanceWatcher";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { Button, Dialog, ProgressBar } from "./ui";
 import { GLOBAL_SETTINGS_ACCOUNT_ID, getRuntimeSettings, saveAccountSettings, setRuntimeSettings } from "../lib/app-settings";
@@ -36,17 +37,8 @@ import { SHOW_SHORTCUTS_EVENT } from "../lib/shell-events";
 import { markTaskFailuresSeen, useUnseenTaskFailureCount } from "../lib/task-attention";
 import { exitPresets, useExitGhost } from "../lib/exit-motion";
 import { claimOverlayKey, hasOpenModalOverlay, useOverlay } from "../lib/overlay-stack";
-
-const navItems = [
-  { to: "/dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard, shortcut: "g d" },
-  { to: "/tasks", labelKey: "nav.tasks", icon: Server, shortcut: "g t" },
-  { to: "/scheduled-tasks", labelKey: "nav.scheduledTasks", icon: CalendarClock, shortcut: "g c" },
-  { to: "/task-templates", labelKey: "nav.taskTemplates", icon: SquareStack, shortcut: "g m" },
-  { to: "/storage", labelKey: "nav.storage", icon: Database, shortcut: "g s" },
-  { to: "/images", labelKey: "nav.images", icon: Image, shortcut: "g i" },
-  { to: "/run-logs", labelKey: "nav.runLogs", icon: ScrollText, shortcut: "g r" },
-  { to: "/settings", labelKey: "nav.settings", icon: Settings, shortcut: "g e" },
-] as const;
+import { navItems } from "../lib/nav-items";
+import { useExecutionReviewCount } from "../lib/use-execution-review";
 
 const primaryMobileNav = navItems.slice(0, 3);
 const secondaryMobileNav = navItems.slice(3);
@@ -168,6 +160,18 @@ export function AppShell() {
   const commandShortcut = browserRuntime.isApplePlatform ? "⌘ K" : "Ctrl K";
   const unseenFailureCount = useUnseenTaskFailureCount();
   const unseenFailureLabel = text(`${unseenFailureCount} 个实例在你上次查看后失败`, `${unseenFailureCount} ${unseenFailureCount === 1 ? "instance" : "instances"} failed since you last looked`);
+  const executionReviewCount = useExecutionReviewCount();
+  const executionReviewLabel = text(
+    `${executionReviewCount} 次定时执行结果待核对`,
+    `${executionReviewCount} scheduled ${executionReviewCount === 1 ? "run needs" : "runs need"} review`,
+  );
+  // Failures are trouble (danger); an unreconciled scheduled run is uncertain (warning).
+  const navBadge = (to: string) =>
+    to === "/tasks" && unseenFailureCount > 0
+      ? { count: unseenFailureCount, label: unseenFailureLabel, className: "bg-app-danger" }
+      : to === "/scheduled-tasks" && executionReviewCount > 0
+        ? { count: executionReviewCount, label: executionReviewLabel, className: "bg-app-warning" }
+        : null;
   const activeQueueCount = (downloadQueue.summary.active ?? 0) + (commitQueue.summary.active ?? 0);
   const failedQueueCount = (downloadQueue.summary.failed ?? 0) + (commitQueue.summary.failed ?? 0);
   const updatePending = browserRuntime.supportsUpdater
@@ -331,10 +335,15 @@ export function AppShell() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [navigate]);
 
-  useEffect(() => {
+  // Close floating menus when the route changes; done during render (React's
+  // documented state-adjustment pattern) so the new page commits with menus
+  // already closed.
+  const [prevNavPathname, setPrevNavPathname] = useState(location.pathname);
+  if (location.pathname !== prevNavPathname) {
+    setPrevNavPathname(location.pathname);
     setMoreMenuOpen(false);
     setStatusPopoverOpen(false);
-  }, [location.pathname]);
+  }
 
   // The page leads the document title, so browser tabs, history and screen readers name the page.
   const pageTitle = t(headerTitleKey(location.pathname));
@@ -564,6 +573,7 @@ export function AppShell() {
         {text("跳到主内容", "Skip to main content")}
       </a>
       <TaskNotificationWatcher />
+      <IdleInstanceWatcher />
       <BackgroundScheduledTaskRunner />
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
@@ -637,13 +647,13 @@ export function AppShell() {
                       <>
                         <item.icon className={cn("h-4 w-4 shrink-0 transition-colors duration-[var(--app-motion-fast)]", isActive && "text-app-accent")} />
                         <span className="truncate">{t(item.labelKey)}</span>
-                        {item.to === "/tasks" && unseenFailureCount > 0 ? (
+                        {navBadge(item.to) ? (
                           <span
-                            className="app-numeric ml-auto min-w-5 shrink-0 rounded-full bg-app-danger px-1.5 text-center text-[0.6875rem] font-semibold leading-5 text-app-onAccent"
-                            title={unseenFailureLabel}
+                            className={cn("app-numeric ml-auto min-w-5 shrink-0 rounded-full px-1.5 text-center text-[0.6875rem] font-semibold leading-5 text-app-onAccent", navBadge(item.to)?.className)}
+                            title={navBadge(item.to)?.label}
                           >
-                            {unseenFailureCount}
-                            <span className="sr-only">{unseenFailureLabel}</span>
+                            {navBadge(item.to)?.count}
+                            <span className="sr-only">{navBadge(item.to)?.label}</span>
                           </span>
                         ) : null}
                       </>
@@ -1098,10 +1108,10 @@ export function AppShell() {
               <>
                 <span className="app-nav-pill relative flex h-7 w-14 items-center justify-center rounded-full">
                   <item.icon className={cn("h-5 w-5", isActive && "text-app-accent")} />
-                  {item.to === "/tasks" && unseenFailureCount > 0 ? (
-                    <span className="app-numeric absolute -top-1 right-2 min-w-4 rounded-full bg-app-danger px-1 text-center text-[0.6875rem] font-semibold leading-4 text-app-onAccent">
-                      {unseenFailureCount}
-                      <span className="sr-only">{unseenFailureLabel}</span>
+                  {navBadge(item.to) ? (
+                    <span className={cn("app-numeric absolute -top-1 right-2 min-w-4 rounded-full px-1 text-center text-[0.6875rem] font-semibold leading-4 text-app-onAccent", navBadge(item.to)?.className)}>
+                      {navBadge(item.to)?.count}
+                      <span className="sr-only">{navBadge(item.to)?.label}</span>
                     </span>
                   ) : null}
                 </span>

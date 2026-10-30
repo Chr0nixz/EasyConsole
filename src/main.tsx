@@ -2,19 +2,23 @@ import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import "./styles.css";
 
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router-dom";
 
 import { createAppRouter } from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { RunLoggerProvider } from "./components/RunLoggerProvider";
+import { ToastProvider } from "./components/Toast";
 import { ThemeProvider } from "./components/ThemeProvider";
 import { AuthProvider } from "./lib/auth-context";
 import { I18nProvider, applyInitialDocumentLang } from "./lib/i18n";
 import { initRuntimeKind } from "./lib/runtime";
 import { applyInitialTheme } from "./lib/theme";
+import { TrayMenu } from "./components/TrayMenu";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,6 +30,9 @@ const queryClient = new QueryClient({
 });
 
 const router = createAppRouter();
+const windowLabel = isTauri() ? getCurrentWindow().label : "main";
+const isSshTerminalWindow = windowLabel.startsWith("ssh-");
+const isTrayMenuWindow = windowLabel === "tray-menu";
 
 // Surface unhandled promise rejections and synchronous errors so they show up
 // in the console alongside the ErrorBoundary logs. These do not block rendering.
@@ -47,19 +54,34 @@ applyInitialTheme();
 // renderer can pick capability flags without race conditions. On web this
 // resolves immediately.
 initRuntimeKind().finally(() => {
+  const SshTerminalPage = lazy(() => import("./pages/SshTerminalPage").then((module) => ({ default: module.SshTerminalPage })));
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
-          <ThemeProvider>
-            <I18nProvider>
-              <AuthProvider>
-                <RunLoggerProvider>
-                  <RouterProvider router={router} />
-                </RunLoggerProvider>
-              </AuthProvider>
+          {isSshTerminalWindow ? (
+            <I18nProvider syncNative={false}>
+              <ToastProvider>
+                <Suspense fallback={null}>
+                  <SshTerminalPage />
+                </Suspense>
+              </ToastProvider>
             </I18nProvider>
-          </ThemeProvider>
+          ) : isTrayMenuWindow ? (
+            <I18nProvider syncNative={false}>
+              <TrayMenu />
+            </I18nProvider>
+          ) : (
+            <ThemeProvider>
+              <I18nProvider>
+                <AuthProvider>
+                  <RunLoggerProvider>
+                    <RouterProvider router={router} />
+                  </RunLoggerProvider>
+                </AuthProvider>
+              </I18nProvider>
+            </ThemeProvider>
+          )}
         </QueryClientProvider>
       </ErrorBoundary>
     </StrictMode>,

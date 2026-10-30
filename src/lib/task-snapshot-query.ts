@@ -1,10 +1,18 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import type { EasyConsoleApi } from "./api-factory";
+import { getActiveAccountScope } from "./account-scope";
 import { fetchAllTasks } from "./fetch-all-tasks";
+import { queryKeys } from "./query-keys";
 import type { ListResult, Task } from "./types";
 
-export const TASK_SNAPSHOT_QUERY_KEY = ["task-notification-watch"] as const;
+/**
+ * Cache key for the shared full-task snapshot. Account-scoped like every other
+ * query key so a snapshot fetched for one account is never reused for another.
+ */
+export function taskSnapshotQueryKey() {
+  return ["account", getActiveAccountScope().key, "task-notification-watch"] as const;
+}
 export const TASK_SNAPSHOT_POLL_INTERVAL = 10_000;
 export const TASK_SNAPSHOT_POLL_INTERVAL_HIDDEN_MIN = 60_000;
 export const TASK_SNAPSHOT_POLL_INTERVAL_HIDDEN_MAX = 5 * 60_000;
@@ -19,7 +27,7 @@ const ACTIVE_TASK_QUERY = {
 
 export function taskSnapshotQueryOptions(api: TasksClient) {
   return {
-    queryKey: TASK_SNAPSHOT_QUERY_KEY,
+    queryKey: taskSnapshotQueryKey(),
     queryFn: ({ signal }: { signal?: AbortSignal }): Promise<ListResult<Task>> =>
       fetchAllTasks(api, { signal, query: ACTIVE_TASK_QUERY as never }),
   } as const;
@@ -33,6 +41,6 @@ export function nextNotificationPollInterval(previousMs: number, hidden: boolean
 
 /** Invalidate paginated task lists and the shared full-task snapshot together. */
 export function invalidateTaskQueries(queryClient: QueryClient) {
-  void queryClient.invalidateQueries({ queryKey: ["tasks"] });
-  void queryClient.invalidateQueries({ queryKey: TASK_SNAPSHOT_QUERY_KEY });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all });
+  void queryClient.invalidateQueries({ queryKey: taskSnapshotQueryKey() });
 }

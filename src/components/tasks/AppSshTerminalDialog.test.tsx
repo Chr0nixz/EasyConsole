@@ -9,8 +9,13 @@ import { ToastContext, type ToastContextValue } from "../../lib/use-toast";
 import { SshWorkspaceProvider } from "../ssh/SshWorkspaceProvider";
 import { AppSshTerminalDialog } from "./AppSshTerminalDialog";
 
+const terminalMock = vi.hoisted(() => ({ requests: [] as Array<{ host: string; password?: string }> }));
+
 vi.mock("./SshTerminalTab", () => ({
-  SshTerminalTab: ({ tabId }: { tabId: string }) => <div data-testid={`ssh-session-${tabId}`} />,
+  SshTerminalTab: ({ tabId, request }: { tabId: string; request: { host: string; password?: string } }) => {
+    terminalMock.requests.push(request);
+    return <div data-testid={`ssh-session-${tabId}`} />;
+  },
 }));
 
 const toast: ToastContextValue = {
@@ -62,6 +67,7 @@ function activeTab(name: string) {
 describe("AppSshTerminalDialog", () => {
   beforeEach(() => {
     setRuntimeSettings(DEFAULT_APP_SETTINGS);
+    terminalMock.requests.length = 0;
   });
 
   it("renders nothing while the workspace has no tabs", () => {
@@ -181,5 +187,36 @@ describe("AppSshTerminalDialog", () => {
     fireEvent.click(screen.getByTitle("新标签"));
 
     expect((screen.getByLabelText("密码") as HTMLInputElement).value).toBe("");
+  });
+
+  it("preserves surrounding whitespace in a manually entered SSH password", async () => {
+    renderWorkspace(requestA);
+    await waitFor(() => expect(activeTab("A")).toHaveAttribute("aria-selected", "true"));
+
+    fireEvent.click(screen.getByTitle("新标签"));
+    fireEvent.change(screen.getByLabelText("主机"), { target: { value: "10.0.0.10" } });
+    fireEvent.change(screen.getByLabelText("密码"), { target: { value: "  secret \t" } });
+    fireEvent.click(screen.getByRole("button", { name: "连接" }));
+
+    await waitFor(() => expect(activeTab("10.0.0.10")).toHaveAttribute("aria-selected", "true"));
+    expect(terminalMock.requests.find((request) => request.host === "10.0.0.10")?.password)
+      .toBe("  secret \t");
+  });
+
+  it("preserves surrounding whitespace in the configured password fallback", async () => {
+    setRuntimeSettings({
+      ...DEFAULT_APP_SETTINGS,
+      ssh: { ...DEFAULT_APP_SETTINGS.ssh, defaultPassword: "  default-secret  " },
+    });
+    renderWorkspace(requestA);
+    await waitFor(() => expect(activeTab("A")).toHaveAttribute("aria-selected", "true"));
+
+    fireEvent.click(screen.getByTitle("新标签"));
+    fireEvent.change(screen.getByLabelText("主机"), { target: { value: "10.0.0.11" } });
+    fireEvent.click(screen.getByRole("button", { name: "连接" }));
+
+    await waitFor(() => expect(activeTab("10.0.0.11")).toHaveAttribute("aria-selected", "true"));
+    expect(terminalMock.requests.find((request) => request.host === "10.0.0.11")?.password)
+      .toBe("  default-secret  ");
   });
 });

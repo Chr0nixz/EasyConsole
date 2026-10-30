@@ -187,7 +187,7 @@ export function SftpPanel({ sessionId }: SftpPanelProps) {
   };
 
   const openContainingFolder = (localPath: string) => {
-    void browserRuntime.revealLocalPath(localPath).catch((e) => {
+    void browserRuntime.revealSftpLocalPath(sessionId, localPath).catch((e) => {
       toast.error(
         text("打开所在文件夹失败", "Failed to open containing folder"),
         rawErrorMessage(e) || text("请确认文件仍然存在。", "Check that the file still exists."),

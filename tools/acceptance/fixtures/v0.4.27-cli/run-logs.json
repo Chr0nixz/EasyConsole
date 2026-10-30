@@ -1,0 +1,190 @@
+[
+  {
+    "channel": "cli",
+    "source": "storage",
+    "level": "info",
+    "action": "backup.export",
+    "result": "success",
+    "title": "CLI operation succeeded: backup.export",
+    "durationMs": 55,
+    "metadata": {
+      "options": {}
+    },
+    "id": "legacy-cli-log-1",
+    "createdAt": "2026-10-20T00:00:00.000Z"
+  },
+  {
+    "id": "legacy-cli-log-2",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "level": "info",
+    "channel": "cli",
+    "source": "task",
+    "action": "schedule.pause",
+    "result": "success",
+    "title": "CLI operation succeeded: schedule.pause",
+    "durationMs": 14,
+    "metadata": {
+      "options": {
+        "yes": true
+      }
+    }
+  },
+  {
+    "id": "legacy-cli-log-3",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "level": "info",
+    "channel": "cli",
+    "source": "task",
+    "action": "schedule.pause",
+    "result": "success",
+    "title": "CLI operation succeeded: schedule.pause",
+    "durationMs": 5,
+    "metadata": {
+      "options": {}
+    }
+  },
+  {
+    "id": "legacy-cli-log-4",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "level": "info",
+    "channel": "cli",
+    "source": "task",
+    "action": "schedule.list",
+    "result": "success",
+    "title": "CLI operation succeeded: schedule.list",
+    "durationMs": 5,
+    "metadata": {
+      "options": {}
+    }
+  },
+  {
+    "id": "legacy-cli-log-5",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "level": "info",
+    "channel": "cli",
+    "source": "task",
+    "action": "schedule.create",
+    "result": "success",
+    "title": "CLI operation succeeded: schedule.create",
+    "durationMs": 12,
+    "metadata": {
+      "options": {
+        "name": "upgrade-0427-cli-paused",
+        "scheduleTime": "2099-01-01T00:00:00.000Z",
+        "yes": true
+      }
+    }
+  },
+  {
+    "id": "legacy-cli-log-6",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "level": "info",
+    "channel": "cli",
+    "source": "task",
+    "action": "schedule.create",
+    "result": "success",
+    "title": "CLI operation succeeded: schedule.create",
+    "durationMs": 2,
+    "metadata": {
+      "options": {
+        "name": "upgrade-0427-cli-paused",
+        "scheduleTime": "2099-01-01T00:00:00.000Z"
+      }
+    }
+  },
+  {
+    "id": "legacy-cli-log-7",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "level": "info",
+    "channel": "cli",
+    "source": "task",
+    "action": "schedule.create",
+    "result": "success",
+    "title": "CLI operation succeeded: schedule.create",
+    "durationMs": 12,
+    "metadata": {
+      "options": {
+        "name": "upgrade-0427-cli-pending",
+        "scheduleTime": "2099-01-01T00:00:00.000Z",
+        "yes": true
+      }
+    }
+  },
+  {
+    "id": "legacy-cli-log-8",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "level": "info",
+    "channel": "cli",
+    "source": "task",
+    "action": "schedule.create",
+    "result": "success",
+    "title": "CLI operation succeeded: schedule.create",
+    "durationMs": 2,
+    "metadata": {
+      "options": {
+        "name": "upgrade-0427-cli-pending",
+        "scheduleTime": "2099-01-01T00:00:00.000Z"
+      }
+    }
+  },
+  {
+    "id": "legacy-cli-log-9",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "level": "info",
+    "channel": "cli",
+    "source": "task",
+    "action": "template.create",
+    "result": "success",
+    "title": "CLI operation succeeded: template.create",
+    "durationMs": 13,
+    "metadata": {
+      "options": {
+        "yes": true
+      }
+    }
+  },
+  {
+    "id": "legacy-cli-log-10",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "level": "info",
+    "channel": "cli",
+    "source": "task",
+    "action": "template.create",
+    "result": "success",
+    "title": "CLI operation succeeded: template.create",
+    "durationMs": 1,
+    "metadata": {
+      "options": {}
+    }
+  },
+  {
+    "id": "legacy-cli-log-11",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "level": "info",
+    "channel": "cli",
+    "source": "task",
+    "action": "template.create",
+    "result": "success",
+    "title": "CLI operation succeeded: template.create",
+    "durationMs": 10,
+    "metadata": {
+      "options": {
+        "yes": true
+      }
+    }
+  },
+  {
+    "id": "legacy-cli-log-12",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "level": "info",
+    "channel": "cli",
+    "source": "task",
+    "action": "template.create",
+    "result": "success",
+    "title": "CLI operation succeeded: template.create",
+    "durationMs": 2,
+    "metadata": {
+      "options": {}
+    }
+  }
+]

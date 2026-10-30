@@ -120,6 +120,25 @@ describe("ssh info", () => {
     expect(toSshConnectionRequest(info).password).toBe("secret");
   });
 
+  it("preserves surrounding whitespace in task and settings passwords", () => {
+    const taskInfo = buildTaskSshInfo({
+      id: 1,
+      task_id: "task-1",
+      ip: "10.0.0.8",
+      ssh_password: " \t task-secret \n",
+    });
+    expect(taskInfo.password).toBe(" \t task-secret \n");
+    expect(toSshConnectionRequest(taskInfo).password).toBe(" \t task-secret \n");
+
+    setRuntimeSettings({
+      ssh: { ...getRuntimeSettings().ssh, defaultPassword: "  settings-secret  " },
+    });
+    const settingsInfo = buildTaskSshInfo({ id: 2, ip: "10.0.0.9", ssh_password: " \t " });
+    expect(settingsInfo.password).toBe("  settings-secret  ");
+    expect(settingsInfo.passwordKind).toBe("settings-default");
+    expect(toSshConnectionRequest(settingsInfo).password).toBe("  settings-secret  ");
+  });
+
   it("keeps missing backend fields explicit", () => {
     expect(buildTaskSshInfo({ id: 1 })).toMatchObject({
       host: "-",
@@ -143,7 +162,7 @@ describe("formatSshCommand", () => {
     );
     expect(formatSshCommand({ host: "[::1]", username: "root" })).toBe("ssh root@[::1]");
     expect(formatSshCommand({ host: "h" })).toBe("ssh h");
-    expect(formatSshCommand({ host: "h", port: "-", username: "-" })).toBe("ssh h");
+    expect(formatSshCommand({ host: "h", port: "-" })).toBe("ssh h");
   });
 
   it("refuses to render missing or unvalidated fields", () => {
@@ -191,7 +210,7 @@ describe("resolveSshConnectionRequest", () => {
       host: "10.0.0.8",
       port: "30222",
       username: "root",
-      password: "secret",
+      password: " secret ",
       // The settings auth mode fills the gap the request left open.
       authMode: "key",
       sshKeyPath: "~/.ssh/id_ed25519",
@@ -227,6 +246,13 @@ describe("resolveSshConnectionRequest", () => {
     expect(resolved.keepaliveIntervalSec).toBe(0);
   });
 
+  it("preserves a nonblank password and omits a whitespace-only password", () => {
+    expect(resolveSshConnectionRequest({ host: "h", password: "  secret \t", command: "" }).password)
+      .toBe("  secret \t");
+    expect(resolveSshConnectionRequest({ host: "h", password: " \t\n ", command: "" }).password)
+      .toBeUndefined();
+  });
+
   it("treats '-' and blank ports as unset", () => {
     expect(resolveSshConnectionRequest({ host: "h", command: "", port: "-" }).port).toBe(
       String(DEFAULT_APP_SETTINGS.ssh.defaultPort),
@@ -249,5 +275,16 @@ describe("findSshConnectionIssue", () => {
     expect(findSshConnectionIssue({ host: "h", port: "70000", command: "" })).not.toBeNull();
     expect(findSshConnectionIssue({ host: "h", username: "ro ot", command: "" })).not.toBeNull();
     expect(findSshConnectionIssue({ host: "h", username: "root@host", command: "" })).not.toBeNull();
+  });
+
+  it("rejects option-like hosts and usernames in requests and copyable commands", () => {
+    for (const host of ["-v", " --proxy-command", "-"]) {
+      expect(findSshConnectionIssue({ host, command: "" })).not.toBeNull();
+      expect(formatSshCommand({ host })).toBeNull();
+    }
+    for (const username of ["-root", " --", "-"]) {
+      expect(findSshConnectionIssue({ host: "example.com", username, command: "" })).not.toBeNull();
+      expect(formatSshCommand({ host: "example.com", username })).toBeNull();
+    }
   });
 });

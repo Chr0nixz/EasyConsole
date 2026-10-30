@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { BadgeCheck, Download, Eye, RefreshCw, Search, Star } from "lucide-react";
+import { BadgeCheck, Download, Eye, Pencil, RefreshCw, Search, Star, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { EmptyState, ErrorState, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { ImageDetailDialog } from "../components/images/ImageDetailDialog";
-import { Button, Input, Panel, Select, TableRegion } from "../components/ui";
+import { Button, Dialog, Input, Panel, Select, SettingTag, TableRegion } from "../components/ui";
 import { imageApi } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { useDownloadQueue } from "../lib/use-download-queue";
@@ -62,6 +62,10 @@ export function ImagesPage() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [detailImage, setDetailImage] = useState<{ id: string | number; name: string } | null>(null);
+  const [editImage, setEditImage] = useState<ImageRow | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
   const custom = useQuery({
     queryKey: queryKeys.images.list(),
     queryFn: ({ signal }) => imageApi.list({ page: 1, page_size: 100 }, { signal }),
@@ -133,7 +137,7 @@ export function ImagesPage() {
             targetId: image.id,
             error: errorMessage(error, text("默认镜像更新失败", "Failed to update default image")),
           });
-          throw error;
+          toast.error(text("默认镜像更新失败", "Failed to update default image"), errorMessage(error, text("请稍后重试", "Try again later")));
         }
       },
     });
@@ -154,6 +158,94 @@ export function ImagesPage() {
     });
   };
 
+  const deleteImageRow = (image: ImageRow) => {
+    confirm({
+      title: text("确认删除镜像", "Confirm Image Deletion"),
+      description: text(
+        `实验性操作。将删除自定义镜像 ${imageName(image)}。使用该镜像创建实例的能力将一并移除，此操作不可从 EasyConsole 撤销。请先在测试镜像上验证。`,
+        `Experimental operation. Delete the custom image ${imageName(image)}. Instances can no longer be created from it; EasyConsole cannot undo this. Verify on a test image first.`,
+      ),
+      confirmLabel: text("删除镜像", "Delete image"),
+      tone: "danger",
+      run: async () => {
+        try {
+          await imageApi.deleteImage(image.id);
+          toast.success(text("镜像已删除", "Image deleted"), imageName(image));
+          void runLogger.log({
+            source: "image",
+            level: "info",
+            action: "image.delete",
+            result: "success",
+            title: text("镜像已删除", "Image deleted"),
+            targetName: imageName(image),
+            targetId: image.id,
+          });
+          refetchImages();
+        } catch (error) {
+          void runLogger.log({
+            source: "image",
+            level: "error",
+            action: "image.delete",
+            result: "failure",
+            title: text("镜像删除失败", "Failed to delete image"),
+            targetName: imageName(image),
+            targetId: image.id,
+            error: errorMessage(error, text("镜像删除失败", "Failed to delete image")),
+          });
+          toast.error(text("镜像删除失败", "Failed to delete image"), errorMessage(error, text("请稍后重试", "Try again later")));
+        }
+      },
+    });
+  };
+
+  const openEditImage = (image: ImageRow) => {
+    setEditImage(image);
+    setEditName(typeof image.name === "string" ? image.name : imageName(image));
+    setEditDescription(typeof image.description === "string" ? image.description : "");
+  };
+
+  const submitEditImage = async () => {
+    if (!editImage || editSaving) return;
+    const trimmedName = editName.trim();
+    if (!trimmedName) {
+      toast.error(text("请填写镜像名称", "Enter an image name"));
+      return;
+    }
+    setEditSaving(true);
+    try {
+      await imageApi.updateImage(editImage.id, { name: trimmedName, description: editDescription.trim() });
+      toast.success(text("镜像已更新", "Image updated"), trimmedName);
+      void runLogger.log({
+        source: "image",
+        level: "info",
+        action: "image.update",
+        result: "success",
+        title: text("镜像已更新", "Image updated"),
+        targetName: trimmedName,
+        targetId: editImage.id,
+      });
+      setEditImage(null);
+      refetchImages();
+    } catch (error) {
+      toast.error(
+        text("镜像更新失败", "Failed to update image"),
+        `${trimmedName}: ${errorMessage(error, text("镜像更新失败", "Failed to update image"))}`,
+      );
+      void runLogger.log({
+        source: "image",
+        level: "error",
+        action: "image.update",
+        result: "failure",
+        title: text("镜像更新失败", "Failed to update image"),
+        targetName: trimmedName,
+        targetId: editImage.id,
+        error: errorMessage(error, text("镜像更新失败", "Failed to update image")),
+      });
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   const isLoading = custom.isLoading || system.isLoading;
   const isFetching = custom.isFetching || system.isFetching;
   const customCount = custom.data?.items.length ?? 0;
@@ -164,13 +256,13 @@ export function ImagesPage() {
     <div className="space-y-4">
       <Panel className="overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-app-border bg-app-panel/50 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-          <p className="text-sm text-app-muted">
+          <p className="app-numeric shrink-0 whitespace-nowrap text-sm text-app-muted">
             {text(
               `自定义 ${customCount} · 系统 ${systemCount} · 默认 ${defaultCount}`,
               `Custom ${customCount} · system ${systemCount} · default ${defaultCount}`,
             )}
           </p>
-          <div className="grid gap-2 sm:grid-cols-[minmax(220px,360px)_160px_auto]">
+          <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(180px,360px)_150px_auto]">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
               <Input
@@ -203,6 +295,11 @@ export function ImagesPage() {
           </Button>
         </div>
 
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-app-border px-4 py-2 text-xs leading-5 text-app-muted">
+          <SettingTag>{text("实验性", "Experimental")}</SettingTag>
+          <span>{text("镜像编辑与删除尚待真实环境验证，请先使用测试镜像。", "Image editing and deletion await real-environment validation. Use test images first.")}</span>
+        </div>
+
         {isLoading ? (
           <TableSkeleton columns={6} />
         ) : custom.isError ? (
@@ -226,10 +323,7 @@ export function ImagesPage() {
                       <div className="flex items-center gap-2">
                         <span id={cardId} className="truncate text-sm font-semibold text-app-text">{imageName(image)}</span>
                         {isDefaultImage(image) ? (
-                          <span className="inline-flex shrink-0 items-center gap-1 rounded-[5px] bg-app-neutralSoft px-2 py-0.5 text-xs font-medium text-app-text">
-                            <BadgeCheck className="h-3 w-3 text-app-muted" aria-hidden="true" />
-                            {text("默认", "Default")}
-                          </span>
+                          <SettingTag className="shrink-0" icon={BadgeCheck}>{text("默认", "Default")}</SettingTag>
                         ) : null}
                       </div>
                       <div className="mt-0.5 text-xs text-app-muted">ID: {String(image.id)}</div>
@@ -254,7 +348,8 @@ export function ImagesPage() {
                   </dl>
                   <div className="flex flex-wrap gap-1.5">
                     <Button
-                      aria-label={favorites.includes(String(image.id)) ? text(`取消收藏 ${imageName(image)}`, `Unfavorite ${imageName(image)}`) : text(`收藏 ${imageName(image)}`, `Favorite ${imageName(image)}`)}
+                      aria-label={text(`收藏 ${imageName(image)}`, `Favorite ${imageName(image)}`)}
+                      aria-pressed={favorites.includes(String(image.id))}
                       variant="ghost"
                       title={favorites.includes(String(image.id)) ? text("取消收藏", "Unfavorite") : text("收藏", "Favorite")}
                       onClick={() => void handleToggleFavorite(image)}
@@ -273,6 +368,8 @@ export function ImagesPage() {
                     </Button>
                     <Button
                       aria-label={text(`将 ${imageName(image)} 设为默认镜像`, `Set ${imageName(image)} as default image`)}
+                      disabled={isDefaultImage(image)}
+                      disabledReason={text("已是默认镜像", "Already the default image")}
                       variant="ghost"
                       title={text("设为默认", "Set default")}
                       onClick={() => setDefaultImage(image)}
@@ -289,6 +386,29 @@ export function ImagesPage() {
                       <Download className="h-4 w-4" />
                       {text("下载", "Download")}
                     </Button>
+                    {image.source === "custom" ? (
+                      <>
+                        <Button
+                          aria-label={text(`编辑镜像 ${imageName(image)}`, `Edit image ${imageName(image)}`)}
+                          variant="ghost"
+                          title={text("编辑", "Edit")}
+                          onClick={() => openEditImage(image)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                          {text("编辑", "Edit")}
+                        </Button>
+                        <Button
+                          aria-label={text(`删除镜像 ${imageName(image)}`, `Delete image ${imageName(image)}`)}
+                          className="hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger"
+                          variant="ghost"
+                          title={text("删除", "Delete")}
+                          onClick={() => deleteImageRow(image)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          {text("删除", "Delete")}
+                        </Button>
+                      </>
+                    ) : null}
                   </div>
                 </article>
               );
@@ -314,10 +434,7 @@ export function ImagesPage() {
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="truncate font-medium text-app-text">{imageName(image)}</span>
                         {isDefaultImage(image) ? (
-                          <span className="inline-flex shrink-0 items-center gap-1 rounded-[5px] bg-app-neutralSoft px-2 py-0.5 text-xs font-medium text-app-text">
-                            <BadgeCheck className="h-3 w-3 text-app-muted" aria-hidden="true" />
-                            {text("默认", "Default")}
-                          </span>
+                          <SettingTag className="shrink-0" icon={BadgeCheck}>{text("默认", "Default")}</SettingTag>
                         ) : null}
                       </div>
                       <div className="mt-0.5 text-xs text-app-text">ID: {String(image.id)}</div>
@@ -337,7 +454,8 @@ export function ImagesPage() {
                     <td className="sticky right-0 bg-app-surface px-3 py-2 align-middle shadow-stickyColumnSubtle">
                       <div className="flex justify-end gap-1">
                         <Button
-                          aria-label={favorites.includes(String(image.id)) ? text(`取消收藏 ${imageName(image)}`, `Unfavorite ${imageName(image)}`) : text(`收藏 ${imageName(image)}`, `Favorite ${imageName(image)}`)}
+                          aria-label={text(`收藏 ${imageName(image)}`, `Favorite ${imageName(image)}`)}
+                          aria-pressed={favorites.includes(String(image.id))}
                           variant="ghost"
                           title={favorites.includes(String(image.id)) ? text("取消收藏", "Unfavorite") : text("收藏", "Favorite")}
                           onClick={() => void handleToggleFavorite(image)}
@@ -352,12 +470,29 @@ export function ImagesPage() {
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
-                        <Button aria-label={text(`将 ${imageName(image)} 设为默认镜像`, `Set ${imageName(image)} as default image`)} variant="ghost" title={text("设为默认", "Set default")} onClick={() => setDefaultImage(image)}>
+                        <Button aria-label={text(`将 ${imageName(image)} 设为默认镜像`, `Set ${imageName(image)} as default image`)} disabled={isDefaultImage(image)} disabledReason={text("已是默认镜像", "Already the default image")} variant="ghost" title={text("设为默认", "Set default")} onClick={() => setDefaultImage(image)}>
                           <BadgeCheck className="h-4 w-4" />
                         </Button>
                         <Button aria-label={text(`下载镜像 ${imageName(image)}`, `Download image ${imageName(image)}`)} variant="ghost" title={text("下载", "Download")} onClick={() => downloadImage(image)}>
                           <Download className="h-4 w-4" />
                         </Button>
+                        {image.source === "custom" ? (
+                          <>
+                            <Button aria-label={text(`编辑镜像 ${imageName(image)}`, `Edit image ${imageName(image)}`)} variant="ghost" title={text("编辑", "Edit")} onClick={() => openEditImage(image)}>
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button aria-label={text(`删除镜像 ${imageName(image)}`, `Delete image ${imageName(image)}`)} className="hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger" variant="ghost" title={text("删除", "Delete")} onClick={() => deleteImageRow(image)}>
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </>
+                        ) : (
+                          // System images cannot be edited or deleted; their slots stay reserved (hidden from
+                          // pointer, focus and assistive tech) so the shared actions line up down the column.
+                          <span aria-hidden="true" className="invisible flex gap-1">
+                            <Button tabIndex={-1} type="button" variant="ghost"><Pencil className="h-4 w-4" /></Button>
+                            <Button tabIndex={-1} type="button" variant="ghost"><Trash2 className="h-4 w-4" /></Button>
+                          </span>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -371,6 +506,44 @@ export function ImagesPage() {
       </Panel>
       {confirmDialog}
       <ImageDetailDialog imageId={detailImage?.id ?? null} imageName={detailImage?.name} onClose={() => setDetailImage(null)} />
+      <Dialog
+        open={Boolean(editImage)}
+        title={text("编辑镜像", "Edit image")}
+        onClose={() => { if (!editSaving) setEditImage(null); }}
+        width="max-w-md"
+        describedBy="image-edit-description"
+      >
+        <form
+          className="space-y-4 p-5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitEditImage();
+          }}
+        >
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-app-text">{text("名称", "Name")}</span>
+            <Input className="w-full" value={editName} onChange={(event) => setEditName(event.target.value)} required />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-app-text">{text("说明", "Description")}</span>
+            <Input className="w-full" value={editDescription} onChange={(event) => setEditDescription(event.target.value)} placeholder={text("可选", "Optional")} />
+          </label>
+          <p id="image-edit-description" className="text-xs leading-5 text-app-muted">
+            {text(
+              "实验性操作。修改自定义镜像的名称和说明，请先在测试镜像上验证。保存失败时会保留输入，便于重试。",
+              "Experimental operation. Change the custom image's name and description; verify on a test image first. Failed saves keep your input so you can retry.",
+            )}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button disabled={editSaving} type="button" variant="ghost" onClick={() => setEditImage(null)}>
+              {text("取消", "Cancel")}
+            </Button>
+            <Button disabled={editSaving} type="submit">
+              {editSaving ? text("保存中…", "Saving…") : text("保存", "Save")}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
     </div>
   );
 }

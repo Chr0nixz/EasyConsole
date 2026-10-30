@@ -64,7 +64,7 @@ export function AppUpdateDialog() {
         ) : null}
 
         {state.status === "unsupported" ? (
-          <div className="rounded-md bg-app-warningSoft px-3 py-2 text-app-warning">
+          <div className="rounded-md bg-app-warningSoft px-3 py-2 text-app-warningText">
             {text("当前运行环境不支持自动更新。", "This runtime does not support automatic updates.")}
           </div>
         ) : null}

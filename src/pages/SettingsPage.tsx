@@ -3,6 +3,7 @@ import {
   Activity,
   ArrowLeft,
   BellRing,
+  CalendarClock,
   ChevronDown,
   DatabaseBackup,
   Download,
@@ -30,8 +31,10 @@ import { Link } from "react-router-dom";
 
 import { LanguageSwitch } from "../components/LanguageSwitch";
 import { ThemeSwitch } from "../components/ThemeSwitch";
-import { Button, Dialog, Input, Panel, Select } from "../components/ui";
+import { Button, Dialog, Input, Panel, Select, SettingTag } from "../components/ui";
 import { authApi, getTransportBlockReason, setApiBaseUrl } from "../lib/api";
+import { IDLE_REMINDER_WINDOW_OPTIONS } from "../lib/idle-instance-reminder";
+import { ScheduledWakeSettings } from "../components/ScheduledWakeSettings";
 import {
   DEFAULT_APP_SETTINGS,
   DEFAULT_CUSTOM_COLORS,
@@ -46,6 +49,9 @@ import {
   saveAccountSettings,
   saveAccountSshPassword,
   setRuntimeSettings,
+  MISSED_SCHEDULE_GRACE_OPTIONS,
+  TIMED_RELEASE_LEAD_OPTIONS,
+  MISSED_SCHEDULE_POLICY_OPTIONS,
   SSH_FONT_PRESETS,
   TASK_AUTO_REFRESH_OPTIONS,
   type AppSettings,
@@ -113,11 +119,12 @@ function validate(settings: AppSettings, t: (key: TranslationKey) => string) {
   return null;
 }
 
-function applySettings(settings: AppSettings) {
+async function applySettings(settings: AppSettings) {
+  await browserRuntime.setDesktopCloseToTray(settings.desktopCloseToTray);
+  await browserRuntime.setDesktopClosePrompt(settings.desktopClosePrompt);
+  await browserRuntime.setDesktopAutostart(settings.desktopAutostart);
   setRuntimeSettings(settings);
   setApiBaseUrl(settings.apiBaseUrl);
-  void browserRuntime.setDesktopCloseToTray(settings.desktopCloseToTray);
-  void browserRuntime.setDesktopClosePrompt(settings.desktopClosePrompt);
 }
 
 const notificationEvents: Array<{ event: ImportantNotificationEvent; zh: string; en: string; descriptionZh: string; descriptionEn: string }> = [
@@ -141,6 +148,20 @@ const notificationEvents: Array<{ event: ImportantNotificationEvent; zh: string;
     en: "Instance abnormal",
     descriptionZh: "实例状态进入异常时触发。",
     descriptionEn: "Triggered when an instance enters the abnormal state.",
+  },
+  {
+    event: "task.releaseDue",
+    zh: "定时释放即将到期",
+    en: "Timed release approaching",
+    descriptionZh: "定时释放的任务在到期前提醒，可从任务详情页延长。",
+    descriptionEn: "Reminds before a timed release fires; extend from the task detail page.",
+  },
+  {
+    event: "task.idle",
+    zh: "实例可能闲置",
+    en: "Instance may be idle",
+    descriptionZh: "持续低负载时提醒。已连接 SSH 后会一并采样 GPU；自动释放需单独开启。",
+    descriptionEn: "Reminds about sustained low activity. A connected SSH session also supplies GPU samples; auto-release requires a separate opt-in.",
   },
 ];
 
@@ -429,12 +450,18 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       normalized.apiBaseUrl !== savedBaseline.apiBaseUrl ||
       normalized.monitorDashboardUrl !== savedBaseline.monitorDashboardUrl ||
       normalized.desktopClosePrompt !== savedBaseline.desktopClosePrompt ||
-      normalized.desktopCloseToTray !== savedBaseline.desktopCloseToTray
+      normalized.desktopCloseToTray !== savedBaseline.desktopCloseToTray ||
+      normalized.desktopAutostart !== savedBaseline.desktopAutostart
     ) {
       groups.push(groupLabels.connection);
     }
     if (JSON.stringify(normalized.ssh) !== JSON.stringify(savedBaseline.ssh)) groups.push(groupLabels.terminal);
-    if (JSON.stringify(normalized.notificationPreferences) !== JSON.stringify(savedBaseline.notificationPreferences)) {
+    if (
+      JSON.stringify(normalized.notificationPreferences) !== JSON.stringify(savedBaseline.notificationPreferences) ||
+      normalized.timedReleaseReminderLeadMs !== savedBaseline.timedReleaseReminderLeadMs ||
+      normalized.idleReminderWindowMs !== savedBaseline.idleReminderWindowMs ||
+      normalized.idleAutoRelease !== savedBaseline.idleAutoRelease
+    ) {
       groups.push(groupLabels.notifications);
     }
     if (
@@ -442,6 +469,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       normalized.taskAutoRefresh !== savedBaseline.taskAutoRefresh ||
       normalized.taskAutoRefreshIntervalMs !== savedBaseline.taskAutoRefreshIntervalMs ||
       normalized.autoNumberDuplicateTaskNames !== savedBaseline.autoNumberDuplicateTaskNames ||
+      normalized.missedSchedulePolicy !== savedBaseline.missedSchedulePolicy ||
+      normalized.missedScheduleGraceMs !== savedBaseline.missedScheduleGraceMs ||
       normalized.runLogLimit !== savedBaseline.runLogLimit ||
       normalized.runLogRetentionDays !== savedBaseline.runLogRetentionDays
     ) {
@@ -460,9 +489,14 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       return t("settings.websshPending");
     }
   }, [normalized.apiBaseUrl, t]);
-  const showInsecureTransportWarning =
-    !shouldEnforceSecureRemoteTransport() &&
-    (isInsecureRemoteTransportUrl(normalized.apiBaseUrl) || isInsecureRemoteTransportUrl(normalized.monitorDashboardUrl));
+  // Name the offending URLs: the API and the monitor dashboard can differ.
+  const insecureTransportTargets = shouldEnforceSecureRemoteTransport()
+    ? []
+    : [
+        isInsecureRemoteTransportUrl(normalized.apiBaseUrl) ? text("API 地址", "API URL") : null,
+        isInsecureRemoteTransportUrl(normalized.monitorDashboardUrl) ? text("监控面板地址", "Monitor dashboard URL") : null,
+      ].filter((label): label is string => Boolean(label));
+  const showInsecureTransportWarning = insecureTransportTargets.length > 0;
   const transportBlockedReason = getTransportBlockReason();
   const validationError = settingsDirty ? validate(normalized, t) : null;
   const visibleError = validationError ?? error;
@@ -488,6 +522,28 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     setSaving(false);
     setLastSavedAt(null);
   }, [settingsAccountId]);
+
+  // The OS-level autostart entry can be flipped outside the app (Task Manager
+  // on Windows, Login Items on macOS). Adopt its actual state on mount so the
+  // checkbox reflects reality and later saves do not silently re-enable an
+  // entry the user disabled there. Baseline moves with the form, so adopting
+  // the OS state never marks the settings dirty.
+  useEffect(() => {
+    if (!browserRuntime.supportsAutostart) return;
+    let cancelled = false;
+    void browserRuntime
+      .getDesktopAutostart()
+      .then((enabled) => {
+        if (cancelled || enabled === getRuntimeSettings().desktopAutostart) return;
+        setForm((value) => ({ ...value, desktopAutostart: enabled }));
+        setSavedBaseline((value) => ({ ...value, desktopAutostart: enabled }));
+        setRuntimeSettings({ ...getRuntimeSettings(), desktopAutostart: enabled });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function onChangePassword() {
     setPasswordError(null);
@@ -544,7 +600,6 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     const previousApiBaseUrl = getRuntimeSettings().apiBaseUrl;
     setSaving(true);
     try {
-      applySettings(nextSettings);
       const savedSettings = await saveAccountSettings(browserRuntime.storage, settingsAccountId, nextSettings);
       // The store JSON never contains the SSH default password; persist it in
       // secureStorage alongside the store save. The web runtime's secureStorage
@@ -559,6 +614,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           nextSettings.ssh.defaultPassword,
         );
       }
+      await applySettings(savedSettings);
       if (previousApiBaseUrl !== savedSettings.apiBaseUrl) {
         await queryClient.cancelQueries({ queryKey: queryKeys.images.all });
         await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all });
@@ -616,7 +672,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           saveGenerationRef.current += 1;
           setSaving(true);
           try {
-            applySettings(DEFAULT_APP_SETTINGS);
+            await applySettings(DEFAULT_APP_SETTINGS);
             const store = await readAccountSettingsStore(browserRuntime.storage);
             await writeAccountSettingsStore(browserRuntime.storage, resetAccountAppSettings(store, settingsAccountId));
             // Reset clears the SSH default password everywhere, including the
@@ -957,8 +1013,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   function addPortForward() {
     const localPort = Number(pfLocalPort);
     const remotePort = Number(pfRemotePort);
-    if (!localPort || localPort < 1 || localPort > 65535) {
-      toast.error(text("请输入有效的本地端口 (1-65535)", "Enter a valid local port (1-65535)"));
+    if (!pfLocalPort.trim() || !Number.isInteger(localPort) || localPort < 0 || localPort > 65535) {
+      toast.error(text("请输入有效的本地端口 (0-65535，0 为自动分配)", "Enter a valid local port (0-65535; 0 assigns an available port)"));
       return;
     }
     if (pfType !== "dynamic") {
@@ -966,7 +1022,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         toast.error(text("请填写远程主机地址", "Enter a remote host address"));
         return;
       }
-      if (!remotePort || remotePort < 1 || remotePort > 65535) {
+      if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) {
         toast.error(text("请输入有效的远程端口 (1-65535)", "Enter a valid remote port (1-65535)"));
         return;
       }
@@ -1121,7 +1177,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           : JSON.stringify(importBackup.items.settings),
       );
       const nextSettings = getAccountAppSettings(store, settingsAccountId);
-      applySettings(nextSettings);
+      await applySettings(nextSettings);
       setForm(nextSettings);
       setSavedBaseline(normalizeAppSettings(nextSettings));
     }
@@ -1238,7 +1294,10 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             </label>
 
             {showInsecureTransportWarning ? (
-              <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">{t("settings.transportInsecureWarning")}</div>
+              <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warningText">
+                <span className="font-medium">{text(`${insecureTransportTargets.join("、")}使用明文 HTTP。`, `${insecureTransportTargets.join(" and ")} ${insecureTransportTargets.length > 1 ? "use" : "uses"} cleartext HTTP. `)}</span>
+                {t("settings.transportInsecureWarning")}
+              </div>
             ) : null}
             {transportBlockedReason ? (
               <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{t("settings.transportBlocked")}</div>
@@ -1323,8 +1382,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         <Panel>
           <SectionHeader
             icon={PanelTopClose}
-            title={text("窗口关闭", "Window Close")}
-            description={text("控制桌面端点击关闭按钮后的确认和托盘行为。", "Control confirmation and tray behavior when closing the desktop window.")}
+              title={text("窗口与启动", "Window & Startup")}
+            description={text("控制桌面端关闭确认、托盘行为和开机自启。", "Control close confirmation, tray behavior, and launch at login on desktop.")}
           />
           <div className="grid gap-3 p-4 sm:grid-cols-2">
             <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface">
@@ -1355,8 +1414,26 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 </span>
               </span>
             </label>
+            <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface sm:col-span-2">
+              <input
+                className="mt-1"
+                type="checkbox"
+                checked={form.desktopAutostart}
+                onChange={(event) => setForm((value) => ({ ...value, desktopAutostart: event.target.checked }))}
+              />
+              <span>
+                <span className="block font-medium text-app-text">{text("开机自动启动", "Launch at login")}</span>
+                <span className="mt-1 block text-xs leading-5 text-app-muted">
+                  {text(
+                    "登录系统后自动启动 EasyConsole，本地定时任务才能在后台按计划执行。可配合“关闭窗口时最小化到托盘”使用。",
+                    "Start EasyConsole when you sign in to the system so local scheduled tasks keep running. Pairs well with minimize-to-tray.",
+                  )}
+                </span>
+              </span>
+            </label>
           </div>
-        </Panel>
+            <ScheduledWakeSettings />
+          </Panel>
       ) : null}
 
       {browserRuntime.supportsUpdater ? (
@@ -1438,7 +1515,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               </div>
             </div>
             {!browserRuntime.supportsUpdater ? (
-              <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warning">
+              <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warningText">
                 {text("当前运行时不支持安装桌面更新。", "This runtime cannot install desktop updates.")}
               </div>
             ) : null}
@@ -1685,6 +1762,10 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                       <div className="min-w-0 flex-1">
                         <div className="font-mono text-app-text">{host.hostPort}</div>
                         <div className="truncate font-mono text-app-muted">{host.fingerprint}</div>
+                        <div className="truncate text-[0.6875rem] text-app-muted">
+                          {host.algorithm ? `${host.algorithm} · ` : ""}
+                          {host.taskId ? text("任务", "Task") + ` ${host.taskId}` : text("任务 ID 未记录", "Task ID not recorded")}
+                        </div>
                       </div>
                       <button className="ml-2 shrink-0 rounded p-1 text-app-muted hover:bg-app-surface hover:text-app-danger" type="button" onClick={() => removeKnownHost(host.hostPort)}>
                         <Trash2 className="h-3.5 w-3.5" />
@@ -1837,7 +1918,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                     </label>
                     <label className="block text-sm">
                       <span className="mb-1 block text-app-muted">{t("settings.sshPortForwardLocalPort")}</span>
-                      <Input type="number" min={1} max={65535} value={pfLocalPort} onChange={(e) => setPfLocalPort(e.target.value)} placeholder="8080" />
+                      <Input type="number" min={0} max={65535} value={pfLocalPort} onChange={(e) => setPfLocalPort(e.target.value)} placeholder="8080" />
+                      <span className="mt-1 block text-xs text-app-muted">{text("填 0 由系统自动分配空闲端口。", "Use 0 to automatically assign an available port.")}</span>
                     </label>
                   </div>
                   {pfType !== "dynamic" ? (
@@ -1878,7 +1960,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                             {rule.type === "local" ? "-L" : rule.type === "remote" ? "-R" : "-D"}
                           </span>
                           <span className="font-mono text-app-text">
-                            {rule.localHost}:{rule.localPort}
+                            {rule.localHost}:{rule.localPort === 0 ? text("自动", "Auto") : rule.localPort}
                             {rule.type !== "dynamic" ? ` → ${rule.remoteHost}:${rule.remotePort}` : ""}
                           </span>
                           {rule.host ? (
@@ -1991,6 +2073,52 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               <span className="mt-1 block text-xs leading-5 text-app-muted">
                 {text("例如已有 XXX 时创建为 XXX_1。默认开启；作用于新建、克隆、模板和定时创建。", "For example, create XXX_1 when XXX already exists. Enabled by default; applies to create, clone, template, and scheduled creation.")}
               </span>
+            </span>
+          </label>
+        </div>
+      </Panel>
+
+      <Panel>
+        <SectionHeader
+          icon={CalendarClock}
+          title={text("定时任务", "Scheduled Tasks")}
+          description={text("客户端关闭或休眠期间错过的计划，恢复后按此策略处理。", "Runs missed while the app was closed or asleep follow this policy when it resumes.")}
+        />
+        <div className="grid gap-3 p-4 sm:grid-cols-2">
+          <label className="block rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+            <span className="mb-1 block font-medium text-app-text">{text("错过执行的处理", "Missed run policy")}</span>
+            <Select
+              className="w-full"
+              value={form.missedSchedulePolicy}
+              onChange={(event) =>
+                setForm((value) => ({ ...value, missedSchedulePolicy: event.target.value as AppSettings["missedSchedulePolicy"] }))
+              }
+            >
+              {MISSED_SCHEDULE_POLICY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {text(option.zh, option.en)}
+                </option>
+              ))}
+            </Select>
+            <span className="mt-1 block text-xs leading-5 text-app-muted">
+              {text("每次询问：保持等待并提醒你确认；补跑一次：恢复后立即执行；跳过：不再补跑。", "Ask: keep waiting and notify you; Catch up once: run immediately on resume; Skip: never catch up.")}
+            </span>
+          </label>
+          <label className="block rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm">
+            <span className="mb-1 block font-medium text-app-text">{text("容忍窗口", "Grace window")}</span>
+            <Select
+              className="w-full"
+              value={String(form.missedScheduleGraceMs)}
+              onChange={(event) => setForm((value) => ({ ...value, missedScheduleGraceMs: Number(event.target.value) }))}
+            >
+              {MISSED_SCHEDULE_GRACE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {text(option.zh, option.en)}
+                </option>
+              ))}
+            </Select>
+            <span className="mt-1 block text-xs leading-5 text-app-muted">
+              {text("超过计划时间多久仍算“错过”。应用运行中的短暂延迟不算错过。", "How far past the planned time still counts as missed. Brief delays while the app is running never do.")}
             </span>
           </label>
         </div>
@@ -2119,8 +2247,68 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
             );
           })}
         </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-app-border px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-app-text">{text("到期前提醒时间", "Remind before release")}</div>
+            <p className="mt-0.5 text-xs leading-5 text-app-muted">
+              {text("定时释放的任务提前多久提醒。仅对上一行的“定时释放即将到期”生效。", "How far ahead to warn for timed releases. Only affects “Timed release approaching” above.")}
+            </p>
+          </div>
+          <Select
+            aria-label={text("到期前提醒时间", "Remind before release")}
+            className="w-40"
+            value={String(form.timedReleaseReminderLeadMs)}
+            onChange={(event) => setForm((value) => ({ ...value, timedReleaseReminderLeadMs: Number(event.target.value) }))}
+          >
+            {TIMED_RELEASE_LEAD_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {text(option.zh, option.en)}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-app-border px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-app-text">{text("闲置判定窗口", "Idle detection window")}</div>
+            <p className="mt-0.5 text-xs leading-5 text-app-muted">
+              {text("已连接 SSH 时采样 GPU 利用率；没有 GPU 数据时仅依据 CPU／网络提醒。", "Samples GPU utilization through an existing SSH connection; falls back to CPU/network reminders when GPU data is unavailable.")}
+            </p>
+          </div>
+          <Select
+            aria-label={text("闲置判定窗口", "Idle detection window")}
+            className="w-40"
+            value={String(form.idleReminderWindowMs)}
+            onChange={(event) => setForm((value) => ({ ...value, idleReminderWindowMs: Number(event.target.value) }))}
+          >
+            {IDLE_REMINDER_WINDOW_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {text(option.zh, option.en)}
+              </option>
+            ))}
+          </Select>
+        </div>
+        {browserRuntime.isDesktop ? (
+          <label className="flex items-start gap-3 border-t border-app-border px-4 py-3 text-sm">
+            <input className="mt-1" type="checkbox" checked={form.idleAutoRelease} aria-labelledby="idle-auto-release-label" aria-describedby="idle-auto-release-help" onChange={(event) => {
+              if (!event.target.checked) { setForm((value) => ({ ...value, idleAutoRelease: false })); return; }
+              confirm({
+                title: text("开启闲置自动释放（实验性）", "Enable Idle Auto-release (Experimental)"),
+                description: text("保存后，对当前账号的运行中实例生效。需已连接 SSH，全部已分配 GPU 持续低负载达到完整判定窗口，同时 CPU 低负载、网络零流量。释放会停止计费并销毁容器内的数据，无法撤销；请先备份。", "After saving, applies to running instances of this account. Requires SSH, low utilization on every allocated GPU for the full window, low CPU, and zero network traffic. Release stops billing and destroys container-local data. It cannot be undone; back up your work first."),
+                confirmLabel: text("开启自动释放", "Enable Auto-release"), tone: "danger",
+                run: () => setForm((value) => ({ ...value, idleAutoRelease: true })),
+              });
+            }} />
+            <span>
+              <span className="flex flex-wrap items-center gap-2 font-medium">
+                <span id="idle-auto-release-label">{text("闲置时自动释放", "Auto-release idle instances")}</span>
+                <SettingTag>{text("实验性", "Experimental")}</SettingTag>
+              </span>
+              <span id="idle-auto-release-help" className="mt-1 block text-xs leading-5 text-app-muted">{text("默认关闭。自动释放会销毁容器内的数据，无法撤销，请先备份。需在主窗口保持 SSH 连接并完成连续 GPU 采样；采样中断、结果未知或账号切换时不会释放。", "Off by default. Auto-release destroys container-local data and cannot be undone; back up your work first. Keep SSH connected in the main window for continuous GPU sampling. Sampling gaps, unknown results or account changes prevent release.")}</span>
+            </span>
+          </label>
+        ) : null}
       </Panel>
-      </SettingsGroup>
+    </SettingsGroup>
 
       <SettingsGroup
         id={settingsGroupId("appearance")}
@@ -2226,8 +2414,8 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 {(() => {
                   const summary = summarizeBackup(importBackup);
                   return text(
-                    `模板 ${summary.taskTemplates}，计划任务 ${summary.scheduledTasks}，运行日志 ${summary.runLogs}，账号 ${summary.savedAccounts}`,
-                    `Templates ${summary.taskTemplates}, scheduled tasks ${summary.scheduledTasks}, run logs ${summary.runLogs}, accounts ${summary.savedAccounts}`,
+                    `模板 ${summary.taskTemplates}，资源预设 ${summary.resourcePresets}，计划任务 ${summary.scheduledTasks}，运行日志 ${summary.runLogs}，账号 ${summary.savedAccounts}`,
+                    `Templates ${summary.taskTemplates}, resource presets ${summary.resourcePresets}, scheduled tasks ${summary.scheduledTasks}, run logs ${summary.runLogs}, accounts ${summary.savedAccounts}`,
                   );
                 })()}
               </div>

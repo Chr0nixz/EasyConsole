@@ -95,7 +95,11 @@ fn write_ssh_history(path: &Path, entries: &[SshHistoryEntryValue]) -> Result<()
 }
 
 #[tauri::command]
-pub fn list_ssh_history(app: AppHandle) -> Result<Vec<SshHistoryEntryValue>, String> {
+pub fn list_ssh_history(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Vec<SshHistoryEntryValue>, String> {
+    crate::require_main_window(window.label())?;
     let path = app_data_file(&app, "ssh-history.json")?;
     load_ssh_history(&path)
 }
@@ -103,12 +107,14 @@ pub fn list_ssh_history(app: AppHandle) -> Result<Vec<SshHistoryEntryValue>, Str
 #[tauri::command]
 pub fn add_ssh_history(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     host: String,
     port: String,
     username: String,
     task_name: String,
     limit: Option<usize>,
 ) -> Result<(), String> {
+    crate::require_main_or_ssh_window(window.label())?;
     let _guard = ssh_history_lock().lock().map_err(|e| {
         trf!(
             "SSH 历史锁获取失败：{e}",
@@ -142,7 +148,8 @@ pub fn add_ssh_history(
 }
 
 #[tauri::command]
-pub fn clear_ssh_history(app: AppHandle) -> Result<(), String> {
+pub fn clear_ssh_history(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    crate::require_main_window(window.label())?;
     let _guard = ssh_history_lock().lock().map_err(|e| {
         trf!(
             "SSH 历史锁获取失败：{e}",

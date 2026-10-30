@@ -3,6 +3,8 @@
 //! history and system terminal spawning. Split out of lib.rs; every Tauri
 //! command keeps its original name so the frontend invoke surface is
 //! unchanged.
+mod auth;
+pub mod gpu;
 pub mod history;
 pub mod host_key;
 pub mod port_forward;

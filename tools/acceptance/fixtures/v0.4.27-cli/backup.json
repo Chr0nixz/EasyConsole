@@ -1,0 +1,113 @@
+{
+  "app": "EasyConsole",
+  "version": 1,
+  "exportedAt": "2026-10-20T00:00:00.000Z",
+  "includeSecrets": false,
+  "items": {
+    "settings": {
+      "version": 2,
+      "byAccount": {}
+    },
+    "taskTemplates": [
+      {
+        "id": "legacy-cli-template-manual",
+        "name": "upgrade-0427-cli-manual",
+        "description": "Published 0.4.27 local-only acceptance fixture",
+        "taskNamePrefix": "upgrade-0427-${run}",
+        "batchCount": 2,
+        "imageId": "acceptance-image-unused",
+        "cpu": 4,
+        "gpu": 0,
+        "memory": 16,
+        "price": 1,
+        "storagePath": "/upgrade-0427",
+        "mountPath": "/home/ubuntu/upgrade-0427",
+        "releaseCondition": 1,
+        "variables": [
+          {
+            "key": "run",
+            "defaultValue": "fixture",
+            "required": true
+          }
+        ],
+        "usageCount": 0,
+        "createdAt": "2026-10-20T00:00:00.000Z",
+        "updatedAt": "2026-10-20T00:00:00.000Z"
+      },
+      {
+        "name": "upgrade-0427-cli-script",
+        "description": "Published 0.4.27 local-only acceptance fixture",
+        "taskNamePrefix": "upgrade-0427-${run}",
+        "batchCount": 2,
+        "imageId": "acceptance-image-unused",
+        "cpu": 4,
+        "gpu": 0,
+        "memory": 16,
+        "price": 1,
+        "storagePath": "/upgrade-0427",
+        "mountPath": "/home/ubuntu/upgrade-0427",
+        "releaseCondition": 3,
+        "variables": [
+          {
+            "key": "run",
+            "defaultValue": "fixture",
+            "required": true
+          }
+        ],
+        "workDirectory": "/home/ubuntu/upgrade-0427",
+        "scriptPath": "python train.py",
+        "scriptEnv": [
+          {
+            "key": "EXPERIMENT_ID",
+            "value": "upgrade-0427-fixture"
+          }
+        ],
+        "id": "legacy-cli-template-script",
+        "usageCount": 0,
+        "createdAt": "2026-10-20T00:00:00.000Z",
+        "updatedAt": "2026-10-20T00:00:00.000Z"
+      }
+    ],
+    "scheduledTasks": [
+      {
+        "id": "legacy-cli-schedule-pending",
+        "name": "upgrade-0427-cli-pending",
+        "scheduleTime": "2099-01-01T00:00:00.000Z",
+        "status": "pending",
+        "payload": {
+          "name": "upgrade-0427-unused",
+          "image_id": "acceptance-image-unused",
+          "cpu": 4,
+          "gpu": 0,
+          "memory": 16,
+          "price": 1,
+          "storage_path": "/upgrade-0427",
+          "mount_path": "/home/ubuntu/upgrade-0427",
+          "releace_conditions": 1
+        },
+        "createdAt": "2026-10-20T00:00:00.000Z",
+        "updatedAt": "2026-10-20T00:00:00.000Z"
+      },
+      {
+        "id": "legacy-cli-schedule-paused",
+        "name": "upgrade-0427-cli-paused",
+        "scheduleTime": "2099-01-01T00:00:00.000Z",
+        "status": "paused",
+        "payload": {
+          "name": "upgrade-0427-unused",
+          "image_id": "acceptance-image-unused",
+          "cpu": 4,
+          "gpu": 0,
+          "memory": 16,
+          "price": 1,
+          "storage_path": "/upgrade-0427",
+          "mount_path": "/home/ubuntu/upgrade-0427",
+          "releace_conditions": 1
+        },
+        "createdAt": "2026-10-20T00:00:00.000Z",
+        "updatedAt": "2026-10-20T00:00:00.000Z"
+      }
+    ],
+    "runLogs": []
+  }
+}

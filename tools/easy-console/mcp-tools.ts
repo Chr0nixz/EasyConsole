@@ -16,6 +16,7 @@ import {
   createScheduledTaskRecord,
   createTask,
   createTaskTemplateRecord,
+  deleteImage,
   deleteScheduledTask,
   deleteStoragePath,
   deleteTask,
@@ -32,6 +33,7 @@ import {
   getImageDetail,
   getMonitorIndex,
   getStorageInfo,
+  getTask,
   getTaskLog,
   importBackup,
   listImages,
@@ -55,9 +57,11 @@ import {
   setDefaultImage,
   uploadLocalFile,
   updateScheduledTaskRecord,
+  updateImage,
   updateTask,
   updateTaskTemplateRecord,
   userInfo,
+  waitForTask,
 } from "./operations";
 import type { EditableTaskTemplate } from "../../src/lib/task-templates";
 
@@ -77,6 +81,35 @@ export type EasyConsoleMcpDeps = {
 
 const idSchema = z.union([z.string(), z.number()]);
 const optionalQuerySchema = z.record(z.string(), z.unknown()).optional();
+const numericInput = (minimum: number, integer: boolean, inclusive = true) =>
+  z.union([z.number(), z.string().trim().min(1)]).refine((value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && (!integer || Number.isInteger(number)) &&
+      (inclusive ? number >= minimum : number > minimum);
+  }, "Invalid resource quantity");
+
+/**
+ * Known create/update payload fields, typed as narrowly as the shared
+ * CreateTaskPayload type. `passthrough` keeps unknown backend fields working
+ * (the live API is only partially verified), but invalid quantities and wrong
+ * value kinds for known fields are rejected at the tool boundary instead of
+ * surfacing as backend errors.
+ */
+const taskPayloadFields = {
+  price: z.union([z.string(), z.number()]).optional(),
+  cpu: numericInput(0, false, false).optional(),
+  gpu: numericInput(0, true).optional(),
+  memory: numericInput(1, true).optional(),
+  img: z.union([z.string(), z.number()]).optional(),
+  storage_path: z.string().optional(),
+  mount_path: z.string().optional(),
+  releace_conditions: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal("1"), z.literal("2"), z.literal("3")]).optional(),
+  releace_time: z.string().optional(),
+  work_directory: z.string().optional(),
+  script_path: z.string().optional(),
+};
+const createTaskPayloadSchema = z.object({ name: z.string().trim().min(1), ...taskPayloadFields }).passthrough();
+const updateTaskPayloadSchema = z.object({ name: z.string().trim().min(1).optional(), ...taskPayloadFields }).passthrough();
 
 function asId(value: unknown): JsonId {
   if (typeof value === "string" || typeof value === "number") return value;
@@ -98,6 +131,19 @@ function asConfirm(value: unknown) {
 function asRecord(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as UnknownRecord;
+}
+
+/**
+ * Stamp the confirmed schedule.create outcome: the CLI/MCP sidecar has no
+ * runner, so without this note agents assume the task will fire automatically
+ * (shared plans still require verified ownership in the desktop app).
+ */
+function withScheduleAutoRunNote(result: Awaited<ReturnType<typeof createScheduledTaskRecord>>) {
+  if (result.dryRun) return result;
+  return {
+    ...result,
+    note: "Local scheduled task persisted in the shared store. It will NOT run automatically by the CLI/MCP sidecar. Trigger it with easyconsole_schedule_run, or verify its owner in the desktop app for automatic execution.",
+  };
 }
 
 function sourceForTool(name: string): RunLogSource {
@@ -146,10 +192,41 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       },
     },
     {
+      name: "easyconsole_task_get",
+      description:
+        "Get one task by id or task_id: full task fields plus statusText, an `ssh` endpoint summary (host/port/username — credentials are deliberately omitted) and its Grafana monitor URL.",
+      inputSchema: {
+        taskId: idSchema,
+      },
+      handler(context, input) {
+        return getTask(context.api, asId(input.taskId));
+      },
+    },
+    {
+      name: "easyconsole_task_wait",
+      description:
+        "Read-only poll until the task reaches a target status (default [2] running), enters a failure state (7 failed / 8 abnormal — returns early with outcome \"failed\"), or times out (outcome \"timeout\"). " +
+        "Defaults: timeout 300s (max 900s), poll every 10s (min 5s). Ideal for create-then-connect flows: wait for running, then use the returned task's SSH fields.",
+      inputSchema: {
+        taskId: idSchema,
+        statuses: z.array(z.number().int()).optional(),
+        timeoutSeconds: z.number().int().positive().max(900).optional(),
+        intervalSeconds: z.number().int().min(5).optional(),
+      },
+      handler(context, input) {
+        const statuses = Array.isArray(input.statuses) ? input.statuses.map(Number) : undefined;
+        return waitForTask(context.api, asId(input.taskId), {
+          targetStatuses: statuses,
+          timeoutMs: (asOptionalNumber(input.timeoutSeconds) ?? 300) * 1000,
+          intervalMs: (asOptionalNumber(input.intervalSeconds) ?? 10) * 1000,
+        });
+      },
+    },
+    {
       name: "easyconsole_task_create",
       description: "Create an EasyConsole task. Requires confirm=true to execute; otherwise returns a dry-run payload.",
       inputSchema: {
-        payload: z.record(z.string(), z.unknown()),
+        payload: createTaskPayloadSchema,
         confirm: z.boolean().optional(),
       },
       handler(context, input) {
@@ -169,7 +246,10 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_task_release_batch",
-      description: "Release multiple EasyConsole tasks. Requires confirm=true to execute.",
+      description:
+        "Release multiple EasyConsole tasks. Requires confirm=true to execute. " +
+        "Without confirm, read the returned `impact` array (id + name of every task the batch would release) and verify it before confirming. " +
+        "With confirm=true the batch runs item by item — a failing task does not abort the rest — and returns `batchId` plus per-item `results` ({id, name, ok, error}) to review afterwards.",
       inputSchema: {
         taskIds: z.array(idSchema),
         confirm: z.boolean().optional(),
@@ -177,7 +257,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       handler(context, input) {
         const ids = input.taskIds;
         if (!Array.isArray(ids)) throw new Error("taskIds must be an array.");
-        return releaseTasks(context.api, ids as JsonId[], asConfirm(input.confirm));
+        return releaseTasks(context.api, ids as JsonId[], asConfirm(input.confirm), { storage: context.runLogStorage, channel: "mcp" });
       },
     },
     {
@@ -277,6 +357,39 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       },
     },
     {
+      name: "easyconsole_image_update",
+      description:
+        "Experimental: update a custom image's metadata (name/description; unknown extra fields pass through). Requires confirm=true to execute. " +
+        "The backend endpoint exists in the API surface but its live behavior is unverified; failures surface the backend's reason.",
+      inputSchema: {
+        imageId: idSchema,
+        payload: z
+          .object({
+            name: z.string().min(1).optional(),
+            description: z.string().optional(),
+            tag: z.string().optional(),
+          })
+          .passthrough(),
+        confirm: z.boolean().optional(),
+      },
+      handler(context, input) {
+        return updateImage(context.api, asId(input.imageId), asRecord(input.payload), asConfirm(input.confirm));
+      },
+    },
+    {
+      name: "easyconsole_image_delete",
+      description:
+        "Experimental: delete a custom image by id; irreversible. Requires confirm=true to execute. " +
+        "Verify the id with easyconsole_image_list first — deletion removes the ability to create instances from the image.",
+      inputSchema: {
+        imageId: idSchema,
+        confirm: z.boolean().optional(),
+      },
+      handler(context, input) {
+        return deleteImage(context.api, asId(input.imageId), asConfirm(input.confirm));
+      },
+    },
+    {
       name: "easyconsole_user_info",
       description: "Show current EasyConsole user information.",
       inputSchema: {},
@@ -312,19 +425,22 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_task_update",
-      description: "Update an EasyConsole task. Requires confirm=true to execute.",
+      description: "Experimental: update an EasyConsole task through PATCH only. Requires confirm=true to execute. The live backend's edit support must be verified.",
       inputSchema: {
         taskId: idSchema,
-        payload: z.record(z.string(), z.unknown()),
+        payload: updateTaskPayloadSchema,
         confirm: z.boolean().optional(),
       },
       handler(context, input) {
-        return updateTask(context.api, asId(input.taskId), buildCreateTaskPayload(asRecord(input.payload)), asConfirm(input.confirm));
+        return updateTask(context.api, asId(input.taskId), asRecord(input.payload), asConfirm(input.confirm));
       },
     },
     {
       name: "easyconsole_task_delete_batch",
-      description: "Delete multiple EasyConsole tasks. Requires confirm=true to execute.",
+      description:
+        "Delete multiple EasyConsole tasks. Requires confirm=true to execute; deletion is irreversible. " +
+        "Without confirm, read the returned `impact` array (id + name of every task the batch would delete) and verify it before confirming. " +
+        "With confirm=true the batch runs item by item — a failing task does not abort the rest — and returns `batchId` plus per-item `results` ({id, name, ok, error}) to review afterwards.",
       inputSchema: {
         taskIds: z.array(idSchema),
         confirm: z.boolean().optional(),
@@ -332,7 +448,7 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       handler(context, input) {
         const ids = input.taskIds;
         if (!Array.isArray(ids)) throw new Error("taskIds must be an array.");
-        return deleteTasks(context.api, ids as JsonId[], asConfirm(input.confirm));
+        return deleteTasks(context.api, ids as JsonId[], asConfirm(input.confirm), { storage: context.runLogStorage, channel: "mcp" });
       },
     },
     {
@@ -489,9 +605,12 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_account_refresh_token",
-      description: "Refresh the current auth token and persist the new token to config.",
-      inputSchema: {},
-      async handler(context) {
+      description: "Refresh the current auth token and persist the new token to config. Requires confirm=true to execute; otherwise returns a dry-run preview without credentials.",
+      inputSchema: { confirm: z.boolean().optional() },
+      async handler(context, input) {
+        if (!asConfirm(input.confirm)) {
+          return { dryRun: true, action: "account.refresh-token", payload: { configPath: context.config.configPath }, message: "Pass confirm=true to refresh and save local credentials." };
+        }
         if (!context.config.token) throw new Error("No current token found in config.");
         const result = await refreshToken(context.api, context.config.token);
         if (result.token) {
@@ -539,7 +658,10 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_template_apply",
-      description: "Apply a task template to create tasks. Requires confirm=true to execute.",
+      description:
+        "Apply a task template to create tasks. Requires confirm=true to execute. " +
+        "Without confirm, read the returned `impact` array — one entry per generated payload (ordinal id + generated task name) — and review the final names and count before confirming. " +
+        "With confirm=true the batch creates tasks one by one — a failing payload does not abort the rest — and returns `batchId` plus per-item `results` ({id, name, ok, error}) to review afterwards.",
       inputSchema: {
         templateId: z.string(),
         variableValues: z.record(z.string(), z.string()).optional(),
@@ -549,7 +671,10 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
         const variableValues = input.variableValues
           ? (asRecord(input.variableValues) as Record<string, string>)
           : undefined;
-        return applyTaskTemplate(context.storage, context.api, String(input.templateId), asConfirm(input.confirm), variableValues);
+        return applyTaskTemplate(context.storage, context.api, String(input.templateId), asConfirm(input.confirm), variableValues, {
+          storage: context.runLogStorage,
+          channel: "mcp",
+        });
       },
     },
     {
@@ -573,7 +698,9 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_schedule_create",
-      description: "Create a local scheduled task. Requires confirm=true to persist; otherwise returns a dry-run preview.",
+      description:
+        "Create a local scheduled task. Requires confirm=true to persist; otherwise returns a dry-run preview. " +
+        "Local scheduled tasks are never executed automatically by the CLI/MCP sidecar. They share desktop storage; verify their owner in the desktop app for automatic execution, or use easyconsole_schedule_run.",
       inputSchema: {
         name: z.string(),
         scheduleTime: z.string(),
@@ -593,12 +720,14 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
             recurrence: input.recurrence as unknown as Parameters<typeof createScheduledTaskRecord>[1]["recurrence"],
           },
           asConfirm(input.confirm),
-        );
+        ).then(withScheduleAutoRunNote);
       },
     },
     {
       name: "easyconsole_schedule_update",
-      description: "Update a local scheduled task. Requires confirm=true to execute.",
+      description:
+        "Update a local scheduled task. Requires confirm=true to execute. " +
+        "Local scheduled tasks are never executed automatically by the CLI/MCP sidecar. The desktop runner may execute shared plans with a verified owner; use easyconsole_schedule_run for an explicit manual run.",
       inputSchema: {
         taskId: z.string(),
         patch: z.record(z.string(), z.unknown()),
@@ -630,7 +759,9 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_schedule_resume",
-      description: "Resume a paused or failed scheduled task. Requires confirm=true to execute.",
+      description:
+        "Resume a paused or failed scheduled task. Requires confirm=true to execute. " +
+        "Local scheduled tasks are never executed automatically by the CLI/MCP sidecar. The desktop runner may execute shared plans with a verified owner; use easyconsole_schedule_run for an explicit manual run.",
       inputSchema: {
         taskId: z.string(),
         confirm: z.boolean().optional(),
@@ -641,13 +772,13 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_schedule_run",
-      description: "Manually run a scheduled task now. Requires confirm=true to execute.",
+      description: "Manually run a scheduled task now. Requires confirm=true and verifies the authenticated account against a known plan owner. Unowned legacy plans require explicit manual confirmation.",
       inputSchema: {
         taskId: z.string(),
         confirm: z.boolean().optional(),
       },
       handler(context, input) {
-        return runScheduledTask(context.storage, context.api, String(input.taskId), asConfirm(input.confirm));
+        return runScheduledTask(context.storage, context.api, String(input.taskId), asConfirm(input.confirm), context.resolveAccountScope);
       },
     },
     {
@@ -664,14 +795,14 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     {
       name: "easyconsole_backup_export",
       description:
-        "Export non-secret local data (settings, language, task templates, scheduled tasks, run logs) as a backup JSON object. " +
+        "Export non-secret local data (settings, language, task templates, resource presets, scheduled tasks, run logs) as a backup JSON object. " +
         "Tokens and saved accounts are never included: export those from the desktop Settings page instead.",
       inputSchema: {},
       handler(context) {
         // No includeSecrets option by design. This is a read-only tool, so it
         // bypasses the mutation confirm gate entirely; letting it return a
         // bearer token would hand credentials to the model with no checkpoint.
-        return exportBackup(context.storage, false);
+        return exportBackup(context.storage, false, context.credentialStorage ?? context.storage);
       },
     },
     {
@@ -691,7 +822,13 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
         if (rejected.length > 0) {
           throw new Error(`Refusing to import credential sections via MCP: ${rejected.join(", ")}. Use the desktop Settings page.`);
         }
-        return importBackup(context.storage, String(input.backupText), sections as never, asConfirm(input.confirm));
+        return importBackup(
+          context.storage,
+          String(input.backupText),
+          sections as never,
+          asConfirm(input.confirm),
+          context.credentialStorage ?? context.storage,
+        );
       },
     },
     {

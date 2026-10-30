@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 
-// recharts ResponsiveContainer uses ResizeObserver, which jsdom does not provide.
+// Components observe their own size (virtualized lists, sliding indicators); jsdom has no ResizeObserver.
 class ResizeObserverStub {
   observe() {}
   unobserve() {}

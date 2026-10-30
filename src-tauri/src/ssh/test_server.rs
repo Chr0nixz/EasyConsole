@@ -3,22 +3,33 @@
 //! filesystem-backed SFTP rooted at a temp directory. Only compiled for
 //! `cargo test`; never part of the shipped app.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use russh::keys::ssh_key::HashAlg;
 use russh::keys::PrivateKey;
 use russh::server::{Auth, Msg, Session};
-use russh::{Channel, ChannelId};
+use russh::{Channel, ChannelId, Pty};
 use russh_sftp::protocol::{
     File, FileAttributes, Handle, Name, OpenFlags, Packet, Status, StatusCode, Version,
 };
 use tokio::sync::Mutex;
+
+pub static TEST_AUTH_STALLED: AtomicBool = AtomicBool::new(false);
+pub static TEST_PTY_STALLED: AtomicBool = AtomicBool::new(false);
+pub static TEST_SHELL_STALLED: AtomicBool = AtomicBool::new(false);
+pub static TEST_GPU_PROBE_DELAY_ONCE: AtomicBool = AtomicBool::new(false);
+pub static TEST_GPU_PROBE_CHANNEL_CLOSES: AtomicUsize = AtomicUsize::new(0);
+pub static TEST_SFTP_CHANNELS_OPENED: AtomicUsize = AtomicUsize::new(0);
+pub static TEST_SFTP_WRITE_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+pub static TEST_DIRECT_TCPIP_REJECTED: AtomicBool = AtomicBool::new(false);
+pub static TEST_PAM_RESPONSES: AtomicUsize = AtomicUsize::new(0);
 
 pub struct TestSshServer {
     pub username: String,
@@ -60,6 +71,7 @@ impl russh::server::Server for TestSshServer {
             support_posix_rename: self.support_posix_rename,
             posix_rename_seen: Arc::clone(&self.posix_rename_seen),
             channels: Arc::new(Mutex::new(HashMap::new())),
+            keyboard_round: 0,
         }
     }
 }
@@ -75,6 +87,7 @@ pub struct TestClientHandler {
     stall_shell_input: bool,
     support_posix_rename: bool,
     posix_rename_seen: Arc<AtomicBool>,
+    keyboard_round: usize,
     /// Channels opened per connection; the SFTP subsystem request turns its
     /// channel into a byte stream for the SFTP server.
     channels: Arc<Mutex<HashMap<ChannelId, Channel<Msg>>>>,
@@ -89,12 +102,81 @@ impl TestClientHandler {
 impl russh::server::Handler for TestClientHandler {
     type Error = russh::Error;
 
+    async fn channel_close(
+        &mut self,
+        _channel: ChannelId,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        TEST_GPU_PROBE_CHANNEL_CLOSES.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
+        if self.username.starts_with("pam-") {
+            return Ok(Auth::Reject {
+                proceed_with_methods: Some(
+                    [russh::MethodKind::KeyboardInteractive].as_slice().into(),
+                ),
+                partial_success: false,
+            });
+        }
+        if user == self.username && self.password == "stall-auth" {
+            TEST_AUTH_STALLED.store(true, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+        }
         if user == self.username && password == self.password {
             Ok(Auth::Accept)
         } else {
             Ok(Auth::reject())
         }
+    }
+
+    async fn auth_keyboard_interactive<'a>(
+        &'a mut self,
+        user: &str,
+        _submethods: &str,
+        response: Option<russh::server::Response<'a>>,
+    ) -> Result<Auth, Self::Error> {
+        if user != self.username || !self.username.starts_with("pam-") {
+            return Ok(Auth::reject());
+        }
+        self.keyboard_round += 1;
+        if self.username == "pam-stall" {
+            TEST_AUTH_STALLED.store(true, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+        }
+        if let Some(response) = response {
+            let answers: Vec<_> = response.collect();
+            TEST_PAM_RESPONSES.fetch_add(answers.len(), Ordering::SeqCst);
+            if !answers.is_empty() {
+                if answers.len() != 1 || answers[0].as_ref() != self.password.as_bytes() {
+                    return Ok(Auth::reject());
+                }
+                if self.username == "pam-mfa" {
+                    return Ok(Auth::Reject {
+                        proceed_with_methods: Some(
+                            [russh::MethodKind::KeyboardInteractive].as_slice().into(),
+                        ),
+                        partial_success: true,
+                    });
+                }
+                if self.username != "pam-repeat" {
+                    return Ok(Auth::Accept);
+                }
+            }
+        }
+        let prompts: Vec<(Cow<'static, str>, bool)> = match self.username.as_str() {
+            "pam-otp" => vec![("Verification code:".into(), false)],
+            "pam-echo" => vec![("Password:".into(), true)],
+            "pam-multi" => vec![("Password:".into(), false), ("OTP:".into(), false)],
+            "pam-info" if self.keyboard_round == 1 => Vec::new(),
+            _ => vec![("Password:".into(), false)],
+        };
+        Ok(Auth::Partial {
+            name: "PAM".into(),
+            instructions: "".into(),
+            prompts: prompts.into(),
+        })
     }
 
     async fn auth_publickey(
@@ -141,6 +223,9 @@ impl russh::server::Handler for TestClientHandler {
         _originator_port: u32,
         _session: &mut Session,
     ) -> Result<bool, Self::Error> {
+        if TEST_DIRECT_TCPIP_REJECTED.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
         self.channels.lock().await.insert(channel.id(), channel);
         Ok(true)
     }
@@ -150,8 +235,73 @@ impl russh::server::Handler for TestClientHandler {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.username == "stall-shell" {
+            TEST_SHELL_STALLED.store(true, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+        }
         session.channel_success(channel)?;
+        if self.shell_banner == "exit-first" {
+            session.data(channel, "finished\n".to_string())?;
+            session.eof(channel)?;
+            session.exit_status_request(channel, 23)?;
+            session.close(channel)?;
+            return Ok(());
+        }
         session.data(channel, self.shell_banner.clone())?;
+        Ok(())
+    }
+
+    async fn pty_request(
+        &mut self,
+        channel: ChannelId,
+        _term: &str,
+        _col_width: u32,
+        _row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        _modes: &[(Pty, u32)],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if self.username == "stall-pty" {
+            TEST_PTY_STALLED.store(true, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+        }
+        session.channel_success(channel)?;
+        Ok(())
+    }
+
+    async fn exec_request(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if data == b"test-exit-first:success" || data == b"test-exit-first:failure" {
+            session.channel_success(channel)?;
+            session.data(channel, "command output\n".to_string())?;
+            session.eof(channel)?;
+            session.exit_status_request(
+                channel,
+                if data == b"test-exit-first:success" {
+                    0
+                } else {
+                    7
+                },
+            )?;
+        } else if data == crate::ssh::gpu::GPU_PROBE_COMMAND.as_bytes() {
+            session.channel_success(channel)?;
+            if TEST_GPU_PROBE_DELAY_ONCE.swap(false, Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(5_500)).await;
+                return Ok(());
+            }
+            session.data(channel, "0\n2\n".to_string())?;
+            session.exit_status_request(channel, 0)?;
+        } else {
+            session.channel_failure(channel)?;
+            session.exit_status_request(channel, 1)?;
+        }
+        session.eof(channel)?;
+        session.close(channel)?;
         Ok(())
     }
 
@@ -192,6 +342,7 @@ impl russh::server::Handler for TestClientHandler {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if name == "sftp" {
+            TEST_SFTP_CHANNELS_OPENED.fetch_add(1, Ordering::SeqCst);
             let channel = self.take_channel(channel_id).await;
             session.channel_success(channel_id)?;
             let handler = TestSftpHandler::new(
@@ -266,15 +417,23 @@ impl TestSftpHandler {
     }
 
     fn resolve(&self, path: &str) -> PathBuf {
+        self.root
+            .join(Self::remote_path(path).trim_start_matches('/'))
+    }
+
+    fn remote_path(path: &str) -> String {
         let path = path.replace('\\', "/");
-        if path == "/" || path == "~" || path == "~/" {
-            return self.root.clone();
+        let mut components = Vec::new();
+        for component in path.trim_start_matches("~/").split('/') {
+            match component {
+                "" | "." | "~" => {}
+                ".." => {
+                    components.pop();
+                }
+                part => components.push(part),
+            }
         }
-        let stripped = path
-            .strip_prefix("~/")
-            .or_else(|| path.strip_prefix('/'))
-            .unwrap_or(&path);
-        self.root.join(stripped)
+        format!("/{}", components.join("/"))
     }
 
     fn ok(id: u32) -> Status {
@@ -376,6 +535,7 @@ impl russh_sftp::server::Handler for TestSftpHandler {
         offset: u64,
         data: Vec<u8>,
     ) -> Result<Status, Self::Error> {
+        TEST_SFTP_WRITE_REQUESTS.fetch_add(1, Ordering::SeqCst);
         self.pace().await;
         let Some(SftpHandle::File(file)) = self.handles.get_mut(&handle) else {
             return Err(StatusCode::NoSuchFile);
@@ -499,7 +659,10 @@ impl russh_sftp::server::Handler for TestSftpHandler {
     async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
         Ok(Name {
             id,
-            files: vec![File::dummy(self.resolve(&path).to_string_lossy())],
+            // The protocol sees a virtual POSIX filesystem. Returning the
+            // host's fixture directory makes Unix clients send /tmp/... back
+            // here, which resolve() would incorrectly root a second time.
+            files: vec![File::dummy(Self::remote_path(&path))],
         })
     }
 
@@ -588,4 +751,36 @@ pub fn generate_key_pair(dir: &Path, name: &str, passphrase: &str) -> (PathBuf, 
 pub fn load_host_key(path: &Path) -> PrivateKey {
     russh::keys::load_secret_key(path.to_string_lossy().as_ref(), None)
         .expect("test host key must load")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use russh_sftp::server::Handler;
+
+    #[tokio::test]
+    async fn sftp_realpath_uses_remote_paths_independent_of_the_host_os() {
+        let root = tempfile::tempdir().unwrap();
+        let mut handler = TestSftpHandler::new(
+            root.path().to_path_buf(),
+            None,
+            false,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let home = handler.realpath(1, ".".into()).await.unwrap();
+        assert_eq!(home.files[0].filename, "/");
+        let file = handler
+            .realpath(2, "~/folder/../file.bin".into())
+            .await
+            .unwrap();
+        assert_eq!(file.files[0].filename, "/file.bin");
+        assert_eq!(
+            handler.resolve(&file.files[0].filename),
+            root.path().join("file.bin")
+        );
+        assert_eq!(
+            handler.resolve("/../file.bin"),
+            root.path().join("file.bin")
+        );
+    }
 }

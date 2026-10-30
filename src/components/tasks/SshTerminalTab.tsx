@@ -6,8 +6,9 @@ import type { IDisposable, Terminal as XTermInstance } from "@xterm/xterm";
 import { ChevronDown, ChevronUp, Circle, FolderOpen, MoreHorizontal, Network, RefreshCw, Search, Square, Unplug, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getRuntimeSettings, portForwardRuleAppliesToHost, type SshTerminalTheme } from "../../lib/app-settings";
+import { getRuntimeSettings, portForwardRuleAppliesToHost, type SshTerminalPreferences, type SshTerminalTheme } from "../../lib/app-settings";
 import { browserRuntime } from "../../lib/runtime";
+import { resolveBuiltinTerminalTheme, SSH_SEARCH_DECORATIONS } from "../../lib/ssh-terminal-colors";
 import { saveBlob } from "../../lib/download";
 import { useI18n } from "../../lib/i18n";
 import { useMobileBackLayer } from "../../lib/use-mobile-back-stack";
@@ -32,6 +33,7 @@ type SshTerminalTabProps = {
   tabId: string;
   active: boolean;
   onStatusChange: (status: string, kind: StatusKind) => void;
+  preferences?: SshTerminalPreferences;
 };
 
 /** Canonical definition lives in lib/types.ts so lib modules can use it. */
@@ -42,18 +44,6 @@ const HOST_KEY_PROMPT_TIMEOUT_SECS = 120;
 
 /** Replay chunk size (rows) for preserved scrollback, so large histories do not block one write. */
 const RECONNECT_REPLAY_CHUNK_ROWS = 500;
-
-/**
- * Overview-ruler-only search decorations: enabling decorations is what makes
- * the search addon report match counts, and scrollbar stripes stay visually
- * restrained where in-terminal match highlighting would not.
- */
-const SEARCH_DECORATIONS = {
-  decorations: {
-    matchOverviewRuler: "oklch(0.62 0.1 250 / 0.7)",
-    activeMatchColorOverviewRuler: "oklch(0.5 0.145 250)",
-  },
-} as const;
 
 function formatClock(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -72,22 +62,14 @@ function statusKindFromPhase(phase: SshSessionPhase | undefined): StatusKind {
   }
 }
 
-function resolveTerminalTheme(theme: SshTerminalTheme) {
+function resolveTerminalTheme(theme: SshTerminalTheme, customColors = getRuntimeSettings().ssh.terminal.customColors) {
   switch (theme) {
     case "light":
-      return {
-        background: "oklch(0.98 0.005 255)",
-        foreground: "oklch(0.2 0.02 255)",
-        cursor: "oklch(0.3 0.15 235)",
-      };
+      return resolveBuiltinTerminalTheme("light");
     case "hacker":
-      return {
-        background: "oklch(0.05 0.01 145)",
-        foreground: "oklch(0.85 0.2 145)",
-        cursor: "oklch(0.9 0.25 145)",
-      };
+      return resolveBuiltinTerminalTheme("hacker");
     case "custom": {
-      const colors = getRuntimeSettings().ssh.terminal.customColors;
+      const colors = customColors;
       return {
         background: colors.background,
         foreground: colors.foreground,
@@ -113,15 +95,11 @@ function resolveTerminalTheme(theme: SshTerminalTheme) {
     }
     case "dark":
     default:
-      return {
-        background: "oklch(0.18 0.028 255)",
-        foreground: "oklch(0.9 0.018 255)",
-        cursor: "oklch(0.78 0.12 235)",
-      };
+      return resolveBuiltinTerminalTheme("dark");
   }
 }
 
-export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTerminalTabProps) {
+export function SshTerminalTab({ request, tabId, active, onStatusChange, preferences }: SshTerminalTabProps) {
   const { text } = useI18n();
   const toast = useToast();
   const sftpLabel = text("SFTP 远程文件", "SFTP Remote Files");
@@ -145,6 +123,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
   const [portForwardStatuses, setPortForwardStatuses] = useState<Record<string, PortForwardStatus>>({});
   const [hostKeyPrompt, setHostKeyPrompt] = useState<SshHostKeyPrompt | null>(null);
   const [hostKeyPending, setHostKeyPending] = useState(false);
+  const [hostKeyChangedAcknowledged, setHostKeyChangedAcknowledged] = useState(false);
   const [hostKeySecondsLeft, setHostKeySecondsLeft] = useState(HOST_KEY_PROMPT_TIMEOUT_SECS);
   const [followBottom, setFollowBottom] = useState(true);
   const [hasNewOutput, setHasNewOutput] = useState(false);
@@ -164,9 +143,27 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
   const toolMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
 
-  // Port forwarding rules come from runtime settings. Re-read on each render
-  // so newly added rules in SettingsPage are reflected when the panel reopens.
-  const portForwardRules: PortForwardRule[] = getRuntimeSettings().ssh.portForwards;
+  // Pop-out windows receive this bounded SSH-only settings snapshot from main.
+  const sshSettings = preferences ?? getRuntimeSettings().ssh;
+  const portForwardRules: PortForwardRule[] = sshSettings.portForwards;
+  const startPortForward = useCallback(async (sid: string, rule: PortForwardRule) => {
+    try {
+      const localPort = await browserRuntime.startPortForward(sid, rule);
+      setPortForwardStatuses((prev) => ({
+        ...prev,
+        [rule.id]: { ruleId: rule.id, active: true, localPort },
+      }));
+    } catch (error) {
+      setPortForwardStatuses((prev) => ({
+        ...prev,
+        [rule.id]: {
+          ruleId: rule.id,
+          active: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      }));
+    }
+  }, []);
 
   useEffect(() => {
     activeRef.current = active;
@@ -223,7 +220,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
       recordingBufferRef.current = createRecordingBuffer();
       recordingCapNotifiedRef.current = false;
       setIsRecording(false);
-      const settings = getRuntimeSettings().ssh;
+      const settings = preferences ?? getRuntimeSettings().ssh;
       const now = new Date();
       const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
       const taskName = request.taskName || "ssh";
@@ -265,7 +262,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     let fitAddon: FitAddonInstance | null = null;
     let dataDisposable: IDisposable | null = null;
 
-    const sshTerminal = getRuntimeSettings().ssh.terminal;
+    const sshTerminal = (preferences ?? getRuntimeSettings().ssh).terminal;
 
     const resizeRemote = () => {
       if (!terminal || !fitAddon || !activeRef.current) return;
@@ -307,11 +304,11 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
 
       terminal = new XTerm({
         cursorBlink: sshTerminal.cursorBlink,
-        convertEol: true,
+        convertEol: false,
         fontFamily: sshTerminal.fontFamily,
         fontSize: browserRuntime.isMobile ? Math.max(sshTerminal.fontSize, 15) : sshTerminal.fontSize,
         scrollback: sshTerminal.scrollback,
-        theme: resolveTerminalTheme(sshTerminal.theme),
+        theme: resolveTerminalTheme(sshTerminal.theme, sshTerminal.customColors),
       });
       fitAddon = new FitAddon();
       terminal.loadAddon(fitAddon);
@@ -330,7 +327,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
       if (sshTerminal.webLinks) {
         try {
           const { WebLinksAddon } = await import("@xterm/addon-web-links");
-          terminal.loadAddon(new WebLinksAddon());
+          terminal.loadAddon(new WebLinksAddon((_event, url) => browserRuntime.openExternal(url)));
         } catch {
           // WebLinks addon not available
         }
@@ -401,7 +398,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         if (!sessionId) return;
         const composed = composeMobileControl(ctrlActiveRef.current, data);
         if (!composed.send) return;
-        void browserRuntime.writeSshSession(sessionId, composed.send);
+        // Native write errors arrive as session events; closing also cancels queued input.
+        void browserRuntime.writeSshSession(sessionId, composed.send).catch(() => {});
         if (composed.ctrlConsumed) {
           ctrlActiveRef.current = false;
           setCtrlActive(false);
@@ -425,12 +423,19 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         let historyRecorded = false;
         unlisten = await browserRuntime.onSshSessionEvent(sessionId, (event) => {
           if (event.kind === "output" && event.data) {
-            activeTerminal.write(event.data);
-            if (followBottomRef.current) {
-              activeTerminal.scrollToBottom();
-            } else {
-              setHasNewOutput(true);
-            }
+            activeTerminal.write(event.data, () => {
+              if (disposed || sessionIdRef.current !== sessionId) return;
+              // Receiving an event is not consumption: release native credits
+              // only after xterm has parsed the batch, including hidden tabs.
+              if (event.outputSequence !== undefined) {
+                void browserRuntime.acknowledgeSshOutput(sessionId, event.outputSequence).catch(() => {});
+              }
+              if (followBottomRef.current) {
+                activeTerminal.scrollToBottom();
+              } else {
+                setHasNewOutput(true);
+              }
+            });
             if (isRecordingRef.current) {
               const appended = appendRecordingChunk(recordingBufferRef.current, event.data);
               if (!appended && recordingBufferRef.current.capped && !recordingCapNotifiedRef.current) {
@@ -458,7 +463,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                   username: request.username ?? "",
                   taskName: request.taskName ?? "",
                 },
-                getRuntimeSettings().ssh.maxHistoryEntries,
+                (preferences ?? getRuntimeSettings().ssh).maxHistoryEntries,
               );
             }
             return;
@@ -467,6 +472,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             try {
               const payload = JSON.parse(event.data) as SshHostKeyPrompt;
               setHostKeyPrompt(payload);
+              setHostKeyChangedAcknowledged(false);
               setStatus(event.message ?? tt("等待确认主机指纹", "Waiting for host key confirmation"));
               setStatusKind("ready");
               activeTerminal.writeln(
@@ -504,20 +510,11 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
         // connected. Rules scoped to a host only start for that host so a
         // forward configured for one machine is not attempted everywhere.
         if (!disposed) {
-          const enabledRules = getRuntimeSettings().ssh.portForwards.filter(
+          const enabledRules = (preferences ?? getRuntimeSettings().ssh).portForwards.filter(
             (rule) => rule.enabled && portForwardRuleAppliesToHost(rule, request.host),
           );
           for (const rule of enabledRules) {
-            void browserRuntime.startPortForward(sessionId, rule).catch((error) => {
-              setPortForwardStatuses((prev) => ({
-                ...prev,
-                [rule.id]: {
-                  ruleId: rule.id,
-                  active: false,
-                  error: error instanceof Error ? error.message : String(error),
-                },
-              }));
-            });
+            void startPortForward(sessionId, rule);
           }
         }
       } catch (error) {
@@ -546,14 +543,14 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
       searchAddonRef.current = null;
       terminal?.dispose();
     };
-  }, [request, reconnectKey, tt, toast]);
+  }, [request, reconnectKey, startPortForward, tt, toast, preferences]);
 
   const sendKeySeq = useCallback((data: string) => {
     const sid = sessionIdRef.current;
     if (!sid) return;
     const composed = composeMobileControl(ctrlActiveRef.current, data);
     if (!composed.send) return;
-    void browserRuntime.writeSshSession(sid, composed.send);
+    void browserRuntime.writeSshSession(sid, composed.send).catch(() => {});
     if (composed.ctrlConsumed) {
       ctrlActiveRef.current = false;
       setCtrlActive(false);
@@ -564,9 +561,9 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
     const addon = searchAddonRef.current;
     if (!addon || !searchQuery) return;
     if (direction === "next") {
-      addon.findNext(searchQuery, SEARCH_DECORATIONS);
+      addon.findNext(searchQuery, SSH_SEARCH_DECORATIONS);
     } else {
-      addon.findPrevious(searchQuery, SEARCH_DECORATIONS);
+      addon.findPrevious(searchQuery, SSH_SEARCH_DECORATIONS);
     }
   }, [searchQuery]);
 
@@ -598,10 +595,11 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
 
   const respondHostKey = (accept: boolean) => {
     if (hostKeyPending || !hostKeyPrompt) return;
+    if (accept && hostKeyPrompt.requiresChangedConfirmation && !hostKeyChangedAcknowledged) return;
     const promptId = hostKeyPrompt.promptId;
     setHostKeyPending(true);
     void browserRuntime
-      .confirmKnownHost(promptId, accept)
+      .confirmKnownHost(promptId, accept, hostKeyChangedAcknowledged)
       .catch(() => {})
       .finally(() => {
         setHostKeyPending(false);
@@ -673,6 +671,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             type="button"
             title={text("搜索 (Ctrl+F)", "Search (Ctrl+F)")}
             aria-label={text("搜索 (Ctrl+F)", "Search (Ctrl+F)")}
+            aria-pressed={showSearch}
             onClick={toggleSearch}
           >
             <Search className="h-3.5 w-3.5" />
@@ -684,7 +683,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
             )}
             type="button"
             title={isRecording ? text("停止录制", "Stop recording") : text("录制", "Record")}
-            aria-label={isRecording ? text("停止录制", "Stop recording") : text("录制", "Record")}
+            aria-label={text("录制", "Record")}
+            aria-pressed={isRecording}
             onClick={toggleRecording}
           >
             {isRecording ? <Square className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
@@ -972,7 +972,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                               {rule.type === "local" ? "-L" : rule.type === "remote" ? "-R" : "-D"}
                             </span>
                             <span className="truncate font-mono text-app-terminalText">
-                              {rule.localHost}:{rule.localPort}
+                              {rule.localHost}:{active ? (status.localPort ?? rule.localPort) : rule.localPort === 0 ? text("自动", "Auto") : rule.localPort}
                               {rule.type !== "dynamic" ? ` → ${rule.remoteHost}:${rule.remotePort}` : ""}
                             </span>
                             {rule.host ? (
@@ -1001,7 +1001,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                             if (active) {
                               void browserRuntime.stopPortForward(sessionId, rule.id).catch(() => {});
                             } else {
-                              void browserRuntime.startPortForward(sessionId, rule).catch(() => {});
+                              void startPortForward(sessionId, rule);
                             }
                           }}
                         >
@@ -1067,7 +1067,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                 onPointerDown={(event) => {
                   event.preventDefault();
                   const sid = sessionIdRef.current;
-                  if (sid) void browserRuntime.writeSshSession(sid, String.fromCharCode(charCode));
+                  if (sid) void browserRuntime.writeSshSession(sid, String.fromCharCode(charCode)).catch(() => {});
                   setTimeout(() => termRef.current?.focus(), 0);
                 }}
               >
@@ -1138,10 +1138,20 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                 {text("确认 SSH 主机密钥", "Confirm SSH Host Key")}
               </h3>
               <p className="mt-2 leading-6 text-app-muted">
-                {text(
-                  "首次连接该主机。请核对指纹后再信任；错误指纹可能表示中间人攻击。",
-                  "First connection to this host. Verify the fingerprint before trusting it; a wrong fingerprint may indicate a man-in-the-middle attack.",
-                )}
+                {hostKeyPrompt.changedKey
+                  ? hostKeyPrompt.taskChanged
+                    ? text(
+                        "此地址对应的任务 ID 已变化，可能是实例回收后重新分配。请核对新旧指纹，并确认这是预期的新实例。",
+                        "The task ID for this address changed, which may indicate a recycled instance. Compare both fingerprints and confirm this new assignment is expected.",
+                      )
+                    : text(
+                        "主机密钥与已信任记录不同。只有在已通过可信渠道核实变更后才继续。",
+                        "The host key differs from the trusted record. Continue only after verifying the change through a trusted channel.",
+                      )
+                  : text(
+                      "首次连接该主机。请核对指纹后再信任；错误指纹可能表示中间人攻击。",
+                      "First connection to this host. Verify the fingerprint before trusting it; a wrong fingerprint may indicate a man-in-the-middle attack.",
+                    )}
               </p>
             </div>
             <div className="space-y-2 rounded-md border border-app-border bg-app-panel px-3 py-2 font-mono text-xs">
@@ -1152,10 +1162,39 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
                 </div>
               </div>
               <div>
-                <span className="text-app-muted">Fingerprint</span>
+                <span className="text-app-muted">{hostKeyPrompt.changedKey ? text("新指纹", "New fingerprint") : "Fingerprint"}</span>
                 <div className="mt-0.5 break-all text-app-text">{hostKeyPrompt.fingerprint}</div>
               </div>
+              {hostKeyPrompt.previousFingerprint ? (
+                <div>
+                  <span className="text-app-muted">{text("已信任的指纹", "Trusted fingerprint")}</span>
+                  <div className="mt-0.5 break-all text-app-text">{hostKeyPrompt.previousFingerprint}</div>
+                </div>
+              ) : null}
+              {hostKeyPrompt.changedKey ? (
+                <div className="grid grid-cols-2 gap-2 border-t border-app-border pt-2">
+                  <div>
+                    <span className="text-app-muted">{text("旧任务 ID", "Previous task ID")}</span>
+                    <div className="mt-0.5 break-all text-app-text">{hostKeyPrompt.previousTaskId || text("未知", "Unknown")}</div>
+                  </div>
+                  <div>
+                    <span className="text-app-muted">{text("当前任务 ID", "Current task ID")}</span>
+                    <div className="mt-0.5 break-all text-app-text">{hostKeyPrompt.taskId || text("未知", "Unknown")}</div>
+                  </div>
+                </div>
+              ) : null}
             </div>
+            {hostKeyPrompt.requiresChangedConfirmation ? (
+              <label className="flex items-start gap-2 text-xs leading-5 text-app-text">
+                <input
+                  className="mt-1 accent-app-accent"
+                  type="checkbox"
+                  checked={hostKeyChangedAcknowledged}
+                  onChange={(event) => setHostKeyChangedAcknowledged(event.target.checked)}
+                />
+                <span>{text("我已通过可信渠道核实新主机指纹，并接受替换原有信任记录。", "I verified the new host fingerprint through a trusted channel and accept replacing the existing trust record.")}</span>
+              </label>
+            ) : null}
             <p className="text-xs text-app-muted">
               {text(
                 `未确认将在 ${hostKeySecondsLeft} 秒后自动拒绝并断开连接。`,
@@ -1166,7 +1205,7 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange }: SshTe
               <Button disabled={hostKeyPending} type="button" variant="secondary" autoFocus onClick={() => respondHostKey(false)}>
                 {text("拒绝", "Reject")}
               </Button>
-              <Button disabled={hostKeyPending} type="button" onClick={() => respondHostKey(true)}>
+              <Button disabled={hostKeyPending || Boolean(hostKeyPrompt.requiresChangedConfirmation && !hostKeyChangedAcknowledged)} type="button" onClick={() => respondHostKey(true)}>
                 {hostKeyPending ? text("提交中", "Submitting") : text("信任并继续", "Trust and continue")}
               </Button>
             </div>

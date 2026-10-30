@@ -59,7 +59,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 Use `npm.cmd run build` for the web-only production build. Use `npm.cmd run build:desktop` for Tauri build inputs; it builds sidecars, typechecks the app, and runs Vite. Use `npm.cmd run tauri:build` when an actual desktop bundle or installer is required. When time is limited, prioritize desktop input build and Tauri shell checks over web-only verification.
 
-`lint` runs with `--max-warnings=46`, which is a ratchet rather than a target. The number may only go down: when you remove warnings, lower it in the same commit. Never raise it to make a build pass -- fix the new warning instead. Remaining warnings are `react-hooks/set-state-in-effect`, `react-refresh/only-export-components`, `react-hooks/exhaustive-deps`, and `react-hooks/incompatible-library`.
+`lint` runs with `--max-warnings=37`, which is a ratchet rather than a target. The number may only go down: when you remove warnings, lower it in the same commit. Never raise it to make a build pass -- fix the new warning instead. Remaining warnings are `react-hooks/set-state-in-effect`, `react-refresh/only-export-components`, `react-hooks/exhaustive-deps`, and `react-hooks/incompatible-library`.
 
 For `react-refresh/only-export-components` in context files, follow the existing split used by `use-toast.ts` and `use-download-queue.ts`: contexts, hooks, and plain helpers live in a `use-*.ts` file, and the `*Provider` component stays in its own file. That removes the warning instead of suppressing it.
 
@@ -95,9 +95,21 @@ EASY_CONSOLE_CONFIG=D:\path\to\config.json
 EASY_CONSOLE_ALLOW_INSECURE_HTTP=1
 ```
 
-Packaged desktop builds currently allow remote cleartext `http://` / `ws://` (lab console). Settings still warn when remote HTTP is in use. Prefer `https://...` or `http://127.0.0.1:...` (local reverse proxy / VPN tunnel) when available. CLI/MCP reject remote cleartext by default; opt in with `--allow-insecure-http` or `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` for lab use.
+Packaged desktop builds currently allow remote cleartext `http://` / `ws://` (lab console). Settings still warn when remote HTTP is in use. Production and externally reachable environments should use `https://...` or a local secure tunnel (`http://127.0.0.1:...`, local reverse proxy / VPN tunnel); the plain-HTTP lab console is an explicitly accepted exception. CLI/MCP reject remote cleartext by default; opt in with `--allow-insecure-http` or `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` for lab use.
 
 Do not commit real account credentials, tokens, or live test secrets.
+
+## Release identity and compatibility
+
+The following production identity values are fixed for 1.x. Do not change them as routine cleanup; changing them can disconnect installed clients from their data, keychain, deep links or updates. Isolated acceptance builds may continue to use a separate test identifier.
+
+- App identifier: `com.easyconsole.desktop`; default keychain service: `easy-console`. Keep existing app-data paths and sidecar path resolution compatible.
+- Deep link scheme: `easyconsole://`.
+- Updater endpoint: `https://github.com/Chr0nixz/EasyConsole/releases/latest/download/latest.json`.
+- Updater public key in `src-tauri/tauri.conf.json`: `dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIyNjBFRTlCRkIwQzAwREQKUldUZEFBejdtKzVnSW1UYWpiOWVnYWFhV2hxN2daWGJnaWpsVVA4bG55RXFlcTJJQ3Vya1VGQmIK`. Never replace it without a separately verified migration for installed clients.
+- Android release application ID: `com.easyconsole.desktop`; debug uses `.debug`. The published v0.4.27 APK's signing-certificate SHA-256 is `2f7730e118dd16346098c92d426196430c8779584c60a7fd1f130e8c6e9d001b`; release APKs must preserve it for installed-client updates. See [public APK evidence](RELEASE_REHEARSAL_2026-10-29.md). Offline signing-key backup verification remains a separate release gate; do not infer either identity or backup recovery from debug builds.
+- Local storage, backups and the shared directory-lock protocol follow [LOCAL_DATA_FORMATS.md](LOCAL_DATA_FORMATS.md). 1.x changes must preserve forward migration and old backup import; never silently overwrite an unknown format.
+- CLI/MCP compatibility follows [CLI_MCP_CONTRACT.md](CLI_MCP_CONTRACT.md). Keep both `easy-console-cli` and `easy-console-mcp` entrypoints for 1.x; deprecate published command/tool names before removal in 2.0. Preserve stable JSON envelopes, required arguments and MCP resource URIs. All requested credential/file/record/remote writes are dry-run unless CLI `--yes` or MCP `confirm: true` is supplied.
 
 ## Architecture
 
@@ -113,6 +125,10 @@ Do not commit real account credentials, tokens, or live test secrets.
 - `tools/easy-console/locale.ts`: CLI/MCP locale bootstrap (`--lang` → `EASY_CONSOLE_LANG` → system locale → English).
 - `tools/eslint-rules/no-bare-cjk.mjs`: ESLint rule that rejects hardcoded CJK text outside the localization helpers. See the Language section of DESIGN.md for which mechanism to use.
 - `src/lib/run-logs.ts`: local operation log model for web, Tauri, CLI, and MCP channels.
+- `src/lib/execution-ledger.ts`: local audit ledger for scheduled-task executions (trigger, account, remote task ID, outcome), with manual resolution of uncertain remote results from the scheduled tasks page.
+- `src/lib/batch-runner.ts`: shared sequential batch engine (per-item outcomes, continue-on-error, progress, abort, failed-subset retry) reused by the UI and CLI/MCP.
+- `src/lib/change-list.ts`: local change list for finished batch operations (action, trigger, account, per-item outcomes, `retryOf` linkage), rendered on the tasks page and exportable as JSON/CSV/Markdown.
+- `src/components/batch/`: batch operation UI (impact-list preview, per-item result dialog with export, collapsible recent-batch history panel) and the `useBatchOperation` orchestration hook.
 - `src/lib/task-templates.ts`: local instance template persistence and batch payload generation.
 - `src/lib/scheduled-tasks.ts`: local scheduled task persistence and due-state helpers.
 - `src/lib/task-list-query.ts` and `src/lib/task-search.ts`: task list URL query state and client-side search ranking.
@@ -126,6 +142,8 @@ Do not commit real account credentials, tokens, or live test secrets.
 - `src/components/*`: shared UI and feature dialogs.
 - `tools/easy-console/*`: Node runtime, CLI, MCP server/tools, and sidecar build scripts.
 - `src-tauri/src/lib.rs`: Tauri commands for app storage, external links, system terminal SSH, VS Code Remote-SSH setup, and in-app SSH sessions.
+- `src-tauri/src/runtime_storage.rs` and `src-tauri/src/runtime_storage_lock.rs`: per-key runtime persistence, legacy JSON migration, per-key backups/tombstones, disk-backed CAS, and the cross-process `.lock` directory protocol shared with Node sidecars.
+- `tools/easy-console/local-data-store.ts`: Node implementation of the Tauri per-key store, lock protocol, legacy CLI JSON migration, and separate local credential storage. CLI/MCP use the desktop app-data path by default; `EASY_CONSOLE_LOCAL_DATA_PATH` overrides the shared store anchor.
 
 Avoid Node-only APIs in renderer code. If a feature needs platform behavior, design the Tauri command/runtime boundary first, then add browser and Node fallbacks only when they are useful and clean. Do not call browser, Tauri, or Node globals directly from page code.
 
@@ -160,7 +178,7 @@ Avoid Node-only APIs in renderer code. If a feature needs platform behavior, des
 - Run logs are local, pruned by count and age, and redact sensitive metadata keys.
 - Important task status changes can trigger app toasts or system notifications for success, failure, and abnormal states.
 - Desktop SSH supports in-app SSH via `russh`, opening a system terminal, and VS Code Remote-SSH setup. The web app only exposes copyable SSH details and WebSSH.
-- Tauri storage is persisted in app data through `runtime-storage.json`, with browser localStorage fallback on command failures.
+- Tauri and CLI/MCP runtime storage use per-key files under app data's `runtime-storage.d/`, with atomic writes, per-key backups, CAS, and a shared cross-process `.lock` protocol. Old `runtime-storage.json` and CLI `local-data.json` files are retained as migration snapshots; CLI credentials stay outside the shared store. Browser localStorage remains the fallback on command failures.
 - Tauri uses `HashRouter`; the web build uses `BrowserRouter`.
 - Desktop parity is more important than browser parity for new workflows. Browser behavior may be read-only, degraded, or hidden when there is no honest equivalent for a desktop capability.
 

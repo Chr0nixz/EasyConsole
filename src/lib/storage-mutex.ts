@@ -40,6 +40,17 @@ export async function updateStorageValue(
   key: string,
   updater: (current: string | null) => string | null | Promise<string | null>,
 ): Promise<string | null> {
+  // Backends with a native compare-and-swap handle cross-window conflicts
+  // themselves; the per-key lock still serializes callers within this window.
+  const atomicUpdate = storage.update;
+  if (atomicUpdate) {
+    // Whole-store transaction backends already serialize their own updates.
+    // Taking the JS key queue first would invert the lock order against a
+    // transaction that holds the file lock and then updates this same key.
+    if (storage.withTransaction) return atomicUpdate(key, updater);
+    return withStorageLock(key, () => atomicUpdate(key, updater));
+  }
+
   const apply = async () => {
     const current = await storage.get(key);
     const next = await updater(current);
@@ -54,7 +65,8 @@ export async function updateStorageValue(
   // `withStorageLock` only serializes within this process (plus other tabs via
   // navigator.locks). Stores shared across OS processes provide their own
   // cross-process transaction, which has to wrap the whole read-modify-write.
-  return withStorageLock(key, () => (storage.withTransaction ? storage.withTransaction(apply) : apply()));
+  if (storage.withTransaction) return storage.withTransaction(apply);
+  return withStorageLock(key, apply);
 }
 
 /**

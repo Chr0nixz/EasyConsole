@@ -1,20 +1,34 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CopyPlus, Edit2, FolderOpen, Plus, RefreshCw, Rocket, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
-import { FieldError, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
+import { FieldError, FormSection, fieldBorderClass, useFormFieldErrors } from "../components/form-fields";
 import { MobileLongText } from "../components/MobileLongText";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
 import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
+import { ResourcePresetPicker } from "../components/tasks/ResourcePresetPicker";
 import { ScriptEnvFields } from "../components/tasks/ScriptEnvFields";
 import { Button, Dialog, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
-import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../lib/batch";
+import { BatchPreviewDialog } from "../components/batch/BatchPreviewDialog";
+import { CreateImpactSummary } from "../components/tasks/CreateImpactSummary";
+import { BatchResultDialog, type PreviewItem } from "../components/batch/BatchResultDialog";
+import { batchExportPayload } from "../components/batch/batch-export";
+import { useBatchOperation } from "../components/batch/use-batch-operation";
+import { verifyUnknownCreateItems } from "../components/batch/verify-unknown-items";
+import type { BatchRunResult } from "../lib/batch-runner";
+import type { BatchOperationRecord } from "../lib/change-list";
+import { saveBlob } from "../lib/download";
 import { getReleaseConditionText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { parsePositivePrice } from "../lib/resource-price";
+import {
+  formatResourcePresetSummary,
+  parseResourcePresetValues,
+  type ResourcePresetFormValues,
+} from "../lib/resource-presets";
 import { normalizeStoragePath } from "../lib/remote-storage";
 import {
   envVarsFromLegacyExperimentId,
@@ -39,13 +53,23 @@ import {
   updateTaskTemplate,
   type EditableTaskTemplate,
 } from "../lib/task-templates";
-import type { ImageItem, TaskTemplate } from "../lib/types";
+import type { CreateTaskPayload, ImageItem, TaskTemplate } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useAuth } from "../lib/use-auth";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
+import { useResourcePresets } from "../lib/use-resource-presets";
 import { useToast } from "../lib/use-toast";
 
 type StoragePickerTarget = "storage" | "workDirectory" | "scriptPath";
+
+/** Preview-dialog summary for one template-apply item: its storage/workdir payload. */
+function templateApplyItemMeta(payload: CreateTaskPayload) {
+  const parts = [
+    payload.storage_path ? `storage: ${payload.storage_path}` : "",
+    payload.work_directory ? `workdir: ${payload.work_directory}` : "",
+  ].filter(Boolean);
+  return parts.join(" · ") || undefined;
+}
 
 const DEFAULT_CPU = 4;
 const DEFAULT_GPU = 0;
@@ -114,6 +138,7 @@ function TemplateDialog({
   const [storagePickerTarget, setStoragePickerTarget] = useState<StoragePickerTarget | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
+  const { presets: resourcePresets, savePreset, deletePreset } = useResourcePresets(browserRuntime.storage, open);
 
   useEffect(() => {
     if (!open) return;
@@ -132,6 +157,18 @@ function TemplateDialog({
 
   function update<K extends keyof EditableTaskTemplate>(key: K, value: EditableTaskTemplate[K]) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function applyResourceValues({ cpu: nextCpu, gpu: nextGpu, memory: nextMemory }: ResourcePresetFormValues) {
+    update("cpu", parseFormNumber(nextCpu, DEFAULT_CPU));
+    update("gpu", parseFormNumber(nextGpu, DEFAULT_GPU));
+    update("memory", parseFormNumber(nextMemory, DEFAULT_MEMORY));
+  }
+
+  function handleSaveResourcePreset(name: string) {
+    const values = parseResourcePresetValues(String(form.cpu), String(form.gpu), String(form.memory));
+    if (!values) return;
+    void savePreset({ ...values, name });
   }
 
   const fieldErrors = useMemo(() => {
@@ -157,6 +194,9 @@ function TemplateDialog({
     }
     return errors;
   }, [form, text]);
+
+  const currentResourcePresetValues = parseResourcePresetValues(String(form.cpu), String(form.gpu), String(form.memory));
+  const resourcePresetSummary = currentResourcePresetValues ? formatResourcePresetSummary(currentResourcePresetValues) : undefined;
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -254,145 +294,161 @@ function TemplateDialog({
   return (
     <Dialog open={open} title={dialogTitle} onClose={onClose} width="max-w-4xl">
       <form className="space-y-4 p-4" onSubmit={submit}>
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="block text-sm">
-            <span className="mb-1 block text-app-muted">{text("模板名称", "Template name")}</span>
-            <Input className={cn("w-full", fieldBorderClass(touchedFields.has("name") && Boolean(fieldErrors.name)))} value={form.name} onChange={(event) => update("name", event.target.value)} onBlur={() => markTouched("name")} required />
-            <FieldError message={touchedFields.has("name") ? fieldErrors.name : undefined} />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-app-muted">{text("实例名称前缀", "Instance name prefix")}</span>
-            <Input className={cn("w-full", fieldBorderClass(touchedFields.has("taskNamePrefix") && Boolean(fieldErrors.taskNamePrefix)))} value={form.taskNamePrefix} onChange={(event) => update("taskNamePrefix", event.target.value)} onBlur={() => markTouched("taskNamePrefix")} required />
-            <FieldError message={touchedFields.has("taskNamePrefix") ? fieldErrors.taskNamePrefix : undefined} />
-          </label>
-        </div>
-        <label className="block text-sm">
-          <span className="mb-1 block text-app-muted">{text("说明", "Description")}</span>
-          <Textarea className="min-h-20 w-full" value={form.description ?? ""} onChange={(event) => update("description", event.target.value)} />
-        </label>
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="block text-sm">
-            <span className="mb-1 block text-app-muted">{text("镜像", "Image")}</span>
-            <Select className={cn("w-full", fieldBorderClass(touchedFields.has("image") && Boolean(fieldErrors.image)))} value={form.imageId} onChange={(event) => update("imageId", event.target.value)} onBlur={() => markTouched("image")} required>
-              <option value="">{text("请选择镜像", "Select an image")}</option>
-              {imageOptions.map((image) => (
-                <option key={String(image.id)} value={String(image.id)}>
-                  {getImageOptionLabel(image)}
-                </option>
-              ))}
-            </Select>
-            <FieldError message={touchedFields.has("image") ? fieldErrors.image : undefined} />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-app-muted">{text("创建数量", "Quantity")}</span>
-            <Input
-              className={cn("w-full", fieldBorderClass(touchedFields.has("batchCount") && Boolean(fieldErrors.batchCount)))}
-              max={MAX_TEMPLATE_BATCH_COUNT}
-              min="1"
-              step="1"
-              type="number"
-              value={form.batchCount}
-              onChange={(event) => update("batchCount", parseFormNumber(event.target.value, 1))}
-              onBlur={() => markTouched("batchCount")}
-              required
-            />
-            <FieldError message={touchedFields.has("batchCount") ? fieldErrors.batchCount : undefined} />
-          </label>
-        </div>
-        <ResourcePriceFields
-          price={String(form.price ?? DEFAULT_PRICE)}
-          priceError={fieldErrors.price}
-          priceTouched={touchedFields.has("price")}
-          onPriceBlur={() => markTouched("price")}
-          onPriceChange={(next) => update("price", parseFormNumber(next, DEFAULT_PRICE))}
-          onApplySpec={({ cpu: nextCpu, gpu: nextGpu, memory: nextMemory }) => {
-            update("cpu", parseFormNumber(nextCpu, DEFAULT_CPU));
-            update("gpu", parseFormNumber(nextGpu, DEFAULT_GPU));
-            update("memory", parseFormNumber(nextMemory, DEFAULT_MEMORY));
-          }}
-        />
-        <div className="grid gap-4 md:grid-cols-3">
-          <label className="block text-sm">
-            <span className="mb-1 block text-app-muted">CPU</span>
-            <Input className={cn("w-full", fieldBorderClass(touchedFields.has("cpu") && Boolean(fieldErrors.cpu)))} min="0.1" step="0.1" type="number" value={form.cpu} onChange={(event) => update("cpu", parseFormNumber(event.target.value, DEFAULT_CPU))} onBlur={() => markTouched("cpu")} required />
-            <FieldError message={touchedFields.has("cpu") ? fieldErrors.cpu : undefined} />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-app-muted">GPU</span>
-            <Input className={cn("w-full", fieldBorderClass(touchedFields.has("gpu") && Boolean(fieldErrors.gpu)))} min="0" step="1" type="number" value={form.gpu} onChange={(event) => update("gpu", parseFormNumber(event.target.value, DEFAULT_GPU))} onBlur={() => markTouched("gpu")} required />
-            <FieldError message={touchedFields.has("gpu") ? fieldErrors.gpu : undefined} />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-app-muted">{text("内存 (GiB)", "Memory (GiB)")}</span>
-            <Input className={cn("w-full", fieldBorderClass(touchedFields.has("memory") && Boolean(fieldErrors.memory)))} min="1" step="1" type="number" value={form.memory} onChange={(event) => update("memory", parseFormNumber(event.target.value, DEFAULT_MEMORY))} onBlur={() => markTouched("memory")} required />
-            <FieldError message={touchedFields.has("memory") ? fieldErrors.memory : undefined} />
-          </label>
-        </div>
-        <div className="grid gap-4 text-sm md:grid-cols-2">
-          <div>
-            <span className="mb-1 block text-app-muted">{text("存储路径", "Storage path")}</span>
-            <div className="flex gap-2">
-              <Input className="w-full font-mono text-xs" value={form.storagePath} onChange={(event) => update("storagePath", event.target.value)} />
-              <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
-                <FolderOpen className="h-4 w-4" />
-                {text("选择", "Select")}
-              </Button>
-            </div>
-          </div>
-          <label className="block">
-            <span className="mb-1 block text-app-muted">{text("挂载路径", "Mount path")}</span>
-            <Input className="w-full font-mono text-xs" value={form.mountPath} onChange={(event) => update("mountPath", event.target.value)} />
-          </label>
-        </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="block text-sm">
-            <span className="mb-1 block text-app-muted">{text("释放条件", "Release condition")}</span>
-            <Select className="w-full" value={form.releaseCondition} onChange={(event) => update("releaseCondition", Number(event.target.value) as 1 | 2 | 3)}>
-              <option value={1}>{text("手动释放", "Manual release")}</option>
-              <option value={2}>{text("定时释放", "Timed release")}</option>
-              <option value={3}>{text("任务结束释放", "Release after task ends")}</option>
-            </Select>
-          </label>
-          {form.releaseCondition === 2 ? (
+        <FormSection title={text("基础", "Basic")}>
+          <div className="grid gap-4 md:grid-cols-2">
             <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">{text("创建后释放小时数", "Release hours after creation")}</span>
-              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("releaseAfterHours") && Boolean(fieldErrors.releaseAfterHours)))} min="0.1" step="0.1" type="number" value={form.releaseAfterHours ?? 24} onChange={(event) => update("releaseAfterHours", parseFormNumber(event.target.value, 24))} onBlur={() => markTouched("releaseAfterHours")} required />
-              <FieldError message={touchedFields.has("releaseAfterHours") ? fieldErrors.releaseAfterHours : undefined} />
+              <span className="mb-1 block text-app-muted">{text("模板名称", "Template name")}</span>
+              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("name") && Boolean(fieldErrors.name)))} value={form.name} onChange={(event) => update("name", event.target.value)} onBlur={() => markTouched("name")} required />
+              <FieldError message={touchedFields.has("name") ? fieldErrors.name : undefined} />
             </label>
-          ) : null}
-        </div>
-        {form.releaseCondition === 3 ? (
-          <div className="space-y-4">
-            <div className="block text-sm">
-              <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
-              <div className="flex gap-2">
-                <Input className={cn("w-full font-mono text-xs", fieldBorderClass(touchedFields.has("workDirectory") && Boolean(fieldErrors.workDirectory)))} value={form.workDirectory ?? ""} onChange={(event) => update("workDirectory", event.target.value)} onBlur={() => markTouched("workDirectory")} required />
-                <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("workDirectory")}>
-                  <FolderOpen className="h-4 w-4" />
-                  {text("选择", "Select")}
-                </Button>
-              </div>
-              <FieldError message={touchedFields.has("workDirectory") ? fieldErrors.workDirectory : undefined} />
-            </div>
-            <div className="block text-sm">
-              <span className="mb-1 block text-app-muted">{text("脚本路径", "Script path")}</span>
-              <div className="flex gap-2">
-                <Input className={cn("w-full font-mono text-xs", fieldBorderClass(touchedFields.has("scriptPath") && Boolean(fieldErrors.scriptPath)))} value={form.scriptPath ?? ""} onChange={(event) => update("scriptPath", event.target.value)} onBlur={() => markTouched("scriptPath")} required />
-                <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("scriptPath")}>
-                  <FolderOpen className="h-4 w-4" />
-                  {text("选择", "Select")}
-                </Button>
-              </div>
-              <FieldError message={touchedFields.has("scriptPath") ? fieldErrors.scriptPath : undefined} />
-            </div>
-            <ScriptEnvFields
-              envVars={form.scriptEnv ?? []}
-              scriptPath={form.scriptPath ?? ""}
-              onChange={(next: ScriptEnvVar[]) => update("scriptEnv", next)}
-              error={touchedFields.has("scriptEnv") ? fieldErrors.scriptEnv : undefined}
-            />
+            <label className="block text-sm">
+              <span className="mb-1 block text-app-muted">{text("实例名称前缀", "Instance name prefix")}</span>
+              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("taskNamePrefix") && Boolean(fieldErrors.taskNamePrefix)))} value={form.taskNamePrefix} onChange={(event) => update("taskNamePrefix", event.target.value)} onBlur={() => markTouched("taskNamePrefix")} required />
+              <FieldError message={touchedFields.has("taskNamePrefix") ? fieldErrors.taskNamePrefix : undefined} />
+            </label>
           </div>
-        ) : null}
+          <label className="block text-sm">
+            <span className="mb-1 block text-app-muted">{text("说明", "Description")}</span>
+            <Textarea className="min-h-20 w-full" value={form.description ?? ""} onChange={(event) => update("description", event.target.value)} />
+          </label>
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="block text-sm">
+              <span className="mb-1 block text-app-muted">{text("镜像", "Image")}</span>
+              <Select className={cn("w-full", fieldBorderClass(touchedFields.has("image") && Boolean(fieldErrors.image)))} value={form.imageId} onChange={(event) => update("imageId", event.target.value)} onBlur={() => markTouched("image")} required>
+                <option value="">{text("请选择镜像", "Select an image")}</option>
+                {imageOptions.map((image) => (
+                  <option key={String(image.id)} value={String(image.id)}>
+                    {getImageOptionLabel(image)}
+                  </option>
+                ))}
+              </Select>
+              <FieldError message={touchedFields.has("image") ? fieldErrors.image : undefined} />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block text-app-muted">{text("创建数量", "Quantity")}</span>
+              <Input
+                className={cn("w-full", fieldBorderClass(touchedFields.has("batchCount") && Boolean(fieldErrors.batchCount)))}
+                max={MAX_TEMPLATE_BATCH_COUNT}
+                min="1"
+                step="1"
+                type="number"
+                value={form.batchCount}
+                onChange={(event) => update("batchCount", parseFormNumber(event.target.value, 1))}
+                onBlur={() => markTouched("batchCount")}
+                required
+              />
+              <FieldError message={touchedFields.has("batchCount") ? fieldErrors.batchCount : undefined} />
+            </label>
+          </div>
+        </FormSection>
+        <FormSection divided title={text("资源配置", "Resources")}>
+          <ResourcePresetPicker
+            activeSummary={resourcePresetSummary}
+            defaultName={resourcePresetSummary ?? ""}
+            onDelete={(id) => void deletePreset(id)}
+            onSaveCurrent={handleSaveResourcePreset}
+            onApply={applyResourceValues}
+            presets={resourcePresets}
+            saveDisabled={!currentResourcePresetValues}
+            saveDisabledReason={text("请先填写有效的 CPU/GPU/内存", "Enter valid CPU/GPU/memory values first")}
+          />
+          <ResourcePriceFields
+            allowDefaultPrice={!initialValue && !touchedFields.has("price")}
+            price={String(form.price ?? DEFAULT_PRICE)}
+            resources={{ cpu: String(form.cpu), gpu: String(form.gpu), memory: String(form.memory) }}
+            priceError={fieldErrors.price}
+            priceTouched={touchedFields.has("price")}
+            onPriceBlur={() => markTouched("price")}
+            onPriceChange={(next) => update("price", parseFormNumber(next, DEFAULT_PRICE))}
+            onApplySpec={applyResourceValues}
+          />
+          <div className="grid gap-4 md:grid-cols-3">
+            <label className="block text-sm">
+              <span className="mb-1 block text-app-muted">CPU</span>
+              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("cpu") && Boolean(fieldErrors.cpu)))} min="0.1" step="0.1" type="number" value={form.cpu} onChange={(event) => update("cpu", parseFormNumber(event.target.value, DEFAULT_CPU))} onBlur={() => markTouched("cpu")} required />
+              <FieldError message={touchedFields.has("cpu") ? fieldErrors.cpu : undefined} />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block text-app-muted">GPU</span>
+              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("gpu") && Boolean(fieldErrors.gpu)))} min="0" step="1" type="number" value={form.gpu} onChange={(event) => update("gpu", parseFormNumber(event.target.value, DEFAULT_GPU))} onBlur={() => markTouched("gpu")} required />
+              <FieldError message={touchedFields.has("gpu") ? fieldErrors.gpu : undefined} />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block text-app-muted">{text("内存 (GiB)", "Memory (GiB)")}</span>
+              <Input className={cn("w-full", fieldBorderClass(touchedFields.has("memory") && Boolean(fieldErrors.memory)))} min="1" step="1" type="number" value={form.memory} onChange={(event) => update("memory", parseFormNumber(event.target.value, DEFAULT_MEMORY))} onBlur={() => markTouched("memory")} required />
+              <FieldError message={touchedFields.has("memory") ? fieldErrors.memory : undefined} />
+            </label>
+          </div>
+        </FormSection>
+        <FormSection divided title={text("存储", "Storage")}>
+          <div className="grid gap-4 text-sm md:grid-cols-2">
+            <div>
+              <span className="mb-1 block text-app-muted">{text("存储路径", "Storage path")}</span>
+              <div className="flex gap-2">
+                <Input className="w-full font-mono text-xs" value={form.storagePath} onChange={(event) => update("storagePath", event.target.value)} />
+                <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
+                  <FolderOpen className="h-4 w-4" />
+                  {text("选择", "Select")}
+                </Button>
+              </div>
+            </div>
+            <label className="block">
+              <span className="mb-1 block text-app-muted">{text("挂载路径", "Mount path")}</span>
+              <Input className="w-full font-mono text-xs" value={form.mountPath} onChange={(event) => update("mountPath", event.target.value)} />
+            </label>
+          </div>
+        </FormSection>
+        <FormSection divided title={text("释放策略", "Release")}>
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="block text-sm">
+              <span className="mb-1 block text-app-muted">{text("释放条件", "Release condition")}</span>
+              <Select className="w-full" value={form.releaseCondition} onChange={(event) => update("releaseCondition", Number(event.target.value) as 1 | 2 | 3)}>
+                <option value={1}>{text("手动释放", "Manual release")}</option>
+                <option value={2}>{text("定时释放", "Timed release")}</option>
+                <option value={3}>{text("任务结束释放", "Release after task ends")}</option>
+              </Select>
+            </label>
+            {form.releaseCondition === 2 ? (
+              <label className="block text-sm">
+                <span className="mb-1 block text-app-muted">{text("创建后释放小时数", "Release hours after creation")}</span>
+                <Input className={cn("w-full", fieldBorderClass(touchedFields.has("releaseAfterHours") && Boolean(fieldErrors.releaseAfterHours)))} min="0.1" step="0.1" type="number" value={form.releaseAfterHours ?? 24} onChange={(event) => update("releaseAfterHours", parseFormNumber(event.target.value, 24))} onBlur={() => markTouched("releaseAfterHours")} required />
+                <FieldError message={touchedFields.has("releaseAfterHours") ? fieldErrors.releaseAfterHours : undefined} />
+              </label>
+            ) : null}
+          </div>
+          {form.releaseCondition === 3 ? (
+            <div className="space-y-4">
+              <div className="block text-sm">
+                <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
+                <div className="flex gap-2">
+                  <Input className={cn("w-full font-mono text-xs", fieldBorderClass(touchedFields.has("workDirectory") && Boolean(fieldErrors.workDirectory)))} value={form.workDirectory ?? ""} onChange={(event) => update("workDirectory", event.target.value)} onBlur={() => markTouched("workDirectory")} required />
+                  <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("workDirectory")}>
+                    <FolderOpen className="h-4 w-4" />
+                    {text("选择", "Select")}
+                  </Button>
+                </div>
+                <FieldError message={touchedFields.has("workDirectory") ? fieldErrors.workDirectory : undefined} />
+              </div>
+              <div className="block text-sm">
+                <span className="mb-1 block text-app-muted">{text("脚本路径", "Script path")}</span>
+                <div className="flex gap-2">
+                  <Input className={cn("w-full font-mono text-xs", fieldBorderClass(touchedFields.has("scriptPath") && Boolean(fieldErrors.scriptPath)))} value={form.scriptPath ?? ""} onChange={(event) => update("scriptPath", event.target.value)} onBlur={() => markTouched("scriptPath")} required />
+                  <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("scriptPath")}>
+                    <FolderOpen className="h-4 w-4" />
+                    {text("选择", "Select")}
+                  </Button>
+                </div>
+                <FieldError message={touchedFields.has("scriptPath") ? fieldErrors.scriptPath : undefined} />
+              </div>
+              <ScriptEnvFields
+                envVars={form.scriptEnv ?? []}
+                scriptPath={form.scriptPath ?? ""}
+                onChange={(next: ScriptEnvVar[]) => update("scriptEnv", next)}
+                error={touchedFields.has("scriptEnv") ? fieldErrors.scriptEnv : undefined}
+              />
+            </div>
+          ) : null}
+        </FormSection>
         <div className="space-y-2 rounded-md border border-app-border bg-app-surface p-3 text-sm">
           <div className="flex items-center justify-between gap-2">
             <div>
@@ -520,7 +576,8 @@ function TemplateExecuteDialog({
   template: TaskTemplate | null;
   open: boolean;
   onClose: () => void;
-  onConfirm: (variableValues: Record<string, string>) => void;
+  /** Receives the payloads generated from the resolved variables for the preview step. */
+  onConfirm: (payloads: CreateTaskPayload[]) => void;
   isPending: boolean;
 }) {
   const { text } = useI18n();
@@ -555,7 +612,9 @@ function TemplateExecuteDialog({
       return;
     }
     setError(null);
-    onConfirm(resolved);
+    // Hand the generated payloads to the BatchPreviewDialog impact list
+    // instead of submitting directly (review 6.3).
+    onConfirm(taskTemplateToPayloads(template, new Date(), resolved));
   }
 
   return (
@@ -595,24 +654,15 @@ function TemplateExecuteDialog({
         )}
 
         <div className="space-y-2">
-          <div className="text-sm font-medium text-app-text">{text("创建预览（试运行）", "Creation Preview (dry-run)")}</div>
-          <div className="max-h-48 overflow-auto rounded-md border border-app-border bg-app-codeBg p-3 font-mono text-xs text-app-codeText">
-            {previewPayloads.length === 0 ? (
-              <div className="text-app-muted">{text("无预览数据", "No preview data")}</div>
-            ) : (
-              <ul className="space-y-1">
-                {previewPayloads.map((payload, index) => (
-                  <li key={index} className="break-all">
-                    <span className="text-app-muted">#{index + 1}</span> {payload.name}
-                    {payload.storage_path ? <div className="pl-4 text-app-muted">storage: {payload.storage_path}</div> : null}
-                    {payload.work_directory ? <div className="pl-4 text-app-muted">workdir: {payload.work_directory}</div> : null}
-                  </li>
-                ))}
-              </ul>
+          <div className="text-sm font-medium text-app-text">{text("创建预览", "Creation preview")}</div>
+          <div className="rounded-md bg-app-panel/60 px-3 py-2 text-sm text-app-muted">
+            {text(
+              `将按模板生成 ${previewPayloads.length} 个实例；下一步会列出逐项影响清单供确认。`,
+              `${previewPayloads.length} instance${previewPayloads.length === 1 ? "" : "s"} will be generated from the template; the next step lists every item for review.`,
             )}
-          </div>
-          <div className="text-xs text-app-muted">
-            {text(`将创建 ${previewPayloads.length} 个实例，请求间隔 ${BATCH_REQUEST_DELAY_MS}ms。`, `Will create ${previewPayloads.length} instance(s), ${BATCH_REQUEST_DELAY_MS}ms apart.`)}
+            {previewPayloads[0]?.name ? (
+              <div className="mt-1 font-mono text-xs">{text(`首项：${String(previewPayloads[0].name)}`, `First: ${String(previewPayloads[0].name)}`)}</div>
+            ) : null}
           </div>
         </div>
 
@@ -703,55 +753,145 @@ export function TaskTemplatesPage() {
     if ((template.variables ?? []).length > 0) {
       setExecutingTemplate(template);
     } else {
-      createMutation.mutate({ template });
+      // No variables to collect: go straight to the impact-list preview.
+      setTemplatePreview({ template, payloads: taskTemplateToPayloads(template, new Date(), undefined) });
     }
   }
 
-  const createMutation = useMutation({
-    mutationFn: async (args: { template: TaskTemplate; variableValues?: Record<string, string> }) => {
-      const { template, variableValues } = args;
-      const payloads = await maybeAllocateUniqueCreateTaskNames(taskTemplateToPayloads(template, new Date(), variableValues), {
-        enabled: getRuntimeSettings().autoNumberDuplicateTaskNames,
-        checkTaskName: (name) => instanceApi.checkTaskName(name),
+  // Template apply (review 6.3): the payload list preview moved into the
+  // shared BatchPreviewDialog, the run itself goes through the batch engine
+  // with a change-list record, and failed items can be retried in place.
+  const [templatePreview, setTemplatePreview] = useState<{ template: TaskTemplate; payloads: CreateTaskPayload[] } | null>(null);
+  const { state: batchState, start: startBatch, retryFailed: retryBatchFailed, resolveUnknown: resolveBatchUnknown, clear: clearBatch } = useBatchOperation();
+  // Retry needs the template identity for toasts and run logs after the fact.
+  const lastAppliedTemplateRef = useRef<TaskTemplate | null>(null);
+
+  // Network-failed creates may have landed server-side; verify them against the
+  // live task list before anything becomes retryable (review P1-3).
+  const [resolvingUnknown, setResolvingUnknown] = useState(false);
+  const resolveUnknownItems = useCallback(async () => {
+    if (!batchState || batchState.pending) return;
+    setResolvingUnknown(true);
+    try {
+      const resolutions = await verifyUnknownCreateItems(batchState.result.outcomes, {
+        startedAt: batchState.records[0]?.startedAt,
+        listTasks: (query) => instanceApi.tasks(query),
       });
-      await runSequentiallyWithDelay(payloads, (payload) => instanceApi.createTask(payload));
-      return { payloads, template };
-    },
-    onSuccess: ({ payloads, template }) => {
-      const description = payloads.length > 1 ? text(`${payloads[0]?.name} 等 ${payloads.length} 个实例，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `${payloads[0]?.name} and ${payloads.length - 1} more instances, ${BATCH_REQUEST_DELAY_MS}ms apart`) : String(payloads[0]?.name ?? "");
+      if (resolutions.length > 0) await resolveBatchUnknown(resolutions);
+    } catch (error) {
+      toast.error(
+        text("核对未知项失败", "Failed to verify unknown items"),
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setResolvingUnknown(false);
+    }
+  }, [batchState, resolveBatchUnknown, text, toast]);
+
+  const templateApplyItems = useCallback(
+    (payloads: CreateTaskPayload[]): PreviewItem[] =>
+      payloads.map((payload, index) => ({
+        key: String(index),
+        name: String(payload.name ?? `#${index + 1}`),
+        meta: templateApplyItemMeta(payload),
+      })),
+    [],
+  );
+
+  const handleTemplateSettled = useCallback(
+    (template: TaskTemplate, result: BatchRunResult<PreviewItem>, record: BatchOperationRecord) => {
+      const failed = result.summary.failed > 0;
+      // Unknown outcomes are undecided creates: verify before retrying.
+      const unknown = result.summary.unknown > 0;
+      const firstName = result.outcomes[0]?.item.name ?? "";
       const title = text(`已按模板创建：${template.name}`, `Created from template: ${template.name}`);
-      toast.success(title, description);
+      if (failed || unknown) {
+        const detail =
+          text(
+            `${result.summary.succeeded}/${result.summary.total} 成功，${result.summary.failed} 失败，${result.summary.unknown} 结果未知`,
+            `${result.summary.succeeded}/${result.summary.total} succeeded, ${result.summary.failed} failed, ${result.summary.unknown} unknown`,
+          ) + (unknown ? text("请先核对未知项再重试。", " Verify the unknown items before retrying.") : "");
+        toast.error(
+          failed
+            ? text(`模板创建部分失败：${template.name}`, `Template creation partially failed: ${template.name}`)
+            : text(`模板创建有结果未知的项：${template.name}`, `Template creation has unknown outcomes: ${template.name}`),
+          detail,
+        );
+      } else {
+        toast.success(
+          title,
+          result.summary.total > 1
+            ? text(`${firstName} 等 ${result.summary.total} 个实例`, `${firstName} and ${result.summary.total - 1} more instances`)
+            : firstName,
+        );
+      }
       void runLogger.log({
         source: "task-template",
-        level: "info",
+        level: failed ? "error" : unknown ? "warning" : "info",
         action: "taskTemplate.execute",
-        result: "success",
-        title,
+        result: failed || unknown ? "failure" : "success",
+        title: failed || unknown ? text(`模板创建未全部成功：${template.name}`, `Template creation not fully successful: ${template.name}`) : title,
         targetName: template.name,
         targetId: template.id,
-        metadata: { count: payloads.length, names: payloads.map((payload) => payload.name) },
+        metadata: {
+          count: result.summary.total,
+          succeeded: result.summary.succeeded,
+          failed: result.summary.failed,
+          skipped: result.summary.skipped,
+          unknown: result.summary.unknown,
+          recordId: record.id,
+          retryOf: record.retryOf,
+        },
       });
+      if (result.summary.succeeded > 0) {
+        setTemplates((current) => {
+          const next = current.map((item) => (item.id === template.id ? recordTaskTemplateUsage(item) : item));
+          void saveTaskTemplates(browserRuntime.storage, next);
+          return next;
+        });
+      }
       invalidateTaskQueries(queryClient);
-      setTemplates((current) => {
-        const next = current.map((item) => (item.id === template.id ? recordTaskTemplateUsage(item) : item));
-        void saveTaskTemplates(browserRuntime.storage, next);
-        return next;
+    },
+    [queryClient, runLogger, setTemplates, text, toast],
+  );
+
+  const runTemplateApply = useCallback(
+    (template: TaskTemplate, payloads: CreateTaskPayload[], retryOf?: string) => {
+      lastAppliedTemplateRef.current = template;
+      void startBatch({
+        action: "template-apply",
+        items: templateApplyItems(payloads),
+        run: (item) => instanceApi.createTask(payloads[Number(item.key)]),
+        retryOf,
+        onSettled: (result, record) => handleTemplateSettled(template, result, record),
       });
     },
-    onError: (error, { template }) => {
-      toast.error(text(`模板创建失败：${template.name}`, `Template creation failed: ${template.name}`), error instanceof Error ? error.message : text("请检查模板配置或稍后重试", "Check the template configuration or try again later"));
-      void runLogger.log({
-        source: "task-template",
-        level: "error",
-        action: "taskTemplate.execute",
-        result: "failure",
-        title: text(`模板创建失败：${template.name}`, `Template creation failed: ${template.name}`),
-        targetName: template.name,
-        targetId: template.id,
-        error: errorMessage(error, text("模板创建失败", "Template creation failed")),
-      });
+    [handleTemplateSettled, startBatch, templateApplyItems],
+  );
+
+  const confirmTemplateApply = useCallback(
+    async (template: TaskTemplate, payloads: CreateTaskPayload[]) => {
+      let resolved = payloads;
+      if (getRuntimeSettings().autoNumberDuplicateTaskNames) {
+        try {
+          resolved = await maybeAllocateUniqueCreateTaskNames(payloads, {
+            enabled: true,
+            checkTaskName: (name) => instanceApi.checkTaskName(name),
+          });
+        } catch (error) {
+          toast.error(
+            text(`模板创建失败：${template.name}`, `Template creation failed: ${template.name}`),
+            error instanceof Error ? error.message : text("无法分配可用实例名称", "Unable to allocate an available instance name"),
+          );
+          return;
+        }
+      }
+      setTemplatePreview(null);
+      setExecutingTemplate(null);
+      runTemplateApply(template, resolved);
     },
-  });
+    [runTemplateApply, text, toast],
+  );
 
   const storageMutation = useMutation({
     mutationFn: persist,
@@ -812,16 +952,17 @@ export function TaskTemplatesPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {/* The shell header already names the page; this lead explains how it behaves. */}
-        <div className="min-w-0 max-w-2xl">
-          <p className="text-sm leading-6 text-app-muted">{text("保存常用资源、镜像和路径配置，从模板直接提交新实例。", "Save common resource, image, and path settings, then create new instances directly from templates.")}</p>
-        </div>
+      {/* The shell header already says what templates are for, and the empty state explains
+          how to start; a third explanation here only pushed the list down. */}
+      <div className="flex flex-wrap items-center justify-end gap-3">
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-          <Button className="flex-1 sm:flex-none" variant="secondary" onClick={() => runningTasksQuery.refetch()}>
-            <RefreshCw className="h-4 w-4" />
-            {text("刷新统计", "Refresh stats")}
-          </Button>
+          {/* Stats are per template, so the refresh only exists once there is something to count. */}
+          {templates.length > 0 ? (
+            <Button className="flex-1 sm:flex-none" variant="secondary" onClick={() => runningTasksQuery.refetch()}>
+              <RefreshCw className="h-4 w-4" />
+              {text("刷新运行统计", "Refresh run stats")}
+            </Button>
+          ) : null}
           <Button className="flex-1 sm:flex-none" onClick={openCreateDialog}>
             <Plus className="h-4 w-4" />
             {text("新建模板", "New template")}
@@ -836,7 +977,11 @@ export function TaskTemplatesPage() {
       {templates.length === 0 ? (
         <Panel>
           <EmptyState
-            title={text("还没有实例模板。为常用开发、训练或批处理环境保存一套参数，之后可以一键创建。", "No instance templates yet. Save a parameter set for common development, training, or batch environments, then create instances with one action.")}
+            title={text("还没有实例模板", "No instance templates yet")}
+            description={text(
+              "为常用的开发、训练或批处理环境保存一套参数，之后一键创建。也可以在任务实例列表里，从某个实例的「更多 → 存为模板」直接生成。",
+              "Save a parameter set for a common development, training, or batch environment and create from it in one step. You can also turn an existing instance into one from More → Save as template on the task list.",
+            )}
             action={<Button onClick={openCreateDialog}>{text("新建模板", "New template")}</Button>}
           />
         </Panel>
@@ -890,7 +1035,7 @@ export function TaskTemplatesPage() {
                 <div className="flex flex-wrap gap-1.5">
                   <Button
                     className="h-9 px-2"
-                    disabled={createMutation.isPending}
+                    disabled={Boolean(batchState?.pending)}
                     title={text("一键新建", "Create with template")}
                     variant="ghost"
                     onClick={() => executeTemplate(template)}
@@ -994,7 +1139,7 @@ export function TaskTemplatesPage() {
                       <div className="flex justify-end gap-1">
                         <Button
                           className="h-8 px-2"
-                          disabled={createMutation.isPending}
+                          disabled={Boolean(batchState?.pending)}
                           title={text("一键新建", "Create with template")}
                           onClick={() => executeTemplate(template)}
                         >
@@ -1069,15 +1214,52 @@ export function TaskTemplatesPage() {
       <TemplateExecuteDialog
         template={executingTemplate}
         open={executingTemplate !== null}
-        isPending={createMutation.isPending}
+        isPending={Boolean(batchState?.pending)}
         onClose={() => setExecutingTemplate(null)}
-        onConfirm={(variableValues) => {
+        onConfirm={(payloads) => {
           if (executingTemplate) {
-            createMutation.mutate({ template: executingTemplate, variableValues });
+            setTemplatePreview({ template: executingTemplate, payloads });
           }
-          setExecutingTemplate(null);
         }}
       />
+      {templatePreview ? (
+        <BatchPreviewDialog
+          open
+          title={text(`确认执行模板：${templatePreview.template.name}`, `Apply Template: ${templatePreview.template.name}`)}
+          tone="default"
+          items={templateApplyItems(templatePreview.payloads)}
+          account={{ displayName: username }}
+          summary={<CreateImpactSummary payloads={templatePreview.payloads} />}
+          confirmLabel={text(`创建 ${templatePreview.payloads.length} 个实例`, `Create ${templatePreview.payloads.length} instances`)}
+          onConfirm={() => {
+            const { template, payloads } = templatePreview;
+            void confirmTemplateApply(template, payloads);
+          }}
+          onClose={() => setTemplatePreview(null)}
+        />
+      ) : null}
+      {batchState ? (
+        <BatchResultDialog
+          open
+          title={text("模板执行结果", "Template apply results")}
+          result={batchState.result}
+          pending={batchState.pending}
+          onRetryFailed={() => {
+            const template = lastAppliedTemplateRef.current;
+            if (!template) return;
+            void retryBatchFailed({ onSettled: (result, record) => handleTemplateSettled(template, result, record) });
+          }}
+          onResolveUnknown={batchState.pending ? undefined : () => void resolveUnknownItems()}
+          resolving={resolvingUnknown}
+          onExport={(format) => {
+            const records = batchState.records;
+            if (records.length === 0) return;
+            const payload = batchExportPayload(records, format);
+            void saveBlob(new Blob([payload.content], { type: payload.type }), payload.filename);
+          }}
+          onClose={() => clearBatch()}
+        />
+      ) : null}
       {confirmDialog}
     </div>
   );

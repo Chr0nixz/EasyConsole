@@ -1,8 +1,12 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rmdir, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 
 import type { EasyConsoleContext } from "./context";
 import type { RuntimeStorage } from "../../src/lib/types";
+import { parseRunLogs, RUN_LOGS_STORAGE_KEY } from "../../src/lib/run-logs";
 import { TASK_TEMPLATES_STORAGE_KEY } from "../../src/lib/task-templates";
 import { SCHEDULED_TASKS_STORAGE_KEY } from "../../src/lib/scheduled-tasks";
 import { createMcpToolDefinitions, invokeMcpToolDefinition, toMcpJsonError, toMcpJsonResult } from "./mcp-tools";
@@ -92,8 +96,155 @@ function createFakeContext(overrides: Record<string, unknown> = {}) {
 }
 
 describe("easy-console MCP tools", () => {
+  it("accepts a task patch without a create-only name and keeps the confirm gate", async () => {
+    const context = createFakeContext();
+    const update = vi.spyOn(context.api.instanceApi, "updateTask");
+    const tool = getTool("easyconsole_task_update");
+    const payload = { releace_time: "2030-01-01T12:00:00Z" };
+    const preview = await invokeMcpToolDefinition(tool, context, { taskId: 42, payload });
+    expect(preview).toMatchObject({ dryRun: true, action: "task.update" });
+    expect(update).not.toHaveBeenCalled();
+    await invokeMcpToolDefinition(tool, context, { taskId: 42, payload, confirm: true });
+    expect(update).toHaveBeenCalledExactlyOnceWith(42, payload);
+  });
+
+  it("requires confirm before refreshing or replacing credentials", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ec-mcp-refresh-"));
+    const configPath = join(directory, "config.json");
+    const original = JSON.stringify({ token: "Bearer current-token" });
+    await writeFile(configPath, original);
+    try {
+      const context = createFakeContext();
+      context.config.configPath = configPath;
+      context.config.token = "Bearer current-token";
+      const refresh = vi.spyOn(context.api.authApi, "refreshToken");
+      const tool = getTool("easyconsole_account_refresh_token");
+      for (const input of [{}, { confirm: false }]) {
+        const preview = await invokeMcpToolDefinition(tool, context, input);
+        expect(preview).toMatchObject({ dryRun: true, action: "account.refresh-token" });
+        expect(JSON.stringify(preview)).not.toContain("current-token");
+      }
+      await expect(invokeMcpToolDefinition(tool, context, { confirm: "true" })).rejects.toThrow();
+      expect(refresh).not.toHaveBeenCalled();
+      expect(await readFile(configPath, "utf8")).toBe(original);
+      await invokeMcpToolDefinition(tool, context, { confirm: true });
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(JSON.parse(await readFile(configPath, "utf8")).token).toBe("Bearer new-token");
+    } finally {
+      await unlink(configPath);
+      await rmdir(directory);
+    }
+  });
+
+  it.each([
+    { name: " " }, { cpu: 0 }, { cpu: "bad" }, { gpu: -1 }, { gpu: 1.5 },
+    { memory: 0 }, { memory: "1.2" }, { releace_conditions: 9 },
+  ])("rejects invalid task quantities before mutation: %j", async (invalid) => {
+    await expect(invokeMcpToolDefinition(getTool("easyconsole_task_create"), createFakeContext(), {
+      payload: { name: "train", ...invalid }, confirm: true,
+    })).rejects.toThrow();
+  });
   it("validates tool input with zod schemas", async () => {
     await expect(invokeMcpToolDefinition(getTool("easyconsole_task_log"), createFakeContext(), {})).rejects.toThrow();
+  });
+
+  it("rejects task create payloads without a name and keeps unknown fields", async () => {
+    await expect(
+      invokeMcpToolDefinition(getTool("easyconsole_task_create"), createFakeContext(), {
+        payload: { cpu: 8, typo_field: "x" },
+      }),
+    ).rejects.toThrow();
+
+    let createCount = 0;
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [], raw: [] }),
+        taskLog: async () => "",
+        createTask: async (payload: Record<string, unknown>) => {
+          createCount += 1;
+          return { payload };
+        },
+      },
+    });
+    const result = await invokeMcpToolDefinition(getTool("easyconsole_task_create"), context, {
+      payload: { name: "train", cpu: 8, custom_backend_field: true },
+      confirm: true,
+    });
+    expect(createCount).toBe(1);
+    expect(JSON.stringify(result)).toContain("custom_backend_field");
+  });
+
+  it("gets a single task with an SSH summary that omits credentials", async () => {
+    const result = (await invokeMcpToolDefinition(getTool("easyconsole_task_get"), createFakeContext(), {
+      taskId: 7,
+    })) as { task: Record<string, unknown>; ssh: Record<string, unknown>; monitorUrl: string };
+
+    expect(result.task).toMatchObject({ id: 7, description: "pod-7" });
+    expect(result.ssh).not.toHaveProperty("password");
+    expect(result.ssh).not.toHaveProperty("command");
+    expect(typeof result.monitorUrl).toBe("string");
+  });
+
+  it("waits for a target status and returns early on failure statuses", async () => {
+    const target = await invokeMcpToolDefinition(
+      getTool("easyconsole_task_wait"),
+      createFakeContext({ instanceApi: { tasks: async () => ({ items: [{ id: 7, status: 2 }], raw: [] }) } }),
+      { taskId: 7 },
+    );
+    expect(target).toMatchObject({ outcome: "target", status: 2 });
+
+    const failed = await invokeMcpToolDefinition(
+      getTool("easyconsole_task_wait"),
+      createFakeContext({ instanceApi: { tasks: async () => ({ items: [{ id: 7, status: 8 }], raw: [] }) } }),
+      { taskId: 7, timeoutSeconds: 30 },
+    );
+    expect(failed).toMatchObject({ outcome: "failed", status: 8 });
+  });
+
+  it("gates image update and delete behind confirm", async () => {
+    let updateCount = 0;
+    let deleteCount = 0;
+    const context = createFakeContext({
+      imageApi: {
+        list: async () => ({ items: [], raw: [] }),
+        system: async () => ({ items: [], raw: [] }),
+        setDefault: async () => ({}),
+        detail: async () => ({}),
+        download: async () => new Blob([]),
+        commitImage: async () => ({}),
+        updateImage: async (id: number, payload: Record<string, unknown>) => {
+          updateCount += 1;
+          return { id, payload };
+        },
+        deleteImage: async () => {
+          deleteCount += 1;
+          return {};
+        },
+      },
+    });
+
+    const dryRun = await invokeMcpToolDefinition(getTool("easyconsole_image_delete"), context, { imageId: 3 });
+    expect(dryRun).toMatchObject({ dryRun: true, action: "image.delete" });
+    expect(deleteCount).toBe(0);
+
+    const confirmed = await invokeMcpToolDefinition(getTool("easyconsole_image_delete"), context, { imageId: 3, confirm: true });
+    expect(confirmed).toMatchObject({ dryRun: false });
+    expect(deleteCount).toBe(1);
+
+    const updateDryRun = await invokeMcpToolDefinition(getTool("easyconsole_image_update"), context, {
+      imageId: 3,
+      payload: { name: "renamed" },
+    });
+    expect(updateDryRun).toMatchObject({ dryRun: true, action: "image.update" });
+    expect(updateCount).toBe(0);
+
+    const updated = await invokeMcpToolDefinition(getTool("easyconsole_image_update"), context, {
+      imageId: 3,
+      payload: { name: "renamed" },
+      confirm: true,
+    });
+    expect(updateCount).toBe(1);
+    expect(JSON.stringify(updated)).toContain("renamed");
   });
 
   it("does not call mutation APIs without confirm=true", async () => {
@@ -414,6 +565,7 @@ describe("easy-console MCP tools", () => {
       payload: { name: "scheduled-task" },
     });
     expect(result).toMatchObject({ dryRun: true, action: "schedule.create" });
+    expect(result).not.toHaveProperty("note");
   });
 
   it("creates a local scheduled task when confirm=true", async () => {
@@ -426,6 +578,15 @@ describe("easy-console MCP tools", () => {
     });
     expect(result).toMatchObject({ dryRun: false, action: "schedule.create" });
     expect(result).toMatchObject({ result: { name: "my-schedule", status: "pending" } });
+    // The store has no runner: the note must tell the agent it will not fire automatically.
+    expect(result).toMatchObject({ note: expect.stringContaining("NOT run automatically") });
+  });
+
+  it("documents that local scheduled tasks never execute automatically", () => {
+    for (const name of ["easyconsole_schedule_create", "easyconsole_schedule_update", "easyconsole_schedule_resume"]) {
+      const tool = getTool(name);
+      expect(tool.description).toContain("never executed automatically");
+    }
   });
 
   it("returns dry-run for backup_import without confirm", async () => {
@@ -442,5 +603,156 @@ describe("easy-console MCP tools", () => {
       backupText: JSON.stringify(backup),
     });
     expect(result).toMatchObject({ dryRun: true, action: "backup.import" });
+  });
+
+  it("returns task impact on batch dry-run without side effects", async () => {
+    let deleteCount = 0;
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [{ id: 7, description: "pod-7" }, { id: 8, name: "train-8" }], raw: [] }),
+        deleteTask: async () => {
+          deleteCount += 1;
+          return {};
+        },
+      },
+    });
+
+    const result = (await invokeMcpToolDefinition(getTool("easyconsole_task_delete_batch"), context, {
+      taskIds: [7, 8, 99],
+    })) as { dryRun: boolean; impact: Array<{ id: number; name: string }> };
+
+    expect(result.dryRun).toBe(true);
+    expect(result.impact).toEqual([
+      { id: 7, name: "pod-7" },
+      { id: 8, name: "train-8" },
+      { id: 99, name: "#99" },
+    ]);
+    expect(deleteCount).toBe(0);
+  });
+
+  it("continues a confirmed batch after a per-item failure and reports receipts", async () => {
+    const released: number[] = [];
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [{ id: 7, description: "pod-7" }, { id: 8, name: "train-8" }], raw: [] }),
+        operateTask: async (id: number) => {
+          released.push(id);
+          if (id === 7) throw new Error("release 7 failed");
+          return { released: true };
+        },
+      },
+    });
+
+    const result = (await invokeMcpToolDefinition(getTool("easyconsole_task_release_batch"), context, {
+      taskIds: [7, 8],
+      confirm: true,
+    })) as {
+      dryRun: boolean;
+      result: { batchId: string; count: number; results: Array<{ id: number; name: string; ok: boolean; error?: string }> };
+    };
+
+    expect(result.dryRun).toBe(false);
+    expect(released).toEqual([7, 8]);
+    expect(result.result.batchId).toBeTruthy();
+    expect(result.result.count).toBe(2);
+    expect(result.result.results).toEqual([
+      { id: 7, name: "pod-7", ok: false, error: "release 7 failed" },
+      { id: 8, name: "train-8", ok: true },
+    ]);
+  });
+
+  it("writes one mcp run log entry per batch item", async () => {
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [{ id: 7, description: "pod-7" }, { id: 8, name: "train-8" }], raw: [] }),
+        operateTask: async (id: number) => {
+          if (id === 7) throw new Error("release 7 failed");
+          return { released: true };
+        },
+      },
+    });
+
+    const result = (await invokeMcpToolDefinition(getTool("easyconsole_task_release_batch"), context, {
+      taskIds: [7, 8],
+      confirm: true,
+    })) as { result: { batchId: string } };
+
+    const logs = parseRunLogs(await context.runLogStorage.get(RUN_LOGS_STORAGE_KEY));
+    const itemLogs = logs.filter((entry) => entry.action === "task.releaseBatch");
+    expect(itemLogs).toHaveLength(2);
+    expect(itemLogs.find((entry) => entry.targetId === 7)).toMatchObject({
+      channel: "mcp",
+      result: "failure",
+      targetName: "pod-7",
+      error: "release 7 failed",
+    });
+    expect(itemLogs.find((entry) => entry.targetId === 8)).toMatchObject({
+      channel: "mcp",
+      result: "success",
+      targetName: "train-8",
+    });
+    expect(itemLogs.every((entry) => entry.metadata?.batchId === result.result.batchId)).toBe(true);
+  });
+
+  it("keeps batch impact and results free of credential fields", async () => {
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [{ id: 7, description: "pod-7" }], raw: [] }),
+        operateTask: async () => ({}),
+      },
+    });
+    await context.storage.set("easy-console.token", "Bearer super-secret-token");
+
+    const dryRun = await invokeMcpToolDefinition(getTool("easyconsole_task_release_batch"), context, { taskIds: [7] });
+    const executed = await invokeMcpToolDefinition(getTool("easyconsole_task_release_batch"), context, {
+      taskIds: [7],
+      confirm: true,
+    });
+
+    for (const data of [dryRun, executed]) {
+      const serialized = JSON.stringify(data);
+      const rows = [
+        ...((data as { impact?: Array<Record<string, unknown>> }).impact ?? []),
+        ...(((data as { result?: { results?: Array<Record<string, unknown>> } }).result?.results) ?? []),
+      ];
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(Object.keys(row).sort()).toEqual(["error", "id", "name", "ok"].filter((key) => key in row).sort());
+      }
+      expect(serialized).not.toContain("super-secret-token");
+      expect(serialized).not.toContain("Bearer");
+    }
+  });
+
+  it("previews template apply payloads in the dry-run impact", async () => {
+    const context = createFakeContext();
+    const template = {
+      id: "tpl-impact",
+      name: "impact-template",
+      taskNamePrefix: "bench",
+      batchCount: 2,
+      imageId: "1",
+      cpu: 4,
+      gpu: 0,
+      memory: 16,
+      storagePath: "/",
+      mountPath: "/home/ubuntu",
+      releaseCondition: 1,
+      usageCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await context.storage.set(TASK_TEMPLATES_STORAGE_KEY, JSON.stringify([template]));
+
+    const result = (await invokeMcpToolDefinition(getTool("easyconsole_template_apply"), context, {
+      templateId: "tpl-impact",
+    })) as { dryRun: boolean; impact: Array<{ id: number; name: string }> };
+
+    expect(result.dryRun).toBe(true);
+    expect(result.impact).toHaveLength(2);
+    expect(result.impact.map((item) => item.id)).toEqual([1, 2]);
+    for (const item of result.impact) {
+      expect(item.name).toContain("bench");
+    }
   });
 });

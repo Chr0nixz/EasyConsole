@@ -1,16 +1,17 @@
-import { Code2, Copy, KeyRound, KeySquare, Server, Terminal } from "lucide-react";
+import { Code2, Copy, CopyPlus, FileText, KeyRound, KeySquare, Server, SquareTerminal, Terminal } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { getTaskName } from "../../lib/format";
 import { useI18n } from "../../lib/i18n";
 import { browserRuntime } from "../../lib/runtime";
 import { buildTaskSshInfo, findSshConnectionIssue, resolveSshConnectionRequest, toSshConnectionRequest } from "../../lib/ssh-info";
-import { canConnectTaskSsh } from "../../lib/task-terminal";
+import { canConnectTaskSsh, getTaskAccess } from "../../lib/task-terminal";
 import type { SshConnectionRequest, Task } from "../../lib/types";
 import { useAuth } from "../../lib/use-auth";
 import { useConfirmAction } from "../../lib/use-confirm-action";
 import { useSshWorkspace } from "../../lib/use-ssh-workspace";
 import { useToast } from "../../lib/use-toast";
+import { EmptyState } from "../DataState";
 import { Button } from "../ui";
 
 function InfoRow({
@@ -50,9 +51,14 @@ function InfoRow({
 export function TaskSshPanel({
   task,
   onOpenAppSsh,
+  onViewLog,
+  onClone,
 }: {
   task: Task;
   onOpenAppSsh?: (request: SshConnectionRequest) => void;
+  /** Offered when the instance is not running: the log is where an ended task is diagnosed. */
+  onViewLog?: () => void;
+  onClone?: () => void;
 }) {
   const toast = useToast();
   const confirmAction = useConfirmAction();
@@ -151,46 +157,75 @@ export function TaskSshPanel({
     });
   };
 
+  // A queued, paused or ended instance has no host: say so plainly and point at what helps
+  // (the log, a corrected rerun) instead of a card of empty fields and advice to refresh.
+  const access = getTaskAccess(task);
+  if (!access.terminal) {
+    return (
+      <EmptyState
+        icon={Server}
+        title={access.terminalReason ?? text("实例未在运行，无法连接", "Not running; nothing to connect to")}
+        description={text(
+          `终端只对运行中的实例开放。${getTaskName(task)} 的输出可以在日志里查看。`,
+          `The terminal is only available while an instance runs. The output of ${getTaskName(task)} is in its log.`,
+        )}
+        action={onViewLog || onClone ? (
+          <div className="flex flex-wrap justify-center gap-2">
+            {onViewLog && access.log ? (
+              <Button type="button" variant="secondary" onClick={onViewLog}>
+                <FileText className="h-4 w-4" />
+                {text("查看日志", "View log")}
+              </Button>
+            ) : null}
+            {onClone ? (
+              <Button type="button" variant="secondary" onClick={onClone}>
+                <CopyPlus className="h-4 w-4" />
+                {text("克隆并修改", "Clone and edit")}
+              </Button>
+            ) : null}
+          </div>
+        ) : undefined}
+      />
+    );
+  }
+
   return (
     <>
       <div className="space-y-4 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border pb-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-md border border-app-border bg-app-panel text-app-accent">
-              <Server className="h-5 w-5" />
-            </div>
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-app-text">{getTaskName(task)}</div>
-              <div className="mt-1 font-mono text-xs text-app-muted">#{task.task_id ?? task.id}</div>
-            </div>
-          </div>
-          {browserRuntime.supportsInAppSsh || browserRuntime.supportsSystemTerminal ? (
-            <div className="flex flex-wrap items-center gap-2">
-              {browserRuntime.supportsInAppSsh ? (
-                <Button disabled={!canConnect} type="button" variant="secondary" onClick={openAppSsh}>
-                  <Terminal className="h-4 w-4" />
-                  {text("应用内 SSH", "In-app SSH")}
+        {/* The drawer title and the detail page header already name the instance. In-app SSH
+            leads; revoking the VS Code key is destructive and sits apart, quiet until hovered. */}
+        {browserRuntime.supportsInAppSsh || browserRuntime.supportsSystemTerminal ? (
+          <div className="flex flex-wrap items-center gap-2 border-b border-app-border pb-4">
+            {browserRuntime.supportsInAppSsh ? (
+              <Button disabled={!canConnect} type="button" onClick={openAppSsh}>
+                <Terminal className="h-4 w-4" />
+                {text("应用内 SSH", "In-app SSH")}
+              </Button>
+            ) : null}
+            {browserRuntime.supportsSystemTerminal ? (
+              <>
+                <Button disabled={!canConnect} type="button" variant={browserRuntime.supportsInAppSsh ? "secondary" : "primary"} onClick={openSystemSsh}>
+                  <SquareTerminal className="h-4 w-4" />
+                  {text("系统终端", "System terminal")}
                 </Button>
-              ) : null}
-              {browserRuntime.supportsSystemTerminal ? (
-                <>
-                  <Button disabled={!canConnect || isOpeningVscode} type="button" variant="secondary" onClick={openVscodeSsh}>
-                    <Code2 className="h-4 w-4" />
-                    {isOpeningVscode ? text("配置中", "Configuring") : "VS Code"}
-                  </Button>
-                  <Button disabled={!canConnect} type="button" variant="secondary" onClick={revokeVscodeSsh}>
-                    <KeySquare className="h-4 w-4" />
-                    {text("撤销免密", "Revoke key")}
-                  </Button>
-                  <Button disabled={!canConnect} type="button" onClick={openSystemSsh}>
-                    <Terminal className="h-4 w-4" />
-                    {text("系统终端", "System terminal")}
-                  </Button>
-                </>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
+                <Button disabled={!canConnect || isOpeningVscode} type="button" variant="secondary" onClick={openVscodeSsh}>
+                  <Code2 className="h-4 w-4" />
+                  {isOpeningVscode ? text("配置中", "Configuring") : "VS Code"}
+                </Button>
+                <Button
+                  className="ml-auto hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger"
+                  disabled={!canConnect}
+                  type="button"
+                  variant="ghost"
+                  onClick={revokeVscodeSsh}
+                >
+                  <KeySquare className="h-4 w-4" />
+                  {text("撤销 VS Code 免密", "Revoke VS Code key")}
+                </Button>
+              </>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="overflow-hidden rounded-lg border border-app-border">
           <InfoRow label={text("主机", "Host")} value={sshInfo.host} onCopy={copyValue} />

@@ -1,4 +1,5 @@
 import { Command, CommanderError } from "commander";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 
 import type { CreateTaskPayload, ImageCommitPayload, TaskQuery, TaskRecurrence, UnknownRecord } from "../../src/lib/types";
 import { applyEnvToScriptCommand, isValidEnvKey, isValidEnvValue } from "../../src/lib/script-command-env";
@@ -17,6 +18,7 @@ import {
   createScheduledTaskRecord,
   createTask,
   createTaskTemplateRecord,
+  deleteImage,
   deleteScheduledTask,
   deleteStoragePath,
   deleteTask,
@@ -32,6 +34,7 @@ import {
   getImageDetail,
   getMonitorIndex,
   getStorageInfo,
+  getTask,
   getTaskLog,
   importBackup,
   listImages,
@@ -53,10 +56,12 @@ import {
   runScheduledTask,
   setDefaultImage,
   uploadLocalFile,
+  updateImage,
   updateScheduledTaskRecord,
   updateTask,
   updateTaskTemplateRecord,
   userInfo,
+  waitForTask,
 } from "./operations";
 import type { EditableTaskTemplate } from "../../src/lib/task-templates";
 
@@ -114,7 +119,8 @@ function parseInteger(value: string | undefined) {
 }
 
 function parseId(value: string) {
-  return /^\d+$/.test(value) ? Number(value) : value;
+  const numeric = Number(value);
+  return /^\d+$/.test(value) && Number.isSafeInteger(numeric) && String(numeric) === value ? numeric : value;
 }
 
 function compactRecord(record: UnknownRecord) {
@@ -361,12 +367,17 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   login.requiredOption("--username <name>", "Username");
   login.option("--password <password>", "Password");
   login.option("--password-stdin", "Read password from stdin");
+  login.option("--yes", "Log in and save credentials instead of dry-run");
   login.action(async () => {
     try {
-      const options = login.optsWithGlobals<GlobalCliOptions & { username: string; password?: string; passwordStdin?: boolean }>();
+      const options = login.optsWithGlobals<GlobalCliOptions & { username: string; password?: string; passwordStdin?: boolean; yes?: boolean }>();
+      const context = await getContext(login);
+      if (options.yes !== true) {
+        emitSuccess(login, { dryRun: true, action: "auth.login", payload: { username: options.username.trim(), apiBaseUrl: context.config.apiBaseUrl, configPath: context.config.configPath }, message: "Pass --yes to log in and save local credentials." });
+        return;
+      }
       const password = options.passwordStdin ? (await readStdin()).trimEnd() : options.password;
       if (!password) throw new Error("Provide --password or --password-stdin.");
-      const context = await getContext(login);
       const startedAt = Date.now();
       const result = await context.api.authApi.login({ username: options.username, password });
       if (!result.token) throw new Error("Login response did not include a token.");
@@ -433,6 +444,32 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
+  const taskGet = task.command("get").description("Get one task with its SSH endpoint (no credentials) and monitor URL");
+  taskGet.argument("<taskId>", "Task id");
+  taskGet.action((taskId: string) =>
+    run(taskGet, (context) => getTask(context.api, parseId(taskId)))(),
+  );
+
+  const taskWait = task.command("wait").description("Wait until a task reaches a status (default 2 = running), fails, or times out");
+  taskWait.argument("<taskId>", "Task id");
+  taskWait.option("--for <statuses>", "Comma-separated target status codes (default 2 = running)");
+  taskWait.option("--timeout <seconds>", "Overall timeout in seconds (default 300, max 900)", "300");
+  taskWait.option("--interval <seconds>", "Poll interval in seconds (default 10, min 5)", "10");
+  taskWait.action((taskId: string) =>
+    run(taskWait, (context) => {
+      const options = taskWait.opts<{ for?: string; timeout: string; interval: string }>();
+      const statuses = options.for
+        ? options.for.split(",").map((value) => Number(value.trim())).filter((value) => Number.isInteger(value))
+        : undefined;
+      if (statuses && statuses.length === 0) throw new Error("Provide at least one status code for --for.");
+      return waitForTask(context.api, parseId(taskId), {
+        targetStatuses: statuses,
+        timeoutMs: Math.min(900, parseInteger(options.timeout) ?? 300) * 1000,
+        intervalMs: Math.max(5, parseInteger(options.interval) ?? 10) * 1000,
+      });
+    })(),
+  );
+
   const taskCreate = task.command("create").description("Create a task");
   taskCreate.option("--payload-json <json>", "Raw create task JSON payload");
   taskCreate.option("--name <name>", "Task name");
@@ -467,7 +504,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
-  const taskReleaseBatch = task.command("release-batch").description("Release multiple tasks");
+  const taskReleaseBatch = task.command("release-batch").description("Release multiple tasks; dry-run lists impact, execution returns per-item results and batchId");
   taskReleaseBatch.argument("<ids>", "Comma-separated task ids");
   taskReleaseBatch.option("--yes", "Execute instead of dry-run");
   taskReleaseBatch.action((ids: string) =>
@@ -475,7 +512,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       const options = taskReleaseBatch.opts<{ yes?: boolean }>();
       const taskIds = ids.split(",").map((id) => parseId(id.trim())).filter(Boolean);
       if (taskIds.length === 0) throw new Error("Provide at least one task id.");
-      return releaseTasks(context.api, taskIds, options.yes);
+      return releaseTasks(context.api, taskIds, options.yes, { storage: context.runLogStorage, channel: "cli" });
     })(),
   );
 
@@ -489,7 +526,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
-  const taskUpdate = task.command("update").description("Update a task");
+  const taskUpdate = task.command("update").description("Experimental: update a task through PATCH only");
   taskUpdate.argument("<taskId>", "Task id");
   taskUpdate.option("--payload-json <json>", "Raw update task JSON payload");
   taskUpdate.option("--name <name>", "Task name");
@@ -532,7 +569,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
-  const taskDeleteBatch = task.command("delete-batch").description("Delete multiple tasks");
+  const taskDeleteBatch = task.command("delete-batch").description("Delete multiple tasks; dry-run lists impact, execution returns per-item results and batchId");
   taskDeleteBatch.argument("<ids>", "Comma-separated task ids");
   taskDeleteBatch.option("--yes", "Execute instead of dry-run");
   taskDeleteBatch.action((ids: string) =>
@@ -540,7 +577,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       const options = taskDeleteBatch.opts<{ yes?: boolean }>();
       const taskIds = ids.split(",").map((id) => parseId(id.trim())).filter(Boolean);
       if (taskIds.length === 0) throw new Error("Provide at least one task id.");
-      return deleteTasks(context.api, taskIds, options.yes);
+      return deleteTasks(context.api, taskIds, options.yes, { storage: context.runLogStorage, channel: "cli" });
     })(),
   );
 
@@ -552,9 +589,11 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   taskDownload.argument("<taskId>", "Task id");
   taskDownload.option("--output <path>", "Local output path");
   taskDownload.option("--overwrite", "Replace the output file if it already exists");
+  taskDownload.option("--yes", "Download and write the file instead of dry-run");
   taskDownload.action((taskId: string) =>
-    run(taskDownload, (context) => {
-      const options = taskDownload.opts<{ output?: string; overwrite?: boolean }>();
+    run(taskDownload, async (context) => {
+      const options = taskDownload.opts<{ output?: string; overwrite?: boolean; yes?: boolean }>();
+      if (options.yes !== true) return { dryRun: true, action: "task.download", payload: { taskId: parseId(taskId), outputPath: options.output ?? null, overwrite: options.overwrite === true }, message: "Pass --yes to download and write the file." };
       // `--output` is an explicit human instruction, so the CLI is not confined
       // to the download root the way MCP tools are.
       return downloadTask(context.api, { task_id: parseId(taskId) }, options.output, {
@@ -583,9 +622,11 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   storageDownload.argument("<path>", "Remote path");
   storageDownload.option("--output <path>", "Local output path");
   storageDownload.option("--overwrite", "Replace the output file if it already exists");
+  storageDownload.option("--yes", "Download and write the file instead of dry-run");
   storageDownload.action((path: string) =>
-    run(storageDownload, (context) => {
-      const options = storageDownload.opts<{ output?: string; overwrite?: boolean }>();
+    run(storageDownload, async (context) => {
+      const options = storageDownload.opts<{ output?: string; overwrite?: boolean; yes?: boolean }>();
+      if (options.yes !== true) return { dryRun: true, action: "storage.download", payload: { path, outputPath: options.output ?? null, overwrite: options.overwrite === true }, message: "Pass --yes to download and write the file." };
       return downloadStoragePath(context.api, path, options.output, {
         allowOutsideRoot: true,
         overwrite: options.overwrite === true,
@@ -641,6 +682,33 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   );
 
   const imageSystem = image.command("system").description("List system images");
+  const imageUpdate = image.command("update").description("Experimental: update a custom image's name/description");
+  imageUpdate.argument("<imageId>", "Image id");
+  imageUpdate.option("--name <name>", "New image name");
+  imageUpdate.option("--description <description>", "New image description");
+  imageUpdate.option("--payload-json <json>", "Raw update image JSON payload");
+  imageUpdate.option("--yes", "Execute instead of dry-run");
+  imageUpdate.action((imageId: string) =>
+    run(imageUpdate, (context) => {
+      const options = imageUpdate.opts<{ name?: string; description?: string; payloadJson?: string; yes?: boolean }>();
+      const payload: UnknownRecord = options.payloadJson
+        ? parseJsonRecord(options.payloadJson)
+        : compactRecord({ name: options.name, description: options.description });
+      if (Object.keys(payload).length === 0) throw new Error("Provide --name, --description, or --payload-json.");
+      return updateImage(context.api, parseId(imageId), payload, options.yes);
+    })(),
+  );
+
+  const imageDelete = image.command("delete").description("Experimental: delete a custom image; irreversible");
+  imageDelete.argument("<imageId>", "Image id");
+  imageDelete.option("--yes", "Execute instead of dry-run");
+  imageDelete.action((imageId: string) =>
+    run(imageDelete, (context) => {
+      const options = imageDelete.opts<{ yes?: boolean }>();
+      return deleteImage(context.api, parseId(imageId), options.yes);
+    })(),
+  );
+
   imageSystem.action(run(imageSystem, (context) => listSystemImages(context.api)));
 
   const imageDetail = image.command("detail").description("Show image detail");
@@ -651,9 +719,11 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   imageDownload.argument("<imageId>", "Image id");
   imageDownload.option("--output <path>", "Local output path");
   imageDownload.option("--overwrite", "Replace the output file if it already exists");
+  imageDownload.option("--yes", "Download and write the file instead of dry-run");
   imageDownload.action((imageId: string) =>
-    run(imageDownload, (context) => {
-      const options = imageDownload.opts<{ output?: string; overwrite?: boolean }>();
+    run(imageDownload, async (context) => {
+      const options = imageDownload.opts<{ output?: string; overwrite?: boolean; yes?: boolean }>();
+      if (options.yes !== true) return { dryRun: true, action: "image.download", payload: { imageId: parseId(imageId), outputPath: options.output ?? null, overwrite: options.overwrite === true }, message: "Pass --yes to download and write the file." };
       return downloadImage(context.api, parseId(imageId), options.output, {
         allowOutsideRoot: true,
         overwrite: options.overwrite === true,
@@ -750,8 +820,12 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   );
 
   const accountRefresh = account.command("refresh-token").description("Refresh the current auth token");
+  accountRefresh.option("--yes", "Refresh and save the token instead of dry-run");
   accountRefresh.action(
     run(accountRefresh, async (context) => {
+      if (accountRefresh.opts<{ yes?: boolean }>().yes !== true) {
+        return { dryRun: true, action: "account.refresh-token", payload: { configPath: context.config.configPath }, message: "Pass --yes to refresh and save local credentials." };
+      }
       if (!context.config.token) throw new Error("No current token found in config.");
       const result = await refreshToken(context.api, context.config.token);
       if (result.token) {
@@ -789,7 +863,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
-  const templateApply = template.command("apply").description("Apply a task template to create tasks");
+  const templateApply = template.command("apply").description("Apply a task template to create tasks; dry-run lists payload impact, execution returns per-item results and batchId");
   templateApply.argument("<templateId>", "Template id");
   templateApply.option("--variables-json <json>", "Template variable values JSON object");
   templateApply.option("--yes", "Execute instead of dry-run");
@@ -799,7 +873,10 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       const variableValues = options.variablesJson
         ? (parseJsonRecord(options.variablesJson) as Record<string, string>)
         : undefined;
-      return applyTaskTemplate(context.storage, context.api, templateId, options.yes, variableValues);
+      return applyTaskTemplate(context.storage, context.api, templateId, options.yes, variableValues, {
+        storage: context.runLogStorage,
+        channel: "cli",
+      });
     })(),
   );
 
@@ -813,11 +890,15 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
     })(),
   );
 
-  const schedule = program.command("schedule").description("Local scheduled task operations");
+  const schedule = program
+    .command("schedule")
+    .description("Shared local scheduled task operations (the sidecar never runs plans automatically; use `schedule run` or the desktop runner)");
   const scheduleList = schedule.command("list").description("List local scheduled tasks");
   scheduleList.action(run(scheduleList, (context) => listScheduledTasks(context.storage)));
 
-  const scheduleCreate = schedule.command("create").description("Create a local scheduled task");
+  const scheduleCreate = schedule
+    .command("create")
+    .description("Create a local scheduled task (it will not run automatically; use `schedule run`)");
   scheduleCreate.requiredOption("--name <name>", "Scheduled task name");
   scheduleCreate.requiredOption("--schedule-time <datetime>", "ISO schedule time");
   scheduleCreate.requiredOption("--payload-json <json>", "Create task JSON payload");
@@ -891,7 +972,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   scheduleRun.action((taskId: string) =>
     run(scheduleRun, (context) => {
       const options = scheduleRun.opts<{ yes?: boolean }>();
-      return runScheduledTask(context.storage, context.api, taskId, options.yes);
+      return runScheduledTask(context.storage, context.api, taskId, options.yes, context.resolveAccountScope);
     })(),
   );
 
@@ -909,19 +990,22 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   const backupExport = backup.command("export").description("Export local data as backup JSON");
   backupExport.option("--include-secrets", "Include token and saved accounts (requires --output)");
   backupExport.option("--output <file>", "Write the backup to a file instead of stdout");
+  backupExport.option("--yes", "Write the backup file instead of dry-run");
   backupExport.action(
     run(backupExport, async (context) => {
-      const options = backupExport.opts<{ includeSecrets?: boolean; output?: string }>();
+      const options = backupExport.opts<{ includeSecrets?: boolean; output?: string; yes?: boolean }>();
       const includeSecrets = Boolean(options.includeSecrets);
       // Secrets must never reach stdout: it is captured by shells, CI logs and
       // AI agent transcripts.
       if (includeSecrets && !options.output) {
         throw new Error("--include-secrets requires --output <file>; refusing to write credentials to stdout.");
       }
-      const data = await exportBackup(context.storage, includeSecrets);
+      if (options.output && options.yes !== true) {
+        return { dryRun: true, action: "backup.export", payload: { outputPath: options.output, includeSecrets }, message: "Pass --yes to write the backup file." };
+      }
+      const data = await exportBackup(context.storage, includeSecrets, context.credentialStorage ?? context.storage);
       if (!options.output) return data;
 
-      const { writeFile, chmod } = await import("node:fs/promises");
       await writeFile(options.output, `${JSON.stringify(data, null, 2)}\n`, "utf8");
       if (process.platform !== "win32") {
         await chmod(options.output, 0o600).catch(() => {});
@@ -938,7 +1022,6 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   backupImport.action((file: string) =>
     run(backupImport, async (context) => {
       const options = backupImport.opts<{ sections?: string; includeSecrets?: boolean; yes?: boolean }>();
-      const { readFile } = await import("node:fs/promises");
       const backupText = await readFile(file, "utf8");
       const sections: LocalDataBackupSection[] = options.sections
         ? (options.sections.split(",").map((s) => s.trim()).filter(Boolean) as LocalDataBackupSection[])
@@ -949,7 +1032,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
       if (!options.includeSecrets && sections.some((section) => secretBackupSections.includes(section))) {
         throw new Error("Importing token/savedAccounts overwrites local credentials; pass --include-secrets to allow it.");
       }
-      return importBackup(context.storage, backupText, sections, options.yes);
+      return importBackup(context.storage, backupText, sections, options.yes, context.credentialStorage ?? context.storage);
     })(),
   );
 
@@ -991,12 +1074,14 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   try {
     await program.parseAsync(argv, { from: "user" });
   } catch (error) {
-    if (error instanceof CommanderError) {
-      exitCode = error.exitCode;
-      if (error.code !== "commander.helpDisplayed" && error.message) stderr += `${error.message}\n`;
+    if (error instanceof CommanderError && error.exitCode === 0) {
+      exitCode = 0;
+    } else if (program.opts<GlobalCliOptions>().json || argv.slice(0, argv.indexOf("--") < 0 ? undefined : argv.indexOf("--")).includes("--json")) {
+      exitCode = error instanceof CommanderError ? error.exitCode : 1;
+      stderr = `${JSON.stringify({ ok: false, data: null, error: formatError(error) })}\n`;
     } else {
-      exitCode = 1;
-      stderr += `${formatError(error).message}\n`;
+      exitCode = error instanceof CommanderError ? error.exitCode : 1;
+      if (!stderr) stderr = `${formatError(error).message}\n`;
     }
   }
 

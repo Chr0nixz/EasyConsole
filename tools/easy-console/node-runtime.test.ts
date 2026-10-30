@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ApiClient } from "../../src/lib/api-client";
 import { ApiError } from "../../src/lib/types";
@@ -55,5 +55,96 @@ describe("node runtime", () => {
       status: 401,
       code: 10000,
     } satisfies Partial<ApiError>);
+  });
+
+  it("completes a blob download whose body outlives the timeout budget", async () => {
+    vi.useFakeTimers();
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+      });
+    const chunks = [1, 2, 3, 4, 5].map((value) => ({ bytes: new Uint8Array([value]), delayMs: 150 }));
+    const runtime = createNodeRuntime({
+      fetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const signal = init?.signal ?? new AbortController().signal;
+        let index = 0;
+        const total = chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0);
+        return {
+          status: 200,
+          headers: new Headers({ "content-length": String(total) }),
+          body: {
+            getReader: () => ({
+              async read() {
+                if (index >= chunks.length) return { done: true, value: undefined };
+                const chunk = chunks[index];
+                index += 1;
+                if (chunk.delayMs > 0) await sleep(chunk.delayMs);
+                if (signal.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+                return { done: false, value: chunk.bytes };
+              },
+            }),
+          },
+        };
+      }) as typeof fetch,
+    });
+
+    const pending = runtime.request<Blob>({
+      method: "GET",
+      url: "http://host/api/file",
+      responseType: "blob",
+      timeoutMs: 400,
+    });
+    for (let step = 0; step < 7; step += 1) {
+      await vi.advanceTimersByTimeAsync(150);
+    }
+    const response = await pending;
+
+    expect(response.data.size).toBe(5);
+    vi.useRealTimers();
+  });
+
+  it("aborts a blob download once the body stalls past the idle window", async () => {
+    vi.useFakeTimers();
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+      });
+    const chunks = [
+      { bytes: new Uint8Array([1]), delayMs: 0 },
+      { bytes: new Uint8Array([2]), delayMs: 10_000 },
+    ];
+    const runtime = createNodeRuntime({
+      fetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const signal = init?.signal ?? new AbortController().signal;
+        let index = 0;
+        return {
+          status: 200,
+          headers: new Headers({ "content-length": "2" }),
+          body: {
+            getReader: () => ({
+              async read() {
+                if (index >= chunks.length) return { done: true, value: undefined };
+                const chunk = chunks[index];
+                index += 1;
+                if (chunk.delayMs > 0) await sleep(chunk.delayMs);
+                if (signal.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+                return { done: false, value: chunk.bytes };
+              },
+            }),
+          },
+        };
+      }) as typeof fetch,
+    });
+
+    const pending = runtime.request<Blob>({
+      method: "GET",
+      url: "http://host/api/file",
+      responseType: "blob",
+      timeoutMs: 400,
+    });
+    const rejection = expect(pending).rejects.toThrow(/abort/i);
+    await vi.advanceTimersByTimeAsync(10_500);
+    await rejection;
+    vi.useRealTimers();
   });
 });

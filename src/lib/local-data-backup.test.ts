@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { TOKEN_STORAGE_KEY } from "./api-client";
 import { exportLocalDataBackup, importLocalDataBackup, secretBackupSections } from "./local-data-backup";
+import { RESOURCE_PRESETS_STORAGE_KEY, loadResourcePresets } from "./resource-presets";
 import { SAVED_ACCOUNTS_STORAGE_KEY, stringifySavedAccounts } from "./saved-accounts";
 import type { RuntimeStorage } from "./types";
 
@@ -57,5 +58,33 @@ describe("local-data-backup credentials", () => {
     const exported = await exportLocalDataBackup({ storage: createMemoryStorage(), credentialStorage }, false);
     expect(exported.items.token).toBeUndefined();
     expect(exported.items.savedAccounts).toBeUndefined();
+  });
+});
+
+describe("local-data-backup resource presets", () => {
+  it("exports and re-imports resource presets", async () => {
+    const storage = createMemoryStorage({
+      [RESOURCE_PRESETS_STORAGE_KEY]: JSON.stringify([
+        {
+          id: "preset-1",
+          name: "开发机",
+          cpu: 4,
+          gpu: 1,
+          memory: 16,
+          createdAt: "2026-05-23T00:00:00.000Z",
+          updatedAt: "2026-05-23T00:00:00.000Z",
+        },
+      ]),
+    });
+
+    const exported = await exportLocalDataBackup(storage, false);
+    expect(exported.items.resourcePresets).toHaveLength(1);
+
+    const target = createMemoryStorage();
+    await importLocalDataBackup(target, exported, ["resourcePresets"]);
+
+    const restored = await loadResourcePresets(target);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({ id: "preset-1", name: "开发机", cpu: 4, gpu: 1, memory: 16 });
   });
 });

@@ -15,7 +15,7 @@ import {
   toTaskApiQuery,
   type TaskListQueryState,
 } from "../../lib/task-list-query";
-import { TASK_SNAPSHOT_QUERY_KEY } from "../../lib/task-snapshot-query";
+import { taskSnapshotQueryKey } from "../../lib/task-snapshot-query";
 
 export function useTaskListController({
   pinnedTaskIds,
@@ -68,7 +68,7 @@ export function useTaskListController({
 
   useEffect(() => {
     if (query.data) {
-      queryClient.setQueryData(TASK_SNAPSHOT_QUERY_KEY, query.data);
+      queryClient.setQueryData(taskSnapshotQueryKey(), query.data);
     }
   }, [query.data, queryClient]);
 

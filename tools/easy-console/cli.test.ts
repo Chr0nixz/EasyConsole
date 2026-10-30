@@ -1,9 +1,12 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rmdir, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 
 import type { EasyConsoleContext } from "./context";
 import { runCli } from "./cli";
-import { RUN_LOGS_STORAGE_KEY } from "../../src/lib/run-logs";
+import { parseRunLogs, RUN_LOGS_STORAGE_KEY } from "../../src/lib/run-logs";
 import type { RuntimeStorage } from "../../src/lib/types";
 import { TASK_TEMPLATES_STORAGE_KEY } from "../../src/lib/task-templates";
 import { SCHEDULED_TASKS_STORAGE_KEY } from "../../src/lib/scheduled-tasks";
@@ -88,6 +91,138 @@ function createFakeContext(overrides: Record<string, unknown> = {}) {
 }
 
 describe("easy-console cli", () => {
+  it.each(["9007199254740993", "00042"])("preserves an opaque id without rounding or dropping zeroes: %s", async (id) => {
+    const context = createFakeContext();
+    const release = vi.spyOn(context.api.instanceApi, "operateTask");
+    const result = await runCli(["--json", "task", "release", id, "--yes"], { createContext: async () => context });
+    expect(result.exitCode).toBe(0);
+    expect(release).toHaveBeenCalledExactlyOnceWith(id);
+  });
+
+  it.each([
+    ["task", "download", "42"],
+    ["storage", "download", "/file.txt"],
+    ["image", "download", "11"],
+  ])("requires --yes before a download reads remote bytes or writes a local file: %s", async (...command) => {
+    const directory = await mkdtemp(join(tmpdir(), "ec-cli-download-"));
+    const outputPath = join(directory, "download.bin");
+    try {
+      const context = createFakeContext();
+      const requests = [vi.spyOn(context.api.instanceApi, "downloadTask"), vi.spyOn(context.api.storageApi, "transmit"), vi.spyOn(context.api.imageApi, "download")];
+      const args = ["--json", ...command, "--output", outputPath];
+      const preview = await runCli(args, { createContext: async () => context });
+      expect(JSON.parse(preview.stdout).data).toMatchObject({ dryRun: true });
+      for (const request of requests) expect(request).not.toHaveBeenCalled();
+      await expect(readFile(outputPath)).rejects.toMatchObject({ code: "ENOENT" });
+      const executed = await runCli([...args, "--yes"], { createContext: async () => context });
+      expect(executed.exitCode).toBe(0);
+      expect(JSON.parse(executed.stdout).data).toMatchObject({ path: outputPath });
+      expect((await readFile(outputPath)).length).toBeGreaterThan(0);
+      expect(requests.reduce((count, request) => count + request.mock.calls.length, 0)).toBe(1);
+    } finally {
+      await unlink(outputPath).catch(() => undefined);
+      await rmdir(directory);
+    }
+  });
+
+  it.each([false, true])("does not read credentials or overwrite an export file until confirmed (includeSecrets=%s)", async (includeSecrets) => {
+    const directory = await mkdtemp(join(tmpdir(), "ec-cli-export-"));
+    const outputPath = join(directory, "backup.json");
+    await writeFile(outputPath, "original file");
+    try {
+      const context = createFakeContext();
+      const get = vi.fn(async () => "Bearer export-secret");
+      context.credentialStorage = { ...memoryStorage(), get };
+      const args = ["--json", "backup", "export", "--output", outputPath, ...(includeSecrets ? ["--include-secrets"] : [])];
+      const preview = await runCli(args, { createContext: async () => context });
+      expect(JSON.parse(preview.stdout).data).toMatchObject({ dryRun: true, action: "backup.export" });
+      expect(get).not.toHaveBeenCalled();
+      expect(await readFile(outputPath, "utf8")).toBe("original file");
+      const executed = await runCli([...args, "--yes"], { createContext: async () => context });
+      expect(executed.exitCode).toBe(0);
+      const backup = JSON.parse(await readFile(outputPath, "utf8"));
+      expect(backup.includeSecrets).toBe(includeSecrets);
+      expect(backup.items.token).toBe(includeSecrets ? "Bearer export-secret" : undefined);
+      expect(executed.stdout).not.toContain("export-secret");
+    } finally {
+      await unlink(outputPath);
+      await rmdir(directory);
+    }
+  });
+
+  it("previews login without reading stdin, authenticating, or overwriting credentials", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ec-cli-login-"));
+    const configPath = join(directory, "config.json");
+    const original = JSON.stringify({ token: "Bearer old-token" });
+    await writeFile(configPath, original);
+    try {
+      const context = createFakeContext();
+      context.config.configPath = configPath;
+      const login = vi.spyOn(context.api.authApi, "login");
+      const readStdin = vi.fn(async () => "stdin-secret");
+      const preview = await runCli(["--json", "login", "--username", "tester", "--password-stdin"], {
+        createContext: async () => context, readStdin,
+      });
+      expect(preview.exitCode).toBe(0);
+      expect(JSON.parse(preview.stdout).data).toMatchObject({ dryRun: true, action: "auth.login" });
+      expect(readStdin).not.toHaveBeenCalled();
+      expect(login).not.toHaveBeenCalled();
+      expect(await readFile(configPath, "utf8")).toBe(original);
+
+      const executed = await runCli(["--json", "login", "--username", "tester", "--password-stdin", "--yes"], {
+        createContext: async () => context, readStdin,
+      });
+      expect(executed.exitCode).toBe(0);
+      expect(JSON.parse(executed.stdout).data).toMatchObject({ tokenSaved: true });
+      expect(readStdin).toHaveBeenCalledOnce();
+      expect(login).toHaveBeenCalledOnce();
+      expect(JSON.parse(await readFile(configPath, "utf8")).token).toBe("Bearer saved-token");
+      expect(executed.stdout).not.toContain("stdin-secret");
+    } finally {
+      await unlink(configPath);
+      await rmdir(directory);
+    }
+  });
+
+  it("requires --yes before refreshing or replacing a token", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ec-cli-refresh-"));
+    const configPath = join(directory, "config.json");
+    const original = JSON.stringify({ token: "Bearer current-token" });
+    await writeFile(configPath, original);
+    try {
+      const context = createFakeContext();
+      context.config.configPath = configPath;
+      context.config.token = "Bearer current-token";
+      const refresh = vi.spyOn(context.api.authApi, "refreshToken");
+      const preview = await runCli(["--json", "account", "refresh-token"], { createContext: async () => context });
+      expect(JSON.parse(preview.stdout).data).toMatchObject({ dryRun: true, action: "account.refresh-token" });
+      expect(preview.stdout).not.toContain("current-token");
+      expect(refresh).not.toHaveBeenCalled();
+      expect(await readFile(configPath, "utf8")).toBe(original);
+      const executed = await runCli(["--json", "account", "refresh-token", "--yes"], { createContext: async () => context });
+      expect(executed.exitCode).toBe(0);
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(JSON.parse(await readFile(configPath, "utf8")).token).toBe("Bearer new-token");
+    } finally {
+      await unlink(configPath);
+      await rmdir(directory);
+    }
+  });
+
+  it.each([
+    ["--json", "unknown-command"],
+    ["--json", "task", "release"],
+    ["task", "release", "--json"],
+    ["--json", "task", "list", "--unknown-option"],
+  ])("keeps usage errors machine-readable: %j", async (...argv) => {
+    const createContext = vi.fn(async () => createFakeContext());
+    const result = await runCli(argv, { createContext });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, data: null, error: { message: expect.any(String), code: expect.stringContaining("commander.") } });
+    expect(createContext).not.toHaveBeenCalled();
+  });
+
   it("prints JSON success envelopes", async () => {
     const result = await runCli(["--json", "whoami"], {
       createContext: async () => createFakeContext(),
@@ -99,6 +234,23 @@ describe("easy-console cli", () => {
       data: { username: "tester" },
       error: null,
     });
+  });
+
+  it("gets a single task with an SSH summary and waits for a status", async () => {
+    const get = await runCli(["--json", "task", "get", "1"], {
+      createContext: async () => createFakeContext(),
+    });
+    expect(get.exitCode).toBe(0);
+    const getData = JSON.parse(get.stdout).data;
+    expect(getData.task).toMatchObject({ id: 1, name: "task-1" });
+    expect(getData.ssh).not.toHaveProperty("password");
+
+    const wait = await runCli(["--json", "task", "wait", "1", "--for", "2", "--interval", "5"], {
+      createContext: async () =>
+        createFakeContext({ instanceApi: { tasks: async () => ({ items: [{ id: 1, status: 2 }], raw: [] }) } }),
+    });
+    expect(wait.exitCode).toBe(0);
+    expect(JSON.parse(wait.stdout).data).toMatchObject({ outcome: "target", status: 2 });
   });
 
   it("returns dry-run data for mutations without --yes", async () => {
@@ -553,5 +705,183 @@ describe("easy-console cli", () => {
     expect(result.exitCode).toBe(0);
     const payload = JSON.parse(result.stdout) as { data: { dryRun: boolean; result: { name: string; status: string } } };
     expect(payload.data).toMatchObject({ dryRun: false, result: { name: "my-schedule", status: "pending" } });
+  });
+
+  it("returns batch impact mapped from the task list on dry-run without side effects", async () => {
+    let operateCount = 0;
+    let deleteCount = 0;
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [{ id: 1, name: "alpha" }, { id: 2, name: "beta" }], raw: [] }),
+        operateTask: async () => {
+          operateCount += 1;
+          return {};
+        },
+        deleteTask: async () => {
+          deleteCount += 1;
+          return {};
+        },
+      },
+    });
+
+    const release = await runCli(["--json", "task", "release-batch", "1,2,9"], { createContext: async () => context });
+    expect(release.exitCode).toBe(0);
+    const releasePayload = JSON.parse(release.stdout) as { data: { impact: Array<{ id: number; name: string }> } };
+    expect(releasePayload.data.impact).toEqual([
+      { id: 1, name: "alpha" },
+      { id: 2, name: "beta" },
+      { id: 9, name: "#9" },
+    ]);
+
+    const del = await runCli(["--json", "task", "delete-batch", "1,2"], { createContext: async () => context });
+    expect(del.exitCode).toBe(0);
+    const deletePayload = JSON.parse(del.stdout) as { data: { impact: Array<{ id: number; name: string }> } };
+    expect(deletePayload.data.impact).toEqual([
+      { id: 1, name: "alpha" },
+      { id: 2, name: "beta" },
+    ]);
+
+    expect(operateCount).toBe(0);
+    expect(deleteCount).toBe(0);
+  });
+
+  it("degrades batch impact to placeholders when the task listing fails", async () => {
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => {
+          throw new Error("listing unavailable");
+        },
+        operateTask: async () => ({}),
+      },
+    });
+
+    const result = await runCli(["--json", "task", "release-batch", "5"], { createContext: async () => context });
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout) as { data: { impact: Array<{ id: number; name: string }> } };
+    expect(payload.data.impact).toEqual([{ id: 5, name: "#5" }]);
+  });
+
+  it("continues a confirmed batch after a per-item failure and returns receipts", async () => {
+    const released: number[] = [];
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [{ id: 1, name: "alpha" }, { id: 2, name: "beta" }], raw: [] }),
+        operateTask: async (id: number) => {
+          released.push(id);
+          if (id === 1) throw new Error("release 1 failed");
+          return { released: true };
+        },
+      },
+    });
+
+    const result = await runCli(["--json", "task", "release-batch", "1,2", "--yes"], { createContext: async () => context });
+    expect(result.exitCode).toBe(0);
+    expect(released).toEqual([1, 2]);
+
+    const payload = JSON.parse(result.stdout) as {
+      data: { dryRun: boolean; result: { batchId: string; count: number; results: Array<{ id: number; name: string; ok: boolean; error?: string }> } };
+    };
+    expect(payload.data.dryRun).toBe(false);
+    expect(payload.data.result.batchId).toBeTruthy();
+    expect(payload.data.result.count).toBe(2);
+    expect(payload.data.result.results).toEqual([
+      { id: 1, name: "alpha", ok: false, error: "release 1 failed" },
+      { id: 2, name: "beta", ok: true },
+    ]);
+  });
+
+  it("writes one run log entry per batch item", async () => {
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [{ id: 1, name: "alpha" }, { id: 2, name: "beta" }], raw: [] }),
+        operateTask: async (id: number) => {
+          if (id === 1) throw new Error("release 1 failed");
+          return { released: true };
+        },
+      },
+    });
+
+    const result = await runCli(["--json", "task", "release-batch", "1,2", "--yes"], { createContext: async () => context });
+    const { batchId } = (JSON.parse(result.stdout) as { data: { result: { batchId: string } } }).data.result;
+
+    const logs = parseRunLogs(await context.runLogStorage.get(RUN_LOGS_STORAGE_KEY));
+    const itemLogs = logs.filter((entry) => entry.action === "task.releaseBatch");
+    expect(itemLogs).toHaveLength(2);
+    expect(itemLogs.find((entry) => entry.targetId === 1)).toMatchObject({
+      channel: "cli",
+      result: "failure",
+      targetName: "alpha",
+      error: "release 1 failed",
+    });
+    expect(itemLogs.find((entry) => entry.targetId === 2)).toMatchObject({
+      channel: "cli",
+      result: "success",
+      targetName: "beta",
+      error: undefined,
+    });
+    expect(itemLogs.every((entry) => entry.metadata?.batchId === batchId)).toBe(true);
+  });
+
+  it("keeps batch impact and results free of credential fields", async () => {
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [{ id: 1, name: "alpha" }], raw: [] }),
+        operateTask: async () => ({}),
+      },
+    });
+    await context.storage.set("easy-console.token", "Bearer super-secret-token");
+
+    const dryRun = await runCli(["--json", "task", "release-batch", "1"], { createContext: async () => context });
+    const executed = await runCli(["--json", "task", "release-batch", "1", "--yes"], { createContext: async () => context });
+
+    for (const output of [dryRun.stdout, executed.stdout]) {
+      const data = JSON.parse(output) as { data: { impact?: Array<Record<string, unknown>>; result?: { results?: Array<Record<string, unknown>> } } };
+      const rows = [...(data.data.impact ?? []), ...(data.data.result?.results ?? [])];
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(Object.keys(row).sort()).toEqual(["error", "id", "name", "ok"].filter((key) => key in row).sort());
+      }
+      expect(output).not.toContain("super-secret-token");
+      expect(output).not.toContain("Bearer");
+    }
+  });
+
+  it("previews template apply payloads in the dry-run impact", async () => {
+    const template = {
+      id: "tpl-impact",
+      name: "impact-template",
+      taskNamePrefix: "bench",
+      batchCount: 2,
+      imageId: "1",
+      cpu: 4,
+      gpu: 0,
+      memory: 16,
+      storagePath: "/",
+      mountPath: "/home/ubuntu",
+      releaseCondition: 1,
+      usageCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    let createCount = 0;
+    const context = createFakeContext({
+      instanceApi: {
+        createTask: async () => {
+          createCount += 1;
+          return {};
+        },
+      },
+    });
+    await context.storage.set(TASK_TEMPLATES_STORAGE_KEY, JSON.stringify([template]));
+
+    const result = await runCli(["--json", "template", "apply", "tpl-impact"], { createContext: async () => context });
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout) as { data: { impact: Array<{ id: number; name: string }> } };
+    expect(payload.data.impact).toHaveLength(2);
+    expect(payload.data.impact.map((item) => item.id)).toEqual([1, 2]);
+    for (const item of payload.data.impact) {
+      expect(item.name).toContain("bench");
+    }
+    expect(createCount).toBe(0);
   });
 });

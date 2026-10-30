@@ -6,11 +6,20 @@ import { ErrorState } from "../DataState";
 import { FieldError, FormSection, useFormFieldErrors } from "../form-fields";
 import { RemoteStoragePicker } from "../storage/RemoteStoragePicker";
 import { ResourcePriceFields } from "./ResourcePriceFields";
+import { ResourcePresetPicker } from "./ResourcePresetPicker";
 import { ScriptEnvFields } from "./ScriptEnvFields";
 import { Button, Dialog, Input, Select } from "../ui";
 import { imageApi, instanceApi } from "../../lib/api";
 import { getRuntimeSettings } from "../../lib/app-settings";
-import { BATCH_REQUEST_DELAY_MS, runSequentiallyWithDelay } from "../../lib/batch";
+import { BatchPreviewDialog } from "../batch/BatchPreviewDialog";
+import { CreateImpactSummary } from "./CreateImpactSummary";
+import { BatchResultDialog, type PreviewItem } from "../batch/BatchResultDialog";
+import { batchExportPayload } from "../batch/batch-export";
+import { useBatchOperation } from "../batch/use-batch-operation";
+import { verifyUnknownCreateItems } from "../batch/verify-unknown-items";
+import { saveBlob } from "../../lib/download";
+import type { BatchRunResult } from "../../lib/batch-runner";
+import type { BatchOperationRecord } from "../../lib/change-list";
 import {
   DEFAULT_CREATE_TASK_UI_PREFS,
   loadCreateTaskUiPrefs,
@@ -23,17 +32,25 @@ import { useAuth } from "../../lib/use-auth";
 import { useToast } from "../../lib/use-toast";
 import {
   addHours,
+  formatCost,
   formatDateTimeForApi,
   formatDateTimeLocalInput,
   formatExperimentTimedTaskName,
   formatTaskDefaultName,
+  getStatusText,
+  getTaskName,
   localizedText,
   releaseConditionText,
 } from "../../lib/format";
+import { summarizeLogFailure } from "../../lib/log-failure";
+import { taskLogQueryOptions } from "../../lib/task-log-query";
+import { FAILURE_STATUSES } from "../../lib/task-status-notifications";
 import { cn } from "../../lib/utils";
 import { useI18n } from "../../lib/i18n";
 import { queryKeys } from "../../lib/query-keys";
 import { parsePositivePrice } from "../../lib/resource-price";
+import { formatResourcePresetSummary, parseResourcePresetValues } from "../../lib/resource-presets";
+import { useResourcePresets } from "../../lib/use-resource-presets";
 import { normalizeStoragePath } from "../../lib/remote-storage";
 import { browserRuntime } from "../../lib/runtime";
 import {
@@ -46,7 +63,7 @@ import {
   type ScriptEnvVar,
 } from "../../lib/script-command-env";
 import { allocateUniqueTaskNames, collectExistingTaskNames, createCombinedTaskNameAvailabilityChecker } from "../../lib/task-name-unique";
-import { invalidateTaskQueries, TASK_SNAPSHOT_QUERY_KEY } from "../../lib/task-snapshot-query";
+import { invalidateTaskQueries, taskSnapshotQueryKey } from "../../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, ListResult, Task } from "../../lib/types";
 import { useUnsavedChanges } from "../../lib/use-unsaved-changes";
 import { useConfirmAction } from "../../lib/use-confirm-action";
@@ -119,6 +136,13 @@ function isFormDirty(current: FormSnapshot, initial: FormSnapshot | null) {
 function getImageOptionLabel(image: ImageItem) {
   const name = image.name ?? image.image_name ?? String(image.id);
   return image.tag ? `${name}:${image.tag}` : name;
+}
+
+/** Preview-dialog summary for one batch-create item: the image it will boot. */
+function createBatchItemMeta(payload: CreateTaskPayload, imageOptions: ImageItem[], label: (zh: string, en: string) => string) {
+  const image = imageOptions.find((candidate) => String(candidate.id) === String(payload.img));
+  if (image) return getImageOptionLabel(image);
+  return payload.img ? label(`镜像 #${String(payload.img)}`, `Image #${String(payload.img)}`) : label("未选择镜像", "No image selected");
 }
 
 function normalizeId(value: string) {
@@ -237,6 +261,21 @@ export function CreateTaskDialog({
   const [memory, setMemory] = useState(DEFAULT_MEMORY);
   const [releaseCondition, setReleaseCondition] = useState("1");
   const [releaseTime, setReleaseTime] = useState("");
+  // A clone says where it came from; when the source failed, it carries the failure line from
+  // the source's log too, so the rerun is edited against the diagnosis instead of from memory.
+  const cloneSource = !isEditMode && initialTask ? initialTask : null;
+  const cloneSourceFailed = cloneSource !== null && FAILURE_STATUSES.has(Number(cloneSource.status));
+  const cloneLogQuery = useQuery({
+    ...taskLogQueryOptions(cloneSource ?? { id: "" }, false),
+    enabled: open && cloneSourceFailed,
+  });
+  const cloneFailure = cloneSourceFailed && cloneLogQuery.data ? summarizeLogFailure(cloneLogQuery.data.text) : null;
+  // Minute clock for the footer's spend estimate up to a timed release.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const [storagePath, setStoragePath] = useState("");
   const [mountPath, setMountPath] = useState("");
   const [workDirectory, setWorkDirectory] = useState("");
@@ -250,6 +289,7 @@ export function CreateTaskDialog({
     ...DEFAULT_CREATE_TASK_UI_PREFS,
     sections: { ...DEFAULT_CREATE_TASK_UI_PREFS.sections },
   }));
+  const { presets: resourcePresets, savePreset, deletePreset } = useResourcePresets(browserRuntime.storage, open);
   const { touchedFields, markTouched, touchAll, resetTouched } = useFormFieldErrors();
   const unsavedMessage = text("表单有未保存的更改，确定要关闭吗？", "You have unsaved changes. Discard them and close?");
 
@@ -333,7 +373,7 @@ export function CreateTaskDialog({
         errors.scriptEnv = text("请填写 EXPERIMENT_ID", "Enter EXPERIMENT_ID");
       }
     } else if (!name.trim()) {
-      errors.name = text("任务名称不能为空", "Task name is required");
+      errors.name = text("实例名称不能为空", "Instance name is required");
     }
     if (!imageId) errors.image = text("请选择镜像", "Select an image");
     if (parsePositivePrice(price) === null) errors.price = text("计费单价必须大于 0", "Hourly rate must be greater than 0");
@@ -358,6 +398,8 @@ export function CreateTaskDialog({
   const imageOptions = useMemo(() => [...(images.data?.items ?? []), ...(systemImages.data?.items ?? [])], [images.data, systemImages.data]);
   const hasSelectedImageOption = imageOptions.some((image) => String(image.id) === imageId);
   const username = auth.user?.username ?? "";
+  const currentResourcePresetValues = parseResourcePresetValues(cpu, gpu, memory);
+  const resourcePresetSummary = currentResourcePresetValues ? formatResourcePresetSummary(currentResourcePresetValues) : undefined;
 
   useEffect(() => {
     if (open) {
@@ -461,6 +503,12 @@ export function CreateTaskDialog({
     setMemory(specMemory);
   }
 
+  function handleSaveResourcePreset(name: string) {
+    const values = parseResourcePresetValues(cpu, gpu, memory);
+    if (!values) return;
+    void savePreset({ ...values, name });
+  }
+
   function handleScriptEnvChange(next: ScriptEnvVar[]) {
     setScriptEnv(next);
     if (!syncNameWithExperimentId || releaseCondition !== "3") return;
@@ -475,7 +523,8 @@ export function CreateTaskDialog({
         await instanceApi.updateTask(editTaskId, payloads[0] as Partial<CreateTaskPayload>);
         return;
       }
-      await runSequentiallyWithDelay(payloads, (payload) => instanceApi.createTask(payload));
+      // Single-instance path only; batch counts of 2+ go through runBatch below.
+      await instanceApi.createTask(payloads[0]);
     },
     onSuccess: (_data, payloads) => {
       const firstName = String(payloads[0]?.name ?? "");
@@ -494,8 +543,8 @@ export function CreateTaskDialog({
         onClose();
         return;
       }
-      const delayText = payloads.length > 1 ? text(`，间隔 ${BATCH_REQUEST_DELAY_MS}ms`, `, ${BATCH_REQUEST_DELAY_MS}ms apart`) : "";
-      const description = payloads.length > 1 ? text(`${firstName} 等 ${payloads.length} 个实例${delayText}`, `${firstName} and ${payloads.length - 1} more instances${delayText}`) : firstName;
+      // The single-instance path never batches, so there is no delay text here.
+      const description = firstName;
       const title = initialTask ? text("复制创建已提交", "Clone creation submitted") : text("实例创建已提交", "Instance creation submitted");
       toast.success(title, description);
       void runLogger.log({
@@ -539,6 +588,113 @@ export function CreateTaskDialog({
     },
   });
 
+  // Batch creation (review 6.3): counts of 2+ go through the impact-list
+  // preview and the shared batch engine with a change-list record; the
+  // single-instance path above stays unchanged.
+  const [batchPreviewPayloads, setBatchPreviewPayloads] = useState<CreateTaskPayload[] | null>(null);
+  const { state: batchState, start: startBatch, retryFailed: retryBatchFailed, resolveUnknown: resolveBatchUnknown, clear: clearBatch } = useBatchOperation();
+
+  const createBatchItems = useCallback(
+    (payloads: CreateTaskPayload[]): PreviewItem[] =>
+      payloads.map((payload, index) => ({
+        key: String(index),
+        name: String(payload.name ?? `#${index + 1}`),
+        meta: createBatchItemMeta(payload, imageOptions, text),
+      })),
+    [imageOptions, text],
+  );
+
+  const handleBatchSettled = useCallback(
+    (result: BatchRunResult<PreviewItem>, record: BatchOperationRecord) => {
+      const firstName = result.outcomes[0]?.item.name ?? "";
+      const failed = result.summary.failed > 0;
+      // Unknown outcomes keep the result dialog open: they are undecided
+      // creates that must be verified before anything is retried or closed.
+      const unknown = result.summary.unknown > 0;
+      const title = initialTask
+        ? text("复制创建已完成", "Clone creation finished")
+        : text("批量创建已完成", "Batch creation finished");
+      if (failed || unknown) {
+        const detail =
+          text(
+            `${result.summary.succeeded}/${result.summary.total} 成功，${result.summary.failed} 失败，${result.summary.unknown} 结果未知`,
+            `${result.summary.succeeded}/${result.summary.total} succeeded, ${result.summary.failed} failed, ${result.summary.unknown} unknown`,
+          ) + (unknown ? text("请先核对未知项再重试。", " Verify the unknown items before retrying.") : "");
+        toast.error(
+          failed
+            ? text("批量创建部分失败", "Batch creation partially failed")
+            : text("批量创建有结果未知的项", "Batch creation has unknown outcomes"),
+          detail,
+        );
+      } else {
+        toast.success(
+          title,
+          result.summary.total > 1
+            ? text(`${firstName} 等 ${result.summary.total} 个实例`, `${firstName} and ${result.summary.total - 1} more instances`)
+            : firstName,
+        );
+        // A fully successful batch behaves like the single-instance path:
+        // dismiss the result dialog and close the form.
+        clearBatch();
+        onClose();
+      }
+      void runLogger.log({
+        source: "task",
+        level: failed ? "error" : unknown ? "warning" : "info",
+        action: initialTask ? "task.cloneCreate" : "task.create",
+        result: failed || unknown ? "failure" : "success",
+        title,
+        targetName: firstName,
+        metadata: {
+          count: result.summary.total,
+          succeeded: result.summary.succeeded,
+          failed: result.summary.failed,
+          skipped: result.summary.skipped,
+          unknown: result.summary.unknown,
+          recordId: record.id,
+          retryOf: record.retryOf,
+        },
+      });
+      invalidateTaskQueries(queryClient);
+    },
+    [clearBatch, initialTask, onClose, queryClient, runLogger, text, toast],
+  );
+
+  const runCreateBatch = useCallback(
+    (payloads: CreateTaskPayload[], retryOf?: string) => {
+      void startBatch({
+        action: "create",
+        items: createBatchItems(payloads),
+        run: (item) => instanceApi.createTask(payloads[Number(item.key)]),
+        retryOf,
+        onSettled: handleBatchSettled,
+      });
+    },
+    [createBatchItems, handleBatchSettled, startBatch],
+  );
+
+  // Network-failed creates may have landed server-side; verify them against the
+  // live task list before anything becomes retryable (review P1-3).
+  const [resolvingUnknown, setResolvingUnknown] = useState(false);
+  const resolveUnknownItems = useCallback(async () => {
+    if (!batchState || batchState.pending) return;
+    setResolvingUnknown(true);
+    try {
+      const resolutions = await verifyUnknownCreateItems(batchState.result.outcomes, {
+        startedAt: batchState.records[0]?.startedAt,
+        listTasks: (query) => instanceApi.tasks(query),
+      });
+      if (resolutions.length > 0) await resolveBatchUnknown(resolutions);
+    } catch (error) {
+      toast.error(
+        text("核对未知项失败", "Failed to verify unknown items"),
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setResolvingUnknown(false);
+    }
+  }, [batchState, resolveBatchUnknown, text, toast]);
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setFormError(null);
@@ -554,7 +710,7 @@ export function CreateTaskDialog({
     const taskName = syncActive ? experimentId : name.trim();
     if (!taskName) {
       openSectionsForErrors({ name: "required" });
-      setFormError(text("任务名称不能为空", "Task name is required"));
+      setFormError(text("实例名称不能为空", "Instance name is required"));
       window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
@@ -654,7 +810,7 @@ export function CreateTaskDialog({
       try {
         // Prefer a few checkTaskName calls over paging the entire task list.
         // Seed only from already-cached snapshot data (no extra network).
-        const cachedSnapshot = queryClient.getQueryData(TASK_SNAPSHOT_QUERY_KEY) as ListResult<Task> | undefined;
+        const cachedSnapshot = queryClient.getQueryData(taskSnapshotQueryKey()) as ListResult<Task> | undefined;
         resolvedNames = await allocateUniqueTaskNames(
           baseNames,
           createCombinedTaskNameAvailabilityChecker({
@@ -668,6 +824,13 @@ export function CreateTaskDialog({
       } finally {
         setResolvingNames(false);
       }
+    }
+
+    // Batch counts of 2+ show the impact list before anything is submitted;
+    // a single instance keeps the direct path below.
+    if (count >= 2) {
+      setBatchPreviewPayloads(resolvedNames.map((resolvedName) => ({ ...sharedPayload, name: resolvedName })));
+      return;
     }
 
     mutation.mutate(
@@ -725,11 +888,23 @@ export function CreateTaskDialog({
     ? text(`创建 ${validCount} 个实例`, `Create ${validCount} instances`)
     : text("创建", "Create");
   const releaseSummary = localizedText(releaseConditionText[Number(releaseCondition)], locale) ?? "-";
+  // Two or more instances open the impact preview first; a single create submits directly,
+  // so the footer says what the click commits to before it is made.
+  const directCreate = !isEditMode && validCount === 1;
+  const plannedReleaseMs = releaseCondition === "2" && releaseTime ? new Date(releaseTime).getTime() - nowMs : null;
+  const plannedSpend = priceValue !== null && plannedReleaseMs !== null && plannedReleaseMs > 0
+    ? formatCost((priceValue * plannedReleaseMs) / 3_600_000, locale)
+    : null;
+  const commitNote = [
+    text("提交后将创建实例并产生费用，请确认配置。", "Submitting creates an instance and incurs charges. Review the configuration first."),
+    releaseCondition === "1" ? text("选择手动释放时，需要主动释放实例以停止计费。", "With manual release, release the instance yourself to stop billing.") : null,
+    plannedSpend ? text(`按所填单价估算，到释放时间约 ${plannedSpend}，以实际计费为准。`, `Estimated at the entered rate: about ${plannedSpend} until release. Actual charges may differ.`) : null,
+  ].filter(Boolean).join(locale === "en-US" ? " " : "");
 
   return (
     <Dialog
       open={open}
-      title={isEditMode ? text("编辑任务", "Edit Task") : initialTask ? text("克隆实例", "Clone Instance") : text("新建任务", "New Task")}
+      title={isEditMode ? text("编辑实例", "Edit Instance") : initialTask ? text("克隆实例", "Clone Instance") : text("新建实例", "New Instance")}
       onClose={requestClose}
       closeOnOverlayClick={false}
       onOverlayClick={requestClose}
@@ -739,6 +914,22 @@ export function CreateTaskDialog({
     >
       <form className="flex h-full min-h-0 flex-col overflow-hidden" noValidate onSubmit={submit}>
         <div className="app-mobile-form-body min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
+          {cloneSource ? (
+            <div className="space-y-0.5 text-xs leading-5 text-app-muted">
+              <p className="[overflow-wrap:anywhere]">
+                {text(
+                  `来自 ${getTaskName(cloneSource)}（#${cloneSource.id}）· ${getStatusText(cloneSource.status, locale)}`,
+                  `From ${getTaskName(cloneSource)} (#${cloneSource.id}) · ${getStatusText(cloneSource.status, locale)}`,
+                )}
+              </p>
+              {cloneFailure ? (
+                <p className="flex min-w-0 gap-2 text-app-danger">
+                  <span className="shrink-0 font-medium">{text("失败原因", "Failure")}</span>
+                  <span className="min-w-0 truncate font-mono" title={cloneFailure.line}>{cloneFailure.line}</span>
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <FormSection
             title={text("基础", "Basic")}
             collapsible
@@ -748,7 +939,7 @@ export function CreateTaskDialog({
           >
             <div className={cn("grid gap-4", isEditMode ? "grid-cols-1" : "md:grid-cols-2")}>
               <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("任务名称", "Task name")}</span>
+                <span className="mb-1 block text-app-muted">{text("实例名称", "Instance name")}</span>
                 <Input
                   className={cn("w-full", touchedFields.has("name") && fieldErrors.name && "border-app-danger")}
                   aria-invalid={Boolean(touchedFields.has("name") && fieldErrors.name)}
@@ -810,6 +1001,16 @@ export function CreateTaskDialog({
             onOpenChange={(next) => setSectionOpen("resources", next)}
             hint={`${cpu || "-"}C / ${gpu || "0"}GPU / ${memory || "-"}G`}
           >
+            <ResourcePresetPicker
+              activeSummary={resourcePresetSummary}
+              defaultName={resourcePresetSummary ?? ""}
+              onDelete={(id) => void deletePreset(id)}
+              onSaveCurrent={handleSaveResourcePreset}
+              onApply={applyResourceSpec}
+              presets={resourcePresets}
+              saveDisabled={!currentResourcePresetValues}
+              saveDisabledReason={text("请先填写有效的 CPU/GPU/内存", "Enter valid CPU/GPU/memory values first")}
+            />
             <ResourcePriceFields
               onApplySpec={applyResourceSpec}
               onPriceBlur={() => markTouched("price")}
@@ -818,6 +1019,7 @@ export function CreateTaskDialog({
               allowDefaultPrice={initialSnapshot?.price === "" && !touchedFields.has("price")}
               originalPrice={initialTask?.price}
               price={price}
+              resources={{ cpu, gpu, memory }}
               priceError={fieldErrors.price}
               priceTouched={touchedFields.has("price")}
             />
@@ -1002,21 +1204,24 @@ export function CreateTaskDialog({
               <span>{releaseSummary}{releaseCondition === "2" && releaseTime ? ` · ${formatDateTimeForApi(releaseTime)}` : ""}</span>
             </p>
             <p className="mt-1 truncate" title={imageSummary}>{text(`镜像：${imageSummary}`, `Image: ${imageSummary}`)}</p>
+            {directCreate ? <p className="mt-1 leading-5" id="create-task-commit-note">{commitNote}</p> : null}
           </div>
           <div className="flex shrink-0 justify-end gap-2">
             <Button type="button" variant="secondary" onClick={requestClose}>
               {text("取消", "Cancel")}
             </Button>
-            <Button disabled={mutation.isPending || resolvingNames}>
+            <Button aria-describedby={directCreate ? "create-task-commit-note" : undefined} disabled={mutation.isPending || resolvingNames || Boolean(batchState?.pending)}>
               {mutation.isPending || resolvingNames
                 ? isEditMode
                   ? text("保存中", "Saving")
                   : resolvingNames
                     ? text("检查名称中", "Checking names")
                     : text("正在创建", "Creating")
-                : isEditMode
-                  ? text("保存", "Save")
-                  : createLabel}
+                : batchState?.pending
+                  ? text("正在创建", "Creating")
+                  : isEditMode
+                    ? text("保存", "Save")
+                    : createLabel}
             </Button>
           </div>
         </div>
@@ -1034,6 +1239,41 @@ export function CreateTaskDialog({
           setStoragePickerTarget(null);
         }}
       />
+      {batchPreviewPayloads ? (
+        <BatchPreviewDialog
+          open
+          title={text("确认批量创建", "Confirm Batch Creation")}
+          tone="default"
+          items={createBatchItems(batchPreviewPayloads)}
+          account={{ displayName: username }}
+          summary={<CreateImpactSummary payloads={batchPreviewPayloads} />}
+          confirmLabel={text(`创建 ${batchPreviewPayloads.length} 个实例`, `Create ${batchPreviewPayloads.length} instances`)}
+          onConfirm={() => {
+            const payloads = batchPreviewPayloads;
+            setBatchPreviewPayloads(null);
+            runCreateBatch(payloads);
+          }}
+          onClose={() => setBatchPreviewPayloads(null)}
+        />
+      ) : null}
+      {batchState ? (
+        <BatchResultDialog
+          open
+          title={text("批量创建结果", "Batch creation results")}
+          result={batchState.result}
+          pending={batchState.pending}
+          onRetryFailed={batchState.pending ? undefined : () => retryBatchFailed({ onSettled: handleBatchSettled })}
+          onResolveUnknown={batchState.pending ? undefined : () => void resolveUnknownItems()}
+          resolving={resolvingUnknown}
+          onExport={(format) => {
+            const records = batchState.records;
+            if (records.length === 0) return;
+            const payload = batchExportPayload(records, format);
+            void saveBlob(new Blob([payload.content], { type: payload.type }), payload.filename);
+          }}
+          onClose={() => clearBatch()}
+        />
+      ) : null}
       {discardDialog}
       <UnsavedChangesPrompt blocker={navigationBlocker} message={unsavedMessage} />
     </Dialog>

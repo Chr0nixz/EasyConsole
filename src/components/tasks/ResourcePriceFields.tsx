@@ -22,6 +22,8 @@ type ResourcePriceFieldsProps = {
   allowDefaultPrice?: boolean;
   originalPrice?: string | number;
   onApplySpec: (values: { cpu: string; gpu: string; memory: string }) => void;
+  /** The form's current CPU/GPU/memory, so the spec select keeps showing the spec they match. */
+  resources?: { cpu: string; gpu: string; memory: string };
   priceError?: string;
   priceTouched?: boolean;
   onPriceBlur?: () => void;
@@ -34,6 +36,7 @@ export function ResourcePriceFields({
   allowDefaultPrice = true,
   originalPrice,
   onApplySpec,
+  resources,
   priceError,
   priceTouched,
   onPriceBlur,
@@ -65,16 +68,27 @@ export function ResourcePriceFields({
     priceTouched && priceError ? priceErrorId : null,
   ].filter(Boolean).join(" ") || undefined;
 
+  // Derived rather than stored: editing CPU/GPU/memory by hand drops the select back to its
+  // placeholder instead of naming a spec the form no longer matches.
+  const same = (a: unknown, b: string) => a !== undefined && b.trim() !== "" && Number(a) === Number(b);
+  const matchedSpecIndex = resources
+    ? specs.findIndex((spec) => same(spec.cpu, resources.cpu) && same(spec.gpu ?? 0, resources.gpu) && same(spec.memory, resources.memory))
+    : -1;
+  const matchedSpecId = matchedSpecIndex === -1 ? "" : String(specs[matchedSpecIndex].id ?? matchedSpecIndex);
+
   useEffect(() => {
-    if (!allowDefaultPrice || price.trim()) return;
+    // A fresh form starts on the first listed rate; a rate the list does not contain is only
+    // replaced while the caller still allows defaults (new and untouched), never on an edit.
+    if (!allowDefaultPrice) return;
+    if (price.trim() && (priceOptions.length === 0 || matchedPriceOptionId)) return;
     if (priceOptions.length > 0) {
       onDefaultPriceChange(String(priceOptions[0].value));
       return;
     }
-    if (!pricesQuery.isLoading && !pricesQuery.isError) {
+    if (!price.trim() && !pricesQuery.isLoading && !pricesQuery.isError) {
       onDefaultPriceChange(DEFAULT_PRICE);
     }
-  }, [allowDefaultPrice, onDefaultPriceChange, price, priceOptions, pricesQuery.isError, pricesQuery.isLoading]);
+  }, [allowDefaultPrice, matchedPriceOptionId, onDefaultPriceChange, price, priceOptions, pricesQuery.isError, pricesQuery.isLoading]);
 
   const loadHint =
     resourcesQuery.isError || pricesQuery.isError
@@ -89,7 +103,7 @@ export function ResourcePriceFields({
           <Select
             className="w-full"
             disabled={specs.length === 0}
-            value=""
+            value={matchedSpecId}
             onChange={(event) => {
               const spec = specs.find((item) => String(item.id) === event.target.value);
               if (!spec) return;
@@ -100,7 +114,13 @@ export function ResourcePriceFields({
               });
             }}
           >
-            <option value="">{specs.length === 0 ? text("暂无规格（可手填）", "No specs (enter manually)") : text("选择规格以填充", "Select a spec to fill")}</option>
+            <option value="">
+              {specs.length === 0
+                ? text("暂无规格（可手填）", "No specs (enter manually)")
+                : resources
+                  ? text("自定义（选择规格以填充）", "Custom (select a spec to fill)")
+                  : text("选择规格以填充", "Select a spec to fill")}
+            </option>
             {specs.map((spec, index) => (
               <option key={String(spec.id ?? index)} value={String(spec.id ?? index)}>
                 {formatResourceSpecOption(spec, index)}

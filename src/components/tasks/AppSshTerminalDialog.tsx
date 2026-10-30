@@ -2,7 +2,7 @@ import { AlertCircle, Check, Circle, ExternalLink, Maximize2, Minimize2, Plus, T
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent as ReactFormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
-import { getRuntimeSettings } from "../../lib/app-settings";
+import { getRuntimeSettings, type SshTerminalPreferences } from "../../lib/app-settings";
 import { browserRuntime } from "../../lib/runtime";
 import { useI18n } from "../../lib/i18n";
 import { findSshConnectionIssue, formatSshCommand, resolveSshConnectionRequest } from "../../lib/ssh-info";
@@ -152,8 +152,14 @@ export function AppSshTerminalDialog() {
   const handlePopOut = useCallback(() => {
     const active = tabs.find((tab) => tab.id === activeTabId);
     if (!active) return;
+    const { ssh } = getRuntimeSettings();
+    const preferences: SshTerminalPreferences = {
+      portForwards: ssh.portForwards,
+      maxHistoryEntries: ssh.maxHistoryEntries,
+      terminal: ssh.terminal,
+    };
     void browserRuntime
-      .openSshWindow(active.request)
+      .openSshWindow(resolveSshConnectionRequest(active.request), preferences)
       .then(() => closeTab(active.id))
       .catch((error: unknown) => {
         const message =
@@ -269,10 +275,10 @@ export function AppSshTerminalDialog() {
     // back to the configured default password so platform instances do not
     // need it retyped; in key mode the field is a passphrase and must never
     // inherit the account password.
-    const password =
-      newAuthMode === "key"
-        ? newPassword.trim() || undefined
-        : newPassword.trim() || getRuntimeSettings().ssh.defaultPassword || undefined;
+    const enteredPassword = newPassword.trim() ? newPassword : undefined;
+    const password = newAuthMode === "key"
+      ? enteredPassword
+      : enteredPassword ?? (getRuntimeSettings().ssh.defaultPassword || undefined);
     const request = resolveSshConnectionRequest({
       host,
       port: newPort.trim() || undefined,

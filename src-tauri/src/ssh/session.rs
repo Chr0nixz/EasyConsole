@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,14 +11,15 @@ use russh::{client, ChannelMsg};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Runtime, State};
 use tokio::io::copy_bidirectional;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{mpsc, oneshot, watch};
 use uuid::Uuid;
 
-use crate::ssh::host_key::{pending_host_key_prompts, EasyConsoleSshClient};
+use crate::ssh::host_key::{
+    clear_pending_host_key_prompts_for_session, pending_host_key_prompts, EasyConsoleSshClient,
+};
 use crate::ssh::port_forward::{
-    normalize_port_forward_bind_host, socks5_handshake, PortForwardRuleValue,
+    normalize_port_forward_bind_host, socks5_handshake, write_socks5_reply, PortForwardRuleValue,
 };
 use crate::ssh::sftp::{
     ensure_sftp_session, sftp_delete_path, sftp_download_file, sftp_list_entries, sftp_mkdir_path,
@@ -35,7 +37,7 @@ pub const HOST_KEY_PROMPT_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_COLS: u32 = 120;
 const DEFAULT_ROWS: u32 = 32;
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(not(desktop), allow(dead_code))]
 pub struct SshConnectionRequest {
@@ -55,6 +57,33 @@ pub struct SshConnectionRequest {
     pub auth_mode: Option<String>,
 }
 
+impl std::fmt::Debug for SshConnectionRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SshConnectionRequest")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("command", &self.command)
+            .field("task_id", &self.task_id)
+            .field("task_name", &self.task_name)
+            .field("cols", &self.cols)
+            .field("rows", &self.rows)
+            .field("connect_timeout_sec", &self.connect_timeout_sec)
+            .field("keepalive_interval_sec", &self.keepalive_interval_sec)
+            .field("term_type", &self.term_type)
+            .field("ssh_key_path", &self.ssh_key_path)
+            .field("auth_mode", &self.auth_mode)
+            .finish()
+    }
+}
+
+pub struct SshSessionContext {
+    pub session_id: String,
+    pub window_label: String,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct SshSessionEvent {
@@ -67,6 +96,8 @@ struct SshSessionEvent {
     phase: Option<&'static str>,
     data: Option<String>,
     message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_sequence: Option<u64>,
 }
 
 /// One write chunk queued for the channel writer: safely below the typical
@@ -76,7 +107,95 @@ const SSH_INPUT_CHUNK_BYTES: usize = 16 * 1024;
 /// the `ssh_write` caller instead of growing the queue without limit.
 const SSH_INPUT_QUEUE_CHUNKS: usize = 64;
 
+/// xterm acknowledges a batch only after parsing it. Stop reading the SSH
+/// channel at this limit; russh's bounded channel then back-pressures TCP.
+/// Each packet is at most 32 KiB, plus <8 KiB buffered before the flush (up to
+/// 3x after lossy UTF-8 decoding): <2 MiB of unparsed output per session.
+const SSH_OUTPUT_MAX_IN_FLIGHT: usize = 16;
+
+#[derive(Default)]
+struct SshOutputFlow {
+    pending: VecDeque<(u64, usize)>,
+    stats: SshOutputStats,
+    paused: bool,
+}
+
+#[derive(Clone, Default, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshOutputStats {
+    pub emitted_batches: u64,
+    pub emitted_bytes: u64,
+    pub in_flight_batches: usize,
+    pub in_flight_bytes: usize,
+    pub peak_in_flight_batches: usize,
+    pub backpressure_count: u64,
+}
+
+impl SshOutputFlow {
+    fn can_emit(&self) -> bool {
+        self.pending.len() < SSH_OUTPUT_MAX_IN_FLIGHT
+    }
+
+    fn record_batch(&mut self, bytes: usize) -> u64 {
+        self.stats.emitted_batches += 1;
+        let sequence = self.stats.emitted_batches;
+        self.pending.push_back((sequence, bytes));
+        self.stats.emitted_bytes += bytes as u64;
+        self.stats.in_flight_bytes += bytes;
+        self.stats.in_flight_batches = self.pending.len();
+        self.stats.peak_in_flight_batches =
+            self.stats.peak_in_flight_batches.max(self.pending.len());
+        if !self.can_emit() && !self.paused {
+            self.stats.backpressure_count += 1;
+            self.paused = true;
+        }
+        sequence
+    }
+
+    fn acknowledge(&mut self, sequence: u64) {
+        // Ignore stale, duplicate and future ACKs. Only a sequence we actually
+        // emitted can release credits, including for cumulative ACKs.
+        let Some(index) = self.pending.iter().position(|(sent, _)| *sent == sequence) else {
+            return;
+        };
+        for (_, bytes) in self.pending.drain(..=index) {
+            self.stats.in_flight_bytes -= bytes;
+        }
+        self.stats.in_flight_batches = self.pending.len();
+        self.paused = false;
+    }
+
+    fn emit<R: Runtime>(&mut self, app: &AppHandle<R>, window: &str, session: &str, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        debug_assert!(self.can_emit());
+        let sequence = self.record_batch(text.len());
+        let _ = app.emit_to(
+            window,
+            SSH_SESSION_EVENT,
+            SshSessionEvent {
+                session_id: session.to_string(),
+                kind: "output",
+                phase: None,
+                data: Some(text),
+                message: None,
+                output_sequence: Some(sequence),
+            },
+        );
+    }
+}
+
 pub enum SshCommand {
+    OutputAck {
+        sequence: u64,
+    },
+    OutputStats {
+        response: oneshot::Sender<SshOutputStats>,
+    },
+    GpuUtilization {
+        response: oneshot::Sender<Result<Vec<f64>, String>>,
+    },
     Resize {
         cols: u32,
         rows: u32,
@@ -111,7 +230,7 @@ pub enum SshCommand {
     },
     StartPortForward {
         rule: PortForwardRuleValue,
-        response: oneshot::Sender<Result<(), String>>,
+        response: oneshot::Sender<Result<u16, String>>,
     },
     StopPortForward {
         rule_id: String,
@@ -146,6 +265,7 @@ pub struct SshSessionState {
 
 struct SshSessionEntry {
     tx: mpsc::UnboundedSender<SshCommand>,
+    cancel_tx: watch::Sender<bool>,
     /// Bounded queue feeding the session's dedicated channel writer. Kept on
     /// the entry so `ssh_write` can back-pressure without touching the command
     /// loop (SSH-P2-07).
@@ -299,12 +419,14 @@ impl SshSessionState {
         window_label: &str,
         tx: mpsc::UnboundedSender<SshCommand>,
         input_tx: mpsc::Sender<Vec<u8>>,
+        cancel_tx: watch::Sender<bool>,
     ) {
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.insert(
                 session_id.to_string(),
                 SshSessionEntry {
                     tx,
+                    cancel_tx,
                     input_tx,
                     window_label: window_label.to_string(),
                     sftp_local_roots: Mutex::new(HashSet::new()),
@@ -322,7 +444,24 @@ impl SshSessionState {
 #[cfg(desktop)]
 #[derive(Default)]
 pub struct PendingSshWindows {
-    requests: Mutex<HashMap<String, SshConnectionRequest>>,
+    requests: Mutex<HashMap<String, SshWindowRequest>>,
+}
+
+#[cfg(desktop)]
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshTerminalPreferences {
+    pub port_forwards: Vec<PortForwardRuleValue>,
+    pub max_history_entries: usize,
+    pub terminal: serde_json::Value,
+}
+
+#[cfg(desktop)]
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshWindowRequest {
+    request: SshConnectionRequest,
+    preferences: SshTerminalPreferences,
 }
 
 #[cfg(desktop)]
@@ -358,24 +497,63 @@ pub fn emit_session_event<R: Runtime>(
             phase,
             data,
             message,
+            output_sequence: None,
         },
     );
 }
 
 pub fn close_sessions_for_window(state: &SshSessionState, window_label: &str) {
-    let senders: Vec<_> = match state.sessions.lock() {
-        Ok(sessions) => sessions
-            .values()
-            .filter(|entry| entry.window_label == window_label)
-            .map(|entry| entry.tx.clone())
-            .collect(),
+    let sessions: Vec<_> = match state.sessions.lock() {
+        Ok(mut sessions) => {
+            let owned = sessions
+                .iter()
+                .filter(|(_, entry)| entry.window_label == window_label)
+                .map(|(session_id, entry)| {
+                    (
+                        session_id.clone(),
+                        entry.tx.clone(),
+                        entry.cancel_tx.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            sessions.retain(|_, entry| entry.window_label != window_label);
+            owned
+        }
         Err(_) => return,
     };
-    for sender in senders {
+    for (_, sender, cancel_tx) in sessions {
+        cancel_tx.send_replace(true);
         let _ = sender.send(SshCommand::Close);
     }
     if let Ok(mut pending) = pending_host_key_prompts().lock() {
         pending.retain(|_, prompt| prompt.window_label != window_label);
+    }
+}
+
+async fn wait_for_session_cancel(cancel_rx: &mut watch::Receiver<bool>) {
+    loop {
+        if *cancel_rx.borrow_and_update() {
+            return;
+        }
+        if cancel_rx.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+enum Cancellable<T> {
+    Completed(T),
+    Cancelled,
+}
+
+async fn run_cancellable<T>(
+    cancel_rx: &mut watch::Receiver<bool>,
+    future: impl Future<Output = T>,
+) -> Cancellable<T> {
+    tokio::select! {
+        biased;
+        _ = wait_for_session_cancel(cancel_rx) => Cancellable::Cancelled,
+        result = future => Cancellable::Completed(result),
     }
 }
 
@@ -385,6 +563,12 @@ pub fn validate_host(host: &str) -> Result<String, String> {
         return Err(trf!(
             "SSH 主机地址为空，无法建立连接",
             "SSH host is empty; cannot establish a connection"
+        ));
+    }
+    if host.starts_with('-') {
+        return Err(trf!(
+            "SSH 主机地址不能以 - 开头",
+            "The SSH host cannot start with -"
         ));
     }
     if !host
@@ -410,6 +594,12 @@ pub fn parse_port(port: Option<&str>) -> Result<u16, String> {
 pub fn validate_username(username: Option<&str>) -> Result<Option<String>, String> {
     let username = username.map(str::trim).filter(|value| !value.is_empty());
     if let Some(username) = username {
+        if username.starts_with('-') {
+            return Err(trf!(
+                "SSH 用户名不能以 - 开头",
+                "The SSH username cannot start with -"
+            ));
+        }
         if !username
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
@@ -534,19 +724,21 @@ fn validate_local_path(raw: &str) -> Result<PathBuf, String> {
 /// canonicalized — resolving symlinks — and the literal remainder re-applied
 /// (no symlinks can hide inside a path that does not exist).
 fn canonical_local_path(path: &Path) -> Option<PathBuf> {
-    if let Ok(canonical) = path.canonicalize() {
-        return Some(canonical);
-    }
-    for ancestor in path.ancestors().skip(1) {
-        if let Ok(canonical_ancestor) = ancestor.canonicalize() {
-            let remainder = path.strip_prefix(ancestor).ok()?;
-            let mut resolved = canonical_ancestor;
-            resolved.extend(
-                remainder
-                    .components()
-                    .map(|component| component.as_os_str()),
-            );
-            return Some(resolved);
+    for ancestor in path.ancestors() {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                // An existing but unresolvable component (including a dangling
+                // symlink) must not be treated as a harmless missing tail.
+                let canonical_ancestor = ancestor.canonicalize().ok()?;
+                let remainder = path.strip_prefix(ancestor).ok()?;
+                return Some(if remainder.as_os_str().is_empty() {
+                    canonical_ancestor
+                } else {
+                    canonical_ancestor.join(remainder)
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
         }
     }
     None
@@ -554,13 +746,17 @@ fn canonical_local_path(path: &Path) -> Option<PathBuf> {
 
 pub async fn run_russh_session<R: Runtime>(
     app: AppHandle<R>,
-    session_id: String,
     request: SshConnectionRequest,
     tx: mpsc::UnboundedSender<SshCommand>,
     mut rx: mpsc::UnboundedReceiver<SshCommand>,
     mut input_rx: mpsc::Receiver<Vec<u8>>,
-    window_label: String,
+    mut cancel_rx: watch::Receiver<bool>,
+    context: SshSessionContext,
 ) -> Result<(), String> {
+    let SshSessionContext {
+        session_id,
+        window_label,
+    } = context;
     let host = validate_host(&request.host)?;
     let port = parse_port(request.port.as_deref())?;
     let username = validate_username(request.username.as_deref())?.ok_or_else(|| {
@@ -572,8 +768,7 @@ pub async fn run_russh_session<R: Runtime>(
     let password = request
         .password
         .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.trim().is_empty())
         .map(str::to_string);
     let auth_mode = request.auth_mode.as_deref().unwrap_or("password");
     let cols = request.cols.unwrap_or(DEFAULT_COLS).max(1);
@@ -615,6 +810,9 @@ pub async fn run_russh_session<R: Runtime>(
         // russh treats 0 as "never declare the peer dead": with keepalive_max
         // unset a dropped network path keeps the session "connected" forever.
         keepalive_max: 3,
+        maximum_packet_size: 32 * 1024,
+        channel_buffer_size: 32,
+        window_size: 512 * 1024,
         ..<_>::default()
     });
     let host_key_error = Arc::new(Mutex::new(None));
@@ -626,19 +824,31 @@ pub async fn run_russh_session<R: Runtime>(
         host_key_error: Arc::clone(&host_key_error),
         allow_host_key_prompt: true,
         window_label: window_label.clone(),
+        task_id: request.task_id.clone(),
     };
-    let tcp_stream = tokio::time::timeout(
-        connect_timeout,
-        tokio::net::TcpStream::connect((host.as_str(), port)),
+    let tcp_result = match run_cancellable(
+        &mut cancel_rx,
+        tokio::time::timeout(
+            connect_timeout,
+            tokio::net::TcpStream::connect((host.as_str(), port)),
+        ),
     )
     .await
-    .map_err(|_| {
-        trf!(
-            "SSH 连接超时，请检查网络和主机是否可达",
-            "SSH connection timed out. Check the network and whether the host is reachable."
-        )
-    })?
-    .map_err(|error| trf!("SSH 连接失败：{error}", "SSH connection failed: {error}"))?;
+    {
+        Cancellable::Completed(result) => result,
+        Cancellable::Cancelled => {
+            clear_pending_host_key_prompts_for_session(&session_id);
+            return Ok(());
+        }
+    };
+    let tcp_stream = tcp_result
+        .map_err(|_| {
+            trf!(
+                "SSH 连接超时，请检查网络和主机是否可达",
+                "SSH connection timed out. Check the network and whether the host is reachable."
+            )
+        })?
+        .map_err(|error| trf!("SSH 连接失败：{error}", "SSH connection failed: {error}"))?;
     // Host-key confirmation (up to 120s) lives inside russh handshake, so it
     // must not share the TCP connect timeout. The handshake still needs its
     // own budget: a host that accepts TCP but never completes the SSH banner
@@ -647,25 +857,36 @@ pub async fn run_russh_session<R: Runtime>(
     let handshake_budget = connect_timeout
         + Duration::from_secs(HOST_KEY_PROMPT_TIMEOUT_SECS)
         + Duration::from_secs(15);
-    let mut session = tokio::time::timeout(
-        handshake_budget,
-        client::connect_stream(config, tcp_stream, handler),
+    let handshake_result = match run_cancellable(
+        &mut cancel_rx,
+        tokio::time::timeout(
+            handshake_budget,
+            client::connect_stream(config, tcp_stream, handler),
+        ),
     )
     .await
-    .map_err(|_| {
-        trf!(
-            "SSH 握手超时，请检查主机上的 SSH 服务是否正常",
-            "The SSH handshake timed out; check whether the SSH service on the host is healthy"
-        )
-    })?
-    .map_err(|error| {
-        if let Ok(guard) = host_key_error.lock() {
-            if let Some(message) = guard.as_ref() {
-                return message.clone();
-            }
+    {
+        Cancellable::Completed(result) => result,
+        Cancellable::Cancelled => {
+            clear_pending_host_key_prompts_for_session(&session_id);
+            return Ok(());
         }
-        trf!("SSH 连接失败：{error}", "SSH connection failed: {error}")
-    })?;
+    };
+    let mut session = handshake_result
+        .map_err(|_| {
+            trf!(
+                "SSH 握手超时，请检查主机上的 SSH 服务是否正常",
+                "The SSH handshake timed out; check whether the SSH service on the host is healthy"
+            )
+        })?
+        .map_err(|error| {
+            if let Ok(guard) = host_key_error.lock() {
+                if let Some(message) = guard.as_ref() {
+                    return message.clone();
+                }
+            }
+            trf!("SSH 连接失败：{error}", "SSH connection failed: {error}")
+        })?;
 
     // Authentication is a couple of round-trips against a live server, but a
     // server that stalls after the handshake must not park the session task
@@ -673,49 +894,77 @@ pub async fn run_russh_session<R: Runtime>(
     // timeout exists to fail fast on unreachable hosts (the TCP stage above),
     // and a very small configured value must not starve real authentication.
     let auth_budget = Duration::from_secs(connect_timeout.as_secs().max(15));
-    let auth_success = match tokio::time::timeout(auth_budget, async {
-        let auth_result = if auth_mode == "key" {
-            let key_path = request
-                .ssh_key_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| trf!("SSH 密钥路径为空", "The SSH key path is empty"))?;
-            let passphrase = password.as_deref();
-            let key_pair = russh::keys::load_secret_key(expand_key_path(key_path), passphrase)
-                .map_err(|e| trf!("SSH 密钥加载失败：{e}", "Failed to load the SSH key: {e}"))?;
-            let key_with_hash =
-                PrivateKeyWithHashAlg::new(Arc::new(key_pair), Some(HashAlg::Sha256));
-            session
-                .authenticate_publickey(&username, key_with_hash)
-                .await
-                .map_err(|error| {
+    let auth_result = match run_cancellable(
+        &mut cancel_rx,
+        tokio::time::timeout(auth_budget, async {
+            let auth_result = if auth_mode == "key" {
+                let key_path = request
+                    .ssh_key_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| trf!("SSH 密钥路径为空", "The SSH key path is empty"))?;
+                let passphrase = password.as_deref();
+                let key_pair = russh::keys::load_secret_key(expand_key_path(key_path), passphrase)
+                    .map_err(|e| {
+                        trf!("SSH 密钥加载失败：{e}", "Failed to load the SSH key: {e}")
+                    })?;
+                let hash = if key_pair.algorithm().is_rsa() {
+                    session
+                        .best_supported_rsa_hash()
+                        .await
+                        .map_err(|error| {
+                            trf!(
+                                "SSH RSA 算法协商失败：{error}",
+                                "SSH RSA algorithm negotiation failed: {error}"
+                            )
+                        })?
+                        .unwrap_or(Some(HashAlg::Sha256))
+                } else {
+                    None
+                };
+                let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(key_pair), hash);
+                let algorithm = key_with_hash.algorithm().to_string();
+                emit_session_event(
+                    &app,
+                    &window_label,
+                    &session_id,
+                    "status",
+                    Some("connecting"),
+                    None,
+                    Some(trf!(
+                        "正在使用 {algorithm} 进行 SSH 密钥认证",
+                        "Authenticating SSH with {algorithm}"
+                    )),
+                );
+                session
+                    .authenticate_publickey(&username, key_with_hash)
+                    .await
+                    .map_err(|error| {
+                        trf!(
+                            "SSH 密钥认证失败：{error}",
+                            "SSH key authentication failed: {error}"
+                        )
+                    })?
+                    .success()
+            } else {
+                let pwd = password.as_deref().ok_or_else(|| {
                     trf!(
-                        "SSH 密钥认证失败：{error}",
-                        "SSH key authentication failed: {error}"
+                        "SSH Password 为空，无法自动登录",
+                        "SSH Password is empty; cannot sign in automatically"
                     )
-                })?
-        } else {
-            let pwd = password.as_deref().ok_or_else(|| {
-                trf!(
-                    "SSH Password 为空，无法自动登录",
-                    "SSH Password is empty; cannot sign in automatically"
-                )
-            })?;
-            session
-                .authenticate_password(&username, pwd)
-                .await
-                .map_err(|error| {
-                    trf!(
-                        "SSH 认证失败：{error}",
-                        "SSH authentication failed: {error}"
-                    )
-                })?
-        };
-        Ok::<bool, String>(auth_result.success())
-    })
+                })?;
+                crate::ssh::auth::authenticate_password(&mut session, &username, pwd).await?
+            };
+            Ok::<bool, String>(auth_result)
+        }),
+    )
     .await
     {
+        Cancellable::Cancelled => return Ok(()),
+        Cancellable::Completed(result) => result,
+    };
+    let auth_success = match auth_result {
         Ok(Ok(success)) => success,
         Ok(Err(error)) => return Err(error),
         Err(_) => {
@@ -741,22 +990,37 @@ pub async fn run_russh_session<R: Runtime>(
     // must come after all mutable calls.
     let session = Arc::new(session);
 
-    let channel = session.channel_open_session().await.map_err(|error| {
+    let channel_result = match run_cancellable(&mut cancel_rx, session.channel_open_session()).await
+    {
+        Cancellable::Cancelled => return Ok(()),
+        Cancellable::Completed(result) => result,
+    };
+    let channel = channel_result.map_err(|error| {
         trf!(
             "SSH 会话打开失败：{error}",
             "Failed to open the SSH session: {error}"
         )
     })?;
-    channel
-        .request_pty(false, term_type, cols, rows, 0, 0, &[])
-        .await
-        .map_err(|error| {
-            trf!(
-                "SSH PTY 请求失败：{error}",
-                "SSH PTY request failed: {error}"
-            )
-        })?;
-    channel.request_shell(true).await.map_err(|error| {
+    let pty_result = match run_cancellable(
+        &mut cancel_rx,
+        channel.request_pty(false, term_type, cols, rows, 0, 0, &[]),
+    )
+    .await
+    {
+        Cancellable::Cancelled => return Ok(()),
+        Cancellable::Completed(result) => result,
+    };
+    pty_result.map_err(|error| {
+        trf!(
+            "SSH PTY 请求失败：{error}",
+            "SSH PTY request failed: {error}"
+        )
+    })?;
+    let shell_result = match run_cancellable(&mut cancel_rx, channel.request_shell(true)).await {
+        Cancellable::Cancelled => return Ok(()),
+        Cancellable::Completed(result) => result,
+    };
+    shell_result.map_err(|error| {
         trf!(
             "SSH Shell 请求失败：{error}",
             "SSH shell request failed: {error}"
@@ -809,6 +1073,7 @@ pub async fn run_russh_session<R: Runtime>(
     });
 
     let mut output_buffer: Vec<u8> = Vec::new();
+    let mut output_flow = SshOutputFlow::default();
     let mut flush_interval = tokio::time::interval(Duration::from_millis(16));
     flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // SFTP runs in spawned tasks so long transfers never stall the terminal
@@ -828,8 +1093,23 @@ pub async fn run_russh_session<R: Runtime>(
 
     loop {
         tokio::select! {
+            _ = wait_for_session_cancel(&mut cancel_rx) => {
+                break;
+            }
             command = rx.recv() => {
                 match command {
+                    Some(SshCommand::OutputAck { sequence }) => {
+                        output_flow.acknowledge(sequence);
+                    }
+                    Some(SshCommand::OutputStats { response }) => {
+                        let _ = response.send(output_flow.stats.clone());
+                    }
+                    Some(SshCommand::GpuUtilization { response }) => {
+                        let probe_session = Arc::clone(&session);
+                        tokio::spawn(async move {
+                            let _ = response.send(crate::ssh::gpu::read_utilization(&probe_session).await);
+                        });
+                    }
                     Some(SshCommand::Resize { cols, rows }) => {
                         if let Err(error) = channel_writer
                             .window_change(cols.max(1), rows.max(1), 0, 0)
@@ -848,10 +1128,6 @@ pub async fn run_russh_session<R: Runtime>(
                         }
                     }
                     Some(SshCommand::Close) | None => {
-                        let text = flush_utf8(&mut output_buffer);
-                        if !text.is_empty() {
-                            emit_session_event(&app, &window_label, &session_id, "output", None, Some(text), None);
-                        }
                         break;
                     }
                     Some(SshCommand::SftpList { path, response }) => {
@@ -1067,55 +1343,33 @@ pub async fn run_russh_session<R: Runtime>(
                                 continue;
                             }
                         };
+                        // Bind before registering the rule: a failed start must
+                        // leave the same rule id available for a retry.
+                        let listener = match tokio::net::TcpListener::bind((bind_host.as_str(), rule.local_port)).await {
+                            Ok(listener) => listener,
+                            Err(error) => {
+                                let _ = response.send(Err(trf!(
+                                    "无法绑定本地转发端口 {}:{}：{error}",
+                                    "Failed to bind the local forwarding port {}:{}: {error}",
+                                    bind_host, rule.local_port
+                                )));
+                                continue;
+                            }
+                        };
+                        let local_port = match listener.local_addr() {
+                            Ok(address) => address.port(),
+                            Err(error) => {
+                                let _ = response.send(Err(trf!(
+                                    "无法读取本地转发端口：{error}",
+                                    "Failed to read the local forwarding port: {error}"
+                                )));
+                                continue;
+                            }
+                        };
                         let session_clone = session.clone();
-                        let app_clone = app.clone();
-                        let session_id_clone = session_id.clone();
-                        let window_label_clone = window_label.clone();
                         let rule_clone = rule.clone();
                         let die_tx = tx.clone();
                         let handle = tokio::spawn(async move {
-                            let listener = match tokio::net::TcpListener::bind((
-                                bind_host.as_str(),
-                                rule_clone.local_port,
-                            ))
-                            .await
-                            {
-                                Ok(l) => l,
-                                Err(e) => {
-                                    emit_session_event(
-                                        &app_clone,
-                                        &window_label_clone,
-                                        &session_id_clone,
-                                        "port-forward-status",
-                                        None,
-                                        Some(
-                                            serde_json::json!({
-                                                "ruleId": rule_clone.id,
-                                                "active": false,
-                                                "error": format!("{e}"),
-                                            })
-                                            .to_string(),
-                                        ),
-                                        None,
-                                    );
-                                    return;
-                                }
-                            };
-                            emit_session_event(
-                                &app_clone,
-                                &window_label_clone,
-                                &session_id_clone,
-                                "port-forward-status",
-                                None,
-                                Some(
-                                    serde_json::json!({
-                                        "ruleId": rule_clone.id,
-                                        "active": true,
-                                    })
-                                        .to_string(),
-                                ),
-                                None,
-                            );
                             // Subconnection tasks live on this set: when the
                             // accept loop ends — deliberate stop (abort), an
                             // accept error, or a panic unwind — the set is
@@ -1167,12 +1421,24 @@ pub async fn run_russh_session<R: Runtime>(
                                         )
                                         .await
                                     {
-                                        Ok(ch) => ch,
+                                        Ok(channel) => {
+                                            if is_dynamic
+                                                && write_socks5_reply(&mut tcp_stream, 0)
+                                                    .await
+                                                    .is_err()
+                                            {
+                                                return;
+                                            }
+                                            channel
+                                        }
                                         // One failed tunnel must not report the
                                         // whole rule inactive: the listener keeps
                                         // accepting, and the client's own failed
                                         // connection is the per-connection signal.
                                         Err(error) => {
+                                            if is_dynamic {
+                                                let _ = write_socks5_reply(&mut tcp_stream, 1).await;
+                                            }
                                             log::warn!(
                                                 "port forward {conn_rule_id} tunnel to {dest_host}:{dest_port} failed: {error}"
                                             );
@@ -1207,7 +1473,20 @@ pub async fn run_russh_session<R: Runtime>(
                                 }
                             }
                         });
-                        let _ = response.send(Ok(()));
+                        emit_session_event(
+                            &app,
+                            &window_label,
+                            &session_id,
+                            "port-forward-status",
+                            None,
+                            Some(serde_json::json!({
+                                "ruleId": rule_id,
+                                "active": true,
+                                "localPort": local_port,
+                            }).to_string()),
+                            None,
+                        );
+                        let _ = response.send(Ok(local_port));
                     }
                     Some(SshCommand::StopPortForward { rule_id, response }) => {
                         if let Some(handle) = port_forward_handles.remove(&rule_id) {
@@ -1232,7 +1511,7 @@ pub async fn run_russh_session<R: Runtime>(
                     }
                 }
             }
-            message = channel_reader.wait() => {
+            message = channel_reader.wait(), if output_flow.can_emit() => {
                 let Some(message) = message else {
                     break;
                 };
@@ -1242,14 +1521,14 @@ pub async fn run_russh_session<R: Runtime>(
                         if output_buffer.len() >= 8192 {
                             let text = drain_utf8(&mut output_buffer);
                             if !text.is_empty() {
-                                emit_session_event(&app, &window_label, &session_id, "output", None, Some(text), None);
+                                output_flow.emit(&app, &window_label, &session_id, text);
                             }
                         }
                     }
                     ChannelMsg::ExitStatus { exit_status } => {
                         let text = flush_utf8(&mut output_buffer);
                         if !text.is_empty() {
-                            emit_session_event(&app, &window_label, &session_id, "output", None, Some(text), None);
+                            output_flow.emit(&app, &window_label, &session_id, text);
                         }
                         emit_session_event(
                             &app,
@@ -1264,7 +1543,7 @@ pub async fn run_russh_session<R: Runtime>(
                     ChannelMsg::ExitSignal { signal_name, error_message, .. } => {
                         let text = flush_utf8(&mut output_buffer);
                         if !text.is_empty() {
-                            emit_session_event(&app, &window_label, &session_id, "output", None, Some(text), None);
+                            output_flow.emit(&app, &window_label, &session_id, text);
                         }
                         emit_session_event(
                             &app,
@@ -1276,39 +1555,38 @@ pub async fn run_russh_session<R: Runtime>(
                             Some(trf!("SSH 进程收到信号 {signal_name:?}: {error_message}", "The SSH process received signal {signal_name:?}: {error_message}")),
                         );
                     }
-                    ChannelMsg::Close | ChannelMsg::Eof => {
+                    ChannelMsg::Eof => {
                         let text = flush_utf8(&mut output_buffer);
                         if !text.is_empty() {
-                            emit_session_event(&app, &window_label, &session_id, "output", None, Some(text), None);
+                            output_flow.emit(&app, &window_label, &session_id, text);
+                        }
+                    }
+                    ChannelMsg::Close => {
+                        let text = flush_utf8(&mut output_buffer);
+                        if !text.is_empty() {
+                            output_flow.emit(&app, &window_label, &session_id, text);
                         }
                         break;
                     }
                     _ => {}
                 }
             }
-            _ = flush_interval.tick() => {
+            _ = flush_interval.tick(), if output_flow.can_emit() => {
                 if !output_buffer.is_empty() {
                     let text = drain_utf8(&mut output_buffer);
                     if !text.is_empty() {
-                        emit_session_event(&app, &window_label, &session_id, "output", None, Some(text), None);
+                        output_flow.emit(&app, &window_label, &session_id, text);
                     }
                 }
             }
         }
     }
 
-    let text = flush_utf8(&mut output_buffer);
-    if !text.is_empty() {
-        emit_session_event(
-            &app,
-            &window_label,
-            &session_id,
-            "output",
-            None,
-            Some(text),
-            None,
-        );
+    if output_flow.can_emit() {
+        let text = flush_utf8(&mut output_buffer);
+        output_flow.emit(&app, &window_label, &session_id, text);
     }
+    log::debug!("SSH output flow {session_id}: {:?}", output_flow.stats);
     // The connection is going away: stop the input writer first (a stalled
     // channel write must not keep it alive), then abort any in-flight SFTP
     // transfers and resolve their invoking commands now — a transfer stuck on
@@ -1344,6 +1622,7 @@ pub fn open_ssh_session(
     state: State<'_, Arc<SshSessionState>>,
     request: SshConnectionRequest,
 ) -> Result<String, String> {
+    crate::require_main_or_ssh_window(window.label())?;
     validate_host(&request.host)?;
     parse_port(request.port.as_deref())?;
     validate_username(request.username.as_deref())?;
@@ -1352,6 +1631,7 @@ pub fn open_ssh_session(
     let window_label = window.label().to_string();
     let (tx, rx) = mpsc::unbounded_channel();
     let (input_tx, input_rx) = mpsc::channel(SSH_INPUT_QUEUE_CHUNKS);
+    let (cancel_tx, cancel_rx) = watch::channel(false);
     state
         .sessions
         .lock()
@@ -1360,6 +1640,7 @@ pub fn open_ssh_session(
             session_id.clone(),
             SshSessionEntry {
                 tx: tx.clone(),
+                cancel_tx,
                 input_tx,
                 window_label: window_label.clone(),
                 sftp_local_roots: Mutex::new(HashSet::new()),
@@ -1372,12 +1653,15 @@ pub fn open_ssh_session(
     tauri::async_runtime::spawn(async move {
         if let Err(error) = run_russh_session(
             app.clone(),
-            task_session_id.clone(),
             request,
             tx,
             rx,
             input_rx,
-            task_window_label.clone(),
+            cancel_rx,
+            SshSessionContext {
+                session_id: task_session_id.clone(),
+                window_label: task_window_label.clone(),
+            },
         )
         .await
         {
@@ -1406,9 +1690,9 @@ pub fn open_ssh_session(
     Ok(session_id)
 }
 
-pub fn send_session_command(
+pub fn send_session_command<R: Runtime>(
     state: State<'_, Arc<SshSessionState>>,
-    window: &tauri::WebviewWindow,
+    window: &tauri::WebviewWindow<R>,
     session_id: &str,
     command: SshCommand,
 ) -> Result<(), String> {
@@ -1418,9 +1702,9 @@ pub fn send_session_command(
         .map_err(|_| trf!("SSH 会话已关闭", "The SSH session is closed"))
 }
 
-pub async fn send_session_command_with_response<T>(
+pub async fn send_session_command_with_response<T, R: Runtime>(
     state: State<'_, Arc<SshSessionState>>,
-    window: &tauri::WebviewWindow,
+    window: &tauri::WebviewWindow<R>,
     session_id: &str,
     build_command: impl FnOnce(oneshot::Sender<Result<T, String>>) -> SshCommand,
 ) -> Result<T, String> {
@@ -1433,6 +1717,19 @@ pub async fn send_session_command_with_response<T>(
             "The SSH command response channel is closed"
         )
     })?
+}
+
+/// Samples GPU utilization over an already authenticated, owner-checked session.
+#[tauri::command]
+pub async fn ssh_gpu_utilization(
+    state: State<'_, Arc<SshSessionState>>,
+    window: tauri::WebviewWindow,
+    session_id: String,
+) -> Result<Vec<f64>, String> {
+    send_session_command_with_response(state, &window, &session_id, |response| {
+        SshCommand::GpuUtilization { response }
+    })
+    .await
 }
 
 /// Writes terminal input to the session's bounded input queue. Awaited sends
@@ -1455,6 +1752,22 @@ pub async fn ssh_write(
     Ok(())
 }
 
+/// Acknowledges xterm parsing, scoped to the session's owning window.
+#[tauri::command]
+pub fn ssh_ack_output<R: Runtime>(
+    state: State<'_, Arc<SshSessionState>>,
+    window: tauri::WebviewWindow<R>,
+    session_id: String,
+    sequence: u64,
+) -> Result<(), String> {
+    send_session_command(
+        state,
+        &window,
+        &session_id,
+        SshCommand::OutputAck { sequence },
+    )
+}
+
 #[tauri::command]
 pub fn ssh_resize(
     state: State<'_, Arc<SshSessionState>>,
@@ -1472,12 +1785,21 @@ pub fn ssh_resize(
 }
 
 #[tauri::command]
-pub fn ssh_close(
+pub fn ssh_close<R: Runtime>(
     state: State<'_, Arc<SshSessionState>>,
-    window: tauri::WebviewWindow,
+    window: tauri::WebviewWindow<R>,
     session_id: String,
 ) -> Result<(), String> {
-    send_session_command(state, &window, &session_id, SshCommand::Close)
+    let (sender, cancel_tx) = state.with_owned_entry(&window, &session_id, |entry| {
+        Ok((entry.tx.clone(), entry.cancel_tx.clone()))
+    })?;
+    cancel_tx.send_replace(true);
+    let result = sender
+        .send(SshCommand::Close)
+        .map_err(|_| trf!("SSH 会话已关闭", "The SSH session is closed"));
+    clear_pending_host_key_prompts_for_session(&session_id);
+    state.remove(&session_id);
+    result
 }
 
 /// Open a standalone SSH terminal window. The connection request is stashed
@@ -1494,9 +1816,12 @@ pub fn ssh_close(
 #[tauri::command]
 pub async fn open_ssh_window(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<PendingSshWindows>>,
     request: SshConnectionRequest,
+    preferences: SshTerminalPreferences,
 ) -> Result<(), String> {
+    crate::require_main_window(window.label())?;
     let label = format!(
         "ssh-{}",
         request
@@ -1540,7 +1865,13 @@ pub async fn open_ssh_window(
             .requests
             .lock()
             .map_err(|e| trf!("锁失败：{e}", "Lock failed: {e}"))?;
-        map.insert(label.clone(), request);
+        map.insert(
+            label.clone(),
+            SshWindowRequest {
+                request,
+                preferences,
+            },
+        );
     }
 
     WebviewWindowBuilder::new(
@@ -1583,8 +1914,8 @@ pub fn get_ssh_window_request(
     window: tauri::WebviewWindow,
     state: State<'_, Arc<PendingSshWindows>>,
     label: String,
-) -> Result<Option<SshConnectionRequest>, String> {
-    if window.label() != label {
+) -> Result<Option<SshWindowRequest>, String> {
+    if !window.label().starts_with("ssh-") || window.label() != label {
         return Err(trf!(
             "拒绝跨窗口读取 SSH 连接请求",
             "Reading another window's SSH connection request is not allowed"
@@ -1602,6 +1933,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn output_flow_only_releases_credits_for_emitted_sequences() {
+        let mut flow = SshOutputFlow::default();
+        for _ in 0..SSH_OUTPUT_MAX_IN_FLIGHT {
+            assert!(flow.can_emit());
+            flow.record_batch(100);
+        }
+        assert!(!flow.can_emit());
+        assert_eq!(flow.stats.backpressure_count, 1);
+        flow.acknowledge(0);
+        flow.acknowledge(99);
+        assert!(!flow.can_emit());
+        assert_eq!(flow.stats.in_flight_bytes, 1600);
+        flow.acknowledge(8);
+        assert!(flow.can_emit());
+        assert_eq!(flow.stats.in_flight_batches, 8);
+        assert_eq!(flow.stats.in_flight_bytes, 800);
+        flow.acknowledge(8);
+        assert_eq!(flow.stats.in_flight_batches, 8);
+        flow.acknowledge(16);
+        assert_eq!(flow.stats.in_flight_bytes, 0);
+        for _ in 0..SSH_OUTPUT_MAX_IN_FLIGHT {
+            flow.record_batch(50);
+        }
+        assert_eq!(flow.stats.backpressure_count, 2);
+        assert_eq!(flow.stats.peak_in_flight_batches, 16);
+    }
+
+    #[test]
+    fn connection_request_debug_redacts_password_and_key_passphrase() {
+        for auth_mode in ["password", "key"] {
+            let request: SshConnectionRequest = serde_json::from_value(serde_json::json!({
+                "host": "example.com",
+                "password": "  debug-secret-value  ",
+                "authMode": auth_mode,
+            }))
+            .unwrap();
+            for debug in [format!("{request:?}"), format!("{request:#?}")] {
+                assert!(debug.contains("example.com"));
+                assert!(debug.contains("[REDACTED]"));
+                assert!(!debug.contains("debug-secret-value"));
+            }
+            assert_eq!(
+                request.clone().password.as_deref(),
+                Some("  debug-secret-value  ")
+            );
+            assert_eq!(
+                serde_json::to_value(&request).unwrap()["password"],
+                "  debug-secret-value  "
+            );
+        }
+    }
+
+    #[test]
     fn validate_host_accepts_hostnames_and_rejects_junk() {
         assert_eq!(validate_host(" 10.0.0.8 ").unwrap(), "10.0.0.8");
         assert_eq!(
@@ -1615,6 +1999,8 @@ mod tests {
         // Whitespace and shell metacharacters must never reach ssh args.
         assert!(validate_host("host example").is_err());
         assert!(validate_host("host;rm").is_err());
+        assert!(validate_host("-v").is_err());
+        assert!(validate_host(" --proxy-command").is_err());
         // Trailing whitespace (including newlines) is trimmed away, so it
         // cannot smuggle a second argument into the ssh command line.
         assert_eq!(validate_host("host\n").unwrap(), "host");
@@ -1635,6 +2021,8 @@ mod tests {
     fn validate_username_filters_invalid_characters() {
         assert_eq!(validate_username(None).unwrap(), None);
         assert_eq!(validate_username(Some("  ")).unwrap(), None);
+        assert!(validate_username(Some(" -root")).is_err());
+        assert!(validate_username(Some("--")).is_err());
         assert_eq!(
             validate_username(Some(" ubuntu ")).unwrap().as_deref(),
             Some("ubuntu")
@@ -1770,5 +2158,15 @@ mod tests {
 
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&outside).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_local_path_rejects_dangling_symlinks_instead_of_treating_them_as_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let link = root.path().join("dangling");
+        std::os::unix::fs::symlink(root.path().join("missing"), &link).unwrap();
+        assert!(canonical_local_path(&link).is_none());
+        assert!(canonical_local_path(&link.join("file.bin")).is_none());
     }
 }

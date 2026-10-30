@@ -18,6 +18,7 @@ function createRuntime(responseData: unknown) {
     supportsSshPopOut: false,
     supportsUpdater: false,
     supportsFileReveal: false,
+    supportsAutostart: false,
     storage: {
       async get() {
         return null;
@@ -57,10 +58,12 @@ function createRuntime(responseData: unknown) {
     openExternal() {},
     async openLocalPath() {},
     async revealLocalPath() {},
+    async revealSftpLocalPath() {},
     async openSshSession() {
       return "session";
     },
     async writeSshSession() {},
+    async acknowledgeSshOutput() {},
     async resizeSshSession() {},
     async closeSshSession() {},
     async onSshSessionEvent() {
@@ -94,7 +97,7 @@ function createRuntime(responseData: unknown) {
     async sftpMkdir() {},
     async sftpCancel() {},
     async onSftpProgress() { return () => {}; },
-    async startPortForward() {},
+    async startPortForward() { return 2222; },
     async stopPortForward() {},
     async onPortForwardStatus() { return () => {}; },
     async listSshHistory() { return []; },
@@ -104,6 +107,12 @@ function createRuntime(responseData: unknown) {
     async setDesktopClosePrompt() {},
     async cancelDesktopClosePrompt() {},
     async completeDesktopClosePrompt() {},
+    async getDesktopAutostart() {
+      return false;
+    },
+    async setDesktopAutostart() {},
+    async desktopScheduledWake() { return null; },
+    async readTaskGpuUtilization() { return null; },
     async showDesktopMainWindow() {},
     async hideDesktopTrayMenu() {},
     async runDueScheduledTasks() {},
@@ -137,6 +146,22 @@ describe("api factory", () => {
     });
   });
 
+  it("requests a task log as text and forwards query cancellation", async () => {
+    const signal = new AbortController().signal;
+    const { runtime, calls } = createRuntime("log text");
+    const api = createEasyConsoleApi(new ApiClient(runtime, "http://host/api"));
+
+    await api.instanceApi.taskLog({ id: 7, task_id: 12 }, { signal });
+
+    expect(calls[0]).toMatchObject({
+      method: "GET",
+      url: "http://host/api/instance/task_log",
+      query: { task_id: 12 },
+      responseType: "text",
+      signal,
+    });
+  });
+
   it("keeps the browser facade exports available", () => {
     expect(apiClient).toBeInstanceOf(ApiClient);
     expect(typeof authApi.login).toBe("function");
@@ -154,6 +179,25 @@ describe("api factory", () => {
       method: "POST",
       url: "http://host/api/image/image_commit",
       body: { user: { username: "xutian" }, pod_name: "common-o7mt1awm" },
+    });
+  });
+
+  it("updates and deletes images through the per-id endpoints", async () => {
+    const { runtime, calls } = createRuntime({ code: 0, data: {} });
+    const client = new ApiClient(runtime, "http://host/api");
+    const api = createEasyConsoleApi(client);
+
+    await api.imageApi.updateImage(3, { name: "renamed", description: "updated" });
+    await api.imageApi.deleteImage(3);
+
+    expect(calls[0]).toMatchObject({
+      method: "PUT",
+      url: "http://host/api/image/image/3",
+      body: { name: "renamed", description: "updated" },
+    });
+    expect(calls[1]).toMatchObject({
+      method: "DELETE",
+      url: "http://host/api/image/image/3",
     });
   });
 

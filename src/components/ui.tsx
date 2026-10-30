@@ -5,6 +5,7 @@ import {
   useId,
   useRef,
   type ButtonHTMLAttributes,
+  type ComponentType,
   type InputHTMLAttributes,
   type MouseEvent,
   type ReactNode,
@@ -77,24 +78,54 @@ function focusDialogContents(container: HTMLElement | null) {
   getInitialDialogFocus(container)?.focus();
 }
 
-export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "ghost" | "danger" }>(function Button({
+type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: "primary" | "secondary" | "ghost" | "danger";
+  /**
+   * Why a disabled button is disabled. With a reason the button stays focusable
+   * (`aria-disabled` instead of `disabled`) and the reason is its description and tooltip:
+   * a natively disabled button is skipped by Tab, so a `title` alone is never heard.
+   */
+  disabledReason?: string;
+};
+
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button({
   className,
   variant = "primary",
+  disabled,
+  disabledReason,
+  title,
+  onClick,
+  "aria-describedby": describedBy,
   ...props
 }, ref) {
-  return (
+  const reasonId = useId();
+  const explained = Boolean(disabled && disabledReason);
+  const button = (
     <button
       ref={ref}
+      aria-describedby={explained ? [describedBy, reasonId].filter(Boolean).join(" ") : describedBy}
+      aria-disabled={explained || undefined}
       className={cn(
-        "app-interactive inline-flex h-9 select-none items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11",
+        "app-interactive inline-flex h-9 select-none items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:shadow-none [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11",
         variant === "primary" && "bg-app-accent text-app-onAccent shadow-raised hover:brightness-[0.94] active:brightness-90",
         variant === "secondary" && "border border-app-borderStrong bg-app-surface text-app-text shadow-raised hover:border-app-muted hover:bg-app-panel",
         variant === "ghost" && "text-app-muted hover:bg-app-panel hover:text-app-text",
         variant === "danger" && "bg-app-danger text-app-onAccent shadow-raised hover:brightness-[0.94] active:brightness-90",
         className,
       )}
+      disabled={explained ? undefined : disabled}
+      title={explained ? disabledReason : title}
+      onClick={explained ? (event) => event.preventDefault() : onClick}
       {...props}
     />
+  );
+  if (!explained) return button;
+  // The reason sits beside the button, not inside it, so it never joins the accessible name.
+  return (
+    <>
+      {button}
+      <span id={reasonId} hidden>{disabledReason}</span>
+    </>
   );
 });
 
@@ -133,6 +164,49 @@ export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
 
 export function Panel({ children, className }: { children: ReactNode; className?: string }) {
   return <section className={cn("rounded-lg border border-app-border bg-app-surface shadow-shell", className)}>{children}</section>;
+}
+
+export type StateTone = "info" | "success" | "warning" | "danger" | "neutral";
+
+const STATE_PILL_TONES: Record<StateTone, string> = {
+  info: "bg-app-infoSoft text-app-info ring-app-infoRing",
+  success: "bg-app-successSoft text-app-success ring-app-successRing",
+  warning: "bg-app-warningSoft text-app-warningText ring-app-warningRing",
+  danger: "bg-app-dangerSoft text-app-danger ring-app-dangerRing",
+  neutral: "bg-app-neutralSoft text-app-muted ring-app-neutralRing",
+};
+
+/**
+ * The status pill: full round, soft fill, inset ring, a still dot and text. Every
+ * state readout (task status, batch item outcome, ledger result) uses this shape,
+ * so a state never reads like a setting.
+ */
+export function StatePill({ tone, children, className }: { tone: StateTone; children: ReactNode; className?: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-full py-0.5 pl-2 pr-2.5 text-xs font-medium leading-5 ring-1 ring-inset",
+        STATE_PILL_TONES[tone],
+        className,
+      )}
+    >
+      <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" />
+      {children}
+    </span>
+  );
+}
+
+/** The squared neutral tag for settings and metadata (release condition, retry-of, IDs): no hue, an optional muted icon. */
+export function SettingTag({ icon: Icon, children, className, title }: { icon?: ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" }>; children: ReactNode; className?: string; title?: string }) {
+  return (
+    <span
+      className={cn("inline-flex items-center gap-1.5 whitespace-nowrap rounded-[5px] bg-app-neutralSoft px-2 py-0.5 text-xs font-medium leading-5 text-app-text", className)}
+      title={title}
+    >
+      {Icon ? <Icon className="h-3 w-3 shrink-0 text-app-muted" aria-hidden="true" /> : null}
+      {children}
+    </span>
+  );
 }
 
 /** Determinate progress: a neutral track and an accent fill that slides in by transform, never by width. */
@@ -234,6 +308,7 @@ export function Dialog({
   onOverlayClick,
   mobileMode = "default",
   contained = false,
+  describedBy,
 }: {
   open: boolean;
   title: string;
@@ -246,6 +321,8 @@ export function Dialog({
   mobileMode?: "default" | "bottom-sheet" | "fullscreen";
   /** Let the child own scrolling, with room for a persistent form footer. */
   contained?: boolean;
+  /** Id of the element that states what the dialog is about to do, read out with the title on open. */
+  describedBy?: string;
 }) {
   const titleId = useId();
   const { t } = useI18n();
@@ -344,6 +421,7 @@ export function Dialog({
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
+      aria-describedby={describedBy}
       onMouseDown={handleOverlayClick}
       style={compactLayout ? { top: viewport.offsetTop, bottom: "auto", height: viewport.height } : undefined}
     >

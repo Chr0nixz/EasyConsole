@@ -57,14 +57,15 @@ type AppUpdateContextValue = {
 
 const AppUpdateContext = createContext<AppUpdateContextValue | null>(null);
 
-function isTrayMenuWindow() {
+function isWindowWithoutAppUpdates() {
   if (typeof window === "undefined") return false;
-  return window.location.hash.includes("/tray-menu") || window.location.pathname.includes("/tray-menu");
+  const location = `${window.location.hash} ${window.location.pathname}`;
+  return location.includes("/tray-menu") || location.includes("/ssh-terminal");
 }
 
 function initialState(): AppUpdateState {
   return {
-    status: browserRuntime.supportsUpdater && !isTrayMenuWindow() ? "idle" : "unsupported",
+    status: browserRuntime.supportsUpdater && !isWindowWithoutAppUpdates() ? "idle" : "unsupported",
     dialogOpen: false,
   };
 }
@@ -83,7 +84,7 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
   }, [state.dialogOpen]);
 
   useEffect(() => {
-    if (!browserRuntime.supportsUpdater || isTrayMenuWindow()) return;
+    if (!browserRuntime.supportsUpdater || isWindowWithoutAppUpdates()) return;
     let cancelled = false;
     void getCurrentAppVersion().then((currentVersion) => {
       if (!cancelled) setState((value) => ({ ...value, currentVersion }));
@@ -107,7 +108,7 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
   }), [text]);
 
   const checkForUpdates = useCallback(async (manual = false) => {
-    if (!browserRuntime.supportsUpdater || isTrayMenuWindow()) {
+    if (!browserRuntime.supportsUpdater || isWindowWithoutAppUpdates()) {
       setState((value) => ({ ...value, status: "unsupported", dialogOpen: manual ? true : value.dialogOpen }));
       return;
     }
@@ -217,7 +218,7 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
   }, [runLogger, text, toast]);
 
   useEffect(() => {
-    if (!browserRuntime.supportsUpdater || isTrayMenuWindow()) return;
+    if (!browserRuntime.supportsUpdater || isWindowWithoutAppUpdates()) return;
     const timer = window.setTimeout(() => {
       void (async () => {
         if (!getRuntimeSettings().autoCheckUpdates) return;

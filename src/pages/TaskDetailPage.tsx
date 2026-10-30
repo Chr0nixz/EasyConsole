@@ -1,30 +1,41 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ChevronDown, FileJson, FileText, Maximize2, Monitor, Power, TerminalSquare } from "lucide-react";
+import { ArrowLeft, ChevronDown, Clock, CopyPlus, ExternalLink, FileJson, FileText, Maximize2, Monitor, Power, TerminalSquare, Trash2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
+import { IdleInstancePill } from "../components/IdleInstancePill";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { ReleaseConfirmDescription } from "../components/tasks/ReleaseConfirmDescription";
 import { TaskLogPanel } from "../components/tasks/TaskLogPanel";
 import { TaskSshPanel } from "../components/tasks/TaskSshPanel";
-import { Button, Panel, Select } from "../components/ui";
+import { Button, Dialog, Panel, Select, SettingTag } from "../components/ui";
 import { instanceApi } from "../lib/api";
-import { getTaskName, getTaskNodeName, getTaskReleaseCondition } from "../lib/format";
+import { formatCost, formatSecondsDuration, getTaskName, getTaskNodeName, getTaskReleaseCondition } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { buildMonitorDashboardUrl } from "../lib/monitor-dashboard";
 import { browserRuntime } from "../lib/runtime";
 import { buildTaskSshInfo } from "../lib/ssh-info";
+import {
+  formatReleaseTimeInput,
+  getLiveTimedReleaseAt,
+  parseReleaseTime,
+  TIMED_RELEASE_CONDITION,
+} from "../lib/task-release-notifications";
 import { invalidateTaskQueries, taskSnapshotQueryOptions } from "../lib/task-snapshot-query";
+import { getTaskAccess } from "../lib/task-terminal";
+import { FAILURE_STATUSES } from "../lib/task-status-notifications";
 import type { MonitorMetricSeries, Task } from "../lib/types";
 import { cn } from "../lib/utils";
 import { useAuth } from "../lib/use-auth";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useCompactLayout } from "../lib/use-compact-layout";
 import { useSlidingIndicator } from "../lib/use-sliding-indicator";
+import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
+const CreateTaskDialog = lazy(() => import("../components/tasks/CreateTaskDialog").then((module) => ({ default: module.CreateTaskDialog })));
 const TaskLogDialog = lazy(() => import("../components/tasks/TaskLogDialog").then((module) => ({ default: module.TaskLogDialog })));
 const TerminalDialog = lazy(() => import("../components/tasks/TerminalDialog").then((module) => ({ default: module.TerminalDialog })));
 
@@ -47,6 +58,12 @@ const MONITOR_RANGES: Array<{ value: MonitorRange; zh: string; en: string }> = [
   { value: "now-6h", zh: "近 6 小时", en: "Last 6 hours" },
   { value: "now-24h", zh: "近 24 小时", en: "Last 24 hours" },
   { value: "now-7d", zh: "近 7 天", en: "Last 7 days" },
+];
+
+const EXTEND_RELEASE_OPTIONS: Array<{ value: number; zh: string; en: string }> = [
+  { value: 60 * 60_000, zh: "延长 1 小时", en: "Extend by 1 hour" },
+  { value: 3 * 60 * 60_000, zh: "延长 3 小时", en: "Extend by 3 hours" },
+  { value: 24 * 60 * 60_000, zh: "延长 24 小时", en: "Extend by 24 hours" },
 ];
 
 function extractSeriesPoints(series: MonitorMetricSeries | undefined): number[] {
@@ -73,25 +90,33 @@ function renderSparkline(points: number[]): string {
     .join(" ");
 }
 
-function SummaryField({ label, value }: { label: string; value: string }) {
+/** `figure` is for quantities read at a glance (runtime, cost); `code` for paths, hosts and IDs. */
+function SummaryField({ label, value, kind = "code", className }: { label: string; value: string; kind?: "figure" | "code"; className?: string }) {
   return (
-    <div className="min-w-0">
+    <div className={cn("min-w-0", className)}>
       <dt className="text-xs text-app-muted">{label}</dt>
-      <dd className="mt-0.5 truncate font-mono text-xs text-app-text" title={value}>{value}</dd>
+      <dd
+        // Touch has no hover title, so long values wrap there instead of hiding behind an ellipsis.
+        className={cn("mt-0.5 truncate text-app-text [@media(pointer:coarse)]:whitespace-normal [@media(pointer:coarse)]:wrap-anywhere", kind === "figure" ? "app-numeric text-sm font-medium" : "font-mono text-xs")}
+        title={value}
+      >
+        {value}
+      </dd>
     </div>
   );
 }
 
 export function TaskDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { text } = useI18n();
+  const { locale, text } = useI18n();
   const auth = useAuth();
   const compactLayout = useCompactLayout();
   const queryClient = useQueryClient();
   const { confirm, confirmDialog } = useConfirmAction();
   const toast = useToast();
+  const runLogger = useRunLogger();
   const [tab, setTab] = useState<Tab>(() => parseDetailTab(searchParams.get("tab")));
   // Panels slide toward the side the user moved to; the first panel just appears with the page.
   const [tabDirection, setTabDirection] = useState<"forward" | "back" | null>(null);
@@ -99,14 +124,31 @@ export function TaskDetailPage() {
     if (next === tab) return;
     setTabDirection(TAB_ORDER.indexOf(next) > TAB_ORDER.indexOf(tab) ? "forward" : "back");
     setTab(next);
+    // Kept in the URL (replace, not push) so a refresh or a shared link lands on the same tab.
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      if (next === "log") params.delete("tab");
+      else params.set("tab", next);
+      return params;
+    }, { replace: true });
   };
   const [logOpen, setLogOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [cloneOpen, setCloneOpen] = useState(false);
   const [monitorRange, setMonitorRange] = useState<MonitorRange>("now-1h");
+  const [extendOpen, setExtendOpen] = useState(false);
+  const [extendDeltaMs, setExtendDeltaMs] = useState(60 * 60_000);
+  // Captured when the dialog opens so the preview stays put while it is open.
+  const [extendBaseMs, setExtendBaseMs] = useState(0);
 
-  useEffect(() => {
+  // Follow the URL when it changes (back/forward navigation); done during
+  // render (React's documented state-adjustment pattern). The tab can also be
+  // switched locally via selectTab without touching the URL.
+  const [prevTabSearchParams, setPrevTabSearchParams] = useState(searchParams.toString());
+  if (searchParams.toString() !== prevTabSearchParams) {
+    setPrevTabSearchParams(searchParams.toString());
     setTab(parseDetailTab(searchParams.get("tab")));
-  }, [searchParams]);
+  }
 
   const snapshotQuery = useQuery({
     ...taskSnapshotQueryOptions(instanceApi),
@@ -123,7 +165,7 @@ export function TaskDetailPage() {
       if (!id) throw new Error("Missing task id");
       const result = await instanceApi.tasks({ page: 1, page_size: 500 });
       const found = findTaskById(result.items, id);
-      if (!found) throw new Error(text("任务不存在", "Task not found"));
+      if (!found) throw new Error(text("实例不存在", "Instance not found"));
       return found;
     },
     enabled: Boolean(id) && snapshotQuery.isFetched && !snapshotQuery.data,
@@ -159,12 +201,73 @@ export function TaskDetailPage() {
     },
   });
 
+  // Extending writes a new `releace_time` through the edit endpoint. No
+  // verified backend extension API exists (the original console has none), so
+  // an unsupported backend surfaces updateTask's clear "not supported" error.
+  const extendReleaseMutation = useMutation({
+    mutationFn: (input: { task: Task; newReleaceTime: string }) =>
+      instanceApi.updateTask(input.task.id, { releace_time: input.newReleaceTime }),
+    onSuccess: (_data, input) => {
+      toast.success(text("释放时间已延长", "Release time extended"), `${getTaskName(input.task)}: ${input.newReleaceTime}`);
+      void runLogger.log({
+        source: "task",
+        level: "info",
+        action: "task.extendRelease",
+        result: "success",
+        title: text("释放时间已延长", "Release time extended"),
+        targetName: getTaskName(input.task),
+        targetId: input.task.id,
+        metadata: { releaceTime: input.newReleaceTime },
+      });
+      invalidateTaskQueries(queryClient);
+      setExtendOpen(false);
+    },
+    onError: (error, input) => {
+      toast.error(
+        text("延长释放失败", "Failed to extend release"),
+        `${getTaskName(input.task)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`,
+      );
+      void runLogger.log({
+        source: "task",
+        level: "error",
+        action: "task.extendRelease",
+        result: "failure",
+        title: text("延长释放失败", "Failed to extend release"),
+        targetName: getTaskName(input.task),
+        targetId: input.task.id,
+        error: errorMessage(error, text("延长释放失败", "Failed to extend release")),
+      });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (task: Task) => instanceApi.deleteTask(task.id),
+    onSuccess: (_data, deletedTask) => {
+      toast.success(text("实例删除已提交", "Instance deletion submitted"), getTaskName(deletedTask));
+      invalidateTaskQueries(queryClient);
+      navigate("/tasks");
+    },
+    onError: (error, deletedTask) => {
+      toast.error(
+        text("实例删除失败", "Instance deletion failed"),
+        `${getTaskName(deletedTask)}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`,
+      );
+    },
+  });
+
   const monitorIndexQuery = useQuery({
     queryKey: ["task-monitor-index", id],
     queryFn: () => instanceApi.monitorIndex({ task_id: String(task?.task_id ?? task?.id ?? id) }),
     enabled: Boolean(task && tab === "monitor"),
     refetchInterval: 30_000,
   });
+
+  // Pure render input: the base time is fixed when the dialog opens.
+  const extendPreview = useMemo(() => {
+    if (!task) return "";
+    const releaseAt = parseReleaseTime(task) ?? 0;
+    return formatReleaseTimeInput(new Date(Math.max(extendBaseMs, releaseAt) + extendDeltaMs));
+  }, [task, extendBaseMs, extendDeltaMs]);
 
   const sparklineMetrics = useMemo(() => {
     const data = monitorIndexQuery.data;
@@ -188,8 +291,8 @@ export function TaskDetailPage() {
   useSlidingIndicator(tabListRef, tabIndicatorRef, '[aria-selected="true"]', `${tab}:${Boolean(task)}`, "underline");
 
   if (isLoading) return <LoadingState />;
-  if (isError) return <ErrorState error={queryError} action={<Button onClick={() => navigate("/tasks")}>{text("返回任务列表", "Back to tasks")}</Button>} />;
-  if (!task) return <EmptyState title={text("任务不存在", "Task not found")} action={<Button onClick={() => navigate("/tasks")}>{text("返回任务列表", "Back to tasks")}</Button>} />;
+  if (isError) return <ErrorState error={queryError} action={<Button onClick={() => navigate("/tasks")}>{text("返回实例列表", "Back to instances")}</Button>} />;
+  if (!task) return <EmptyState title={text("实例不存在", "Instance not found")} action={<Button onClick={() => navigate("/tasks")}>{text("返回实例列表", "Back to instances")}</Button>} />;
 
   const tabs: Array<{ key: Tab; label: string; icon: typeof FileText }> = [
     { key: "log", label: text("日志", "Logs"), icon: FileText },
@@ -202,6 +305,9 @@ export function TaskDetailPage() {
     ? `${sshSummary.host}${sshSummary.port !== "-" ? `:${sshSummary.port}` : ""}`
     : "-";
   const canRelease = [0, 1, 2].includes(Number(task.status));
+  // Records of ended instances can be deleted; release is the only exit for live ones.
+  const canDelete = !canRelease;
+  const failed = FAILURE_STATUSES.has(Number(task.status));
   const requestRelease = () => {
     confirm({
       title: text("确认释放实例", "Confirm Instance Release"),
@@ -211,52 +317,116 @@ export function TaskDetailPage() {
       run: () => releaseMutation.mutateAsync(task),
     });
   };
+  const requestDelete = () => {
+    confirm({
+      title: text("确认删除实例", "Confirm Instance Deletion"),
+      description: text(
+        `将删除 ${getTaskName(task)} 的记录，从列表中移除。此操作不可从 EasyConsole 撤销。`,
+        `Delete the record of ${getTaskName(task)} and remove it from the list. EasyConsole cannot undo this.`,
+      ),
+      confirmLabel: text("删除记录", "Delete record"),
+      tone: "danger",
+      run: () => deleteMutation.mutateAsync(task),
+    });
+  };
+  const secondaryId = task.task_id !== undefined && String(task.task_id) !== String(task.id) ? String(task.task_id) : null;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" onClick={() => navigate("/tasks")} aria-label={text("返回", "Back")}>
+      {/* Phones wrap the name (there is no hover title to read the rest) and keep the back arrow on its line. */}
+      <div className={cn("flex flex-wrap gap-3", compactLayout ? "items-start" : "items-center")}>
+        <Button className={compactLayout ? "-my-2 -ml-2" : undefined} variant="ghost" onClick={() => navigate("/tasks")} aria-label={text("返回实例列表", "Back to instances")}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="min-w-0 flex-1">
-          <h2 className="truncate text-lg font-semibold tracking-[-0.015em] text-app-text">{getTaskName(task)}</h2>
+          <h2 className={cn("text-lg font-semibold tracking-[-0.015em] text-app-text", compactLayout ? "wrap-anywhere" : "truncate")}>{getTaskName(task)}</h2>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
-            <span>ID: {String(task.id)}</span>
-            {task.task_id ? <span>Task ID: {String(task.task_id)}</span> : null}
+            <span className="font-mono">#{String(task.id)}</span>
+            {secondaryId ? <span className="font-mono">{text(`任务 ID ${secondaryId}`, `Task ID ${secondaryId}`)}</span> : null}
             <StatusBadge status={task.status} />
-            {releaseCondition != null ? <ReleaseConditionBadge condition={releaseCondition} /> : null}
+            <IdleInstancePill task={task} />
+            {releaseCondition != null ? <ReleaseConditionBadge condition={releaseCondition} releaseAt={getLiveTimedReleaseAt(task)} /> : null}
           </div>
         </div>
-        {canRelease ? (
-          // Neutral at rest like the table's release action; danger color only on hover/focus and in the confirm.
-          <Button
-            className="shrink-0 hover:border-app-dangerRing hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger"
-            disabled={releaseMutation.isPending}
-            type="button"
-            variant="secondary"
-            onClick={requestRelease}
-          >
-            <Power className="h-4 w-4" aria-hidden="true" />
-            {text("释放", "Release")}
+        {/* On phones the actions take their own full-width row and grow to fill it, so release and
+            extend are wide thumb targets instead of a ragged wrap. */}
+        <div className={cn("flex shrink-0 flex-wrap items-center gap-2", compactLayout && "w-full *:flex-auto")}>
+          {/* After a failure the next step is a corrected rerun, so clone leads there. */}
+          <Button type="button" variant={failed ? "primary" : "secondary"} onClick={() => setCloneOpen(true)}>
+            <CopyPlus className="h-4 w-4" aria-hidden="true" />
+            {text("克隆并修改", "Clone and edit")}
           </Button>
-        ) : null}
+          {canRelease && releaseCondition === TIMED_RELEASE_CONDITION ? (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setExtendBaseMs(Date.now());
+                setExtendOpen(true);
+              }}
+            >
+              <Clock className="h-4 w-4" aria-hidden="true" />
+              {text("延长释放", "Extend release")}
+            </Button>
+          ) : null}
+          {canRelease ? (
+            // Neutral at rest like the table's release action; danger color only on hover/focus and in the confirm.
+            <Button
+              className="hover:border-app-dangerRing hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger"
+              disabled={releaseMutation.isPending}
+              type="button"
+              variant="secondary"
+              onClick={requestRelease}
+            >
+              <Power className="h-4 w-4" aria-hidden="true" />
+              {text("释放", "Release")}
+            </Button>
+          ) : null}
+          {canDelete ? (
+            <Button
+              className="hover:bg-app-dangerSoft hover:text-app-danger focus-visible:text-app-danger"
+              disabled={deleteMutation.isPending}
+              type="button"
+              variant="ghost"
+              onClick={requestDelete}
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+              {text("删除记录", "Delete record")}
+            </Button>
+          ) : null}
+        </div>
       </div>
 
-      <dl className="grid gap-3 rounded-lg border border-app-border bg-app-surface px-4 py-3 shadow-shell sm:grid-cols-2 xl:grid-cols-4">
+      {/* What keeping this instance costs leads the strip: release and rerun are decided on
+          runtime and cost, so they are read here rather than first seen in the release confirm. */}
+      <dl className="grid grid-cols-2 gap-3 rounded-lg border border-app-border bg-app-surface px-4 py-3 shadow-shell xl:grid-cols-4">
         <SummaryField
+          kind="figure"
+          label={text("已运行", "Running for")}
+          value={Number(task.use_time) > 0 ? formatSecondsDuration(task.use_time, locale) : "—"}
+        />
+        <SummaryField
+          kind="figure"
+          label={text("已产生费用", "Billed so far")}
+          value={Number(task.cost) > 0 ? formatCost(task.cost, locale) : "—"}
+        />
+        <SummaryField
+          kind="figure"
           label={text("资源", "Resources")}
           value={`${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`}
         />
-        <SummaryField label={text("节点", "Node")} value={getTaskNodeName(task) || "-"} />
-        <div className="col-span-full min-w-0 xl:col-span-2">
+        <SummaryField kind="figure" label={text("创建时间", "Created")} value={String(task.create_time ?? task.created_at ?? "-")} />
+        <div className="col-span-full min-w-0">
           <details className="group" open={!compactLayout}>
             <summary className={cn("flex min-h-11 cursor-pointer list-none items-center justify-between text-sm font-medium text-app-text", !compactLayout && "sm:hidden")}>
               {text("路径与连接", "Paths and connection")}
               <ChevronDown className="h-4 w-4 text-app-muted transition-transform group-open:rotate-180" aria-hidden="true" />
             </summary>
-            <div className={cn("grid gap-3 border-t border-app-border pt-3", !compactLayout && "sm:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] sm:border-t-0 sm:pt-0")}>
-              <SummaryField label={text("存储路径", "Storage path")} value={storagePath} />
+            {/* Same column grid as the figures above, so node and endpoint line up under them. */}
+            <div className="grid grid-cols-2 gap-3 border-t border-app-border pt-3 xl:grid-cols-4">
+              <SummaryField label={text("节点", "Node")} value={getTaskNodeName(task) || "-"} />
               <SummaryField label={text("入口", "Endpoint")} value={endpoint} />
+              <SummaryField className="col-span-2" label={text("存储路径", "Storage path")} value={storagePath} />
             </div>
           </details>
         </div>
@@ -357,41 +527,29 @@ export function TaskDetailPage() {
               </div>
             </Panel>
           ) : null}
-          <Panel className="overflow-hidden p-0">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-app-border px-3 py-2">
-              <span className="text-sm font-medium text-app-text">{text("Grafana 监控面板", "Grafana Monitor Dashboard")}</span>
-              <div className="flex items-center gap-2">
-                <Select
-                  aria-label={text("时间范围", "Time range")}
-                  value={monitorRange}
-                  onChange={(event) => setMonitorRange(event.target.value as MonitorRange)}
-                  className="h-8 text-xs"
-                >
-                  {MONITOR_RANGES.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {text(option.zh, option.en)}
-                    </option>
-                  ))}
-                </Select>
-                <Button onClick={() => browserRuntime.openExternal(monitorUrl)}>
-                  {text("在新窗口打开", "Open in new window")}
-                </Button>
-              </div>
+          {/* Grafana refuses to be embedded, so this is a launcher for the full dashboard. */}
+          <Panel className={cn("flex flex-wrap items-center justify-between gap-2 px-3 py-2", sparklineMetrics.length > 0 && "mt-3")}>
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-app-text">{text("Grafana 监控面板", "Grafana monitor dashboard")}</div>
+              <div className="text-xs text-app-muted">{text("在浏览器中打开完整面板", "Opens the full dashboard in your browser")}</div>
             </div>
-            <div className="px-4 py-10">
-              <EmptyState
-                icon={Monitor}
-                title={text("无法在应用内嵌套显示 Grafana", "Grafana cannot be embedded in-app")}
-                description={text(
-                  "监控服务返回了 X-Frame-Options: deny，浏览器会拦截内嵌页面。请选择时间范围后，在新窗口打开完整 Grafana 面板。",
-                  "The monitor service returns X-Frame-Options: deny, so the browser blocks the embedded page. Choose a time range, then open the full Grafana dashboard in a new window.",
-                )}
-                action={
-                  <Button onClick={() => browserRuntime.openExternal(monitorUrl)}>
-                    {text("打开 Grafana 面板", "Open Grafana dashboard")}
-                  </Button>
-                }
-              />
+            <div className="flex items-center gap-2">
+              <Select
+                aria-label={text("时间范围", "Time range")}
+                value={monitorRange}
+                onChange={(event) => setMonitorRange(event.target.value as MonitorRange)}
+                className="h-8 text-xs"
+              >
+                {MONITOR_RANGES.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {text(option.zh, option.en)}
+                  </option>
+                ))}
+              </Select>
+              <Button className="h-8" onClick={() => browserRuntime.openExternal(monitorUrl)}>
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                {text("打开 Grafana", "Open Grafana")}
+              </Button>
             </div>
           </Panel>
         </div>
@@ -419,9 +577,9 @@ export function TaskDetailPage() {
             <TaskLogPanel
               task={task}
               toolbarEnd={
-                <Button className="h-8 px-2" type="button" variant="ghost" onClick={() => setLogOpen(true)}>
-                  <Maximize2 className="h-4 w-4" />
-                  {text("放大", "Expand")}
+                <Button className="h-8 px-2" title={text("放大", "Expand")} type="button" variant="ghost" onClick={() => setLogOpen(true)}>
+                  <Maximize2 className="h-4 w-4" aria-hidden="true" />
+                  <span className="max-sm:sr-only">{text("放大", "Expand")}</span>
                 </Button>
               }
             />
@@ -431,14 +589,16 @@ export function TaskDetailPage() {
 
       {tab === "ssh" ? (
         <div role="tabpanel" id="task-detail-panel-ssh" aria-labelledby="task-detail-tab-ssh" className="app-tab-enter space-y-2" data-direction={tabDirection ?? undefined}>
-          <div className="flex justify-end">
-            <Button className="h-8" type="button" variant="secondary" onClick={() => setTerminalOpen(true)}>
-              <Maximize2 className="h-4 w-4" />
-              {text("放大", "Expand")}
-            </Button>
-          </div>
+          {getTaskAccess(task).terminal ? (
+            <div className="flex justify-end">
+              <Button className="h-8" type="button" variant="secondary" onClick={() => setTerminalOpen(true)}>
+                <Maximize2 className="h-4 w-4" />
+                {text("放大", "Expand")}
+              </Button>
+            </div>
+          ) : null}
           <Panel className="overflow-hidden p-0">
-            <TaskSshPanel task={task} />
+            <TaskSshPanel task={task} onClone={() => setCloneOpen(true)} onViewLog={() => selectTab("log")} />
           </Panel>
         </div>
       ) : null}
@@ -446,9 +606,63 @@ export function TaskDetailPage() {
       <Suspense fallback={null}>
         <TaskLogDialog task={logOpen ? task : null} onClose={() => setLogOpen(false)} />
       </Suspense>
+      {cloneOpen ? (
+        <Suspense fallback={null}>
+          <CreateTaskDialog initialTask={task} open onClose={() => setCloneOpen(false)} />
+        </Suspense>
+      ) : null}
       <Suspense fallback={null}>
         <TerminalDialog task={terminalOpen ? task : null} onClose={() => setTerminalOpen(false)} />
       </Suspense>
+      <Dialog
+        open={extendOpen}
+        title={text("延长定时释放", "Extend timed release")}
+        onClose={() => { if (!extendReleaseMutation.isPending) setExtendOpen(false); }}
+        width="max-w-md"
+        describedBy="extend-release-description"
+      >
+        <div className="space-y-4 p-5">
+          <SettingTag>{text("实验性", "Experimental")}</SettingTag>
+          <p id="extend-release-description" className="text-sm leading-6 text-app-muted">
+            {text(
+              `实验性操作，尚待真实环境验证。当前释放时间 ${String(task.releace_time ?? "-")}。延长会写入新的释放时间；如后端不支持修改会明确报错。`,
+              `Experimental operation awaiting real-environment validation. Current release time ${String(task.releace_time ?? "-")}. Extending writes a new release time; an unsupported backend reports a clear error.`,
+            )}
+          </p>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-app-text">{text("延长时间", "Extension")}</span>
+            <Select
+              className="w-full"
+              value={String(extendDeltaMs)}
+              onChange={(event) => setExtendDeltaMs(Number(event.target.value))}
+            >
+              {EXTEND_RELEASE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {text(option.zh, option.en)}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <p className="app-numeric rounded-md border border-app-border bg-app-panel px-3 py-2 font-mono text-sm text-app-text">
+            {text("新释放时间", "New release time")}: {extendPreview}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button disabled={extendReleaseMutation.isPending} type="button" variant="ghost" onClick={() => setExtendOpen(false)}>
+              {text("取消", "Cancel")}
+            </Button>
+            <Button
+              disabled={extendReleaseMutation.isPending}
+              type="button"
+              onClick={() => {
+                const base = Math.max(Date.now(), parseReleaseTime(task) ?? Date.now());
+                extendReleaseMutation.mutate({ task, newReleaceTime: formatReleaseTimeInput(new Date(base + extendDeltaMs)) });
+              }}
+            >
+              {extendReleaseMutation.isPending ? text("提交中…", "Submitting…") : text("确认延长", "Extend")}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
       {confirmDialog}
     </div>
   );

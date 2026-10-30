@@ -27,6 +27,7 @@ fn ssh_args(request: &SshConnectionRequest) -> Result<Vec<String>, String> {
     let target = username
         .map(|username| format!("{username}@{host}"))
         .unwrap_or(host);
+    args.push("--".to_string());
     args.push(target);
     Ok(args)
 }
@@ -144,7 +145,11 @@ fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn open_system_ssh_terminal(request: SshConnectionRequest) -> Result<(), String> {
+pub fn open_system_ssh_terminal(
+    window: tauri::WebviewWindow,
+    request: SshConnectionRequest,
+) -> Result<(), String> {
+    crate::require_main_window(window.label())?;
     spawn_ssh_terminal(&request)
 }
 
@@ -179,13 +184,16 @@ mod tests {
     #[test]
     fn ssh_args_builds_target_and_port() {
         let args = ssh_args(&request("10.0.0.8", Some("30222"), Some("root"), None)).unwrap();
-        assert_eq!(args, vec!["-p", "30222", "root@10.0.0.8"]);
+        assert_eq!(args, vec!["-p", "30222", "--", "root@10.0.0.8"]);
 
         let bare = ssh_args(&request("example.com", None, None, None)).unwrap();
-        assert_eq!(bare, vec!["example.com"]);
+        assert_eq!(bare, vec!["--", "example.com"]);
 
         assert!(ssh_args(&request("bad host", None, None, None)).is_err());
         assert!(ssh_args(&request("example.com", Some("22x"), None, None)).is_err());
+        assert!(ssh_args(&request(" -oProxyCommand=calc", None, None, None)).is_err());
+        assert!(ssh_args(&request("-v", None, None, None)).is_err());
+        assert!(ssh_args(&request("example.com", None, Some("-root"), None)).is_err());
     }
 
     #[cfg(target_os = "windows")]

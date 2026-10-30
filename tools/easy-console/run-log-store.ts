@@ -1,12 +1,37 @@
-import { readFile, rename } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { access, readFile, rename } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 
 import type { RuntimeStorage } from "../../src/lib/types";
-import { RUN_LOGS_STORAGE_KEY } from "../../src/lib/run-logs";
+import { parseRunLogs, pruneRunLogs, RUN_LOGS_STORAGE_KEY } from "../../src/lib/run-logs";
 import { atomicWriteFile, withFileLock } from "./local-data-store";
 
 export function getDefaultRunLogPath(configPath: string) {
-  return process.env.EASY_CONSOLE_RUN_LOG_PATH ?? join(dirname(configPath), "run-logs.json");
+  return process.env.EASY_CONSOLE_RUN_LOG_PATH || join(dirname(configPath), "run-logs.json");
+}
+
+/** Copy the old sidecar log file once, merging ids and keeping its snapshot. */
+export async function migrateLegacyRunLogs(storage: RuntimeStorage, storagePath: string, legacyLogPath: string) {
+  const isMissing = (error: unknown) => error && typeof error === "object" && "code" in error && error.code === "ENOENT";
+  try { await access(legacyLogPath); } catch (error) {
+    if (isMissing(error)) return;
+    throw error;
+  }
+  const targetHash = createHash("sha256").update(resolve(storagePath)).digest("hex").slice(0, 16);
+  const marker = `${legacyLogPath}.shared-${targetHash}.done`;
+  const migrate = async () => withFileLock(legacyLogPath, async () => {
+    try { await access(marker); return; } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+    const raw = await readFile(legacyLogPath, "utf8");
+    if (!Array.isArray(JSON.parse(raw))) throw new Error(`Legacy run logs must be a JSON array: ${legacyLogPath}`);
+    const byId = new Map(parseRunLogs(raw).map((entry) => [entry.id, entry]));
+    for (const entry of parseRunLogs(await storage.get(RUN_LOGS_STORAGE_KEY))) byId.set(entry.id, entry);
+    await storage.set(RUN_LOGS_STORAGE_KEY, JSON.stringify(pruneRunLogs([...byId.values()])));
+    await atomicWriteFile(marker, "1\n");
+  });
+  if (storage.withTransaction) await storage.withTransaction(migrate);
+  else await migrate();
 }
 
 /**

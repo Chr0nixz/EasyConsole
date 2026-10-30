@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -8,18 +9,20 @@ use russh::client;
 use russh::keys::ssh_key::HashAlg;
 use russh::ChannelMsg;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 
 use crate::app_data_file;
-use crate::ssh::host_key::EasyConsoleSshClient;
+use crate::ssh::host_key::{
+    known_host_key, load_known_hosts, ssh_known_hosts_path, EasyConsoleSshClient, KnownHostRecord,
+};
 use crate::ssh::session::{
     expand_key_path, parse_port, require_username, validate_host, SshConnectionRequest,
 };
 use crate::trf;
 
 /// Comment marker stamped onto generated keys and recorded in the remote
-/// `authorized_keys` line. Revocation matches this exact marker, so only
-/// EasyConsole-managed lines are ever removed.
+/// `authorized_keys` line. It helps users identify entries; revocation matches
+/// the public key itself so another EasyConsole key is never removed by name.
 #[cfg(desktop)]
 const VSCODE_KEY_MARKER: &str = "easyconsole-vscode";
 
@@ -122,8 +125,7 @@ fn remove_vscode_key_record(app: &AppHandle, alias: &str) -> Result<(), String> 
 #[cfg(desktop)]
 fn require_password(password: Option<&str>) -> Result<String, String> {
     password
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
         .ok_or_else(|| {
             trf!(
@@ -464,6 +466,7 @@ fn write_user_ssh_config(config_path: &Path, contents: &str) -> Result<(), Strin
 
 #[cfg(desktop)]
 fn write_vscode_ssh_config(
+    app: &AppHandle,
     request: &SshConnectionRequest,
     alias: &str,
     identity_file: &Path,
@@ -471,6 +474,16 @@ fn write_vscode_ssh_config(
     let host = validate_host(&request.host)?;
     let username = require_username(request.username.as_deref())?;
     let port = parse_port(request.port.as_deref())?;
+    let host_records = load_known_hosts(app)?;
+    let target_key = known_host_key(&host, port);
+    let has_pinned_key = host_records
+        .get(&target_key)
+        .is_some_and(|record| record.public_key.is_some());
+    let known_hosts_file = if has_pinned_key {
+        Some(write_managed_known_hosts(app, &host_records)?)
+    } else {
+        None
+    };
     let ssh_dir = user_ssh_dir()?;
     fs::create_dir_all(&ssh_dir).map_err(|error| {
         trf!(
@@ -496,16 +509,170 @@ fn write_vscode_ssh_config(
         next.push('\n');
     }
     next.push_str(&format!(
-        "{start_marker}\nHost {alias}\n  HostName {host}\n  User {username}\n  Port {port}\n  IdentityFile {}\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n{end_marker}\n",
+        "{start_marker}\nHost {alias}\n  HostName {host}\n  User {username}\n  Port {port}\n  IdentityFile {}\n  IdentitiesOnly yes\n",
         ssh_config_identity_path(identity_file),
     ));
+    next.push_str(&vscode_host_key_options(known_hosts_file.as_deref()));
+    next.push_str(&format!("{end_marker}\n"));
 
     write_user_ssh_config(&config_path, &next)
 }
 
 #[cfg(desktop)]
+fn vscode_host_key_options(known_hosts_file: Option<&Path>) -> String {
+    if let Some(path) = known_hosts_file {
+        format!(
+            "  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n",
+            ssh_config_identity_path(path),
+        )
+    } else {
+        "  StrictHostKeyChecking accept-new\n".to_string()
+    }
+}
+
+#[cfg(desktop)]
+fn parse_known_host_key(host_port: &str) -> Option<(String, u16)> {
+    if let Some(bracketed) = host_port.strip_prefix('[') {
+        let (host, port) = bracketed.split_once("]:")?;
+        return Some((host.to_string(), port.parse().ok()?));
+    }
+    let (host, port) = host_port.rsplit_once(':')?;
+    Some((host.to_string(), port.parse().ok()?))
+}
+
+#[cfg(desktop)]
+pub fn write_managed_known_hosts<R: Runtime>(
+    app: &AppHandle<R>,
+    records: &std::collections::HashMap<String, KnownHostRecord>,
+) -> Result<PathBuf, String> {
+    let path = ssh_known_hosts_path(app)?;
+    let mut lines = records
+        .iter()
+        .filter_map(|(host_port, record)| {
+            let public_key = record.public_key.as_deref()?;
+            let (host, port) = parse_known_host_key(host_port)?;
+            let host_field = if port == 22 {
+                host
+            } else {
+                format!("[{host}]:{port}")
+            };
+            Some(format!("{host_field} {public_key}"))
+        })
+        .collect::<Vec<_>>();
+    lines.sort();
+    let contents = if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    };
+    let temp = path.with_extension("openssh.tmp");
+    let mut file = fs::File::create(&temp).map_err(|error| {
+        trf!(
+            "无法写入应用管理的 SSH 主机记录：{error}",
+            "Failed to write the application-managed SSH host file: {error}"
+        )
+    })?;
+    file.write_all(contents.as_bytes()).map_err(|error| {
+        trf!(
+            "无法写入应用管理的 SSH 主机记录：{error}",
+            "Failed to write the application-managed SSH host file: {error}"
+        )
+    })?;
+    file.sync_all().map_err(|error| {
+        trf!(
+            "无法同步应用管理的 SSH 主机记录：{error}",
+            "Failed to sync the application-managed SSH host file: {error}"
+        )
+    })?;
+    fs::rename(&temp, &path).map_err(|error| {
+        let _ = fs::remove_file(&temp);
+        trf!(
+            "无法提交应用管理的 SSH 主机记录：{error}",
+            "Failed to commit the application-managed SSH host file: {error}"
+        )
+    })?;
+    Ok(path)
+}
+
+#[cfg(desktop)]
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(desktop)]
+fn public_key_parts(key_path: &Path) -> Result<(String, String), String> {
+    let public_key_path = key_path.with_extension("pub");
+    let public_key = if public_key_path.is_file() {
+        fs::read_to_string(&public_key_path).map_err(|error| {
+            trf!(
+                "无法读取 VS Code SSH 公钥：{error}",
+                "Failed to read the VS Code SSH public key: {error}"
+            )
+        })?
+    } else if key_path.is_file() {
+        let output = Command::new("ssh-keygen")
+            .args(["-y", "-f"])
+            .arg(key_path)
+            .output()
+            .map_err(|error| {
+                trf!(
+                    "无法从 VS Code 私钥恢复公钥：{error}",
+                    "Failed to recover the VS Code public key from its private key: {error}"
+                )
+            })?;
+        if !output.status.success() {
+            return Err(trf!(
+                "无法从 VS Code 私钥恢复公钥",
+                "Failed to recover the VS Code public key from its private key"
+            ));
+        }
+        String::from_utf8(output.stdout).map_err(|error| {
+            trf!(
+                "恢复的 VS Code 公钥不是有效文本：{error}",
+                "The recovered VS Code public key is not valid text: {error}"
+            )
+        })?
+    } else {
+        return Err(trf!(
+            "找不到本机 VS Code 公钥或对应私钥；为避免删除其他密钥，未修改远端 authorized_keys",
+            "The local VS Code public key and its private key are missing; remote authorized_keys was left unchanged to avoid deleting another key"
+        ));
+    };
+
+    let line = public_key
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| {
+            trf!(
+                "VS Code SSH 公钥为空",
+                "The VS Code SSH public key is empty"
+            )
+        })?;
+    let mut fields = line.split_ascii_whitespace();
+    let key_type = fields.next().unwrap_or_default();
+    let key_blob = fields.next().unwrap_or_default();
+    if key_type.is_empty()
+        || key_blob.is_empty()
+        || russh::keys::PublicKey::from_openssh(&format!("{key_type} {key_blob}")).is_err()
+    {
+        return Err(trf!(
+            "VS Code SSH 公钥格式无效；为避免删除其他密钥，未修改远端 authorized_keys",
+            "The VS Code SSH public key is invalid; remote authorized_keys was left unchanged to avoid deleting another key"
+        ));
+    }
+    Ok((key_type.to_string(), key_blob.to_string()))
+}
+
+#[cfg(desktop)]
+fn build_revoke_authorized_keys_script(keys: &[(String, String)]) -> String {
+    let key_pairs = keys
+        .iter()
+        .map(|(key_type, key_blob)| format!("{key_type} {key_blob}"))
+        .collect::<Vec<_>>()
+        .join("\u{1c}");
+    let key_pairs = shell_single_quote(&key_pairs);
+    let script = r#"set -eu; umask 077; f="$HOME/.ssh/authorized_keys"; [ -f "$f" ] || exit 0; d=${f%/*}; t=$(mktemp "$d/.authorized_keys.XXXXXX"); trap 'rm -f "$t"' 0; trap 'exit 1' HUP INT TERM; awk -v keys=KEYS 'function parse_fields(line, result,    i, c, quoted, escaped, token, count) { count = 0; token = ""; quoted = 0; escaped = 0; for (i = 1; i <= length(line); i++) { c = substr(line, i, 1); if (escaped) { token = token c; escaped = 0; continue } if (c == "\\") { token = token c; escaped = 1; continue } if (c == "\"") { token = token c; quoted = !quoted; continue } if ((c == " " || c == "\t") && !quoted) { if (token != "") result[++count] = token; token = ""; continue } token = token c } if (token != "") result[++count] = token; return count } BEGIN { n = split(keys, pairs, "\034"); for (j = 1; j <= n; j++) { count = split(pairs[j], pair, " "); types[j] = pair[1]; blobs[j] = pair[2] } } { count = parse_fields($0, tokens); for (i = 1; i < count; i++) for (j = 1; j <= n; j++) if (tokens[i] == types[j] && tokens[i + 1] == blobs[j]) next; print }' "$f" > "$t"; chmod 600 "$t"; mv -f "$t" "$f""#;
+    script.replace("KEYS", &key_pairs)
 }
 
 #[cfg(all(desktop, target_os = "windows"))]
@@ -583,11 +750,11 @@ fn spawn_vscode_ssh(alias: &str) -> Result<(), String> {
 /// are never prompted for or implicitly accepted: an unknown or changed
 /// fingerprint fails the operation.
 #[cfg(desktop)]
-async fn connect_for_vscode_setup(
-    app: &AppHandle,
+async fn connect_for_vscode_setup<R: Runtime>(
+    app: &AppHandle<R>,
     request: &SshConnectionRequest,
     operation_label: &str,
-) -> Result<client::Handle<EasyConsoleSshClient>, String> {
+) -> Result<client::Handle<EasyConsoleSshClient<R>>, String> {
     let host = validate_host(&request.host)?;
     let port = parse_port(request.port.as_deref())?;
     require_username(request.username.as_deref())?;
@@ -607,6 +774,7 @@ async fn connect_for_vscode_setup(
         host_key_error: Arc::clone(&host_key_error),
         allow_host_key_prompt: false,
         window_label: String::new(),
+        task_id: request.task_id.clone(),
     };
     let session = tokio::time::timeout(
         Duration::from_secs(15),
@@ -635,8 +803,8 @@ async fn connect_for_vscode_setup(
 
 /// Runs a shell command on the target and reports failure with captured output.
 #[cfg(desktop)]
-async fn exec_remote_command(
-    session: client::Handle<EasyConsoleSshClient>,
+async fn exec_remote_command<R: Runtime>(
+    session: client::Handle<EasyConsoleSshClient<R>>,
     command: &str,
     failure_label: &str,
 ) -> Result<(), String> {
@@ -665,7 +833,7 @@ async fn exec_remote_command(
             } => {
                 exit_status = Some(status);
             }
-            ChannelMsg::Close | ChannelMsg::Eof => break,
+            ChannelMsg::Close => break,
             _ => {}
         }
     }
@@ -689,6 +857,38 @@ async fn exec_remote_command(
     Ok(())
 }
 
+#[cfg(feature = "ssh-test-internals")]
+pub async fn execute_test_remote_command<R: Runtime>(
+    app: AppHandle<R>,
+    port: u16,
+    command: &str,
+) -> Result<(), String> {
+    let request = SshConnectionRequest {
+        host: "127.0.0.1".to_string(),
+        port: Some(port.to_string()),
+        username: Some("ubuntu".to_string()),
+        password: Some("correct".to_string()),
+        command: None,
+        task_id: None,
+        task_name: None,
+        cols: None,
+        rows: None,
+        connect_timeout_sec: None,
+        keepalive_interval_sec: None,
+        term_type: None,
+        ssh_key_path: None,
+        auth_mode: Some("password".to_string()),
+    };
+    let mut session = connect_for_vscode_setup(&app, &request, "run a test command").await?;
+    let auth = crate::ssh::auth::authenticate_password(&mut session, "ubuntu", "correct")
+        .await
+        .map_err(|error| error.to_string())?;
+    if !auth {
+        return Err(trf!("SSH 测试认证失败", "SSH test authentication failed"));
+    }
+    exec_remote_command(session, command, "run a test command").await
+}
+
 #[cfg(desktop)]
 async fn install_vscode_public_key(
     app: &AppHandle,
@@ -707,8 +907,7 @@ async fn install_vscode_public_key(
 
     let mut session = connect_for_vscode_setup(app, request, &label).await?;
     let username = require_username(request.username.as_deref())?;
-    let auth = session
-        .authenticate_password(username, password)
+    let auth = crate::ssh::auth::authenticate_password(&mut session, &username, &password)
         .await
         .map_err(|error| {
             trf!(
@@ -716,7 +915,7 @@ async fn install_vscode_public_key(
                 "SSH authentication failed; cannot {label}: {error}"
             )
         })?;
-    if !auth.success() {
+    if !auth {
         return Err(trf!(
             "SSH 认证失败，无法{label}：用户名或密码不正确",
             "SSH authentication failed; cannot {label}: incorrect username or password"
@@ -726,7 +925,7 @@ async fn install_vscode_public_key(
     exec_remote_command(session, &command, &label).await
 }
 
-/// Removes every `authorized_keys` line carrying this install's marker from
+/// Removes this host's public key and an identifiable legacy shared key from
 /// the remote host, authenticating with the per-host key first and falling
 /// back to the password when one was supplied.
 #[cfg(desktop)]
@@ -740,14 +939,14 @@ async fn revoke_vscode_remote_key(
         "revoke passwordless VS Code access"
     );
     let username = require_username(request.username.as_deref())?;
-    // `awk` filters by the comment (last) field: the per-host lines end with
-    // `easyconsole-vscode:<suffix>` and the legacy shared line ends with the
-    // bare marker, so one pass removes both without touching other keys.
-    // awk exits 0 even when nothing prints, and rewriting through a temp file
-    // keeps the change atomic enough for a one-line shell.
-    let command = format!(
-        "umask 077; f=\"$HOME/.ssh/authorized_keys\"; if [ -f \"$f\" ]; then t=$(mktemp); awk '{{ if ($NF != \"{VSCODE_KEY_MARKER}\" && $NF !~ /^{VSCODE_KEY_MARKER}:/) print }}' \"$f\" > \"$t\" || true; cat \"$t\" > \"$f\"; rm -f \"$t\"; chmod 600 \"$f\"; fi",
-    );
+    let mut keys = vec![public_key_parts(key_path)?];
+    // Older versions shared one local key across hosts. Remove that legacy
+    // key only when this install still has it and can identify its public key.
+    let legacy_key_path = legacy_vscode_key_path(app)?;
+    if legacy_key_path.is_file() {
+        keys.push(public_key_parts(&legacy_key_path)?);
+    }
+    let command = build_revoke_authorized_keys_script(&keys);
 
     let mut session = connect_for_vscode_setup(app, request, &label).await?;
     let mut authed = false;
@@ -773,8 +972,7 @@ async fn revoke_vscode_remote_key(
                 "The local VS Code key can no longer sign in to this host and no password was provided; use the password-backed revoke from the task panel"
             )
         })?;
-        let auth = session
-            .authenticate_password(username, password)
+        let auth = crate::ssh::auth::authenticate_password(&mut session, &username, &password)
             .await
             .map_err(|error| {
                 trf!(
@@ -782,7 +980,7 @@ async fn revoke_vscode_remote_key(
                     "SSH authentication failed; cannot {label}: {error}"
                 )
             })?;
-        if !auth.success() {
+        if !auth {
             return Err(trf!(
                 "SSH 认证失败，无法{label}：用户名或密码不正确",
                 "SSH authentication failed; cannot {label}: incorrect username or password"
@@ -801,7 +999,7 @@ async fn prepare_vscode_ssh(
     let (alias, suffix) = vscode_ssh_alias_parts(request)?;
     let (identity_file, public_key) = ensure_vscode_key(app, &suffix)?;
     install_vscode_public_key(app, request, &public_key).await?;
-    write_vscode_ssh_config(request, &alias, &identity_file)?;
+    write_vscode_ssh_config(app, request, &alias, &identity_file)?;
     // Record what was installed so it can be listed and revoked later.
     record_vscode_key(
         app,
@@ -870,7 +1068,12 @@ async fn revoke_vscode_setup(
 }
 
 #[tauri::command]
-pub async fn open_vscode_ssh(app: AppHandle, request: SshConnectionRequest) -> Result<(), String> {
+pub async fn open_vscode_ssh(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    request: SshConnectionRequest,
+) -> Result<(), String> {
+    crate::require_main_window(window.label())?;
     let alias = prepare_vscode_ssh(&app, &request).await?;
     spawn_vscode_ssh(&alias)
 }
@@ -879,7 +1082,11 @@ pub async fn open_vscode_ssh(app: AppHandle, request: SshConnectionRequest) -> R
 /// first, so users can see (and revoke) every key EasyConsole installed.
 #[cfg(desktop)]
 #[tauri::command]
-pub fn list_vscode_ssh_keys(app: AppHandle) -> Result<Vec<VscodeKeyRecord>, String> {
+pub fn list_vscode_ssh_keys(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Vec<VscodeKeyRecord>, String> {
+    crate::require_main_window(window.label())?;
     let path = app_data_file(&app, "vscode-keys.json")?;
     Ok(load_vscode_key_records(&path))
 }
@@ -888,7 +1095,11 @@ pub fn list_vscode_ssh_keys(app: AppHandle) -> Result<Vec<VscodeKeyRecord>, Stri
 /// still exists locally.
 #[cfg(desktop)]
 #[tauri::command]
-pub fn has_legacy_vscode_ssh_key(app: AppHandle) -> Result<bool, String> {
+pub fn has_legacy_vscode_ssh_key(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<bool, String> {
+    crate::require_main_window(window.label())?;
     Ok(legacy_vscode_key_path(&app)?.exists())
 }
 
@@ -899,7 +1110,11 @@ pub fn has_legacy_vscode_ssh_key(app: AppHandle) -> Result<bool, String> {
 /// that host's legacy line as part of the normal revoke.
 #[cfg(desktop)]
 #[tauri::command]
-pub fn cleanup_legacy_vscode_ssh_key(app: AppHandle) -> Result<(), String> {
+pub fn cleanup_legacy_vscode_ssh_key(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    crate::require_main_window(window.label())?;
     let key_path = legacy_vscode_key_path(&app)?;
     let ssh_dir = user_ssh_dir()?;
     let config_path = ssh_dir.join("config");
@@ -917,17 +1132,19 @@ pub fn cleanup_legacy_vscode_ssh_key(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Revokes a VS Code Remote-SSH setup. With `remove_remote` the marked key is
-/// deleted from the host's `authorized_keys` first (authenticating with the
-/// per-host key, falling back to a supplied password); without it only local
-/// config and key files are removed.
+/// Revokes a VS Code Remote-SSH setup. With `remove_remote`, the matching
+/// public key is deleted from the host's `authorized_keys` first (authenticating
+/// with the per-host key, falling back to a supplied password); without it
+/// only local config and key files are removed.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn revoke_vscode_ssh(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     request: SshConnectionRequest,
     remove_remote: bool,
 ) -> Result<(), String> {
+    crate::require_main_window(window.label())?;
     revoke_vscode_setup(&app, &request, remove_remote).await
 }
 
@@ -936,10 +1153,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn require_password_preserves_surrounding_whitespace_and_rejects_blank_values() {
+        assert_eq!(
+            require_password(Some("  secret \t")).unwrap(),
+            "  secret \t"
+        );
+        assert!(require_password(Some(" \t\n ")).is_err());
+        assert!(require_password(None).is_err());
+    }
+
+    #[test]
     fn sanitize_alias_part_lowercases_and_strips_noise() {
         assert_eq!(sanitize_alias_part("Task_01 Name!"), "task_01-name");
         assert_eq!(sanitize_alias_part("---"), "");
         assert_eq!(sanitize_alias_part("abc"), "abc");
+    }
+
+    #[test]
+    fn parses_known_host_addresses_for_openssh_format() {
+        assert_eq!(
+            parse_known_host_key("example.com:22"),
+            Some(("example.com".into(), 22))
+        );
+        assert_eq!(
+            parse_known_host_key("example.com:2222"),
+            Some(("example.com".into(), 2222))
+        );
+        assert_eq!(
+            parse_known_host_key("[2001:db8::1]:2200"),
+            Some(("2001:db8::1".into(), 2200))
+        );
+        assert_eq!(parse_known_host_key("invalid"), None);
+    }
+
+    #[test]
+    fn pins_vscode_to_the_managed_host_file_when_a_full_key_is_available() {
+        let pinned = vscode_host_key_options(Some(Path::new("C:/app/known-ssh-hosts.openssh")));
+        assert!(pinned.contains("UserKnownHostsFile \"C:/app/known-ssh-hosts.openssh\""));
+        assert!(pinned.contains("StrictHostKeyChecking yes"));
+
+        let legacy = vscode_host_key_options(None);
+        assert!(legacy.contains("StrictHostKeyChecking accept-new"));
+        assert!(!legacy.contains("UserKnownHostsFile"));
     }
 
     #[test]
@@ -1056,5 +1311,110 @@ Host easyconsole-old
         let current = format!("Host personal\n  HostName personal.example\n{start}\nHost task-1\nHost work\n  HostName work.example\n");
 
         assert!(strip_easy_console_block(&current, start, end).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revoke_script_removes_only_matching_public_keys() {
+        let home = tempfile::tempdir().unwrap();
+        let ssh_dir = home.path().join(".ssh");
+        fs::create_dir(&ssh_dir).unwrap();
+        let key_dir = home.path().join("keys");
+        fs::create_dir(&key_dir).unwrap();
+        let target_key = key_dir.join("target");
+        let other_key = key_dir.join("other");
+        for path in [&target_key, &other_key] {
+            let status = Command::new("ssh-keygen")
+                .args([
+                    "-q",
+                    "-t",
+                    "ed25519",
+                    "-N",
+                    "",
+                    "-C",
+                    "easyconsole-vscode:same",
+                    "-f",
+                ])
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let (target_type, target_blob) = public_key_parts(&target_key).unwrap();
+        let other_public = fs::read_to_string(other_key.with_extension("pub")).unwrap();
+        let authorized_keys = ssh_dir.join("authorized_keys");
+        fs::write(
+            &authorized_keys,
+            format!(
+                "restrict,command=\"echo ignored\" {target_type} {target_blob} easyconsole-vscode:same\n{other_public}ssh-rsa KEEP other-key\n"
+            ),
+        )
+        .unwrap();
+        let script = build_revoke_authorized_keys_script(&[(target_type, target_blob.clone())]);
+
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .env("HOME", home.path())
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let remaining = fs::read_to_string(authorized_keys).unwrap();
+        assert!(!remaining.contains(&target_blob));
+        assert!(remaining.contains(&other_public));
+        assert!(remaining.contains("easyconsole-vscode:same"));
+        assert!(remaining.contains("ssh-rsa KEEP other-key"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revoke_script_preserves_original_file_when_staging_or_filtering_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for failing_command in ["mktemp", "awk"] {
+            let home = tempfile::tempdir().unwrap();
+            let ssh_dir = home.path().join(".ssh");
+            let fake_bin = home.path().join("bin");
+            fs::create_dir(&ssh_dir).unwrap();
+            fs::create_dir(&fake_bin).unwrap();
+            let authorized_keys = ssh_dir.join("authorized_keys");
+            let original = b"ssh-ed25519 TARGET easyconsole-vscode:one\nssh-rsa KEEP platform\n";
+            fs::write(&authorized_keys, original).unwrap();
+            let fake_command = fake_bin.join(failing_command);
+            let failure_script = if failing_command == "awk" {
+                "#!/bin/sh\nprintf partial-output\nexit 1\n"
+            } else {
+                "#!/bin/sh\nexit 1\n"
+            };
+            fs::write(&fake_command, failure_script).unwrap();
+            fs::set_permissions(&fake_command, fs::Permissions::from_mode(0o700)).unwrap();
+            let script = build_revoke_authorized_keys_script(&[(
+                "ssh-ed25519".to_string(),
+                "TARGET".to_string(),
+            )]);
+
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .env("HOME", home.path())
+                .env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()))
+                .output()
+                .unwrap();
+
+            assert!(
+                !output.status.success(),
+                "{failing_command} failure must propagate"
+            );
+            assert_eq!(
+                fs::read(authorized_keys).unwrap(),
+                original,
+                "{failing_command} must not change authorized_keys"
+            );
+        }
     }
 }

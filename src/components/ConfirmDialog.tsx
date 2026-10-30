@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 
 import { Button, Dialog } from "./ui";
 import { useI18n } from "../lib/i18n";
@@ -23,17 +23,20 @@ export function ConfirmDialog({
   onConfirm: () => void;
 }) {
   const { t } = useI18n();
+  // Focus lands on Cancel, so the consequences must be read with the title, not only seen.
+  const descriptionId = useId();
 
   return (
     <Dialog
       closeOnOverlayClick={!pending}
+      describedBy={descriptionId}
       open={Boolean(options)}
       title={options?.title ?? t("confirm.title")}
       width="max-w-md"
       onClose={pending ? () => {} : onCancel}
     >
       <div className="space-y-4 p-4">
-        <div className="text-sm leading-6 text-app-muted">{options?.description}</div>
+        <div id={descriptionId} className="text-sm leading-6 text-app-muted">{options?.description}</div>
         <div className="flex flex-col-reverse gap-2 border-t border-app-border pt-3 sm:flex-row sm:justify-end">
           <Button disabled={pending} type="button" variant="secondary" onClick={onCancel}>
             {t("common.cancel")}

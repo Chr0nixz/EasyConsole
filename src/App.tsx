@@ -55,12 +55,17 @@ function deepLinkToPath(rawUrl: string): string | null {
   }
 }
 
+function isSshTerminalRoute() {
+  return window.location.hash.includes("/ssh-terminal") || window.location.pathname.includes("/ssh-terminal");
+}
+
 // Listens for desktop deep-link events (scheme `easyconsole://`) and navigates
 // to the matching in-app route. On non-desktop runtimes `onDeepLink` resolves
 // to a no-op unsubscribe, so the effect is a cheap no-op there.
 function DeepLinkHandler() {
   const navigate = useNavigate();
   useEffect(() => {
+    if (isSshTerminalRoute()) return;
     let active = true;
     let detach: (() => void) | null = null;
     void browserRuntime.onDeepLink((urls) => {

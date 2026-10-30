@@ -39,6 +39,8 @@ describe("app settings", () => {
           "task.success": "app",
           "task.failure": "off",
           "task.abnormal": "system",
+          "task.releaseDue": "system",
+        "task.idle": "system",
         },
       }),
     ).toEqual({
@@ -48,13 +50,21 @@ describe("app settings", () => {
         "task.success": "app",
         "task.failure": "off",
         "task.abnormal": "system",
+        "task.releaseDue": "system",
+        "task.idle": "system",
       },
       taskAutoRefresh: false,
       taskAutoRefreshIntervalMs: 10_000,
       autoCheckUpdates: true,
       autoNumberDuplicateTaskNames: true,
+      missedSchedulePolicy: "ask",
+      missedScheduleGraceMs: 10 * 60_000,
+      timedReleaseReminderLeadMs: 10 * 60_000,
+      idleReminderWindowMs: 120 * 60_000,
+      idleAutoRelease: false,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
+      desktopAutostart: false,
       runLogLimit: DEFAULT_RUN_LOG_LIMIT,
       runLogRetentionDays: DEFAULT_RUN_LOG_RETENTION_DAYS,
       ssh: DEFAULT_SSH_SETTINGS,
@@ -69,13 +79,21 @@ describe("app settings", () => {
         "task.success": "system",
         "task.failure": "system",
         "task.abnormal": "system",
+        "task.releaseDue": "system",
+        "task.idle": "system",
       },
       taskAutoRefresh: false,
       taskAutoRefreshIntervalMs: 10_000,
       autoCheckUpdates: true,
       autoNumberDuplicateTaskNames: true,
+      missedSchedulePolicy: "ask",
+      missedScheduleGraceMs: 10 * 60_000,
+      timedReleaseReminderLeadMs: 10 * 60_000,
+      idleReminderWindowMs: 120 * 60_000,
+      idleAutoRelease: false,
       desktopCloseToTray: false,
       desktopClosePrompt: true,
+      desktopAutostart: false,
       runLogLimit: DEFAULT_RUN_LOG_LIMIT,
       runLogRetentionDays: DEFAULT_RUN_LOG_RETENTION_DAYS,
       ssh: DEFAULT_SSH_SETTINGS,
@@ -96,8 +114,17 @@ describe("app settings", () => {
         "task.success": "system",
         "task.failure": "system",
         "task.abnormal": "system",
+        "task.releaseDue": "system",
+        "task.idle": "system",
       },
     });
+  });
+
+  it("requires an explicit boolean opt-in for idle auto-release", () => {
+    expect(parseAppSettings("{}").idleAutoRelease).toBe(false);
+    expect(parseAppSettings('{"idleAutoRelease":"true"}').idleAutoRelease).toBe(false);
+    expect(parseAppSettings('{"idleAutoRelease":1}').idleAutoRelease).toBe(false);
+    expect(parseAppSettings('{"idleAutoRelease":true}').idleAutoRelease).toBe(true);
   });
 
   it("normalizes run log retention fields", () => {
@@ -116,6 +143,42 @@ describe("app settings", () => {
       taskAutoRefresh: true,
       taskAutoRefreshIntervalMs: 10_000,
     });
+  });
+
+  it("defaults the missed schedule policy to ask with a 10-minute grace window", () => {
+    expect(DEFAULT_APP_SETTINGS).toMatchObject({
+      missedSchedulePolicy: "ask",
+      missedScheduleGraceMs: 10 * 60_000,
+    });
+  });
+
+  it("normalizes missed schedule policy and rejects unknown values", () => {
+    expect(normalizeAppSettings({ missedSchedulePolicy: "run", missedScheduleGraceMs: 30 * 60_000 })).toMatchObject({
+      missedSchedulePolicy: "run",
+      missedScheduleGraceMs: 30 * 60_000,
+    });
+    // Stored payloads go through parseAppSettings, so unknown values arrive as
+    // untyped JSON rather than a typed Partial<AppSettings>.
+    expect(parseAppSettings(JSON.stringify({ missedSchedulePolicy: "sometimes" })).missedSchedulePolicy).toBe("ask");
+    expect(normalizeAppSettings({ missedScheduleGraceMs: 7 * 60_000 }).missedScheduleGraceMs).toBe(10 * 60_000);
+    expect(normalizeAppSettings({ missedScheduleGraceMs: 0 }).missedScheduleGraceMs).toBe(10 * 60_000);
+  });
+
+  it("defaults the timed-release reminder lead to 10 minutes and whitelists options", () => {
+    expect(DEFAULT_APP_SETTINGS).toMatchObject({ timedReleaseReminderLeadMs: 10 * 60_000 });
+    expect(normalizeAppSettings({ timedReleaseReminderLeadMs: 30 * 60_000 }).timedReleaseReminderLeadMs).toBe(30 * 60_000);
+    expect(normalizeAppSettings({ timedReleaseReminderLeadMs: 7 * 60_000 }).timedReleaseReminderLeadMs).toBe(10 * 60_000);
+    expect(normalizeAppSettings({ timedReleaseReminderLeadMs: 0 }).timedReleaseReminderLeadMs).toBe(10 * 60_000);
+    // Invalid notification modes for the new event fall back to the default.
+    expect(parseAppSettings(JSON.stringify({ notificationPreferences: { "task.releaseDue": "loudly" } })).notificationPreferences["task.releaseDue"]).toBe("system");
+  });
+
+  it("defaults the idle reminder window to 120 minutes and whitelists options", () => {
+    expect(DEFAULT_APP_SETTINGS).toMatchObject({ idleReminderWindowMs: 120 * 60_000 });
+    expect(normalizeAppSettings({ idleReminderWindowMs: 30 * 60_000 }).idleReminderWindowMs).toBe(30 * 60_000);
+    expect(normalizeAppSettings({ idleReminderWindowMs: 45 * 60_000 }).idleReminderWindowMs).toBe(120 * 60_000);
+    expect(normalizeAppSettings({ idleReminderWindowMs: 0 }).idleReminderWindowMs).toBe(120 * 60_000);
+    expect(parseAppSettings(JSON.stringify({ notificationPreferences: { "task.idle": "loudly" } })).notificationPreferences["task.idle"]).toBe("system");
   });
 
   it("preserves empty default SSH password", () => {
@@ -267,6 +330,21 @@ describe("port forward rule host scoping", () => {
       ssh: { ...DEFAULT_SSH_SETTINGS, portForwards: [{ id: "pf-2", ...baseRule, enabled: true, host: "   " }] },
     }).ssh.portForwards;
     expect(unscoped[0].host).toBeUndefined();
+  });
+
+  it("keeps local port zero for OS-assigned forwarding and rejects out-of-range ports", () => {
+    const rules = normalizeAppSettings({
+      ssh: {
+        ...DEFAULT_SSH_SETTINGS,
+        portForwards: [
+          { id: "auto", ...baseRule, localPort: 0, enabled: true },
+          { id: "invalid", ...baseRule, localPort: 65536, enabled: true },
+        ],
+      },
+    }).ssh.portForwards;
+
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatchObject({ id: "auto", localPort: 0 });
   });
 
   it("matches unscoped rules against every host and scoped rules exactly, case-insensitively", () => {

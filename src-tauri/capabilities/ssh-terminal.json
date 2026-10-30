@@ -1,0 +1,28 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "ssh-terminal",
+  "description": "Limited permissions for popped-out SSH terminal windows",
+  "platforms": [
+    "linux",
+    "macOS",
+    "windows"
+  ],
+  "windows": [
+    "ssh-*"
+  ],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-close",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "fs:allow-exists",
+    "fs:write-files",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        "$DOWNLOAD/**"
+      ]
+    }
+  ]
+}

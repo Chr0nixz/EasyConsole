@@ -8,6 +8,53 @@ Tauri-first desktop control panel for the existing web console API at `http://11
 
 Development priority is the Tauri desktop app and the CLI/MCP sidecars derived from it. The web build remains useful for renderer development, fast debugging, and keeping the UI portable, but product decisions should optimize for the packaged desktop workflow first.
 
+## Install and sign in
+
+Download a published version from [GitHub Releases](https://github.com/Chr0nixz/EasyConsole/releases). The 1.0 preparation branch is not a published 1.0 release; `manual-N` drafts are packaging rehearsals.
+
+| Platform | Package |
+| --- | --- |
+| Windows x64 | `x64-setup.exe` installer, or `x64_en-US.msi` for MSI deployment |
+| macOS | Choose `aarch64.dmg` for Apple Silicon or `x64.dmg` for Intel; open the image and move EasyConsole to Applications |
+| Linux x64 | Use the distribution's package installer for `.deb` / `.rpm`, or mark the `.AppImage` executable and launch it |
+| Android | Install the signed `android-aarch64.apk` on an arm64 device; `android-x86_64.apk` is for matching devices/emulators. Updates must keep the same application ID and certificate |
+
+### Windows and macOS security prompts
+
+The 1.0 distribution decision is to omit Windows Authenticode and Apple notarization. Desktop updater signatures and Android release signing remain enabled; they serve different purposes from operating-system publisher verification. Verify the GitHub release source and the downloaded asset's SHA-256 before accepting a per-app exception.
+
+- **Windows:** an unrecognized-app SmartScreen prompt may show an unknown publisher. Select **More info → Run anyway** only when you trust this download and the option is available. Smart App Control or enterprise policy can block unsigned executables without a user override; ask the device administrator to approve distribution. See [Microsoft's prompt instructions](https://learn.microsoft.com/en-us/troubleshoot/microsoft-edge/development/ie-mode-blocks-addon#check-uac-and-windows-defender-smartscreen-settings) and [reputation/policy explanation](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation).
+- **macOS:** after trying to open EasyConsole, open **System Settings → Privacy & Security → Open Anyway**, confirm the app's identity, then choose **Open**. This creates an exception for that app; availability depends on device policy. Damage or malware alerts require investigation rather than this developer-verification exception. See [Apple's opening instructions](https://support.apple.com/en-us/102445).
+
+### First sign-in
+
+Open EasyConsole, check the API host shown on the sign-in screen, then sign in with your console account. The sign-in screen's API Settings link can change the API and monitor URLs before login. The default lab service uses HTTP; use it on a trusted network, or select an HTTPS endpoint / secure local tunnel. See [transport configuration](#local-credentials).
+
+Saved accounts can use a token only, or opt into **Remember password** for recovery after token expiry. On desktop, saved credentials use the OS keychain. Use the account switcher to change accounts; settings and local automation must stay with their owner. Read the [experimental feature limits](#desktop-runtime) before enabling automation.
+
+## Back up and restore local data
+
+In **Settings → Local Data Backup**, choose **Export** to save ordinary settings, language, templates, presets, schedules and logs. Credentials are excluded by default. To include them, select **Include credentials**, set a backup password and confirm the encrypted export; keep that password separately. Restore with **Import**, enter the password if requested, inspect the available sections and select only those you intend to replace. Importing credentials has an additional confirmation and may require a refresh.
+
+This export does not contain the entire application profile: SSH trust/keys, execution ledgers and change lists need separate migration checks. The [local-data format reference](LOCAL_DATA_FORMATS.md) describes the format and limits; [shared storage paths](#local-credentials) lists the per-platform data directories. CLI credentials live separately under `~/.easy-console/`. Do not commit backups or copy credential stores into a shared repository. Before an upgrade, keep a protected profile snapshot as described in the [0.4.27 → 0.5.0 acceptance material](UPGRADE_ACCEPTANCE_0.5.0.md); an exported JSON alone is not a full migration check.
+
+## Connect an MCP client
+
+Use the matching desktop release's `easy-console-mcp.exe` on Windows or `easy-console-mcp` on macOS/Linux. Locate the installed file and copy its absolute path; see the [sidecar layout contract](CLI_MCP_CONTRACT.md). It contains Node, so the client needs no separate Node installation or arguments. For a client that uses `mcpServers`, this example uses the MSI default path; adjust it for an NSIS/custom installation:
+
+```json
+{
+  "mcpServers": {
+    "easy-console": {
+      "command": "C:\\Program Files\\EasyConsole\\easy-console-mcp.exe",
+      "args": []
+    }
+  }
+}
+```
+
+Authenticate the separate CLI/MCP config using the [stdin login instructions](#local-credentials), then restart the MCP connection. For the default HTTP lab service, add `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` to the client's environment explicitly. Check `easyconsole_user_info` before any remote change. Template/preset resources are local and work without remote authentication. See the [complete tool and compatibility contract](CLI_MCP_CONTRACT.md) and [AI skill](skills/easy-console-ai/SKILL.md).
+
 ## Current Scope
 
 - Login, saved-token account recovery, and user session expiry handling.
@@ -85,16 +132,30 @@ EASY_CONSOLE_MONITOR_DASHBOARD_URL=http://116.172.93.164:33000/d/da7c4fef-70c7-4
 EASY_CONSOLE_TOKEN=Bearer ...
 EASY_CONSOLE_CONFIG=D:\path\to\config.json
 EASY_CONSOLE_ALLOW_INSECURE_HTTP=1
+EASY_CONSOLE_LOCAL_DATA_PATH=D:\path\to\runtime-storage.json
 ```
 
-The CLI and MCP server reject remote cleartext HTTP by default. Prefer HTTPS or a loopback tunnel (`http://127.0.0.1:...`). For lab APIs over plain HTTP, pass `--allow-insecure-http` or set `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1`.
+CLI/MCP templates, schedules, non-secret settings, and default run logs share the desktop app-data store:
 
-The desktop and web app deliberately do **not** block remote cleartext URLs, because the default lab console is only reachable over plain HTTP. Settings shows a persistent warning whenever a remote `http://` API or monitor URL is in use: password digests and bearer tokens are replayable on such a link, so use it only on a trusted network.
+| Platform | Default shared directory |
+|---|---|
+| Windows | `%APPDATA%\com.easyconsole.desktop\runtime-storage.d\` |
+| macOS | `~/Library/Application Support/com.easyconsole.desktop/runtime-storage.d/` |
+| Linux | `$XDG_DATA_HOME/com.easyconsole.desktop/runtime-storage.d/`, or `~/.local/share/com.easyconsole.desktop/runtime-storage.d/` |
+
+Existing `%USERPROFILE%\.easy-console\local-data.json` values are copied only into missing desktop keys; existing values and deletion records take precedence. The source file stays unchanged. `EASY_CONSOLE_LOCAL_DATA_PATH` overrides the sidecar store anchor only: choose the desktop's `runtime-storage.json` for sharing, or another path for isolated sidecar data. Legacy `run-logs.json` is merged once; `--run-log-path` / `EASY_CONSOLE_RUN_LOG_PATH` selects a separate log file.
+
+Credentials remain in the CLI-local `credential-data.d/` beside its config and do not sync with the desktop keychain. Sidecars do not run schedules automatically; plans created there have an unverified owner and require review in the desktop app before automatic execution. A confirmed CLI/MCP manual run verifies a known plan owner against the token's username and API realm. Reopen local-data pages to reload sidecar changes. Use matching desktop and sidecar builds for shared access: older desktop releases only have an in-process storage lock.
+
+The CLI and MCP server reject remote cleartext HTTP by default. Production and externally reachable environments should use HTTPS or a local secure tunnel (`http://127.0.0.1:...`). The plain-HTTP lab console is an explicitly accepted exception: pass `--allow-insecure-http` or set `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` to opt in.
+
+The desktop and web app deliberately do **not** block remote cleartext URLs, because the default lab console is only reachable over plain HTTP — the same explicitly accepted lab exception. Settings shows a persistent warning whenever a remote `http://` API or monitor URL is in use: password digests and bearer tokens are replayable on such a link, so use it only on a trusted network. For production or externally reachable deployments, point the app at an HTTPS endpoint or a local secure tunnel instead.
 
 Login stores a normalized bearer token in the local config file:
 
 ```powershell
-"your-password" | npm.cmd run ec -- login --username your-name --password-stdin
+$easyConsoleCredential = Get-Credential -UserName "your-name" -Message "EasyConsole login"
+$easyConsoleCredential.GetNetworkCredential().Password | npm.cmd run ec -- login --username $easyConsoleCredential.UserName --password-stdin --yes
 ```
 
 Do not commit real credentials or generated config files.
@@ -117,7 +178,7 @@ npm.cmd run ec -- --json run-log list
 npm.cmd run ec -- --json run-log export
 ```
 
-Mutation commands are dry-run by default. Pass `--yes` to execute:
+Mutation commands are dry-run by default. Pass `--yes` to execute, including login, token refresh, downloads, and backup file output:
 
 ```powershell
 npm.cmd run ec -- --json task create --name demo --image-id 1 --cpu 4 --gpu 0 --memory 16
@@ -136,6 +197,10 @@ All `--json` CLI output uses this shape:
 { "ok": true, "data": {}, "error": null }
 ```
 
+Success envelopes go to stdout; errors (including usage errors) go to stderr with `ok: false` and a nonzero exit code. `--help` remains text. A successful wait or batch command may contain timeout/failed outcomes; inspect the returned business result.
+
+The [CLI/MCP contract](CLI_MCP_CONTRACT.md) records all 54 MCP tools, CLI arguments, result shapes and resource URIs. For 1.x, **stable** interfaces keep compatible names, inputs and client-owned return fields. **Experimental** interfaces are task PATCH editing and image editing/deletion; their live service behavior remains unverified. Idle auto-release and Windows scheduled wake are also experimental desktop capabilities. Published names and both sidecar entrypoints are retained throughout 1.x, with deprecation before removal in 2.0.
+
 Task logs and remote text reads are truncated by default at `200000` bytes and return truncation metadata.
 
 ### MCP server
@@ -150,9 +215,14 @@ Available MCP tools include task list/log/create/release/delete, storage list/re
 
 ## Desktop Runtime
 
+- Idle reminders use CPU/network metrics, plus real GPU utilization sampled with `nvidia-smi` over an existing in-app SSH connection in the main window. **Experimental auto-release is off by default**; release stops billing and destroys container-local data irreversibly. It requires explicit opt-in, a full continuous sampling window for every allocated GPU, fresh low CPU metrics, zero network traffic, and the same signed-in account/API realm. Missing samples never authorize release; uncertain release results are recorded and never automatically retried.
+- On Windows, Settings → Window & Startup can register an **experimental**, opt-in Task Scheduler wake-up. It checks the desktop's local plans every minute and starts the app when a pending plan is due. It requires an interactive OS login and valid console credentials; the desktop runner still checks ownership and missed-run policy. Turning it off removes the OS task. Other platforms keep launch-at-login/tray behavior.
+- **Experimental** task editing and release extension use PATCH only. PUT on the same task route is the original console's release operation and is never used as an editing fallback. A backend without PATCH support reports an unsupported operation. **Image editing/deletion are also experimental**; use test images until live-service acceptance is complete.
+
 The desktop app is built with Tauri 2 and is the primary product target. Web code talks to `src/lib/runtime.ts`; Tauri-specific commands live in `src-tauri/src/lib.rs`.
 
-- Storage settings and saved tokens are persisted in the Tauri app data directory and fall back to browser storage if a command fails.
+- Runtime settings, templates, schedules, and logs use per-key files under the Tauri app data directory's `runtime-storage.d/`, with atomic writes, backups, cross-window compare-and-swap, and a cross-process lock shared with the CLI/MCP sidecars. CLI/MCP use the same store for non-secret local data; saved credentials remain in a separate sidecar store or the desktop OS keychain. Browser storage remains a fallback if native commands fail.
+- Existing `runtime-storage.json` data migrates automatically in the background. The old JSON and its backup remain as migration snapshots; later changes live in `runtime-storage.d/`. Use Settings export/import for current backups and transfers, including before downgrading to a release that only reads the old JSON.
 - HTTP and WebSocket calls use Tauri plugins in desktop and browser APIs on the web.
 - System notifications use the Tauri notification plugin on desktop and the browser Notification API on the web.
 - Desktop task SSH actions include in-app SSH auto-login, opening a system terminal, and configuring/opening VS Code Remote-SSH. Web runtime only exposes copyable SSH details and WebSSH.
@@ -248,8 +318,13 @@ For GitHub Actions releases, copy the private key content into `TAURI_SIGNING_PR
 
 GitHub Actions workflows live in `.github/workflows/`:
 
-- `ci.yml`: runs on pull requests and pushes to `main`/`master`; verifies Windows, macOS, and Linux with version consistency, typecheck, tool typecheck, lint, tests, rustfmt, clippy, desktop input build, Tauri shell check, and sidecar artifact upload.
-- `release.yml`: runs on `v*` tags or manual dispatch; verifies the project (including rustfmt/clippy), builds Windows, macOS, and Linux Tauri desktop bundles serially, creates a draft GitHub release, signs updater artifacts, and uploads sidecar plus desktop artifacts.
+- `ci.yml`: runs on pull requests and pushes to `main`/`master`; verifies Windows, macOS arm64, and Linux with version consistency, app/tools typechecks, lint, coverage gates, rustfmt, clippy, Rust unit/storage interoperability tests, SSH integration tests, desktop input build, Tauri shell check, and sidecar artifact upload.
+- `android-ci.yml`: runs on pull requests, pushes to `main`/`master`, and manual dispatch; checks the app and tools, builds desktop inputs, and builds an Android aarch64 debug APK. This does not verify production signing or upgrades of installed release APKs.
+- `release.yml`: runs on `v*` tags or manual dispatch; verifies the project (including rustfmt/clippy), builds Windows, Linux, and macOS arm64/x64 desktop bundles serially, signs updater artifacts, then builds signed Android aarch64/x86_64 release APKs. A tag run publishes the GitHub release directly; a manual run creates a `manual-N` draft prerelease for rehearsal. Draft prereleases do not reach clients using the production `releases/latest/download/latest.json` endpoint.
+
+In the updated workflow, only a matching version-tag **push** publishes publicly; manual dispatch remains a draft even when started from a tag. Historical tags still contain their old workflows, so start rehearsals from the reviewed preparation branch. Version-specific notes in `docs/releases/<version>.md` supply both the GitHub Release body and updater notes. See [release note preparation](docs/releases/README.md); a public release fails before packaging when its notes are missing.
+
+Release gates and evidence are tracked in [RELEASE_CHECKLIST_1.0.0.md](RELEASE_CHECKLIST_1.0.0.md). Use [UPGRADE_ACCEPTANCE_0.5.0.md](UPGRADE_ACCEPTANCE_0.5.0.md) for the pending 0.4.27 → 0.5.0 installer and local-data migration acceptance; successful CI does not replace those checks.
 
 Create a release by pushing a version tag:
 
@@ -289,5 +364,7 @@ npm.cmd run build:web
 npm.cmd run build:desktop
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
+
+`npm.cmd run test:coverage` runs the same suite with V8 coverage and the checked-in thresholds. CI runs it on Windows, macOS, and Linux and uploads HTML and JSON summaries. Coverage includes all application and CLI/MCP TypeScript sources, including untested files; tests and declarations are excluded. Global and critical-module thresholds are baseline floors that may only increase.
 
 Live verification still needs a real test account. Validate exact request and response fields for task creation, storage upload completion, and image actions before marking those flows complete.

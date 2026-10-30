@@ -67,4 +67,15 @@ describe("task list query", () => {
     );
     expect(sorted.map((task) => task.name)).toEqual(["alpha", "beta"]);
   });
+
+  it("sorts by billed cost and runtime, with missing values as zero", () => {
+    const tasks = [
+      { id: 1, cost: 12.5, use_time: 600 },
+      { id: 2 },
+      { id: 3, cost: 80, use_time: 30 },
+    ];
+    expect(sortTasksClientSide(tasks, "cost", "desc").map((task) => task.id)).toEqual([3, 1, 2]);
+    expect(sortTasksClientSide(tasks, "duration", "asc").map((task) => task.id)).toEqual([2, 3, 1]);
+    expect(parseTaskListQuery(new URLSearchParams("sortBy=cost")).sortBy).toBe("cost");
+  });
 });

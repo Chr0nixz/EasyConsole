@@ -43,9 +43,9 @@ const zhCN = {
   "title.scheduledTasks": "定时任务",
   "title.taskTemplates": "实例模板",
   "title.storage": "文件存储",
-  "title.images": "镜像管理",
+  "title.images": "镜像",
   "title.runLogs": "运行日志",
-  "title.settings": "系统设置",
+  "title.settings": "设置",
   "shell.productSubtitle": "任务控制台",
   "shell.headerDescription": "集中查看任务、存储、镜像与终端状态",
   "shell.desc.dashboard": "查看需要处理的实例、时长和费用",
@@ -69,15 +69,13 @@ const zhCN = {
   "shell.shortcutsTitle": "键盘快捷键",
   "shell.shortcutsOpenCmd": "命令面板",
   "shell.shortcutsSearch": "聚焦搜索框",
-  "shell.shortcutsNav": "跳转页面",
   "shell.shortcutsShortcuts": "查看快捷键",
-  "shell.shortcutsResize": "调整侧栏宽度",
-  "shell.shortcutsReset": "重置侧栏宽度",
-  "shell.shortcutsTaskMove": "任务列表：移动选中行（j / k 在页面任意处即可进入列表）",
-  "shell.shortcutsTaskOpen": "任务列表：打开详情",
-  "shell.shortcutsTaskLog": "任务列表：打开日志",
-  "shell.shortcutsTaskTerminal": "任务列表：打开终端",
-  "shell.shortcutsTaskRelease": "任务列表：释放当前实例",
+  "shell.shortcutsTaskMove": "移动当前行（在页面任意处按 j / k 即可进入列表）",
+  "shell.shortcutsTaskOpen": "打开详情",
+  "shell.shortcutsTaskLog": "打开日志",
+  "shell.shortcutsTaskTerminal": "打开终端",
+  "shell.shortcutsTaskSelect": "选中或取消选中当前行，用于批量操作",
+  "shell.shortcutsTaskRelease": "释放当前实例",
   "login.restoreSession": "正在恢复登录状态",
   "login.sessionExpired": "登录已过期，请重新登录。登录后会回到你刚才所在的页面。",
   "login.failed": "登录失败",
@@ -107,7 +105,7 @@ const zhCN = {
   "settings.monitorUrlInvalid": "监控面板 URL 需要是 http 或 https 开头的完整地址",
   "settings.apiBaseInsecure": "远程明文 HTTP 不安全。建议改用 HTTPS，或本机隧道 http://127.0.0.1:.../api",
   "settings.monitorUrlInsecure": "远程明文监控地址不安全。建议改用 HTTPS，或本机隧道 http://127.0.0.1:...",
-  "settings.transportInsecureWarning": "当前使用远程明文 HTTP。密码摘要与 Token 可被重放，请仅在可信网络使用；有条件时优先改用 HTTPS 或本机隧道。",
+  "settings.transportInsecureWarning": "密码摘要与 Token 可被重放，请仅在可信网络使用；有条件时优先改用 HTTPS 或本机隧道。",
   "settings.transportBlocked": "当前 API 地址不被允许。请检查 URL 是否为 http/https 开头的完整地址。",
   "settings.websshPending": "API Base URL 有效后自动生成",
   "settings.websshHint": "仅反映 API 主机推导，供排查参考。桌面请使用应用内 SSH、系统终端或 VS Code；浏览器不提供 WebSSH 终端。",
@@ -243,9 +241,9 @@ const enUS: Record<TranslationKey, string> = {
   "title.scheduledTasks": "Scheduled Tasks",
   "title.taskTemplates": "Instance Templates",
   "title.storage": "File Storage",
-  "title.images": "Image Management",
+  "title.images": "Images",
   "title.runLogs": "Run Logs",
-  "title.settings": "System Settings",
+  "title.settings": "Settings",
   "shell.productSubtitle": "Task Console",
   "shell.headerDescription": "Centralized view of tasks, storage, images, and terminal status",
   "shell.desc.dashboard": "See instances that need attention, runtime, and cost",
@@ -269,15 +267,13 @@ const enUS: Record<TranslationKey, string> = {
   "shell.shortcutsTitle": "Keyboard shortcuts",
   "shell.shortcutsOpenCmd": "Command palette",
   "shell.shortcutsSearch": "Focus search",
-  "shell.shortcutsNav": "Navigate pages",
   "shell.shortcutsShortcuts": "Show shortcuts",
-  "shell.shortcutsResize": "Resize sidebar",
-  "shell.shortcutsReset": "Reset sidebar width",
-  "shell.shortcutsTaskMove": "Tasks: move the selected row (j / k work from anywhere on the page)",
-  "shell.shortcutsTaskOpen": "Tasks: open details",
-  "shell.shortcutsTaskLog": "Tasks: open logs",
-  "shell.shortcutsTaskTerminal": "Tasks: open terminal",
-  "shell.shortcutsTaskRelease": "Tasks: release current instance",
+  "shell.shortcutsTaskMove": "Move the current row (j / k work from anywhere on the page)",
+  "shell.shortcutsTaskOpen": "Open details",
+  "shell.shortcutsTaskLog": "Open logs",
+  "shell.shortcutsTaskTerminal": "Open terminal",
+  "shell.shortcutsTaskSelect": "Select or deselect the current row for batch actions",
+  "shell.shortcutsTaskRelease": "Release current instance",
   "login.restoreSession": "Restoring sign-in state",
   "login.sessionExpired": "Your session expired. Sign in again to return to the page you were on.",
   "login.failed": "Sign-in failed",
@@ -307,7 +303,7 @@ const enUS: Record<TranslationKey, string> = {
   "settings.monitorUrlInvalid": "Monitor dashboard URL must be a full URL starting with http or https",
   "settings.apiBaseInsecure": "Remote cleartext HTTP is insecure. Prefer HTTPS, or a local tunnel such as http://127.0.0.1:.../api",
   "settings.monitorUrlInsecure": "Remote cleartext monitor URLs are insecure. Prefer HTTPS, or a local tunnel such as http://127.0.0.1:...",
-  "settings.transportInsecureWarning": "Remote cleartext HTTP is in use. Password digests and tokens are replayable — use only on trusted networks. Prefer HTTPS or a local tunnel when available.",
+  "settings.transportInsecureWarning": "Password digests and tokens are replayable — use only on trusted networks. Prefer HTTPS or a local tunnel when available.",
   "settings.transportBlocked": "The current API URL is not allowed. Use a full address starting with http or https.",
   "settings.websshPending": "Generated after API Base URL is valid",
   "settings.websshHint": "Shows the API-host-derived reference URL only. On desktop use in-app SSH, the system terminal, or VS Code; the browser does not provide a WebSSH terminal.",
@@ -452,7 +448,7 @@ const fallbackValue: I18nContextValue = {
 
 const I18nContext = createContext<I18nContextValue>(fallbackValue);
 
-export function I18nProvider({ children }: { children: ReactNode }) {
+export function I18nProvider({ children, syncNative = true }: { children: ReactNode; syncNative?: boolean }) {
   const [locale, setLocaleState] = useState<Locale>(detectInitialLocale);
 
   // Sync the module-level locale during render rather than in an effect.
@@ -474,8 +470,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     document.documentElement.lang = locale;
-    void setNativeLocale(locale);
-  }, [locale]);
+    if (syncNative) void setNativeLocale(locale);
+  }, [locale, syncNative]);
 
   const setLocale = useCallback((nextLocale: Locale) => {
     setLocaleState(nextLocale);

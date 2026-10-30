@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { I18N_STORAGE_KEY, I18nProvider, useI18n } from "../lib/i18n";
 import { browserRuntime } from "../lib/runtime";
-import { TASK_SNAPSHOT_QUERY_KEY } from "../lib/task-snapshot-query";
+import { formatReleaseTimeInput } from "../lib/task-release-notifications";
+import { taskSnapshotQueryKey } from "../lib/task-snapshot-query";
 import type { Task } from "../lib/types";
 import { ToastProvider } from "./Toast";
 
@@ -87,7 +88,7 @@ describe("TaskNotificationWatcher", () => {
 
     // Wait for the initial snapshot to settle: it must not notify.
     await waitFor(() => expect(screen.getByTestId("locale")).toHaveTextContent("zh-CN"));
-    await waitFor(() => expect(client.getQueryData(TASK_SNAPSHOT_QUERY_KEY)).toBeTruthy());
+    await waitFor(() => expect(client.getQueryData(taskSnapshotQueryKey())).toBeTruthy());
     expect(notifySystem).not.toHaveBeenCalled();
 
     // Switching language re-runs the watcher effect; it must not re-notify.
@@ -97,7 +98,7 @@ describe("TaskNotificationWatcher", () => {
 
     // A real status change notifies once, in the active language.
     mocks.items = [task(6)];
-    client.setQueryData(TASK_SNAPSHOT_QUERY_KEY, { items: mocks.items, total: 1, raw: null });
+    client.setQueryData(taskSnapshotQueryKey(), { items: mocks.items, total: 1, raw: null });
     await waitFor(() => expect(notifySystem).toHaveBeenCalledTimes(1));
     expect(notifySystem).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Instance succeeded", body: "train: Succeeded" }),
@@ -107,5 +108,42 @@ describe("TaskNotificationWatcher", () => {
     fireEvent.click(screen.getByRole("button", { name: "switch-locale" }));
     await waitFor(() => expect(screen.getByTestId("locale")).toHaveTextContent("zh-CN"));
     expect(notifySystem).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns once for an upcoming timed release and re-arms after an extension", async () => {
+    const soon = formatReleaseTimeInput(new Date(Date.now() + 5 * 60_000));
+    mocks.items = [{ ...task(2), releace_conditions: 2, releace_time: soon } as Task];
+    renderWatcher(client);
+
+    await waitFor(() => expect(notifySystem).toHaveBeenCalledTimes(1));
+    expect(notifySystem).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "定时释放即将到期", tag: expect.stringContaining("easy-console-release-due-") }),
+    );
+
+    // Re-published snapshot with the same release time must not warn again.
+    client.setQueryData(taskSnapshotQueryKey(), {
+      items: [{ ...task(2), releace_conditions: 2, releace_time: soon } as Task],
+      total: 1,
+      raw: null,
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(notifySystem).toHaveBeenCalledTimes(1);
+
+    // A new release time (the task was extended, still inside the lead window)
+    // changes the dedupe key and warns again.
+    client.setQueryData(taskSnapshotQueryKey(), {
+      items: [
+        {
+          ...task(2),
+          releace_conditions: 2,
+          releace_time: formatReleaseTimeInput(new Date(Date.now() + 9 * 60_000 + 30_000)),
+        } as Task,
+      ],
+      total: 1,
+      raw: null,
+    });
+    await waitFor(() => expect(notifySystem).toHaveBeenCalledTimes(2));
   });
 });

@@ -1,6 +1,9 @@
 import { API_BASE_URL } from "./api-client";
+import { DEFAULT_IDLE_REMINDER_WINDOW_MS, IDLE_REMINDER_WINDOW_OPTIONS } from "./idle-instance-reminder";
 import { DEFAULT_MONITOR_DASHBOARD_URL } from "./monitor-dashboard-core";
 import { DEFAULT_RUN_LOG_LIMIT, DEFAULT_RUN_LOG_RETENTION_DAYS } from "./run-logs";
+import { DEFAULT_MISSED_SCHEDULE_GRACE_MS } from "./scheduled-tasks";
+import { DEFAULT_CUSTOM_COLORS } from "./ssh-terminal-colors";
 import { withStorageLock } from "./storage-mutex";
 import type { PortForwardRule, PortForwardType, SshAuthMode, SshCustomColors } from "./types";
 
@@ -12,6 +15,9 @@ type ImportMetaWithEnv = ImportMeta & {
 
 /** "hacker" is the persisted settings key (renaming it would drop saved choices); the UI labels it 绿色终端/Green. */
 export type SshTerminalTheme = "dark" | "light" | "hacker" | "custom";
+
+/** What to do with a scheduled run that became due while the app was closed or asleep. */
+export type MissedSchedulePolicy = "ask" | "run" | "skip";
 
 export type { SshAuthMode } from "./types";
 export type { PortForwardRule, PortForwardType, SshCustomColors } from "./types";
@@ -44,6 +50,8 @@ export type SshSettings = {
   };
 };
 
+export type SshTerminalPreferences = Pick<SshSettings, "portForwards" | "maxHistoryEntries" | "terminal">;
+
 export type AppSettings = {
   apiBaseUrl: string;
   monitorDashboardUrl: string;
@@ -53,14 +61,26 @@ export type AppSettings = {
   autoCheckUpdates: boolean;
   /** When creating instances, append `_1`, `_2`, … if the name already exists. Default on. */
   autoNumberDuplicateTaskNames: boolean;
+  /** Policy for scheduled runs that became due while the app was closed or asleep. Default "ask". */
+  missedSchedulePolicy: MissedSchedulePolicy;
+  /** A due run older than this window counts as missed. Default 10 minutes. */
+  missedScheduleGraceMs: number;
+  /** Warn this far before a timed release fires. Default 10 minutes. */
+  timedReleaseReminderLeadMs: number;
+  /** CPU/network heuristics window for idle-instance reminders. Default 120 minutes. */
+  idleReminderWindowMs: number;
+  /** Explicit opt-in; only a full, continuous SSH GPU sampling window can release. */
+  idleAutoRelease: boolean;
   desktopCloseToTray: boolean;
   desktopClosePrompt: boolean;
+  /** Launch the desktop app at OS login (applied to the autostart plugin). */
+  desktopAutostart: boolean;
   runLogLimit: number;
   runLogRetentionDays: number;
   ssh: SshSettings;
 };
 
-export type ImportantNotificationEvent = "task.success" | "task.failure" | "task.abnormal";
+export type ImportantNotificationEvent = "task.success" | "task.failure" | "task.abnormal" | "task.releaseDue" | "task.idle";
 
 export type NotificationMode = "off" | "app" | "system";
 
@@ -82,6 +102,8 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
   "task.success": "system",
   "task.failure": "system",
   "task.abnormal": "system",
+  "task.releaseDue": "system",
+  "task.idle": "system",
 };
 
 export const TASK_AUTO_REFRESH_OPTIONS = [
@@ -92,28 +114,29 @@ export const TASK_AUTO_REFRESH_OPTIONS = [
 
 export const DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS = 10_000;
 
-export const DEFAULT_CUSTOM_COLORS: SshCustomColors = {
-  background: "#1e1e2e",
-  foreground: "#cdd6f4",
-  cursor: "#f5e0dc",
-  selection: "#585b7066",
-  black: "#45475a",
-  red: "#f38ba8",
-  green: "#a6e3a1",
-  yellow: "#f9e2af",
-  blue: "#89b4fa",
-  magenta: "#f5c2e7",
-  cyan: "#94e2d5",
-  white: "#bac2de",
-  brightBlack: "#585b70",
-  brightRed: "#f38ba8",
-  brightGreen: "#a6e3a1",
-  brightYellow: "#f9e2af",
-  brightBlue: "#89b4fa",
-  brightMagenta: "#f5c2e7",
-  brightCyan: "#94e2d5",
-  brightWhite: "#a6adc8",
-};
+export const MISSED_SCHEDULE_POLICY_OPTIONS = [
+  { zh: "每次询问", en: "Ask every time", value: "ask" },
+  { zh: "补跑一次", en: "Catch up once", value: "run" },
+  { zh: "跳过", en: "Skip", value: "skip" },
+] as const;
+
+export const MISSED_SCHEDULE_GRACE_OPTIONS = [
+  { zh: "5 分钟", en: "5 min", value: 5 * 60_000 },
+  { zh: "10 分钟", en: "10 min", value: 10 * 60_000 },
+  { zh: "30 分钟", en: "30 min", value: 30 * 60_000 },
+] as const;
+
+export const TIMED_RELEASE_LEAD_OPTIONS = [
+  { zh: "5 分钟", en: "5 min", value: 5 * 60_000 },
+  { zh: "10 分钟", en: "10 min", value: 10 * 60_000 },
+  { zh: "30 分钟", en: "30 min", value: 30 * 60_000 },
+] as const;
+
+export const DEFAULT_TIMED_RELEASE_LEAD_MS = 10 * 60_000;
+
+// Re-exported here so existing settings consumers keep one import site; the
+// deliberate terminal color values themselves live in ssh-terminal-colors.ts.
+export { DEFAULT_CUSTOM_COLORS } from "./ssh-terminal-colors";
 
 export const SSH_FONT_PRESETS: Array<{ id: string; zh: string; en: string; value: string }> = [
   { id: "consolas", zh: "Consolas", en: "Consolas", value: 'Consolas, "SFMono-Regular", "Cascadia Mono", monospace' },
@@ -162,14 +185,26 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   taskAutoRefreshIntervalMs: DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS,
   autoCheckUpdates: true,
   autoNumberDuplicateTaskNames: true,
+  missedSchedulePolicy: "ask",
+  missedScheduleGraceMs: DEFAULT_MISSED_SCHEDULE_GRACE_MS,
+  timedReleaseReminderLeadMs: DEFAULT_TIMED_RELEASE_LEAD_MS,
+  idleReminderWindowMs: DEFAULT_IDLE_REMINDER_WINDOW_MS,
+  idleAutoRelease: false,
   desktopCloseToTray: false,
   desktopClosePrompt: true,
+  desktopAutostart: false,
   runLogLimit: DEFAULT_RUN_LOG_LIMIT,
   runLogRetentionDays: DEFAULT_RUN_LOG_RETENTION_DAYS,
   ssh: DEFAULT_SSH_SETTINGS,
 };
 
 let runtimeSettings: AppSettings = DEFAULT_APP_SETTINGS;
+const runtimeSettingsListeners = new Set<() => void>();
+
+export function subscribeRuntimeSettings(listener: () => void) {
+  runtimeSettingsListeners.add(listener);
+  return () => { runtimeSettingsListeners.delete(listener); };
+}
 
 function trimSlash(value: string) {
   return value.trim().replace(/\/+$/, "");
@@ -192,6 +227,8 @@ function normalizeNotificationPreferences(value: unknown): NotificationPreferenc
     "task.success": normalizeNotificationMode(raw["task.success"], DEFAULT_NOTIFICATION_PREFERENCES["task.success"]),
     "task.failure": normalizeNotificationMode(raw["task.failure"], DEFAULT_NOTIFICATION_PREFERENCES["task.failure"]),
     "task.abnormal": normalizeNotificationMode(raw["task.abnormal"], DEFAULT_NOTIFICATION_PREFERENCES["task.abnormal"]),
+    "task.releaseDue": normalizeNotificationMode(raw["task.releaseDue"], DEFAULT_NOTIFICATION_PREFERENCES["task.releaseDue"]),
+    "task.idle": normalizeNotificationMode(raw["task.idle"], DEFAULT_NOTIFICATION_PREFERENCES["task.idle"]),
   };
 }
 
@@ -208,6 +245,25 @@ function normalizeNonNegativeInteger(value: unknown, fallback: number) {
 function normalizeTaskAutoRefreshInterval(value: unknown) {
   const interval = normalizePositiveInteger(value, DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS);
   return TASK_AUTO_REFRESH_OPTIONS.some((option) => option.value === interval) ? interval : DEFAULT_TASK_AUTO_REFRESH_INTERVAL_MS;
+}
+
+function normalizeMissedSchedulePolicy(value: unknown): MissedSchedulePolicy {
+  return value === "run" || value === "skip" || value === "ask" ? value : "ask";
+}
+
+function normalizeMissedScheduleGrace(value: unknown) {
+  const grace = normalizePositiveInteger(value, DEFAULT_MISSED_SCHEDULE_GRACE_MS);
+  return MISSED_SCHEDULE_GRACE_OPTIONS.some((option) => option.value === grace) ? grace : DEFAULT_MISSED_SCHEDULE_GRACE_MS;
+}
+
+function normalizeTimedReleaseLead(value: unknown) {
+  const lead = normalizePositiveInteger(value, DEFAULT_TIMED_RELEASE_LEAD_MS);
+  return TIMED_RELEASE_LEAD_OPTIONS.some((option) => option.value === lead) ? lead : DEFAULT_TIMED_RELEASE_LEAD_MS;
+}
+
+function normalizeIdleReminderWindow(value: unknown) {
+  const window = normalizePositiveInteger(value, DEFAULT_IDLE_REMINDER_WINDOW_MS);
+  return IDLE_REMINDER_WINDOW_OPTIONS.some((option) => option.value === window) ? window : DEFAULT_IDLE_REMINDER_WINDOW_MS;
 }
 
 function normalizeString(value: unknown, fallback: string) {
@@ -262,11 +318,11 @@ function normalizePortForwardRule(value: unknown, index: number): PortForwardRul
   const id = typeof raw.id === "string" && raw.id ? raw.id : `pf-${index}`;
   const type = normalizePortForwardType(raw.type);
   const localHost = normalizeString(raw.localHost, "127.0.0.1");
-  const localPort = normalizePositiveInteger(raw.localPort, 0);
+  const localPort = raw.localPort == null ? -1 : normalizeNonNegativeInteger(raw.localPort, -1);
   const remoteHost = normalizeString(raw.remoteHost, "");
   const remotePort = normalizePositiveInteger(raw.remotePort, 0);
-  if (localPort === 0) return null;
-  if (type !== "dynamic" && (remoteHost === "" || remotePort === 0)) return null;
+  if (localPort < 0 || localPort > 65535) return null;
+  if (type !== "dynamic" && (remoteHost === "" || remotePort === 0 || remotePort > 65535)) return null;
   const host = typeof raw.host === "string" && raw.host.trim() ? raw.host.trim() : undefined;
   return { id, type, localHost, localPort, remoteHost, remotePort, enabled: raw.enabled === true, host };
 }
@@ -340,8 +396,14 @@ export function normalizeAppSettings(settings: Partial<AppSettings>): AppSetting
     taskAutoRefreshIntervalMs: normalizeTaskAutoRefreshInterval(settings.taskAutoRefreshIntervalMs),
     autoCheckUpdates: settings.autoCheckUpdates !== false,
     autoNumberDuplicateTaskNames: settings.autoNumberDuplicateTaskNames !== false,
+    missedSchedulePolicy: normalizeMissedSchedulePolicy(settings.missedSchedulePolicy),
+    missedScheduleGraceMs: normalizeMissedScheduleGrace(settings.missedScheduleGraceMs),
+    timedReleaseReminderLeadMs: normalizeTimedReleaseLead(settings.timedReleaseReminderLeadMs),
+    idleReminderWindowMs: normalizeIdleReminderWindow(settings.idleReminderWindowMs),
+    idleAutoRelease: settings.idleAutoRelease === true,
     desktopCloseToTray: settings.desktopCloseToTray === true,
     desktopClosePrompt: settings.desktopClosePrompt !== false,
+    desktopAutostart: settings.desktopAutostart === true,
     runLogLimit: normalizePositiveInteger(settings.runLogLimit, DEFAULT_APP_SETTINGS.runLogLimit),
     runLogRetentionDays: normalizePositiveInteger(settings.runLogRetentionDays, DEFAULT_APP_SETTINGS.runLogRetentionDays),
     ssh: normalizeSshSettings(settings.ssh),
@@ -530,6 +592,7 @@ export function resetAccountAppSettings(store: AccountSettingsStore, accountId: 
 
 export function setRuntimeSettings(settings: Partial<AppSettings>) {
   runtimeSettings = normalizeAppSettings(settings);
+  for (const listener of runtimeSettingsListeners) listener();
 }
 
 export function getRuntimeSettings() {
