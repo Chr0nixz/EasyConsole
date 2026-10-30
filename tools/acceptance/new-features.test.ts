@@ -23,6 +23,21 @@ async function fixture() {
 }
 
 describe("local HTTP acceptance: implemented features", () => {
+  it("serves seeded UI fixtures consistently across lists, creation and release", async () => {
+    const { api, baseUrl, task } = await fixture();
+    const control = await fetch(`${baseUrl.replace(/\/api$/, "")}/__acceptance/tasks`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: [{ ...task }, { id: 43, name: "local-failed", status: 7 }] }),
+    });
+    expect(control.ok).toBe(true);
+    expect(await api.instanceApi.statics({})).toMatchObject({ total: 2 });
+    expect(await api.resourceApi.resources()).toEqual([]);
+    await api.instanceApi.createTask({ name: "local-created", cpu: 4, gpu: 0, memory: 16 } as never);
+    expect((await api.instanceApi.tasks({ page: 1 })).items.map((item) => item.name)).toEqual([task.name, "local-failed", "local-created"]);
+    await api.instanceApi.operateTask(42);
+    expect((await api.instanceApi.tasks({ page: 1 })).items[0].status).toBe(4);
+  });
+
   it("logs in, reads tasks, extends release safely and reads the result", async () => {
     const { api, requests, task } = await fixture();
     expect(await api.authApi.userInfo()).toMatchObject({ username: "local-acceptance" });

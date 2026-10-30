@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-30",
+  "timezone": "Asia/Shanghai",
+  "scope": "loopback mock API only; not a machine-wide network audit",
+  "renderer": "http://127.0.0.1:1439",
+  "mockApi": "http://127.0.0.1:28991/api",
+  "instances": [
+    {
+      "id": 42,
+      "name": "local-acceptance",
+      "status": 2
+    },
+    {
+      "id": 43,
+      "name": "local-failed-clone",
+      "status": 7
+    },
+    {
+      "id": 44,
+      "name": "local-rerun-acceptance",
+      "status": 1
+    }
+  ],
+  "instanceMutations": [
+    {
+      "method": "POST",
+      "path": "/api/instance/task"
+    }
+  ],
+  "destructiveInstanceRequests": 0
+}

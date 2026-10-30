@@ -63,6 +63,10 @@ CLI/MCP 确认门、实验性标记与发布正文生成器完成后，再次执
 
 先前文档提交 `5c59732` 的 [三平台 CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40713157486) 和 [Android CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40713157607) 也已成功，macOS 首次未分配到 runner，重跑后通过。本轮功能源码 `91c5153` 的 [三平台 CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40750384576)、[Android CI](https://github.com/Chr0nixz/EasyConsole/actions/runs/40750384903) 与 [六目标 Release 演练](https://github.com/Chr0nixz/EasyConsole/actions/runs/40750407480) 全部成功；演练及清理证据见 [产物记录](RELEASE_REHEARSAL_2026-10-29.md)。后续仅补文档、公开证书指纹与元数据快照。
 
+### 2026-10-30 前端优化回归
+
+前端源码 `1fcc2a6` 完成费用、闲置状态与失败克隆诊断优化，并补齐停止运行和监控失败时清除闲置标记的回归。120 个文件 / 896 项测试、覆盖率门槛（lines 65.83%、statements 63.35%、functions 56.13%、branches 57.10%）、app / tools typecheck、lint（37 warnings / 0 errors）、桌面输入构建、打包 CLI 备份冒烟和 cargo check / fmt / clippy 均通过。中文 / 英文、1280 / 1024 / 375px、暗色主题与键盘焦点完成模拟 API 渲染检查；Windows 原生窗口只确认启动。见 [详细记录、截图与模拟请求审计](FRONTEND_ACCEPTANCE_2026-10-30.md)。本轮未执行真实后端操作或安装升级，以下真实环境项目保持待办。
+
 ## 2. 0.5.0：承载本地存储迁移
 
 这批改动把桌面本地存储从单个 `runtime-storage.json` 改成 `runtime-storage.d/` 按 key 分文件，CLI/MCP 也改为共享这份存储。迁移出错的后果是设置、账号、模板、定时任务、执行台账全部丢失，所以不能让 1.0 成为第一个执行迁移的版本。
