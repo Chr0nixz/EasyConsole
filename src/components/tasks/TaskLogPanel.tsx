@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState, memo, type KeyboardEvent as React
 import { ErrorState, LoadingState } from "../DataState";
 import { Button, Input } from "../ui";
 import { useI18n } from "../../lib/i18n";
+import { ERROR_LINE_PATTERN, findFailureSummary } from "../../lib/log-failure";
 import { browserRuntime } from "../../lib/runtime";
 import { FAILURE_STATUSES } from "../../lib/task-status-notifications";
 import { taskLogQueryOptions } from "../../lib/task-log-query";
@@ -24,12 +25,6 @@ const MAX_LOG_DISPLAY_CHARS = 200_000;
 const FOLLOW_BOTTOM_THRESHOLD_PX = 48;
 const FILTER_DEBOUNCE_MS = 200;
 
-/** Lines that read as a failure: tracebacks, exceptions, fatal signals, OOM, non-zero exits. */
-const ERROR_LINE_PATTERN = /traceback \(most recent call last\)|\b(?:error|exception|fatal|panic|killed|segmentation fault)\b|out of memory|exit(?:ed)? (?:with )?(?:code|status) [1-9]/i;
-/** The line that names the failure, e.g. `torch.OutOfMemoryError: CUDA out of memory`. */
-const EXCEPTION_LINE_PATTERN = /^\s*[\w.]*(?:Error|Exception|Interrupt)\b:?/;
-const EXIT_CODE_PATTERN = /exit(?:ed)? (?:with )?(?:code|status) (\d+)/i;
-
 function truncateLogForDisplay(value: string, maxChars: number) {
   if (value.length <= maxChars) {
     return { text: value, truncated: false, totalChars: value.length, displayedChars: value.length };
@@ -40,22 +35,6 @@ function truncateLogForDisplay(value: string, maxChars: number) {
     totalChars: value.length,
     displayedChars: maxChars,
   };
-}
-
-/** The failure a reader wants first: the last exception line (else the last error-looking line) and any exit code. */
-function findFailureSummary(lines: string[], errorLines: Set<number>) {
-  let exceptionIndex = -1;
-  let lastErrorIndex = -1;
-  let exitCode: string | null = null;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (!errorLines.has(index)) continue;
-    if (lastErrorIndex < 0) lastErrorIndex = index;
-    if (exitCode === null) exitCode = EXIT_CODE_PATTERN.exec(lines[index])?.[1] ?? null;
-    if (exceptionIndex < 0 && EXCEPTION_LINE_PATTERN.test(lines[index])) exceptionIndex = index;
-    if (exceptionIndex >= 0 && exitCode !== null) break;
-  }
-  const index = exceptionIndex >= 0 ? exceptionIndex : lastErrorIndex;
-  return index >= 0 ? { index, line: lines[index].trim(), exitCode } : null;
 }
 
 /**

@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { StatusBadge } from "../components/StatusBadge";
+import { IdleInstancePill } from "../components/IdleInstancePill";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { ReleaseConfirmDescription } from "../components/tasks/ReleaseConfirmDescription";
 import { TaskLogPanel } from "../components/tasks/TaskLogPanel";
@@ -164,7 +165,7 @@ export function TaskDetailPage() {
       if (!id) throw new Error("Missing task id");
       const result = await instanceApi.tasks({ page: 1, page_size: 500 });
       const found = findTaskById(result.items, id);
-      if (!found) throw new Error(text("任务不存在", "Task not found"));
+      if (!found) throw new Error(text("实例不存在", "Instance not found"));
       return found;
     },
     enabled: Boolean(id) && snapshotQuery.isFetched && !snapshotQuery.data,
@@ -290,8 +291,8 @@ export function TaskDetailPage() {
   useSlidingIndicator(tabListRef, tabIndicatorRef, '[aria-selected="true"]', `${tab}:${Boolean(task)}`, "underline");
 
   if (isLoading) return <LoadingState />;
-  if (isError) return <ErrorState error={queryError} action={<Button onClick={() => navigate("/tasks")}>{text("返回任务列表", "Back to tasks")}</Button>} />;
-  if (!task) return <EmptyState title={text("任务不存在", "Task not found")} action={<Button onClick={() => navigate("/tasks")}>{text("返回任务列表", "Back to tasks")}</Button>} />;
+  if (isError) return <ErrorState error={queryError} action={<Button onClick={() => navigate("/tasks")}>{text("返回实例列表", "Back to instances")}</Button>} />;
+  if (!task) return <EmptyState title={text("实例不存在", "Instance not found")} action={<Button onClick={() => navigate("/tasks")}>{text("返回实例列表", "Back to instances")}</Button>} />;
 
   const tabs: Array<{ key: Tab; label: string; icon: typeof FileText }> = [
     { key: "log", label: text("日志", "Logs"), icon: FileText },
@@ -334,7 +335,7 @@ export function TaskDetailPage() {
     <div className="space-y-4">
       {/* Phones wrap the name (there is no hover title to read the rest) and keep the back arrow on its line. */}
       <div className={cn("flex flex-wrap gap-3", compactLayout ? "items-start" : "items-center")}>
-        <Button className={compactLayout ? "-my-2 -ml-2" : undefined} variant="ghost" onClick={() => navigate("/tasks")} aria-label={text("返回任务列表", "Back to tasks")}>
+        <Button className={compactLayout ? "-my-2 -ml-2" : undefined} variant="ghost" onClick={() => navigate("/tasks")} aria-label={text("返回实例列表", "Back to instances")}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="min-w-0 flex-1">
@@ -343,6 +344,7 @@ export function TaskDetailPage() {
             <span className="font-mono">#{String(task.id)}</span>
             {secondaryId ? <span className="font-mono">{text(`任务 ID ${secondaryId}`, `Task ID ${secondaryId}`)}</span> : null}
             <StatusBadge status={task.status} />
+            <IdleInstancePill task={task} />
             {releaseCondition != null ? <ReleaseConditionBadge condition={releaseCondition} releaseAt={getLiveTimedReleaseAt(task)} /> : null}
           </div>
         </div>

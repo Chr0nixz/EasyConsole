@@ -266,7 +266,7 @@ export function ScheduledTasksPage() {
 
   const fieldErrors = useMemo(() => {
     const errors: Record<string, string> = {};
-    if (!name.trim()) errors.name = text("任务名称不能为空", "Task name is required");
+    if (!name.trim()) errors.name = text("实例名称不能为空", "Instance name is required");
     if (!scheduleTime) errors.scheduleTime = text("请选择计划执行时间", "Select a scheduled execution time");
     if (!imageId) errors.image = text("请选择镜像", "Select an image");
     if (parsePositivePrice(price) === null) errors.price = text("价格必须大于 0", "Price must be greater than 0");
@@ -412,7 +412,7 @@ export function ScheduledTasksPage() {
     touchAll(["name", "scheduleTime", "image", "price", "cpu", "gpu", "memory", "releaseTime", "workDirectory", "scriptPath", "scriptEnv"]);
     const taskName = name.trim();
     if (!taskName) {
-      setFormError(text("任务名称不能为空", "Task name is required"));
+      setFormError(text("实例名称不能为空", "Instance name is required"));
       return null;
     }
     if (!scheduleTime) {
@@ -873,7 +873,7 @@ export function ScheduledTasksPage() {
           <FormSection title={text("基础", "Basic")}>
             <div className="grid gap-4 md:grid-cols-2">
               <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("任务名称", "Task name")}</span>
+                <span className="mb-1 block text-app-muted">{text("实例名称", "Instance name")}</span>
                 <Input className={cn("w-full", fieldBorderClass(touchedFields.has("name") && Boolean(fieldErrors.name)))} value={name} onChange={(event) => setName(event.target.value)} onBlur={() => markTouched("name")} required />
                 <FieldError message={touchedFields.has("name") ? fieldErrors.name : undefined} />
               </label>

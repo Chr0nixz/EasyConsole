@@ -485,7 +485,14 @@ export function ImagesPage() {
                               <Trash2 className="h-4 w-4" />
                             </Button>
                           </>
-                        ) : null}
+                        ) : (
+                          // System images cannot be edited or deleted; their slots stay reserved (hidden from
+                          // pointer, focus and assistive tech) so the shared actions line up down the column.
+                          <span aria-hidden="true" className="invisible flex gap-1">
+                            <Button tabIndex={-1} type="button" variant="ghost"><Pencil className="h-4 w-4" /></Button>
+                            <Button tabIndex={-1} type="button" variant="ghost"><Trash2 className="h-4 w-4" /></Button>
+                          </span>
+                        )}
                       </div>
                     </td>
                   </tr>

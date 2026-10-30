@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   imageSystem: vi.fn(),
   createTask: vi.fn(),
   checkTaskName: vi.fn(),
+  taskLog: vi.fn(),
   tasks: vi.fn(),
   resources: vi.fn(),
   prices: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("../../lib/api", () => ({
     createTask: (...args: unknown[]) => mocks.createTask(...args),
     checkTaskName: (...args: unknown[]) => mocks.checkTaskName(...args),
     tasks: (...args: unknown[]) => mocks.tasks(...args),
+    taskLog: (...args: unknown[]) => mocks.taskLog(...args),
   },
   resourceApi: {
     resources: () => mocks.resources(),
@@ -85,19 +87,21 @@ describe("CreateTaskDialog", () => {
     mocks.imageSystem.mockReset();
     mocks.createTask.mockReset();
     mocks.checkTaskName.mockReset();
+    mocks.taskLog.mockReset();
     mocks.tasks.mockReset();
     mocks.imageList.mockResolvedValue({ items: [{ id: "img1", name: "ubuntu", tag: "22.04" }] });
     mocks.imageSystem.mockResolvedValue({ items: [] });
     mocks.createTask.mockResolvedValue({});
     mocks.checkTaskName.mockResolvedValue({ available: true });
     mocks.tasks.mockResolvedValue({ items: [], total: 0 });
+    mocks.taskLog.mockResolvedValue("RuntimeError: CUDA out of memory\nprocess exited with code 137\n");
     mocks.resources.mockResolvedValue([]);
     mocks.prices.mockResolvedValue([]);
   });
 
   it("renders dialog with create title and a visible billing rate field", async () => {
     renderDialog();
-    await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("新建实例")).toBeInTheDocument());
     expect(screen.queryByText("有同名实例自动增加编号")).not.toBeInTheDocument();
     expect(screen.getByText("计费单价（元/小时）")).toBeInTheDocument();
   });
@@ -197,7 +201,7 @@ describe("CreateTaskDialog", () => {
     mocks.prices.mockReturnValue(new Promise((resolve) => { resolvePrices = resolve; }));
     const onClose = vi.fn();
     renderDialog({ onClose });
-    fireEvent.change(screen.getByLabelText("任务名称"), { target: { value: "my-edited-task" } });
+    fireEvent.change(screen.getByLabelText("实例名称"), { target: { value: "my-edited-task" } });
     await act(async () => {
       resolveImages({ items: [{ id: "img1", name: "ubuntu" }] });
       resolvePrices([4.8]);
@@ -214,7 +218,7 @@ describe("CreateTaskDialog", () => {
     fireEvent.click(within(discardDialog).getByRole("button", { name: "取消" }));
     await waitFor(() => expect(screen.queryByText("放弃未保存的更改？")).not.toBeInTheDocument());
     expect(onClose).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("任务名称")).toHaveValue("my-edited-task");
+    expect(screen.getByLabelText("实例名称")).toHaveValue("my-edited-task");
   });
 
   it("does not replace an image the user intentionally cleared", async () => {
@@ -234,7 +238,7 @@ describe("CreateTaskDialog", () => {
     // Bare true = exists (taken).
     mocks.checkTaskName.mockImplementation(async (name: string) => name === "my-task");
     renderDialog();
-    await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("新建实例")).toBeInTheDocument());
     await waitFor(() => expect(mocks.imageList).toHaveBeenCalled());
 
     const nameInput = screen.getAllByRole("textbox")[0];
@@ -248,7 +252,7 @@ describe("CreateTaskDialog", () => {
 
   it("appends a timestamp to the instance name but leaves EXPERIMENT_ID unnumbered when sync is enabled", async () => {
     renderDialog();
-    await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("新建实例")).toBeInTheDocument());
     await waitFor(() => expect(mocks.imageList).toHaveBeenCalled());
 
     fireEvent.change(screen.getByDisplayValue("手动释放"), { target: { value: "3" } });
@@ -300,14 +304,14 @@ describe("CreateTaskDialog", () => {
 
   it("shows form error when submitting with empty name", async () => {
     renderDialog();
-    await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("新建实例")).toBeInTheDocument());
     await waitFor(() => expect(mocks.imageList).toHaveBeenCalled());
 
     const form = document.querySelector("form")!;
     const nameInput = screen.getAllByRole("textbox")[0];
     fireEvent.change(nameInput, { target: { value: "" } });
     fireEvent.submit(form);
-    await waitFor(() => expect(screen.getAllByText("任务名称不能为空").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText("实例名称不能为空").length).toBeGreaterThan(0));
     expect(mocks.createTask).not.toHaveBeenCalled();
   });
 
@@ -315,7 +319,7 @@ describe("CreateTaskDialog", () => {
     mocks.imageList.mockResolvedValue({ items: [] });
     mocks.imageSystem.mockResolvedValue({ items: [] });
     renderDialog();
-    await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("新建实例")).toBeInTheDocument());
 
     const form = document.querySelector("form")!;
     const nameInput = screen.getAllByRole("textbox")[0];
@@ -328,7 +332,33 @@ describe("CreateTaskDialog", () => {
 
   it("renders edit title in edit mode", async () => {
     renderDialog({ mode: "edit", editTaskId: "123" });
-    await waitFor(() => expect(screen.getByText("编辑任务")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("编辑实例")).toBeInTheDocument());
+    // Saving an edit starts no billing, so the create commitment line stays out.
+    expect(screen.queryByText(/提交后将创建实例并产生费用/)).not.toBeInTheDocument();
+  });
+
+  it("states what a single create commits to, since it skips the impact preview", async () => {
+    renderDialog();
+    await waitFor(() => expect(screen.getByText("新建实例")).toBeInTheDocument());
+
+    const note = screen.getByText(/提交后将创建实例并产生费用，请确认配置。/);
+    // The default release condition is manual, which never stops billing on its own.
+    expect(note).toHaveTextContent("需要主动释放实例以停止计费");
+    // The submit button reads the commitment when focused.
+    expect(document.querySelector(`button[aria-describedby="${note.id}"]`)).toHaveTextContent("创建");
+  });
+
+  it("names the source of a clone", async () => {
+    renderDialog({ initialTask: { id: 9, name: "source-instance", status: 6, price: 1, cpu: 4, memory: 16 } as never });
+    await waitFor(() => expect(screen.getByText("克隆实例")).toBeInTheDocument());
+    expect(screen.getByText("来自 source-instance（#9）· 成功")).toBeInTheDocument();
+  });
+
+  it("shows the source log diagnosis when cloning a failed instance", async () => {
+    renderDialog({ initialTask: { id: 9, name: "failed-source", status: 7, price: 1, cpu: 4, memory: 16 } as never });
+    expect(await screen.findByText("RuntimeError: CUDA out of memory")).toBeInTheDocument();
+    expect(mocks.taskLog).toHaveBeenCalledTimes(1);
+    expect(mocks.createTask).not.toHaveBeenCalled();
   });
 
   it("applies a saved resource preset to the resource fields", async () => {
@@ -358,7 +388,7 @@ describe("CreateTaskDialog", () => {
     localStorage.removeItem(RESOURCE_PRESETS_STORAGE_KEY);
     try {
       renderDialog();
-      await waitFor(() => expect(screen.getByText("新建任务")).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText("新建实例")).toBeInTheDocument());
 
       fireEvent.change(screen.getByLabelText("CPU"), { target: { value: "12" } });
       fireEvent.click(screen.getByRole("button", { name: "存为预设" }));

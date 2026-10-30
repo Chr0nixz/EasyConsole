@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
+import { IdleInstancePill } from "../components/IdleInstancePill";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
 import { Button, Panel, SegmentedControl, Select, TableRegion } from "../components/ui";
@@ -11,11 +12,13 @@ import { instanceApi } from "../lib/api";
 import { formatCost, formatHours, formatNumber, formatRelativeUpdatedAt, formatSecondsDuration, getTaskName, getTaskNodeName } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import type { Locale } from "../lib/i18n-text";
+import { useIdleEvidence } from "../lib/idle-instance-state";
 import { useCompactLayout } from "../lib/use-compact-layout";
 import { EXECUTION_LEDGER_ROUTE, useExecutionReviewCount } from "../lib/use-execution-review";
 import { browserRuntime } from "../lib/runtime";
 import { cn } from "../lib/utils";
 import { DEFAULT_TASK_PAGE, DEFAULT_TASK_PAGE_SIZE, serializeTaskListQuery, taskTimestamp } from "../lib/task-list-query";
+import { requestCreateTask } from "../lib/task-create-request";
 import { getLiveTimedReleaseAt, TIMED_RELEASE_CONDITION } from "../lib/task-release-notifications";
 import type { ConsoleSummary, Task } from "../lib/types";
 
@@ -93,10 +96,12 @@ function byRecency(tasks: Task[]) {
 }
 
 // The whole row is the link target (the name stretches over it), which also gives touch a full-height hit area.
-// A live timed release adds its countdown, since an extension is decided from here as often as from the detail page.
+// A live timed release adds its countdown, since an extension is decided from here as often as from the detail page;
+// an instance the idle watcher judges idle says so on the same line until it is active again.
 function DashboardTaskRow({ task, meta }: { task: Task; meta: string }) {
   const { text } = useI18n();
   const releaseAt = getLiveTimedReleaseAt(task);
+  const idle = useIdleEvidence(task) !== null && Number(task.status) === 2;
   return (
     <li className="relative px-3 py-2.5 transition-colors duration-150 hover:bg-app-panel/60">
       <div className="flex items-center justify-between gap-3">
@@ -112,9 +117,10 @@ function DashboardTaskRow({ task, meta }: { task: Task; meta: string }) {
         <StatusBadge status={task.status} />
       </div>
       {meta ? <p className="mt-0.5 truncate text-xs text-app-muted">{meta}</p> : null}
-      {releaseAt !== null ? (
-        <div className="mt-1.5">
-          <ReleaseConditionBadge condition={TIMED_RELEASE_CONDITION} releaseAt={releaseAt} />
+      {releaseAt !== null || idle ? (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {idle ? <IdleInstancePill task={task} /> : null}
+          {releaseAt !== null ? <ReleaseConditionBadge condition={TIMED_RELEASE_CONDITION} releaseAt={releaseAt} /> : null}
         </div>
       ) : null}
     </li>
@@ -175,12 +181,37 @@ function AttentionGroup({
   );
 }
 
+type BillingRate = { perHour: number; partial: boolean };
+
+// What the running instances cost per hour right now, from each one's own price. An instance
+// without a price is not guessed at; the figure then reads as a floor.
+function runningBillingRate(tasks: Task[]): BillingRate | null {
+  let perHour = 0;
+  let priced = 0;
+  for (const task of tasks) {
+    const price = Number(task.price);
+    if (Number.isFinite(price) && price > 0) {
+      perHour += price;
+      priced += 1;
+    }
+  }
+  return priced === 0 ? null : { perHour, partial: priced < tasks.length };
+}
+
+function formatBillingRate(rate: BillingRate, locale: Locale, text: (zh: string, en: string) => string) {
+  const amount = formatCost(rate.perHour, locale);
+  return rate.partial ? text(`至少 ${amount}/小时`, `≥ ${amount}/hr`) : text(`约 ${amount}/小时`, `≈ ${amount}/hr`);
+}
+
 // The status line stays a sentence, not a stat-card row. Figures update in place; the
 // one live pulse in the product sits here, on the running count, and nowhere else.
-function SummaryLine({ running, queued, runtime, cost, rangeName }: { running: number; queued: number; runtime: number; cost: number; rangeName: string }) {
+// The billing rate sits beside the running count, so the line answers "what is this costing now".
+function SummaryLine({ running, queued, runtime, cost, rangeName, billingRate }: { running: number; queued: number; runtime: number; cost: number; rangeName: string; billingRate: BillingRate | null }) {
   const { locale, text } = useI18n();
+  const rateValue = billingRate ? formatBillingRate(billingRate, locale, text) : null;
   const segments = [
     { key: "running", label: text("运行中", "Running"), value: formatNumber(running, 0, locale), live: running > 0 },
+    ...(rateValue ? [{ key: "rate", label: text("当前计费", "Billing now"), value: rateValue, live: false, wide: true }] : []),
     { key: "queued", label: text("队列中", "Queued"), value: formatNumber(queued, 0, locale), live: false },
     { key: "runtime", label: text(`${rangeName}时长`, rangeName), value: formatSecondsDuration(runtime, locale), live: false },
     { key: "cost", label: text("费用", "Cost"), value: formatCost(cost, locale), live: false },
@@ -190,16 +221,17 @@ function SummaryLine({ running, queued, runtime, cost, rangeName }: { running: n
     <p className="min-w-0 text-sm text-app-text">
       <span className="sr-only">
         {text(
-          `运行中 ${formatNumber(running, 0, locale)} · 队列中 ${formatNumber(queued, 0, locale)} · ${rangeName}时长 ${formatSecondsDuration(runtime, locale)} · 费用 ${formatCost(cost, locale)}`,
-          `Running ${formatNumber(running, 0, locale)} · queued ${formatNumber(queued, 0, locale)} · ${rangeName} ${formatSecondsDuration(runtime, locale)} · cost ${formatCost(cost, locale)}`,
+          `运行中 ${formatNumber(running, 0, locale)}${rateValue ? ` · 当前计费 ${rateValue}` : ""} · 队列中 ${formatNumber(queued, 0, locale)} · ${rangeName}时长 ${formatSecondsDuration(runtime, locale)} · 费用 ${formatCost(cost, locale)}`,
+          `Running ${formatNumber(running, 0, locale)}${rateValue ? ` · billing now ${rateValue}` : ""} · queued ${formatNumber(queued, 0, locale)} · ${rangeName} ${formatSecondsDuration(runtime, locale)} · cost ${formatCost(cost, locale)}`,
         )}
       </span>
-      {/* Two columns on phones (no rules to strand at a wrap), one ruled sentence from sm up. */}
-      <span aria-hidden="true" className="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:flex sm:flex-wrap sm:items-baseline sm:gap-x-0">
+      {/* Two columns on phones (no rules to strand at a wrap), one ruled sentence from sm up.
+          The billing rate is too long for half a phone row, so it takes a whole one under the counts. */}
+      <span aria-hidden="true" className="grid grid-flow-row-dense grid-cols-2 gap-x-4 gap-y-1.5 sm:flex sm:flex-wrap sm:items-baseline sm:gap-x-0">
         {segments.map((segment, index) => (
-          <span key={segment.key} className={cn("inline-flex items-baseline gap-2 sm:pr-4", index > 0 && "sm:border-l sm:border-app-border sm:pl-4")}>
+          <span key={segment.key} className={cn("inline-flex items-baseline gap-2 sm:pr-4", index > 0 && "sm:border-l sm:border-app-border sm:pl-4", "wide" in segment && "col-span-2 sm:col-span-1")}>
             {segment.live ? <span className="app-live-dot h-1.5 w-1.5 shrink-0 self-center rounded-full bg-app-info text-app-info" /> : null}
-            <span className="text-app-muted">{segment.label}</span>
+            <span className="whitespace-nowrap text-app-muted">{segment.label}</span>
             <span className="app-numeric text-[0.9375rem] font-semibold tracking-[-0.01em]">{segment.value}</span>
           </span>
         ))}
@@ -349,6 +381,7 @@ export function DashboardPage() {
           runtime={runtimeValue}
           cost={costValue}
           rangeName={rangeLabel(timeRange, text)}
+          billingRate={runningBillingRate(runningTasks)}
         />
         {compactLayout ? (
           // Phones: the range choice spans the row with refresh in thumb reach beside it,
@@ -450,7 +483,7 @@ export function DashboardPage() {
           ) : null}
         </div>
         {staticsQuery.isLoading ? (
-          <LoadingState label={text("正在加载任务", "Loading tasks")} />
+          <LoadingState label={text("正在加载实例", "Loading instances")} />
         ) : staticsQuery.isError ? (
           <ErrorState error={staticsQuery.error} action={<Button variant="secondary" onClick={() => staticsQuery.refetch()}>{text("重试", "Retry")}</Button>} />
         ) : recentTasks.length > 0 ? (
@@ -464,13 +497,14 @@ export function DashboardPage() {
                   meta={[
                     `${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`,
                     getTaskNodeName(task),
-                    `${formatCost(task.cost, locale)} (${formatHours(task.use_time, locale)})`,
+                    formatCost(task.cost, locale),
+                    Number.isFinite(Number(task.use_time)) ? text(`时长 ${formatHours(task.use_time, locale)}`, `Duration ${formatHours(task.use_time, locale)}`) : "",
                   ].filter(Boolean).join(" · ")}
                 />
               ))}
             </ul>
           ) : (
-            <TableRegion label={text("最近任务表格", "Recent tasks table")}>
+            <TableRegion label={text("最近实例表格", "Recent instances table")}>
               <table className="w-full min-w-[720px] text-sm">
                 <thead className="bg-app-panel text-left text-xs text-app-muted">
                   <tr>
@@ -478,6 +512,7 @@ export function DashboardPage() {
                     <th className="px-3 py-2 font-medium" scope="col">{text("状态", "Status")}</th>
                     <th className="px-3 py-2 font-medium" scope="col">{text("资源", "Resources")}</th>
                     <th className="px-3 py-2 font-medium" scope="col">{text("节点", "Node")}</th>
+                    <th className="px-3 py-2 font-medium" scope="col">{text("时长", "Duration")}</th>
                     <th className="px-3 py-2 font-medium" scope="col">{text("费用", "Cost")}</th>
                   </tr>
                 </thead>
@@ -500,9 +535,8 @@ export function DashboardPage() {
                         {task.cpu ?? "-"}C / {task.gpu ?? "-"}GPU / {task.memory ?? "-"}G
                       </td>
                       <td className="px-3 py-2 text-app-muted">{getTaskNodeName(task) || "-"}</td>
-                      <td className="px-3 py-2 text-app-muted">
-                        {formatCost(task.cost, locale)} ({formatHours(task.use_time, locale)})
-                      </td>
+                      <td className="app-numeric px-3 py-2 text-app-muted">{formatHours(task.use_time, locale)}</td>
+                      <td className="app-numeric px-3 py-2 text-app-muted">{formatCost(task.cost, locale)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -511,7 +545,7 @@ export function DashboardPage() {
           )
         ) : (
           <EmptyState
-            title={text("暂无最近任务", "No recent tasks")}
+            title={text("暂无最近实例", "No recent instances")}
             action={
               <div className="flex flex-wrap justify-center gap-2">
                 <Link
@@ -520,11 +554,13 @@ export function DashboardPage() {
                 >
                   {text("去任务实例", "Go to tasks")}
                 </Link>
+                {/* Lands on the list with the create form already open, as the command palette does. */}
                 <Link
                   to="/tasks"
+                  onClick={() => requestCreateTask()}
                   className="app-interactive inline-flex h-9 items-center rounded-md bg-app-accent px-3 text-sm font-medium text-app-onAccent"
                 >
-                  {text("新建任务", "New task")}
+                  {text("新建实例", "New instance")}
                 </Link>
               </div>
             }

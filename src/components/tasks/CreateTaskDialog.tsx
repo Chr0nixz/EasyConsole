@@ -32,13 +32,19 @@ import { useAuth } from "../../lib/use-auth";
 import { useToast } from "../../lib/use-toast";
 import {
   addHours,
+  formatCost,
   formatDateTimeForApi,
   formatDateTimeLocalInput,
   formatExperimentTimedTaskName,
   formatTaskDefaultName,
+  getStatusText,
+  getTaskName,
   localizedText,
   releaseConditionText,
 } from "../../lib/format";
+import { summarizeLogFailure } from "../../lib/log-failure";
+import { taskLogQueryOptions } from "../../lib/task-log-query";
+import { FAILURE_STATUSES } from "../../lib/task-status-notifications";
 import { cn } from "../../lib/utils";
 import { useI18n } from "../../lib/i18n";
 import { queryKeys } from "../../lib/query-keys";
@@ -255,6 +261,21 @@ export function CreateTaskDialog({
   const [memory, setMemory] = useState(DEFAULT_MEMORY);
   const [releaseCondition, setReleaseCondition] = useState("1");
   const [releaseTime, setReleaseTime] = useState("");
+  // A clone says where it came from; when the source failed, it carries the failure line from
+  // the source's log too, so the rerun is edited against the diagnosis instead of from memory.
+  const cloneSource = !isEditMode && initialTask ? initialTask : null;
+  const cloneSourceFailed = cloneSource !== null && FAILURE_STATUSES.has(Number(cloneSource.status));
+  const cloneLogQuery = useQuery({
+    ...taskLogQueryOptions(cloneSource ?? { id: "" }, false),
+    enabled: open && cloneSourceFailed,
+  });
+  const cloneFailure = cloneSourceFailed && cloneLogQuery.data ? summarizeLogFailure(cloneLogQuery.data.text) : null;
+  // Minute clock for the footer's spend estimate up to a timed release.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const [storagePath, setStoragePath] = useState("");
   const [mountPath, setMountPath] = useState("");
   const [workDirectory, setWorkDirectory] = useState("");
@@ -352,7 +373,7 @@ export function CreateTaskDialog({
         errors.scriptEnv = text("请填写 EXPERIMENT_ID", "Enter EXPERIMENT_ID");
       }
     } else if (!name.trim()) {
-      errors.name = text("任务名称不能为空", "Task name is required");
+      errors.name = text("实例名称不能为空", "Instance name is required");
     }
     if (!imageId) errors.image = text("请选择镜像", "Select an image");
     if (parsePositivePrice(price) === null) errors.price = text("计费单价必须大于 0", "Hourly rate must be greater than 0");
@@ -689,7 +710,7 @@ export function CreateTaskDialog({
     const taskName = syncActive ? experimentId : name.trim();
     if (!taskName) {
       openSectionsForErrors({ name: "required" });
-      setFormError(text("任务名称不能为空", "Task name is required"));
+      setFormError(text("实例名称不能为空", "Instance name is required"));
       window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
@@ -867,11 +888,23 @@ export function CreateTaskDialog({
     ? text(`创建 ${validCount} 个实例`, `Create ${validCount} instances`)
     : text("创建", "Create");
   const releaseSummary = localizedText(releaseConditionText[Number(releaseCondition)], locale) ?? "-";
+  // Two or more instances open the impact preview first; a single create submits directly,
+  // so the footer says what the click commits to before it is made.
+  const directCreate = !isEditMode && validCount === 1;
+  const plannedReleaseMs = releaseCondition === "2" && releaseTime ? new Date(releaseTime).getTime() - nowMs : null;
+  const plannedSpend = priceValue !== null && plannedReleaseMs !== null && plannedReleaseMs > 0
+    ? formatCost((priceValue * plannedReleaseMs) / 3_600_000, locale)
+    : null;
+  const commitNote = [
+    text("提交后将创建实例并产生费用，请确认配置。", "Submitting creates an instance and incurs charges. Review the configuration first."),
+    releaseCondition === "1" ? text("选择手动释放时，需要主动释放实例以停止计费。", "With manual release, release the instance yourself to stop billing.") : null,
+    plannedSpend ? text(`按所填单价估算，到释放时间约 ${plannedSpend}，以实际计费为准。`, `Estimated at the entered rate: about ${plannedSpend} until release. Actual charges may differ.`) : null,
+  ].filter(Boolean).join(locale === "en-US" ? " " : "");
 
   return (
     <Dialog
       open={open}
-      title={isEditMode ? text("编辑任务", "Edit Task") : initialTask ? text("克隆实例", "Clone Instance") : text("新建任务", "New Task")}
+      title={isEditMode ? text("编辑实例", "Edit Instance") : initialTask ? text("克隆实例", "Clone Instance") : text("新建实例", "New Instance")}
       onClose={requestClose}
       closeOnOverlayClick={false}
       onOverlayClick={requestClose}
@@ -881,6 +914,22 @@ export function CreateTaskDialog({
     >
       <form className="flex h-full min-h-0 flex-col overflow-hidden" noValidate onSubmit={submit}>
         <div className="app-mobile-form-body min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
+          {cloneSource ? (
+            <div className="space-y-0.5 text-xs leading-5 text-app-muted">
+              <p className="[overflow-wrap:anywhere]">
+                {text(
+                  `来自 ${getTaskName(cloneSource)}（#${cloneSource.id}）· ${getStatusText(cloneSource.status, locale)}`,
+                  `From ${getTaskName(cloneSource)} (#${cloneSource.id}) · ${getStatusText(cloneSource.status, locale)}`,
+                )}
+              </p>
+              {cloneFailure ? (
+                <p className="flex min-w-0 gap-2 text-app-danger">
+                  <span className="shrink-0 font-medium">{text("失败原因", "Failure")}</span>
+                  <span className="min-w-0 truncate font-mono" title={cloneFailure.line}>{cloneFailure.line}</span>
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <FormSection
             title={text("基础", "Basic")}
             collapsible
@@ -890,7 +939,7 @@ export function CreateTaskDialog({
           >
             <div className={cn("grid gap-4", isEditMode ? "grid-cols-1" : "md:grid-cols-2")}>
               <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("任务名称", "Task name")}</span>
+                <span className="mb-1 block text-app-muted">{text("实例名称", "Instance name")}</span>
                 <Input
                   className={cn("w-full", touchedFields.has("name") && fieldErrors.name && "border-app-danger")}
                   aria-invalid={Boolean(touchedFields.has("name") && fieldErrors.name)}
@@ -1155,12 +1204,13 @@ export function CreateTaskDialog({
               <span>{releaseSummary}{releaseCondition === "2" && releaseTime ? ` · ${formatDateTimeForApi(releaseTime)}` : ""}</span>
             </p>
             <p className="mt-1 truncate" title={imageSummary}>{text(`镜像：${imageSummary}`, `Image: ${imageSummary}`)}</p>
+            {directCreate ? <p className="mt-1 leading-5" id="create-task-commit-note">{commitNote}</p> : null}
           </div>
           <div className="flex shrink-0 justify-end gap-2">
             <Button type="button" variant="secondary" onClick={requestClose}>
               {text("取消", "Cancel")}
             </Button>
-            <Button disabled={mutation.isPending || resolvingNames || Boolean(batchState?.pending)}>
+            <Button aria-describedby={directCreate ? "create-task-commit-note" : undefined} disabled={mutation.isPending || resolvingNames || Boolean(batchState?.pending)}>
               {mutation.isPending || resolvingNames
                 ? isEditMode
                   ? text("保存中", "Saving")

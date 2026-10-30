@@ -71,14 +71,14 @@ function buildTaskPaletteCommands(
   const open: PaletteCommand = {
     id: `task-${id}-open`,
     label: name,
-    description: helpers.text("打开任务详情", "Open task detail"),
+    description: helpers.text("打开实例详情", "Open instance details"),
     icon: ListFilter,
     run: () => helpers.navigate(`/tasks/${id}`),
   };
   const log: PaletteCommand = {
     id: `task-${id}-log`,
     label: `${name} · ${helpers.text("日志", "Logs")}`,
-    description: helpers.text("查看任务日志", "View task logs"),
+    description: helpers.text("查看实例日志", "View instance logs"),
     icon: FileText,
     run: () => helpers.navigate(`/tasks/${id}?tab=log`),
   };
@@ -190,8 +190,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       // Actions, not just pages: the placeholder promises 操作, so the palette carries them.
       {
         id: "action-new-task",
-        label: text("新建任务", "New task"),
-        description: text("打开新建任务表单", "Open the new task form"),
+        label: text("新建实例", "New instance"),
+        description: text("打开新建实例表单", "Open the new instance form"),
         icon: Plus,
         run: () => {
           requestCreateTask();
@@ -327,9 +327,9 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
               data-autofocus=""
               className="w-full pl-9"
               value={query}
-              placeholder={text("搜索页面、任务或操作", "Search pages, tasks, or actions")}
+              placeholder={text("搜索页面、实例或操作", "Search pages, instances, or actions")}
               role="combobox"
-              aria-label={text("搜索页面、任务或操作", "Search pages, tasks, or actions")}
+              aria-label={text("搜索页面、实例或操作", "Search pages, instances, or actions")}
               aria-autocomplete="list"
               aria-controls={listboxId}
               aria-expanded={open}

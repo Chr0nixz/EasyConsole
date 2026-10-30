@@ -6,6 +6,7 @@ import { apiClient, instanceApi } from "../lib/api";
 import { getActiveAccountScope, normalizeApiRealm } from "../lib/account-scope";
 import { getRuntimeSettings, subscribeRuntimeSettings } from "../lib/app-settings";
 import { evaluateIdleInstance, getIdleInstanceReminder, hasFreshIdleMetrics, type IdleInstanceReminder } from "../lib/idle-instance-reminder";
+import { clearIdleInstances, publishIdleInstances, type IdleEvidence } from "../lib/idle-instance-state";
 import { sampleGpuIdle, type GpuIdleHistory } from "../lib/idle-gpu";
 import { releaseIdleInstance } from "../lib/idle-auto-release";
 import { appendRunLog } from "../lib/run-logs";
@@ -55,6 +56,12 @@ export function IdleInstanceWatcher() {
     gpuHistoryRef.current = new Map();
     lastCheckAtRef.current = 0;
   }, [accountScope]);
+
+  // Idle marks belong to this account and this preference; switching either drops them.
+  useEffect(() => {
+    if (!enabled) return;
+    return () => clearIdleInstances();
+  }, [enabled, accountScope]);
 
   const showReminder = useCallback((reminder: IdleInstanceReminder) => {
     toast.notify({
@@ -145,6 +152,10 @@ export function IdleInstanceWatcher() {
             }
             nextStates.set(key, state);
           } catch (error) {
+            // A previous low reading is no longer evidence when monitoring fails.
+            const key = String(task.id ?? task.task_id);
+            nextStates.delete(key);
+            gpuHistoryRef.current.delete(key);
             console.warn("Failed to read monitor metrics for idle detection.", task.id, error);
           }
         }
@@ -153,7 +164,14 @@ export function IdleInstanceWatcher() {
         for (const key of nextStates.keys()) {
           if (!runningKeys.has(key)) { nextStates.delete(key); gpuHistoryRef.current.delete(key); }
         }
-        if (isCurrent()) idleStatesRef.current = nextStates;
+        if (isCurrent()) {
+          idleStatesRef.current = nextStates;
+          const idle = new Map<string, IdleEvidence>();
+          for (const [key, state] of nextStates) {
+            if (state.startsWith("idle:")) idle.set(key, state === "idle:gpu" ? "gpu" : "heuristic");
+          }
+          publishIdleInstances(idle);
+        }
       } finally {
         checkingRef.current = false;
       }

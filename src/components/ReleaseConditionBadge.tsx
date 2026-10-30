@@ -1,4 +1,4 @@
-import { CalendarClock, Flag, Hand } from "lucide-react";
+import { AlarmClock, CalendarClock, Flag, Hand } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { getRuntimeSettings } from "../lib/app-settings";
@@ -50,7 +50,11 @@ function ReleaseCountdownTag({ releaseAt }: { releaseAt: number }) {
       )}
       title={text(`定时释放：${when}`, `Timed release: ${when}`)}
     >
-      <CalendarClock className={cn("h-3 w-3 shrink-0", urgent ? "text-app-warningText" : "text-app-muted")} aria-hidden="true" />
+      {/* Urgency changes the icon too, so it never rests on the warning hue alone. */}
+      {urgent
+        ? <AlarmClock className="h-3 w-3 shrink-0 text-app-warningText" aria-hidden="true" />
+        : <CalendarClock className="h-3 w-3 shrink-0 text-app-muted" aria-hidden="true" />}
+      {urgent ? <span className="sr-only">{text("即将释放：", "Releasing soon: ")}</span> : null}
       <span className="app-numeric">{formatReleaseCountdown(remaining, locale)}</span>
     </span>
   );

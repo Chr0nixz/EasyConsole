@@ -37,6 +37,7 @@ import { useNavigate } from "react-router-dom";
 import { FAILURE_STATUSES, needsLogAttention } from "../lib/task-status-notifications";
 
 import { EmptyState, ErrorState, LoadingState, SearchXIcon, TableSkeleton } from "../components/DataState";
+import { IdleInstancePill } from "../components/IdleInstancePill";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
 import { BatchReleaseImpact, ReleaseConfirmDescription } from "../components/tasks/ReleaseConfirmDescription";
@@ -103,10 +104,13 @@ const defaultColumnVisibility: VisibilityState = {
   owner: false,
   group: false,
   duration: false,
-  billed: false,
+  billed: true,
   release: false,
   deleted: false,
 };
+// Cost became a default column after many preferences were already saved with it hidden;
+// this flag shows it once for those, then the user's own choice stands.
+const COST_COLUMN_DEFAULTED_KEY = "easy-console.tasks.costColumnDefaulted";
 const taskColumnSizing = {
   select: { size: 48, minSize: 48, maxSize: 80 },
   name: { size: 240, minSize: 160, maxSize: 560 },
@@ -256,6 +260,8 @@ function ActionHeader() {
 async function loadColumnVisibility(): Promise<VisibilityState> {
   try {
     const raw = await browserRuntime.storage.get(COLUMN_VISIBILITY_KEY);
+    const costDefaulted = Boolean(await browserRuntime.storage.get(COST_COLUMN_DEFAULTED_KEY));
+    if (!costDefaulted) void browserRuntime.storage.set(COST_COLUMN_DEFAULTED_KEY, "1");
     if (!raw) return defaultColumnVisibility;
     const parsed = JSON.parse(raw) as VisibilityState;
     delete parsed.actions;
@@ -265,6 +271,7 @@ async function loadColumnVisibility(): Promise<VisibilityState> {
       delete parsed.cost;
     }
     if (Object.keys(parsed).length === 0) return defaultColumnVisibility;
+    if (!costDefaulted) parsed.billed = true;
     if (!("release" in parsed)) {
       return {
         ...defaultColumnVisibility,
@@ -1374,7 +1381,7 @@ export function TasksPage() {
     setCreateOpen(true);
   };
 
-  // "新建任务" from the command palette while this page is already open.
+  // "新建实例" from the command palette while this page is already open.
   useEffect(() => subscribeCreateTaskRequests(() => {
     setCloneTask(null);
     setEditTask(null);
@@ -1539,7 +1546,13 @@ export function TasksPage() {
       columnHelper.accessor("status", {
         ...taskColumnSizing.status,
         header: text("状态", "Status"),
-        cell: (info) => <StatusBadge status={info.getValue()} />,
+        // Stacked rather than side by side, so a possibly idle instance never widens the column.
+        cell: (info) => (
+          <div className="flex flex-col items-start gap-1">
+            <StatusBadge status={info.getValue()} />
+            <IdleInstancePill task={info.row.original} />
+          </div>
+        ),
       }),
       columnHelper.accessor((row) => resourceText(row), {
         id: "resource",
@@ -1585,6 +1598,15 @@ export function TasksPage() {
           <span className="app-numeric whitespace-nowrap text-app-text">{Number(info.getValue()) > 0 ? formatCost(info.getValue(), locale) : "—"}</span>
         ),
       }),
+      // Release sits beside cost, ahead of the timestamps: when the table is wider than its region,
+      // what an instance costs and when it stops stay in view and the creation time scrolls instead.
+      columnHelper.accessor((row) => row.releace_conditions ?? row.release_condition, {
+        id: "releaseCondition",
+        ...taskColumnSizing.releaseCondition,
+        header: text("释放条件", "Release condition"),
+        // A live timed release counts down here as it does on the phone card and the dashboard.
+        cell: (info) => <ReleaseConditionBadge condition={info.getValue()} releaseAt={getLiveTimedReleaseAt(info.row.original)} />,
+      }),
       columnHelper.accessor((row) => row.create_time ?? row.created_at ?? "-", {
         id: "created",
         ...taskColumnSizing.created,
@@ -1596,12 +1618,6 @@ export function TasksPage() {
         ...taskColumnSizing.release,
         header: text("释放时间", "Release time"),
         cell: (info) => <span className="app-numeric whitespace-nowrap text-app-text">{info.getValue()}</span>,
-      }),
-      columnHelper.accessor((row) => row.releace_conditions ?? row.release_condition, {
-        id: "releaseCondition",
-        ...taskColumnSizing.releaseCondition,
-        header: text("释放条件", "Release condition"),
-        cell: (info) => <ReleaseConditionBadge condition={info.getValue()} />,
       }),
       columnHelper.accessor((row) => (row.is_delete ? text("已删除", "Deleted") : text("正常", "Normal")), {
         id: "deleted",
@@ -2161,7 +2177,7 @@ export function TasksPage() {
         {compactLayout ? null : (
           <Button onClick={openCreateTask}>
             <Plus className="h-4 w-4" />
-            {text("新建任务", "New task")}
+            {text("新建实例", "New instance")}
           </Button>
         )}
       </div>
@@ -2173,8 +2189,11 @@ export function TasksPage() {
           <ErrorState error={query.error} action={<Button variant="secondary" onClick={() => query.refetch()}>{text("重试", "Retry")}</Button>} />
         ) : table.getRowModel().rows.length === 0 && queryState.keyword.trim() ? (
           <EmptyState icon={SearchXIcon} title={text("未找到匹配实例", "No matching instances")} action={<Button variant="secondary" onClick={() => updateTaskQuery({ keyword: "" })}>{text("清空搜索", "Clear search")}</Button>} />
+        ) : table.getRowModel().rows.length === 0 && queryState.status ? (
+          // A status filter that matches nothing is not an empty account: offer the way back, not a create.
+          <EmptyState icon={SearchXIcon} title={text("没有该状态的实例", "No instances in this status")} action={<Button variant="secondary" onClick={() => updateTaskQuery({ status: "" })}>{text("清除状态筛选", "Clear status filter")}</Button>} />
         ) : table.getRowModel().rows.length === 0 ? (
-          <EmptyState title={text("暂无任务实例", "No task instances")} action={<Button onClick={openCreateTask}>{text("新建任务", "New task")}</Button>} />
+          <EmptyState title={text("暂无任务实例", "No task instances")} action={<Button onClick={openCreateTask}>{text("新建实例", "New instance")}</Button>} />
         ) : (
           <>
           <h2 id="task-list-heading" className="sr-only">
@@ -2251,6 +2270,7 @@ export function TasksPage() {
                           <span className="app-numeric text-app-text">{formatCost(cost, locale)}</span>
                         ) : null}
                         <ReleaseConditionBadge condition={task.releace_conditions ?? task.release_condition} releaseAt={getLiveTimedReleaseAt(task)} />
+                        <IdleInstancePill task={task} />
                       </div>
                     </div>
                   </div>

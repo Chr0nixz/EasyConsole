@@ -204,10 +204,10 @@ describe("ScheduledTasksPage execution safety", () => {
   it("saves a future plan with the signed-in owner without submitting it remotely", async () => {
     renderPage();
     fireEvent.click((await screen.findAllByRole("button", { name: /新建计划|New plan/ }))[0]);
-    fireEvent.change(screen.getByRole("textbox", { name: /任务名称|Task name/ }), { target: { value: "future-train" } });
+    fireEvent.change(screen.getByRole("textbox", { name: /实例名称|Instance name/ }), { target: { value: "future-train" } });
     await waitFor(() => expect(screen.getByRole("combobox", { name: /镜像|Image/ })).toHaveValue("1"));
     await waitFor(() => expect(screen.getByRole("spinbutton", { name: /计费单价|Hourly rate/ })).toHaveValue(1));
-    expect(fireEvent.submit(screen.getByRole("textbox", { name: /任务名称|Task name/ }).closest("form")!)).toBe(false);
+    expect(fireEvent.submit(screen.getByRole("textbox", { name: /实例名称|Instance name/ }).closest("form")!)).toBe(false);
     await waitFor(() => expect(storedTasks()).toHaveLength(1));
     expect(storedTasks()[0]).toMatchObject({ name: "future-train", status: "pending", owner: { displayName: "Tester" }, payload: { name: "future-train", img: 1 } });
     expect(mocks.createTask).not.toHaveBeenCalled();

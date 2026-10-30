@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_APP_SETTINGS, setRuntimeSettings } from "../lib/app-settings";
 import { makeAccountScope, resetAccountScope, setActiveAccountScope } from "../lib/account-scope";
 import { I18nProvider } from "../lib/i18n";
+import { useIdleEvidence } from "../lib/idle-instance-state";
 import { browserRuntime } from "../lib/runtime";
 import { taskSnapshotQueryKey } from "../lib/task-snapshot-query";
 import { ToastContext } from "../lib/use-toast";
@@ -23,8 +24,11 @@ import { IdleInstanceWatcher } from "./IdleInstanceWatcher";
 
 const toast = { notify: mocks.notify, success: mocks.success, error: mocks.error, info: vi.fn() };
 let client: QueryClient;
+function IdleEvidenceProbe() {
+  return <output data-testid="idle-evidence">{useIdleEvidence(mocks.task) ?? "not-idle"}</output>;
+}
 function renderWatcher() {
-  return render(<MemoryRouter><I18nProvider><ToastContext.Provider value={toast}><QueryClientProvider client={client}><IdleInstanceWatcher /></QueryClientProvider></ToastContext.Provider></I18nProvider></MemoryRouter>);
+  return render(<MemoryRouter><I18nProvider><ToastContext.Provider value={toast}><QueryClientProvider client={client}><IdleInstanceWatcher /><IdleEvidenceProbe /></QueryClientProvider></ToastContext.Provider></I18nProvider></MemoryRouter>);
 }
 async function tick() {
   mocks.now += 60_001;
@@ -126,6 +130,24 @@ describe("idle watcher acceptance", () => {
     await tick();
     expect(mocks.monitor).not.toHaveBeenCalled();
     expect(mocks.release).not.toHaveBeenCalled();
+  });
+
+  it("clears idle evidence when the next monitor request fails", async () => {
+    renderWatcher();
+    await waitFor(() => expect(screen.getByTestId("idle-evidence")).toHaveTextContent("heuristic"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.monitor.mockRejectedValueOnce(new Error("metrics unavailable"));
+    await tick();
+    await waitFor(() => expect(screen.getByTestId("idle-evidence")).toHaveTextContent("not-idle"));
+    expect(mocks.release).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("clears published idle evidence when monitoring is disabled", async () => {
+    renderWatcher();
+    await waitFor(() => expect(screen.getByTestId("idle-evidence")).toHaveTextContent("heuristic"));
+    act(() => setRuntimeSettings({ ...DEFAULT_APP_SETTINGS, idleAutoRelease: false, notificationPreferences: { ...DEFAULT_APP_SETTINGS.notificationPreferences, "task.idle": "off" } }));
+    await waitFor(() => expect(screen.getByTestId("idle-evidence")).toHaveTextContent("not-idle"));
   });
 
   it("falls back to an app notification if system delivery fails", async () => {
