@@ -3,12 +3,16 @@
   "private": true,
   "version": "0.4.27",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "dev:tauri": "vite --host 127.0.0.1 --port 1420 --strictPort",
     "build": "tsc -b && vite build",
     "build:desktop": "node tools/easy-console/build-desktop.mjs",
     "build:sidecars": "node tools/easy-console/build-sidecars.mjs",
+    "sidecars:placeholders": "node tools/easy-console/ensure-sidecar-placeholders.mjs",
     "build:web": "tsc -b && vite build",
     "ec": "tsx tools/easy-console/cli-entry.ts",
     "ec:mcp": "tsx tools/easy-console/mcp-entry.ts",

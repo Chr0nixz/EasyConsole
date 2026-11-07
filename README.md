@@ -72,6 +72,8 @@ Authenticate the separate CLI/MCP config using the [stdin login instructions](#l
 
 ## Setup
 
+Requires Node.js 22 or newer (CI and `.nvmrc` pin Node 22) and npm. A Rust stable toolchain is only needed for the desktop shell.
+
 ```powershell
 npm.cmd install
 Copy-Item .env.example .env.local
@@ -80,10 +82,17 @@ npm.cmd run dev
 
 PowerShell may block `npm.ps1`; use `npm.cmd` on Windows.
 
-For desktop development:
+For desktop development, build the sidecars once after cloning:
 
 ```powershell
+npm.cmd run build:sidecars
 npm.cmd run tauri:dev
+```
+
+`src-tauri/binaries/` is generated and git-ignored, so a fresh clone has none. `tauri dev`, `cargo check`, `cargo clippy`, and `cargo test` all fail while it is missing (`resource path binaries/... doesn't exist`). If you only need the Rust checks, create empty placeholders instead of full sidecars:
+
+```powershell
+npm.cmd run sidecars:placeholders
 ```
 
 `dev:tauri` starts only the Tauri-targeted Vite dev server; `tauri:dev` is the normal desktop entrypoint and starts that server through Tauri's `beforeDevCommand`.

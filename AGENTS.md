@@ -35,6 +35,7 @@ npm.cmd run test
 npm.cmd run build
 npm.cmd run build:desktop
 npm.cmd run build:sidecars
+npm.cmd run sidecars:placeholders
 npm.cmd run tauri:dev
 npm.cmd run tauri:build
 npm.cmd run ec -- --help
@@ -58,6 +59,8 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
 Use `npm.cmd run build` for the web-only production build. Use `npm.cmd run build:desktop` for Tauri build inputs; it builds sidecars, typechecks the app, and runs Vite. Use `npm.cmd run tauri:build` when an actual desktop bundle or installer is required. When time is limited, prioritize desktop input build and Tauri shell checks over web-only verification.
+
+A fresh clone has no `src-tauri/binaries/` (git-ignored, generated), so `tauri:dev`, `cargo check`, `cargo clippy`, and `cargo test` fail with `resource path binaries/... doesn't exist` until sidecars exist. Run `npm.cmd run build:sidecars` before desktop work, or `npm.cmd run sidecars:placeholders` when only the Rust checks are needed.
 
 `lint` runs with `--max-warnings=37`, which is a ratchet rather than a target. The number may only go down: when you remove warnings, lower it in the same commit. Never raise it to make a build pass -- fix the new warning instead. Remaining warnings are `react-hooks/set-state-in-effect`, `react-refresh/only-export-components`, `react-hooks/exhaustive-deps`, and `react-hooks/incompatible-library`.
 
