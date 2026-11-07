@@ -208,7 +208,7 @@ All `--json` CLI output uses this shape:
 
 Success envelopes go to stdout; errors (including usage errors) go to stderr with `ok: false` and a nonzero exit code. `--help` remains text. A successful wait or batch command may contain timeout/failed outcomes; inspect the returned business result.
 
-The [CLI/MCP contract](CLI_MCP_CONTRACT.md) records all 54 MCP tools, CLI arguments, result shapes and resource URIs. For 1.x, **stable** interfaces keep compatible names, inputs and client-owned return fields. **Experimental** interfaces are task PATCH editing and image editing/deletion; their live service behavior remains unverified. Idle auto-release and Windows scheduled wake are also experimental desktop capabilities. Published names and both sidecar entrypoints are retained throughout 1.x, with deprecation before removal in 2.0.
+The [CLI/MCP contract](CLI_MCP_CONTRACT.md) records all 54 MCP tools, CLI arguments, result shapes and resource URIs. For 1.x, **stable** interfaces keep compatible names, inputs and client-owned return fields. **Experimental** interfaces are task PATCH editing and image editing/deletion; their live service behavior remains unverified. Idle auto-release and scheduled wake (Windows and macOS) are also experimental desktop capabilities. Published names and both sidecar entrypoints are retained throughout 1.x, with deprecation before removal in 2.0.
 
 Task logs and remote text reads are truncated by default at `200000` bytes and return truncation metadata.
 
@@ -225,7 +225,7 @@ Available MCP tools include task list/log/create/release/delete, storage list/re
 ## Desktop Runtime
 
 - Idle reminders use CPU/network metrics, plus real GPU utilization sampled with `nvidia-smi` over an existing in-app SSH connection in the main window. **Experimental auto-release is off by default**; release stops billing and destroys container-local data irreversibly. It requires explicit opt-in, a full continuous sampling window for every allocated GPU, fresh low CPU metrics, zero network traffic, and the same signed-in account/API realm. Missing samples never authorize release; uncertain release results are recorded and never automatically retried.
-- On Windows, Settings → Window & Startup can register an **experimental**, opt-in Task Scheduler wake-up. It checks the desktop's local plans every minute and starts the app when a pending plan is due. It requires an interactive OS login and valid console credentials; the desktop runner still checks ownership and missed-run policy. Turning it off removes the OS task. Other platforms keep launch-at-login/tray behavior.
+- On Windows and macOS, Settings → Window & Startup can register an **experimental**, opt-in wake-up. It checks the desktop's local plans every minute and starts the app when a pending plan is due: a Task Scheduler task on Windows, a per-user launchd agent on macOS (see [macOS](#macos)). Neither stores credentials or calls the console. It requires an interactive OS login and valid console credentials; the desktop runner still checks ownership and missed-run policy. Turning it off removes the OS task or agent. Linux keeps launch-at-login/tray behavior.
 - **Experimental** task editing and release extension use PATCH only. PUT on the same task route is the original console's release operation and is never used as an editing fallback. A backend without PATCH support reports an unsupported operation. **Image editing/deletion are also experimental**; use test images until live-service acceptance is complete.
 
 The desktop app is built with Tauri 2 and is the primary product target. Web code talks to `src/lib/runtime.ts`; Tauri-specific commands live in `src-tauri/src/lib.rs`.
@@ -237,6 +237,12 @@ The desktop app is built with Tauri 2 and is the primary product target. Web cod
 - Desktop task SSH actions include in-app SSH auto-login, opening a system terminal, and configuring/opening VS Code Remote-SSH. Web runtime only exposes copyable SSH details and WebSSH.
 - VS Code Remote-SSH setup creates an EasyConsole-managed key, installs the public key on the target host through password SSH, and writes an EasyConsole-marked block in the user's SSH config.
 - New platform behavior should be designed for Tauri first, then exposed through the browser runtime only when it has a clean equivalent.
+
+### macOS
+
+- Scheduled wake-up (`src-tauri/src/scheduled_wake_macos.rs`) writes `~/Library/LaunchAgents/com.easyconsole.desktop.scheduled-wake.<hash>.plist` and loads it with `launchctl bootstrap gui/$UID`; turning it off runs `launchctl bootout` and deletes the plist. Every 60 seconds, and once at login, the agent runs a JXA script (`osascript -l JavaScript`) that exits if the app is already running, reads the scheduled-plan record from `runtime-storage.d/` (or its `.bak`, or the legacy `runtime-storage.json` before migration), and runs `open -g` on the installed `.app` when a pending plan is due.
+- It needs the packaged app; development builds and apps that macOS runs from a temporary (translocated) location report an error instead. macOS may list the agent under System Settings → General → Login Items & Extensions, and turning it off there takes precedence.
+- launchd does not wake a sleeping Mac: plans that come due during sleep are checked after the Mac wakes, so keep the Mac awake if a plan must start on time.
 
 ## Packaging
 

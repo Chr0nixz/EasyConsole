@@ -11,6 +11,18 @@ describe("scheduled wake controls", () => {
     await waitFor(() => expect(call).toHaveBeenCalledWith());
     expect(view.container).toBeEmptyDOMElement();
   });
+  it.each([
+    [false, /Windows/, /launchd/],
+    [true, /launchd.*Mac/, /Windows/],
+  ])("names the OS scheduler that applies (Apple platform: %s)", async (apple, shown, hidden) => {
+    vi.spyOn(browserRuntime, "isApplePlatform", "get").mockReturnValue(apple);
+    vi.spyOn(browserRuntime, "desktopScheduledWake").mockResolvedValue(false);
+    render(<ScheduledWakeSettings />);
+    await screen.findByRole("checkbox");
+    const help = document.getElementById("scheduled-wake-help");
+    expect(help).toHaveTextContent(shown);
+    expect(help).not.toHaveTextContent(hidden);
+  });
   it("reflects actual OS state, reports registration failure and permits retry", async () => {
     const call = vi.spyOn(browserRuntime, "desktopScheduledWake").mockResolvedValueOnce(false)
       .mockRejectedValueOnce(new Error("Access denied")).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
