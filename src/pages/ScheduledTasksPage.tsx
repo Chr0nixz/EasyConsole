@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarCheck, CalendarClock, FolderOpen, Pause, Pencil, Play, Plus, SkipForward, Trash2, X, Zap } from "lucide-react";
+import { AlertTriangle, CalendarCheck, CalendarClock, FolderOpen, Pause, Pencil, Play, Plus, SkipForward, Trash2, X, Zap } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -20,7 +20,7 @@ import { getActiveAccountScope } from "../lib/account-scope";
 import { getRuntimeSettings } from "../lib/app-settings";
 import { runBatch } from "../lib/batch-runner";
 import { queryKeys } from "../lib/query-keys";
-import { addHours, formatDateTimeLocalInput, formatTaskDefaultName, localizedText, releaseConditionText } from "../lib/format";
+import { addHours, formatCost, formatDateTimeLocalInput, formatHourlyRate, formatTaskDefaultName, localizedText, releaseConditionText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { i18nText } from "../lib/i18n-text";
 import { parsePositivePrice } from "../lib/resource-price";
@@ -29,7 +29,8 @@ import { browserRuntime } from "../lib/runtime";
 import { useExecutionReviewCount } from "../lib/use-execution-review";
 import { formatPayloadResources, formatResourcePresetSummary, parseResourcePresetValues } from "../lib/resource-presets";
 import { useResourcePresets } from "../lib/use-resource-presets";
-import { applyScheduledReleasePolicy, getScheduledReleaseTime } from "../lib/scheduled-release";
+import { countFirstDayRuns, estimateScheduleCost, FIRST_DAY_RUN_CAP } from "../lib/schedule-cost";
+import { applyScheduledReleasePolicy, getScheduledReleaseTime, SCHEDULED_RELEASE_DELAY_HOURS } from "../lib/scheduled-release";
 import {
   applyEnvToScriptCommand,
   findScriptEnvVarErrors,
@@ -118,7 +119,6 @@ function buildFormRecurrence(type: TaskRecurrenceType, intervalMinutes: string, 
 }
 
 const PREVIEW_RUN_COUNT = 3;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * What a recurring rule will actually do: the next runs and how many instances a day
@@ -134,9 +134,7 @@ function RecurrencePreview({ scheduleTime, recurrence }: { scheduleTime: string;
       validateRecurrence(recurrence);
       const seed = { scheduleTime: first.toISOString(), lastRunAt: first.toISOString(), recurrence } as ScheduledTask;
       const runs = [first, ...previewNextRuns(seed, PREVIEW_RUN_COUNT - 1, first)];
-      // Runs inside the first 24 hours, capped so a per-minute cron stays cheap to count.
-      const dayRuns = [first, ...previewNextRuns(seed, 300, first)].filter((run) => run.getTime() - first.getTime() < DAY_MS).length;
-      return { runs, dayRuns };
+      return { runs, dayRuns: countFirstDayRuns(scheduleTime, recurrence) ?? 0 };
     } catch (error) {
       return { error: error instanceof Error ? error.message : text("重复规则无效", "Invalid recurrence rule") };
     }
@@ -153,11 +151,82 @@ function RecurrencePreview({ scheduleTime, recurrence }: { scheduleTime: string;
           {text("接下来：", "Next runs: ")}
           <span className="app-numeric text-app-text">{preview.runs.map(formatRun).join(" · ")}</span>
           {text(
-            ` · 首日约 ${preview.dayRuns >= 300 ? "300+" : preview.dayRuns} 次，每次创建 1 个实例`,
-            ` · about ${preview.dayRuns >= 300 ? "300+" : preview.dayRuns} in the first day, each creating one instance`,
+            ` · 首日约 ${preview.dayRuns >= FIRST_DAY_RUN_CAP ? `${FIRST_DAY_RUN_CAP}+` : preview.dayRuns} 次，每次创建 1 个实例`,
+            ` · about ${preview.dayRuns >= FIRST_DAY_RUN_CAP ? `${FIRST_DAY_RUN_CAP}+` : preview.dayRuns} in the first day, each creating one instance`,
           )}
         </span>
       )}
+    </div>
+  );
+}
+
+/**
+ * What saving the plan commits to, beside the save button: the rate each run starts, how
+ * often it runs, and what that adds up to when the length is known. A recurring plan with
+ * manual release is the one combination that keeps adding instances nobody stops, so it is
+ * the one line here that takes the warning color.
+ */
+function SchedulePlanSummary({
+  price,
+  releaseCondition,
+  scheduleTime,
+  recurrence,
+}: {
+  price: string;
+  releaseCondition: string;
+  scheduleTime: string;
+  recurrence: TaskRecurrence | undefined;
+}) {
+  const { locale, text } = useI18n();
+  const rate = parsePositivePrice(price);
+  const condition = Number(releaseCondition);
+  const recurring = Boolean(recurrence && recurrence.type !== "once");
+  const runsPerDay = recurring && recurrence ? countFirstDayRuns(scheduleTime, recurrence) : null;
+  const { perRun, perDay } = estimateScheduleCost({ rate, releaseCondition: condition, runsPerDay });
+  const capped = runsPerDay !== null && runsPerDay >= FIRST_DAY_RUN_CAP;
+  const runsText = runsPerDay === null ? null : capped ? `${FIRST_DAY_RUN_CAP}+` : String(runsPerDay);
+  const releaseLabel = localizedText(releaseConditionText[condition], locale) ?? "-";
+
+  const headline = [
+    text("每次 1 个实例", "1 instance per run"),
+    rate === null ? text("未设置单价", "Rate not set") : formatHourlyRate(rate, locale),
+    condition === 2
+      ? text(`${releaseLabel}（执行后 ${SCHEDULED_RELEASE_DELAY_HOURS} 小时）`, `${releaseLabel} (${SCHEDULED_RELEASE_DELAY_HOURS} hours after each run)`)
+      : releaseLabel,
+    runsText ? text(`首日约 ${runsText} 次`, `about ${runsText} runs in the first day`) : null,
+  ].filter(Boolean);
+
+  let note: string | null = null;
+  let warning = false;
+  if (perRun !== null) {
+    const run = formatCost(perRun, locale);
+    note = perDay !== null
+      ? text(
+          `按所填单价估算，每次约 ${run}，首日合计${capped ? "至少" : "约"} ${formatCost(perDay, locale)}，以实际计费为准。`,
+          `Estimated at the entered rate: about ${run} per run, ${capped ? "at least" : "about"} ${formatCost(perDay, locale)} in the first day. Actual charges may differ.`,
+        )
+      : text(`按所填单价估算，本次约 ${run}，以实际计费为准。`, `Estimated at the entered rate: about ${run} for this run. Actual charges may differ.`);
+  } else if (condition === 1) {
+    warning = recurring;
+    note = recurring
+      ? text(
+          `手动释放：每次运行都会新建一个持续计费的实例${runsText ? `，首日约 ${runsText} 个` : ""}，需要逐个释放。`,
+          `Manual release: every run adds another instance that bills until it is released${runsText ? `, about ${runsText} in the first day` : ""}, each released by hand.`,
+        )
+      : text("手动释放：实例会一直计费，直到被释放。", "Manual release: the instance bills until it is released.");
+  } else if (condition === 3) {
+    note = text("任务结束释放：按脚本实际运行时长计费。", "Release after task ends: billed for as long as the script runs.");
+  }
+
+  return (
+    <div className="min-w-0 flex-1 text-xs text-app-muted" role="group" aria-label={text("计划摘要", "Plan summary")}>
+      <p className="app-numeric font-medium text-app-text">{headline.join(" · ")}</p>
+      {note ? (
+        <p id="scheduled-plan-cost" className={cn("mt-1 flex gap-1.5 leading-5", warning && "text-app-warningText")}>
+          {warning ? <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : null}
+          <span>{note}</span>
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -1089,14 +1158,22 @@ export function ScheduledTasksPage() {
             ) : null}
           </FormSection>
           {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={resetForm}>
-              {text("取消", "Cancel")}
-            </Button>
-            <Button disabled={saveMutation.isPending}>
-              {editingId ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-              {editingId ? text("保存修改", "Save changes") : text("保存定时任务", "Save scheduled task")}
-            </Button>
+          <div className="flex flex-col gap-3 border-t border-app-border pt-3 sm:flex-row sm:items-center sm:justify-between">
+            <SchedulePlanSummary
+              price={price}
+              recurrence={buildFormRecurrence(recurrenceType, recurrenceIntervalMin, recurrenceCron, recurrenceWeekdays)}
+              releaseCondition={releaseCondition}
+              scheduleTime={scheduleTime}
+            />
+            <div className="flex shrink-0 justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={resetForm}>
+                {text("取消", "Cancel")}
+              </Button>
+              <Button aria-describedby="scheduled-plan-cost" disabled={saveMutation.isPending}>
+                {editingId ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                {editingId ? text("保存修改", "Save changes") : text("保存定时任务", "Save scheduled task")}
+              </Button>
+            </div>
           </div>
         </form>
       </Panel>

@@ -130,6 +130,17 @@ export function formatCost(value: unknown, locale: Locale = "zh-CN") {
   return locale === "en-US" ? `CNY ${amount}` : `${amount} 元`;
 }
 
+/** An hourly rate with its unit ("48.00 元/小时"). Up to four decimals, so an entered rate is never rounded away. */
+export function formatHourlyRate(value: unknown, locale: Locale = "zh-CN") {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  const amount = number.toLocaleString(locale, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  });
+  return locale === "en-US" ? `CNY ${amount}/hr` : `${amount} 元/小时`;
+}
+
 export function formatHours(value: unknown, locale: Locale = "zh-CN") {
   const number = Number(value);
   if (!Number.isFinite(number)) return "-";

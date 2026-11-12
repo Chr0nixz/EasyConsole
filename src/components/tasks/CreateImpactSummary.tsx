@@ -1,4 +1,4 @@
-import { localizedText, releaseConditionText } from "../../lib/format";
+import { formatHourlyRate, localizedText, releaseConditionText } from "../../lib/format";
 import { useI18n } from "../../lib/i18n";
 import { formatPayloadResources } from "../../lib/resource-presets";
 import type { CreateTaskPayload } from "../../lib/types";
@@ -6,7 +6,7 @@ import type { CreateTaskPayload } from "../../lib/types";
 /**
  * What submitting a creation commits the user to, shown above every create preview (batch
  * create, template apply, scheduled run now / run due): how many instances, what each one
- * holds, and that EasyConsole cannot take a creation back. The creation counterpart of
+ * holds, what they bill per hour together, and that EasyConsole cannot take a creation back. The creation counterpart of
  * `BatchReleaseImpact`, so spending never reads lighter than releasing.
  */
 export function CreateImpactSummary({ payloads }: { payloads: CreateTaskPayload[] }) {
@@ -15,6 +15,11 @@ export function CreateImpactSummary({ payloads }: { payloads: CreateTaskPayload[
     const value = Number(payload.gpu);
     return Number.isFinite(value) && value > 0 ? total + value : total;
   }, 0);
+  // Every payload carries the rate it was created at; one without a usable rate leaves the total unknown.
+  const rates = payloads.map((payload) => Number(payload.price));
+  const totalRate = rates.every((rate) => Number.isFinite(rate) && rate > 0)
+    ? rates.reduce((total, rate) => total + rate, 0)
+    : null;
   const shapes = new Set(payloads.map(formatPayloadResources));
   const conditions = new Set(payloads.map((payload) => Number(payload.releace_conditions)));
   const condition = conditions.size === 1 ? releaseConditionText[[...conditions][0]] : undefined;
@@ -31,6 +36,8 @@ export function CreateImpactSummary({ payloads }: { payloads: CreateTaskPayload[
         <dd className="app-numeric text-app-text">{shapes.size === 1 ? [...shapes][0] : text("各不相同，逐项见下方", "Varies, listed per item below")}</dd>
         <dt>{text("合计 GPU", "GPUs in total")}</dt>
         <dd className="app-numeric text-app-text">{gpus > 0 ? gpus : "—"}</dd>
+        <dt>{text("合计单价", "Total rate")}</dt>
+        <dd className="app-numeric text-app-text">{totalRate !== null ? formatHourlyRate(totalRate, locale) : "—"}</dd>
         <dt>{text("释放条件", "Release condition")}</dt>
         <dd className="text-app-text">{condition ? localizedText(condition, locale) : text("各不相同", "Varies")}</dd>
       </dl>

@@ -36,12 +36,14 @@ import {
   formatDateTimeForApi,
   formatDateTimeLocalInput,
   formatExperimentTimedTaskName,
+  formatHourlyRate,
   formatTaskDefaultName,
   getStatusText,
   getTaskName,
   localizedText,
   releaseConditionText,
 } from "../../lib/format";
+import { guardImplicitSubmit, submitShortcut } from "../../lib/form-submit-keys";
 import { summarizeLogFailure } from "../../lib/log-failure";
 import { taskLogQueryOptions } from "../../lib/task-log-query";
 import { FAILURE_STATUSES } from "../../lib/task-status-notifications";
@@ -872,7 +874,7 @@ export function CreateTaskDialog({
   const instanceCount = isEditMode ? 1 : Number(batchCount);
   const validCount = Number.isInteger(instanceCount) && instanceCount >= 1 ? instanceCount : null;
   const gpuPerInstance = parseNonNegativeInteger(gpu);
-  const rateText = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 4 });
+  const rateText = (value: number) => value.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
   const priceSummary = priceValue === null
     ? text("未设置单价", "Rate not set")
     : validCount !== null && validCount > 1
@@ -884,19 +886,23 @@ export function CreateTaskDialog({
   const gpuSummary = validCount !== null && gpuPerInstance !== null && gpuPerInstance > 0
     ? text(`共 ${validCount * gpuPerInstance} GPU`, `${validCount * gpuPerInstance} GPU total`)
     : null;
-  const createLabel = validCount !== null && validCount > 1
-    ? text(`创建 ${validCount} 个实例`, `Create ${validCount} instances`)
-    : text("创建", "Create");
   const releaseSummary = localizedText(releaseConditionText[Number(releaseCondition)], locale) ?? "-";
   // Two or more instances open the impact preview first; a single create submits directly,
-  // so the footer says what the click commits to before it is made.
+  // so the button itself names the hourly rate the click starts, and the footer says the rest.
   const directCreate = !isEditMode && validCount === 1;
+  const rateOnButton = directCreate && priceValue !== null;
+  const createLabel = validCount !== null && validCount > 1
+    ? text(`创建 ${validCount} 个实例`, `Create ${validCount} instances`)
+    : rateOnButton
+      ? text(`创建 · ${formatHourlyRate(priceValue, locale)}`, `Create · ${formatHourlyRate(priceValue, locale)}`)
+      : text("创建", "Create");
+  const shortcut = submitShortcut(Boolean(browserRuntime.isApplePlatform));
   const plannedReleaseMs = releaseCondition === "2" && releaseTime ? new Date(releaseTime).getTime() - nowMs : null;
   const plannedSpend = priceValue !== null && plannedReleaseMs !== null && plannedReleaseMs > 0
     ? formatCost((priceValue * plannedReleaseMs) / 3_600_000, locale)
     : null;
   const commitNote = [
-    text("提交后将创建实例并产生费用，请确认配置。", "Submitting creates an instance and incurs charges. Review the configuration first."),
+    text("实例启动后即开始计费，EasyConsole 无法撤回已提交的创建。", "The instance bills from the moment it starts, and EasyConsole cannot take back a submitted creation."),
     releaseCondition === "1" ? text("选择手动释放时，需要主动释放实例以停止计费。", "With manual release, release the instance yourself to stop billing.") : null,
     plannedSpend ? text(`按所填单价估算，到释放时间约 ${plannedSpend}，以实际计费为准。`, `Estimated at the entered rate: about ${plannedSpend} until release. Actual charges may differ.`) : null,
   ].filter(Boolean).join(locale === "en-US" ? " " : "");
@@ -912,7 +918,8 @@ export function CreateTaskDialog({
       mobileMode="fullscreen"
       contained
     >
-      <form className="flex h-full min-h-0 flex-col overflow-hidden" noValidate onSubmit={submit}>
+      {/* Enter in a field never submits: a single create starts billing at once. ⌘/Ctrl+Enter does. */}
+      <form className="flex h-full min-h-0 flex-col overflow-hidden" noValidate onKeyDown={guardImplicitSubmit} onSubmit={submit}>
         <div className="app-mobile-form-body min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
           {cloneSource ? (
             <div className="space-y-0.5 text-xs leading-5 text-app-muted">
@@ -1199,7 +1206,7 @@ export function CreateTaskDialog({
           <div className="min-w-0 flex-1 text-xs text-app-muted" role="group" aria-label={text("提交摘要", "Submission summary")}>
             <p className="flex flex-wrap gap-x-3 gap-y-1 font-medium text-app-text">
               <span>{text(`${isEditMode ? "1" : batchCount || "-"} 个实例`, `${isEditMode ? "1" : batchCount || "-"} ${isEditMode || Number(batchCount) === 1 ? "instance" : "instances"}`)}</span>
-              <span className="app-numeric">{priceSummary}</span>
+              {rateOnButton ? null : <span className="app-numeric">{priceSummary}</span>}
               {gpuSummary ? <span className="app-numeric">{gpuSummary}</span> : null}
               <span>{releaseSummary}{releaseCondition === "2" && releaseTime ? ` · ${formatDateTimeForApi(releaseTime)}` : ""}</span>
             </p>
@@ -1210,7 +1217,12 @@ export function CreateTaskDialog({
             <Button type="button" variant="secondary" onClick={requestClose}>
               {text("取消", "Cancel")}
             </Button>
-            <Button aria-describedby={directCreate ? "create-task-commit-note" : undefined} disabled={mutation.isPending || resolvingNames || Boolean(batchState?.pending)}>
+            <Button
+              aria-describedby={directCreate ? "create-task-commit-note" : undefined}
+              aria-keyshortcuts={shortcut.aria}
+              disabled={mutation.isPending || resolvingNames || Boolean(batchState?.pending)}
+              title={shortcut.label}
+            >
               {mutation.isPending || resolvingNames
                 ? isEditMode
                   ? text("保存中", "Saving")

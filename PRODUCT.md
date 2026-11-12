@@ -49,7 +49,7 @@ The original web console cannot truthfully offer these, because each depends on 
 ## Capabilities and Constraints
 
 - The backend belongs to the platform. Its API is reconstructed from the original console (`api_documentation.md`, `reference/original-console/`), so fields that are inferred rather than proven stay inspectable, and backend quirks such as the `releace_conditions` spelling are preserved rather than corrected.
-- Creating an instance starts billing and EasyConsole cannot take it back. Releasing an instance stops billing and destroys container-local data. Both stay behind confirmations that state these consequences.
+- Creating an instance starts billing and EasyConsole cannot take it back. Releasing an instance stops billing and destroys container-local data. Release, and any creation of more than one instance, stays behind a confirmation that states these consequences. A single create is one deliberate step instead: Enter in a field never submits it, its button names the hourly rate it starts, and its footer says the creation cannot be taken back.
 - Extending a timed release requires the backend to accept a PATCH edit. There is no PUT fallback, because the original console releases instances with PUT.
 - Templates, resource presets, scheduled tasks, the execution ledger, the change list, and run logs are EasyConsole-side helpers, not backend entities. Scheduled creations run only while the desktop app is running or can be woken; CLI/MCP plans never run on their own.
 - Idle auto-release is off by default. When enabled it acts only on a complete sampling window across every allocated GPU, with low CPU, zero network traffic, and the same account and API host; an uncertain outcome is never retried automatically.

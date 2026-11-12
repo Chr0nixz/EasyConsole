@@ -125,7 +125,9 @@ describe("CreateTaskDialog", () => {
 
     const rate = await screen.findByRole("combobox", { name: "计费单价（元/小时）" });
     await waitFor(() => expect(rate).toHaveDisplayValue("4.8"));
-    expect(within(screen.getByRole("group", { name: "提交摘要" })).getByText("4.8 元/小时")).toBeInTheDocument();
+    // A single create names the rate on its button, so the summary does not repeat it.
+    expect(screen.getByRole("button", { name: "创建 · 4.80 元/小时" })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "提交摘要" })).queryByText(/元\/小时/)).not.toBeInTheDocument();
 
     fireEvent.submit(document.querySelector("form")!);
 
@@ -154,7 +156,7 @@ describe("CreateTaskDialog", () => {
       renderDialog();
       await waitFor(() => expect(screen.getByRole("button", { name: /^资源配置/ })).toHaveAttribute("aria-expanded", "false"));
       await act(async () => { resolvePrices([4.8]); });
-      await waitFor(() => expect(within(screen.getByRole("group", { name: "提交摘要" })).getByText("4.8 元/小时")).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole("button", { name: "创建 · 4.80 元/小时" })).toBeInTheDocument());
 
       fireEvent.submit(document.querySelector("form")!);
 
@@ -334,18 +336,32 @@ describe("CreateTaskDialog", () => {
     renderDialog({ mode: "edit", editTaskId: "123" });
     await waitFor(() => expect(screen.getByText("编辑实例")).toBeInTheDocument());
     // Saving an edit starts no billing, so the create commitment line stays out.
-    expect(screen.queryByText(/提交后将创建实例并产生费用/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/实例启动后即开始计费/)).not.toBeInTheDocument();
   });
 
   it("states what a single create commits to, since it skips the impact preview", async () => {
     renderDialog();
     await waitFor(() => expect(screen.getByText("新建实例")).toBeInTheDocument());
 
-    const note = screen.getByText(/提交后将创建实例并产生费用，请确认配置。/);
+    const note = screen.getByText(/实例启动后即开始计费，EasyConsole 无法撤回已提交的创建。/);
     // The default release condition is manual, which never stops billing on its own.
     expect(note).toHaveTextContent("需要主动释放实例以停止计费");
-    // The submit button reads the commitment when focused.
-    expect(document.querySelector(`button[aria-describedby="${note.id}"]`)).toHaveTextContent("创建");
+    // The submit button names the rate it starts and reads the commitment when focused.
+    // The default rate arrives with the price list, so the label settles after the first render.
+    await waitFor(() => expect(document.querySelector(`button[aria-describedby="${note.id}"]`)).toHaveTextContent("创建 · 1.00 元/小时"));
+  });
+
+  it("creates only from the button or Cmd/Ctrl+Enter, never from Enter in a field", async () => {
+    renderDialog();
+    await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+    const name = screen.getByRole("textbox", { name: "实例名称" });
+
+    // A cancelled keydown is what stops the browser's implicit submission.
+    expect(fireEvent.keyDown(name, { key: "Enter" })).toBe(false);
+    expect(mocks.createTask).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(name, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(mocks.createTask).toHaveBeenCalledTimes(1));
   });
 
   it("names the source of a clone", async () => {
