@@ -7,7 +7,7 @@ import tseslint from "typescript-eslint";
 import i18nRules from "./tools/eslint-rules/no-bare-cjk.mjs";
 
 export default tseslint.config(
-  { ignores: ["build", "dist", "coverage", "node_modules", "src-tauri/**", "reference"] },
+  { ignores: ["build", "dist", "coverage", "node_modules", "src-tauri/**", "reference", ".claude/worktrees/"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],

@@ -1,5 +1,12 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
+
+// Node 25+ ships its own Web Storage globals, which shadow jsdom's
+// localStorage (it reads as undefined without --localstorage-file). That is
+// the default Node on a current Homebrew macOS setup; Node 22 (.nvmrc) keeps
+// the flag off already and older 22.x builds do not know it.
+const nodeMajor = Number(process.versions.node.split(".")[0]);
+const testExecArgv = nodeMajor >= 25 ? ["--no-experimental-webstorage"] : [];
 
 export default defineConfig({
   plugins: [react()],
@@ -23,9 +30,11 @@ export default defineConfig({
     },
   },
   test: {
+    exclude: [...configDefaults.exclude, ".claude/**"],
     environment: "jsdom",
     globals: true,
     setupFiles: "./src/test/setup.ts",
+    execArgv: testExecArgv,
     coverage: {
       provider: "v8",
       include: ["src/**/*.{ts,tsx}", "tools/easy-console/**/*.ts"],

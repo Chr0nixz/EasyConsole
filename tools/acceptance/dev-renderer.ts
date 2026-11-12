@@ -1,12 +1,14 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 
 import { TOKEN_STORAGE_KEY } from "../../src/lib/api-client";
 import { APP_SETTINGS_STORAGE_KEY } from "../../src/lib/app-settings";
+import { getTauriAppDataDir } from "../easy-console/local-data-store";
 
-if (!process.env.APPDATA) throw new Error("Desktop acceptance profile requires Windows APPDATA");
-const profile = join(process.env.APPDATA, "com.easyconsole.acceptance");
+// Sibling of the installed app's data directory on every desktop OS
+// (%APPDATA%, ~/Library/Application Support, $XDG_DATA_HOME), never inside it.
+const profile = join(dirname(getTauriAppDataDir()), "com.easyconsole.acceptance");
 await mkdir(profile, { recursive: true });
 const settings = {
   apiBaseUrl: "http://127.0.0.1:28991/api", monitorDashboardUrl: "http://127.0.0.1:28991/monitor",

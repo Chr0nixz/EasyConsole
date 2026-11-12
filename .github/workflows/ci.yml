@@ -115,6 +115,12 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then cli="$cli.exe"; fi
           node --import tsx tools/acceptance/cli-backup-smoke.ts "$cli"
 
+      - name: Test signed macOS bundle and sidecars
+        if: runner.os == 'macOS'
+        run: |
+          npm run tauri:build -- --debug --bundles app --config '{"build":{"beforeBuildCommand":""},"bundle":{"createUpdaterArtifacts":false}}'
+          node --import tsx tools/acceptance/macos-bundle-smoke.ts src-tauri/target/debug/bundle/macos/EasyConsole.app
+
       - name: Check Tauri shell
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
