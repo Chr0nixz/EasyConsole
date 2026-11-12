@@ -4,18 +4,20 @@ import { useMatch, useNavigate } from "react-router-dom";
 
 import { instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
+import { formatCost } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { browserRuntime } from "../lib/runtime";
 import { recordUnseenTaskFailure } from "../lib/task-attention";
-import { getUpcomingTimedReleaseNotification, type TimedReleaseDueNotification } from "../lib/task-release-notifications";
+import { getExtensionCost, getUpcomingTimedReleaseNotification, type TimedReleaseDueNotification } from "../lib/task-release-notifications";
 import { getImportantTaskStatusNotification, getTaskNotificationId, type ImportantTaskStatusNotification } from "../lib/task-status-notifications";
 import {
   nextNotificationPollInterval,
   TASK_SNAPSHOT_POLL_INTERVAL,
   taskSnapshotQueryOptions,
 } from "../lib/task-snapshot-query";
-import type { TaskStatus } from "../lib/types";
+import type { Task, TaskStatus } from "../lib/types";
 import { useAuth } from "../lib/use-auth";
+import { useExtendRelease } from "../lib/use-extend-release";
 import { useToast } from "../lib/use-toast";
 
 export function TaskNotificationWatcher() {
@@ -23,6 +25,7 @@ export function TaskNotificationWatcher() {
   const toast = useToast();
   const { locale, text } = useI18n();
   const navigate = useNavigate();
+  const { extend } = useExtendRelease();
   const initializedRef = useRef(false);
   const statusSnapshotRef = useRef<Map<string, TaskStatus | undefined>>(new Map());
   // Session-scoped: a timed release warns once per release time; extending the
@@ -76,18 +79,27 @@ export function TaskNotificationWatcher() {
     });
   }, [navigate, text, toast]);
 
-  const showInAppReleaseNotification = useCallback((notification: TimedReleaseDueNotification) => {
+  // The reminder is the one-step extension: an hour more from the toast, priced on the button,
+  // or the detail page with the extend dialog already open for a longer choice.
+  const showInAppReleaseNotification = useCallback((notification: TimedReleaseDueNotification, task: Task) => {
+    const hourCost = getExtensionCost(task, 1);
     toast.notify({
-      kind: "info",
+      kind: "warning",
       title: notification.title,
       description: notification.body,
       durationMs: 15_000,
       action: {
-        label: text("去处理", "Resolve"),
-        onClick: () => navigate(`/tasks/${encodeURIComponent(notification.routeId)}`),
+        label: hourCost === null
+          ? text("延长 1 小时", "Extend 1 Hour")
+          : text(`延长 1 小时 · 约 ${formatCost(hourCost, locale)}`, `Extend 1 Hour · ≈ ${formatCost(hourCost, locale)}`),
+        onClick: () => extend(task, 1),
+      },
+      secondaryAction: {
+        label: text("其他时长", "Other Durations"),
+        onClick: () => navigate(`/tasks/${encodeURIComponent(notification.routeId)}?extend=1`),
       },
     });
-  }, [navigate, text, toast]);
+  }, [extend, locale, navigate, text, toast]);
 
   useEffect(() => {
     if (!auth.token) {
@@ -145,7 +157,7 @@ export function TaskNotificationWatcher() {
         warnedReleaseKeysRef.current.add(dueNotification.dedupeKey);
         const mode = settings.notificationPreferences[dueNotification.event];
         if (mode === "app") {
-          showInAppReleaseNotification(dueNotification);
+          showInAppReleaseNotification(dueNotification, task);
         } else if (mode === "system") {
           void browserRuntime
             .notifySystem({
@@ -154,7 +166,7 @@ export function TaskNotificationWatcher() {
               tag: dueNotification.tag,
             })
             .then((result) => {
-              if (result !== "shown") showInAppReleaseNotification(dueNotification);
+              if (result !== "shown") showInAppReleaseNotification(dueNotification, task);
             });
         }
       }

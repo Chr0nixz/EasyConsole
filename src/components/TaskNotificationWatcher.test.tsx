@@ -10,7 +10,11 @@ import { taskSnapshotQueryKey } from "../lib/task-snapshot-query";
 import type { Task } from "../lib/types";
 import { ToastProvider } from "./Toast";
 
-const mocks = vi.hoisted(() => ({ items: [] as Task[] }));
+const mocks = vi.hoisted(() => ({ items: [] as Task[], extend: vi.fn() }));
+
+vi.mock("../lib/use-extend-release", () => ({
+  useExtendRelease: () => ({ extend: mocks.extend, pending: false }),
+}));
 
 vi.mock("../lib/fetch-all-tasks", () => ({
   fetchAllTasks: () =>
@@ -74,6 +78,7 @@ describe("TaskNotificationWatcher", () => {
     window.localStorage.clear();
     window.localStorage.setItem(I18N_STORAGE_KEY, "zh-CN");
     mocks.items = [task(2)];
+    mocks.extend.mockReset();
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     notifySystem = vi.spyOn(browserRuntime, "notifySystem").mockResolvedValue("shown");
   });
@@ -145,5 +150,20 @@ describe("TaskNotificationWatcher", () => {
       raw: null,
     });
     await waitFor(() => expect(notifySystem).toHaveBeenCalledTimes(2));
+  });
+
+  it("offers a priced one-hour extension and the other durations in the in-app reminder", async () => {
+    // A refused system notification falls back to the in-app toast.
+    notifySystem.mockResolvedValue("denied");
+    const due = { ...task(2), price: 12, releace_conditions: 2, releace_time: formatReleaseTimeInput(new Date(Date.now() + 5 * 60_000)) } as Task;
+    mocks.items = [due];
+    renderWatcher(client);
+
+    const extendButton = await screen.findByRole("button", { name: "延长 1 小时 · 约 12.00 元" });
+    expect(screen.getByText(/数据会被清理/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "其他时长" })).toBeInTheDocument();
+
+    fireEvent.click(extendButton);
+    expect(mocks.extend).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }), 1);
   });
 });

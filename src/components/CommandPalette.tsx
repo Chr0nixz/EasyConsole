@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CalendarClock,
+  Clock,
   Database,
   FileText,
   Image,
@@ -27,6 +28,7 @@ import { useI18n } from "../lib/i18n";
 import { SHOW_SHORTCUTS_EVENT } from "../lib/shell-events";
 import { requestCreateTask } from "../lib/task-create-request";
 import { useTheme } from "../lib/use-theme";
+import { canExtendRelease } from "../lib/task-release-notifications";
 import { needsLogAttention } from "../lib/task-status-notifications";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import { getTaskAccess } from "../lib/task-terminal";
@@ -100,12 +102,23 @@ function buildTaskPaletteCommands(
       }
     : null;
 
+  // Opens the detail page with the extend dialog up, where the cost of each choice is shown.
+  const extend: PaletteCommand | null = canExtendRelease(task)
+    ? {
+        id: `task-${id}-extend`,
+        label: `${name} · ${helpers.text("延长释放", "Extend release")}`,
+        description: helpers.text("推迟定时释放时间", "Push back the timed release"),
+        icon: Clock,
+        run: () => helpers.navigate(`/tasks/${id}?extend=1`),
+      }
+    : null;
+
   // Same availability rule as the task table: no log before start, no terminal unless running.
   const access = getTaskAccess(task);
   const ordered = (needsLogAttention(task) ? [log, open, terminal] : [open, log, terminal]).filter(
     (command) => (command !== log || access.log) && (command !== terminal || access.terminal),
   );
-  return release ? [...ordered, release] : ordered;
+  return [...ordered, ...(extend ? [extend] : []), ...(release ? [release] : [])];
 }
 
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {

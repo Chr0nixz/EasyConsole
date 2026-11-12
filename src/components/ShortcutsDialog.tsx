@@ -21,6 +21,11 @@ const TASK_LIST_SHORTCUTS: ShortcutItem[] = [
   { keys: "t", labelKey: "shell.shortcutsTaskTerminal" },
   { keys: "x", labelKey: "shell.shortcutsTaskSelect" },
   { keys: "r", labelKey: "shell.shortcutsTaskRelease" },
+  { keys: "e", labelKey: "shell.shortcutsTaskExtend" },
+];
+
+const CREATE_FORM_SHORTCUTS: ShortcutItem[] = [
+  { keys: "Mod Enter", labelKey: "shell.shortcutsFormSubmit" },
 ];
 
 function ShortcutKeys({ keys }: { keys: string }) {
@@ -37,6 +42,7 @@ export function ShortcutsDialog({ open, onClose }: { open: boolean; onClose: () 
     { id: "global", title: text("全局", "Global"), items: GLOBAL_SHORTCUTS.map((item) => ({ keys: item.keys, label: t(item.labelKey) })) },
     { id: "pages", title: text("跳转页面（先按 g）", "Go to page (press g first)"), items: navItems.map((item) => ({ keys: item.shortcut, label: t(item.labelKey) })) },
     { id: "tasks", title: text("任务列表", "Task list"), items: TASK_LIST_SHORTCUTS.map((item) => ({ keys: item.keys, label: t(item.labelKey) })) },
+    { id: "create", title: text("新建与克隆实例", "New and cloned instances"), items: CREATE_FORM_SHORTCUTS.map((item) => ({ keys: item.keys, label: t(item.labelKey) })) },
   ];
   return (
     <Dialog open={open} title={t("shell.shortcutsTitle")} onClose={onClose} width="max-w-md">

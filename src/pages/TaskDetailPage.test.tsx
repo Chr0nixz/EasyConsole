@@ -39,7 +39,7 @@ vi.mock("../lib/use-auth", () => ({
 
 import { TaskDetailPage } from "./TaskDetailPage";
 
-function renderDetail() {
+function renderDetail(entry = "/tasks/42") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createMemoryRouter(
     [
@@ -58,7 +58,7 @@ function renderDetail() {
         ),
       },
     ],
-    { initialEntries: ["/tasks/42"] },
+    { initialEntries: [entry] },
   );
   return render(<RouterProvider router={router} />);
 }
@@ -104,13 +104,13 @@ describe("TaskDetailPage", () => {
     mocks.tasks.mockResolvedValue({ items: [{ id: 42, name: "timed", status: 2, releace_conditions: 2, releace_time: releaseAt }], total: 1 });
     renderDetail();
     fireEvent.click(await screen.findByRole("button", { name: /延长释放|Extend release/ }));
-    const dialog = screen.getByRole("dialog", { name: /延长定时释放|Extend timed release/ });
-    fireEvent.click(within(dialog).getByRole("button", { name: /确认延长|^Extend$/ }));
+    const dialog = screen.getByRole("dialog", { name: /延长定时释放|Extend timed release/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^延长 1 小时$|^Extend 1 Hour$/ }));
     await waitFor(() => expect(mocks.updateTask).toHaveBeenCalledTimes(1));
     const [id, payload] = mocks.updateTask.mock.calls[0] as [number, { releace_time: string }];
     expect(id).toBe(42);
     expect(Date.parse(payload.releace_time)).toBeGreaterThanOrEqual(Date.parse(releaseAt) + 3_600_000 - 1000);
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: /延长定时释放|Extend timed release/ })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /延长定时释放|Extend timed release/i })).not.toBeInTheDocument());
     expect(mocks.tasks.mock.calls.length).toBeGreaterThan(1);
   });
 
@@ -119,9 +119,23 @@ describe("TaskDetailPage", () => {
     mocks.updateTask.mockRejectedValue(new Error("Safe editing unsupported"));
     renderDetail();
     fireEvent.click(await screen.findByRole("button", { name: /延长释放|Extend release/ }));
-    const dialog = screen.getByRole("dialog", { name: /延长定时释放|Extend timed release/ });
-    fireEvent.click(within(dialog).getByRole("button", { name: /确认延长|^Extend$/ }));
+    const dialog = screen.getByRole("dialog", { name: /延长定时释放|Extend timed release/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^延长 1 小时$|^Extend 1 Hour$/ }));
     expect(await screen.findByText(/Safe editing unsupported/)).toBeInTheDocument();
     expect(dialog).toBeInTheDocument();
+  });
+
+  it("opens the extend dialog from ?extend=1 and prices each choice at the instance's rate", async () => {
+    mocks.tasks.mockResolvedValue({
+      items: [{ id: 42, name: "timed", status: 2, price: 12, cost: 30, releace_conditions: 2, releace_time: new Date(Date.now() + 5 * 60_000).toISOString() }],
+      total: 1,
+    });
+    renderDetail("/tasks/42?extend=1");
+    const dialog = await screen.findByRole("dialog", { name: /延长定时释放|Extend timed release/i });
+    expect(within(dialog).getByText(/约 12\.00 元（12\.00 元\/小时 × 1 小时）|about CNY 12\.00 \(CNY 12\.00\/hr × 1 hour\)/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: /^\+3 (小时|hours)$/ }));
+    expect(within(dialog).getByText(/约 36\.00 元（12\.00 元\/小时 × 3 小时）|about CNY 36\.00 \(CNY 12\.00\/hr × 3 hours\)/)).toBeInTheDocument();
+    // The rate also sits under the billed total on the page itself.
+    expect(screen.getByText(/^(12\.00 元\/小时|CNY 12\.00\/hr)$/)).toBeInTheDocument();
   });
 });

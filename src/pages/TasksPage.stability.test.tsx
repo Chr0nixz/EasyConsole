@@ -116,4 +116,18 @@ describe("TasksPage row stability", () => {
     });
     storageSet.mockRestore();
   });
+
+  it("moves a release column still at the old default to the new width, and keeps a chosen one", async () => {
+    window.localStorage.setItem("easy-console.tasks.columnSizing", JSON.stringify({ releaseCondition: 140, name: 300 }));
+    const { unmount } = renderPage();
+    const releaseHandle = () => screen.findByRole("separator", { name: /调整释放条件列宽|Resize Release condition column/i });
+    await waitFor(async () => expect(await releaseHandle()).toHaveAttribute("aria-valuenow", "200"));
+    expect(screen.getByRole("separator", { name: /调整实例名称列宽|Resize Instance name column/i })).toHaveAttribute("aria-valuenow", "300");
+    unmount();
+
+    window.localStorage.setItem("easy-console.tasks.columnSizing", JSON.stringify({ releaseCondition: 160 }));
+    renderPage();
+    await waitFor(async () => expect(await releaseHandle()).toHaveAttribute("aria-valuenow", "160"));
+    window.localStorage.removeItem("easy-console.tasks.columnSizing");
+  });
 });

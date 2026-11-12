@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
+import { AlertCircle, AlertTriangle, CheckCircle2, Info, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type ReactNode } from "react";
 
 import { motionEnabled } from "../lib/exit-motion";
@@ -14,6 +14,7 @@ function createToastId() {
 function iconFor(kind: ToastKind) {
   if (kind === "success") return <CheckCircle2 className="h-4 w-4 text-app-success" />;
   if (kind === "error") return <AlertCircle className="h-4 w-4 text-app-danger" />;
+  if (kind === "warning") return <AlertTriangle className="h-4 w-4 text-app-warning" />;
   return <Info className="h-4 w-4 text-app-accent" />;
 }
 
@@ -144,17 +145,33 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium text-app-text">{toast.title}</div>
                 {toast.description ? <div className="mt-1 text-xs leading-5 text-app-muted">{toast.description}</div> : null}
-                {toast.action ? (
-                  <button
-                    type="button"
-                    className="app-interactive mt-2 rounded-md border border-app-borderStrong px-2 py-0.5 text-xs font-medium text-app-text hover:bg-app-panel"
-                    onClick={() => {
-                      toast.action?.onClick();
-                      remove(toast.id);
-                    }}
-                  >
-                    {toast.action.label}
-                  </button>
+                {toast.action || toast.secondaryAction ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                    {toast.action ? (
+                      <button
+                        type="button"
+                        className="app-interactive rounded-md border border-app-borderStrong px-2 py-0.5 text-xs font-medium text-app-text hover:bg-app-panel"
+                        onClick={() => {
+                          toast.action?.onClick();
+                          remove(toast.id);
+                        }}
+                      >
+                        {toast.action.label}
+                      </button>
+                    ) : null}
+                    {toast.secondaryAction ? (
+                      <button
+                        type="button"
+                        className="app-interactive rounded-md px-2 py-0.5 text-xs font-medium text-app-muted hover:bg-app-panel hover:text-app-text"
+                        onClick={() => {
+                          toast.secondaryAction?.onClick();
+                          remove(toast.id);
+                        }}
+                      >
+                        {toast.secondaryAction.label}
+                      </button>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
               <button

@@ -1,6 +1,7 @@
 import { createContext, useContext } from "react";
 
-export type ToastKind = "success" | "error" | "info";
+/** `warning` is for something about to go wrong that the user can still stop; it keeps the neutral surface. */
+export type ToastKind = "success" | "error" | "info" | "warning";
 
 export type ToastAction = {
   label: string;
@@ -13,6 +14,8 @@ export type ToastItem = {
   title: string;
   description?: string;
   action?: ToastAction;
+  /** A quieter second choice beside `action`, such as "other durations" next to a one-step fix. */
+  secondaryAction?: ToastAction;
 };
 
 export type ToastInput = Omit<ToastItem, "id"> & {

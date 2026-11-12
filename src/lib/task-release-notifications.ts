@@ -21,11 +21,38 @@ export function parseReleaseTime(task: Pick<Task, "releace_time">): number | nul
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** A live instance on a timed release: the only kind whose release time can be extended. */
+export function canExtendRelease(task: Task): boolean {
+  return getTaskReleaseCondition(task) === TIMED_RELEASE_CONDITION && RELEASABLE_STATUSES.has(Number(task.status));
+}
+
 /** When a live timed-release task will be released; null for every other task. */
 export function getLiveTimedReleaseAt(task: Task): number | null {
-  if (getTaskReleaseCondition(task) !== TIMED_RELEASE_CONDITION) return null;
-  if (!RELEASABLE_STATUSES.has(Number(task.status))) return null;
+  if (!canExtendRelease(task)) return null;
   return parseReleaseTime(task);
+}
+
+/** The extensions offered everywhere a release can be extended, in hours. */
+export const RELEASE_EXTENSION_HOURS = [1, 3, 24] as const;
+export type ReleaseExtensionHours = (typeof RELEASE_EXTENSION_HOURS)[number];
+
+/**
+ * The release time after extending by `hours`. An overdue or unparseable release time counts
+ * from now, so an extension always ends in the future by the amount chosen.
+ */
+export function getExtendedReleaseAt(task: Pick<Task, "releace_time">, hours: number, now: number): number {
+  return Math.max(now, parseReleaseTime(task) ?? now) + hours * 3_600_000;
+}
+
+/** What `hours` more costs at the instance's own rate; null when the rate is unknown. */
+export function getExtensionCost(task: Pick<Task, "price">, hours: number): number | null {
+  const rate = Number(task.price);
+  return Number.isFinite(rate) && rate > 0 ? rate * hours : null;
+}
+
+/** A release moment as people read it ("11/09 16:31"); the backend form is `formatReleaseTimeInput`. */
+export function formatReleaseMoment(releaseAt: number, locale: Locale): string {
+  return new Date(releaseAt).toLocaleString(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 /** "40 分钟后释放" — the time left before a timed release, rounded down to the minute. */
@@ -80,7 +107,7 @@ export function getUpcomingTimedReleaseNotification(
   const name = getTaskName(task);
   const routeId = String(task.id ?? task.task_id);
   const taskId = String(task.task_id ?? task.id);
-  const when = formatReleaseTimeInput(new Date(releaseAt));
+  const when = formatReleaseMoment(releaseAt, locale);
   return {
     event: "task.releaseDue",
     routeId,
@@ -89,9 +116,10 @@ export function getUpcomingTimedReleaseNotification(
     releaseAt,
     dedupeKey: `${routeId}@${String(task.releace_time)}`,
     title: en ? "Timed release approaching" : "定时释放即将到期",
+    // The system notification has no buttons, so the body says what is lost and what to do.
     body: en
-      ? `${name}: releases at ${when}. Extend it from the task detail page if it is still needed.`
-      : `${name}：将于 ${when} 释放，如仍需要请在任务详情页延长。`,
+      ? `${name} releases at ${when}. Data in the container that is not in the storage path will be deleted. Extend the release if you still need it.`
+      : `${name} 将于 ${when} 释放，容器内未写入存储路径的数据会被清理。如仍需要，请延长释放时间。`,
     tag: `easy-console-release-due-${taskId}-${String(task.releace_time)}`,
   };
 }

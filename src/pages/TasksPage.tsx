@@ -13,6 +13,7 @@ import {
   ArrowDown,
   ArrowUp,
   Braces,
+  Clock,
   CopyPlus,
   Download,
   FileText,
@@ -40,6 +41,7 @@ import { EmptyState, ErrorState, LoadingState, SearchXIcon, TableSkeleton } from
 import { IdleInstancePill } from "../components/IdleInstancePill";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
 import { StatusBadge } from "../components/StatusBadge";
+import { ExtendReleaseDialog } from "../components/tasks/ExtendReleaseDialog";
 import { BatchReleaseImpact, ReleaseConfirmDescription } from "../components/tasks/ReleaseConfirmDescription";
 import { TaskInstanceName } from "../components/tasks/TaskInstanceName";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
@@ -74,7 +76,7 @@ import { createTaskTemplate, loadTaskTemplates, saveTaskTemplates, taskToEditabl
 import { TASK_PAGE_SIZE_OPTIONS, type TaskListSortBy } from "../lib/task-list-query";
 import { consumePendingCreateTaskRequest, subscribeCreateTaskRequests } from "../lib/task-create-request";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
-import { getLiveTimedReleaseAt } from "../lib/task-release-notifications";
+import { canExtendRelease, getLiveTimedReleaseAt } from "../lib/task-release-notifications";
 import { queryKeys } from "../lib/query-keys";
 import type { Task } from "../lib/types";
 import { useConfirmAction } from "../lib/use-confirm-action";
@@ -96,6 +98,8 @@ const COLUMN_VISIBILITY_KEY = "easy-console.tasks.columnVisibility";
 const COLUMN_SIZING_KEY = "easy-console.tasks.columnSizing";
 const ALWAYS_VISIBLE_COLUMNS = new Set(["select", "actions"]);
 const ACTION_COLUMN_WIDTH = 232;
+/** The compact action strip (release + More: 4rem + 2rem + gap) plus the cell's 12px padding each side. */
+const COMPACT_ACTION_COLUMN_WIDTH = 124;
 // Pages at or under this many phone cards render whole (the 20-per-page option always does).
 const MOBILE_CARD_VIRTUALIZE_MIN = 30;
 const defaultColumnVisibility: VisibilityState = {
@@ -124,10 +128,16 @@ const taskColumnSizing = {
   billed: { size: 112, minSize: 96, maxSize: 180 },
   created: { size: 190, minSize: 144, maxSize: 320 },
   release: { size: 190, minSize: 144, maxSize: 320 },
-  releaseCondition: { size: 140, minSize: 108, maxSize: 240 },
+  // Wide enough for the longest live countdown in either language ("Releases in 23 hr 59 min").
+  releaseCondition: { size: 200, minSize: 108, maxSize: 240 },
   deleted: { size: 120, minSize: 96, maxSize: 180 },
-  actions: { size: ACTION_COLUMN_WIDTH, minSize: 124, maxSize: 360 },
+  actions: { size: ACTION_COLUMN_WIDTH, minSize: COMPACT_ACTION_COLUMN_WIDTH, maxSize: 360 },
 } satisfies Record<string, { size: number; minSize: number; maxSize: number }>;
+/**
+ * Defaults that have since changed. A saved width still equal to the old default is the
+ * default the user was given, not one they chose, so it follows the new default.
+ */
+const SUPERSEDED_COLUMN_DEFAULTS: Partial<Record<string, number>> = { releaseCondition: 140 };
 const defaultColumnSizing: ColumnSizingState = Object.fromEntries(
   Object.entries(taskColumnSizing).map(([id, sizing]) => [id, sizing.size]),
 );
@@ -151,8 +161,12 @@ const columnLabels: Record<string, { zh: string; en: string }> = {
 };
 const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_2rem_4rem_2rem] items-center gap-1";
 const COMPACT_ACTION_GRID_CLASS = "grid grid-cols-[4rem_2rem] items-center gap-1";
-/** Table regions narrower than this fold the row's terminal / log / clone buttons into More. */
-const COMPACT_ACTIONS_MAX_WIDTH = 1040;
+/**
+ * Table regions narrower than this fold the row's terminal / log / clone buttons into More.
+ * It is the default width of everything that must stay in view (select 48, name 240, status
+ * 112, resources 152, cost 112, release condition 200) beside the full 232px action strip.
+ */
+const COMPACT_ACTIONS_MAX_WIDTH = 1100;
 const MENU_ITEM_CLASS =
   "flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel disabled:cursor-not-allowed disabled:opacity-50 [@media(pointer:coarse)]:min-h-11";
 const MENU_ITEM_DANGER_CLASS =
@@ -304,7 +318,7 @@ function normalizeColumnSizing(sizing: Record<string, unknown>): ColumnSizingSta
   return Object.fromEntries(
     Object.entries(taskColumnSizing).map(([id, bounds]) => {
       const value = sizing[id];
-      const width = typeof value === "number" && Number.isFinite(value) ? value : bounds.size;
+      const width = typeof value === "number" && Number.isFinite(value) && value !== SUPERSEDED_COLUMN_DEFAULTS[id] ? value : bounds.size;
       return [id, Math.min(bounds.maxSize, Math.max(bounds.minSize, width))];
     }),
   );
@@ -328,6 +342,7 @@ type TaskTableMeta = {
   onTerminal: TaskAction;
   onLog: TaskAction;
   onClone: TaskAction;
+  onExtend: TaskAction;
   onRelease: TaskAction;
   onCommit: TaskAction;
   onDelete: TaskAction;
@@ -380,6 +395,7 @@ function buildMoreMenuSections({
   text,
   onLog,
   onClone,
+  onExtend,
   onSshInfo,
   onMonitor,
   onRaw,
@@ -399,6 +415,7 @@ function buildMoreMenuSections({
   text: (zh: string, en: string) => string;
   onLog: (task: Task) => void;
   onClone: (task: Task) => void;
+  onExtend?: (task: Task) => void;
   onSshInfo: (task: Task) => void;
   onMonitor?: (task: Task) => void;
   onRaw: (task: Task) => void;
@@ -446,6 +463,15 @@ function buildMoreMenuSections({
     : [logItem, ...(sshInfoItem ? [sshInfoItem] : [])];
 
   const lifecycle: MoreMenuItem[] = [];
+  // Extending is the lifecycle step that keeps a running job alive, so it leads the section.
+  if (onExtend && canExtendRelease(task)) {
+    lifecycle.push({
+      key: "extend",
+      label: text("延长释放…", "Extend release…"),
+      icon: <Clock className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onExtend(task),
+    });
+  }
   if (!promoteClone) {
     lifecycle.push({
       key: "clone",
@@ -535,6 +561,7 @@ function MoreActionsMenuPanel({
   onClose,
   onLog,
   onClone,
+  onExtend,
   onSshInfo,
   onMonitor,
   onRaw,
@@ -558,6 +585,7 @@ function MoreActionsMenuPanel({
   onClose: (restoreFocus?: boolean) => void;
   onLog: (task: Task) => void;
   onClone: (task: Task) => void;
+  onExtend?: (task: Task) => void;
   onSshInfo: (task: Task) => void;
   onMonitor?: (task: Task) => void;
   onRaw: (task: Task) => void;
@@ -589,6 +617,7 @@ function MoreActionsMenuPanel({
         text,
         onLog,
         onClone,
+        onExtend,
         onSshInfo,
         onMonitor,
         onRaw,
@@ -603,6 +632,7 @@ function MoreActionsMenuPanel({
       canEdit,
       isPinned,
       onClone,
+      onExtend,
       onCommit,
       onDelete,
       onDownload,
@@ -799,6 +829,7 @@ export function MoreActionsMenu({
   open: openControlled,
   onLog,
   onClone,
+  onExtend,
   onSshInfo,
   onMonitor,
   onRaw,
@@ -821,6 +852,8 @@ export function MoreActionsMenu({
   open?: boolean;
   onLog: (task: Task) => void;
   onClone: (task: Task) => void;
+  /** Offered for live timed releases; omit to leave extension off the menu. */
+  onExtend?: (task: Task) => void;
   onSshInfo: (task: Task) => void;
   onMonitor?: (task: Task) => void;
   onRaw: (task: Task) => void;
@@ -858,6 +891,7 @@ export function MoreActionsMenu({
       text,
       onLog,
       onClone,
+      onExtend,
       onSshInfo,
       onMonitor,
       onRaw,
@@ -876,6 +910,7 @@ export function MoreActionsMenu({
     canEdit,
     isPinned,
     onClone,
+    onExtend,
     onCommit,
     onDelete,
     onDownload,
@@ -994,6 +1029,15 @@ export function TasksPage() {
   const compactLayout = useCompactLayout();
   const [createOpen, setCreateOpen] = useState(consumePendingCreateTaskRequest);
   const [cloneTask, setCloneTask] = useState<Task | null>(null);
+  const [extendTask, setExtendTask] = useState<Task | null>(null);
+  // Phone cards offer extend inside the reminder window, so they need a clock that moves
+  // between refreshes, ticking as often as the release tag's own countdown.
+  const [cardNowMs, setCardNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!compactLayout) return undefined;
+    const timer = window.setInterval(() => setCardNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [compactLayout]);
   const [editTask, setEditTask] = useState<Task | null>(null);
   const [logTask, setLogTask] = useState<Task | null>(null);
   const [sshInfoTask, setSshInfoTask] = useState<Task | null>(null);
@@ -1702,6 +1746,7 @@ export function TasksPage() {
                 showSshInfo={compact}
                 task={task}
                 onClone={meta.onClone}
+                onExtend={meta.onExtend}
                 onCommit={meta.onCommit}
                 onDelete={meta.onDelete}
                 onDownload={meta.onDownload}
@@ -1722,6 +1767,15 @@ export function TasksPage() {
     [locale, text],
   );
 
+  // A narrow region folds terminal, log and clone into More, and the sticky column shrinks
+  // with them; at its full 232px it sat over the release condition at the default window.
+  const tableColumnSizing = useMemo<ColumnSizingState>(
+    () => (compactActions
+      ? { ...columnSizing, actions: Math.min(columnSizing.actions ?? ACTION_COLUMN_WIDTH, COMPACT_ACTION_COLUMN_WIDTH) }
+      : columnSizing),
+    [columnSizing, compactActions],
+  );
+
   const tableMeta: TaskTableMeta = {
     pinnedTaskIds,
     moreMenuTaskId: moreMenu?.taskId ?? null,
@@ -1730,6 +1784,7 @@ export function TasksPage() {
     onTerminal: openTerminal,
     onLog: setLogTask,
     onClone: openCloneTask,
+    onExtend: setExtendTask,
     onRelease: confirmReleaseTask,
     onCommit: confirmCommitTask,
     onDelete: confirmDeleteTask,
@@ -1751,7 +1806,7 @@ export function TasksPage() {
     enableRowSelection: true,
     state: {
       columnVisibility,
-      columnSizing,
+      columnSizing: tableColumnSizing,
       rowSelection,
     },
     onColumnVisibilityChange: setColumnVisibility,
@@ -1991,6 +2046,11 @@ export function TasksPage() {
       if (key === "r" && isReleasableTask(task)) {
         event.preventDefault();
         confirmReleaseTask(task);
+        return;
+      }
+      if (key === "e" && canExtendRelease(task)) {
+        event.preventDefault();
+        setExtendTask(task);
       }
     };
 
@@ -2279,6 +2339,9 @@ export function TasksPage() {
                       const terminalLabel = text("终端", "Terminal");
                       const logAttention = needsLogAttention(task);
                       const access = getTaskAccess(task);
+                      // The same window that turns the release tag amber: the moment an extension still helps.
+                      const releaseAt = getLiveTimedReleaseAt(task);
+                      const releaseDueSoon = releaseAt !== null && releaseAt - cardNowMs <= getRuntimeSettings().timedReleaseReminderLeadMs;
                       return (
                         <>
                         <Button
@@ -2313,6 +2376,17 @@ export function TasksPage() {
                           <CopyPlus className="h-4 w-4" />
                           {text("克隆", "Clone")}
                         </Button>
+                        {releaseDueSoon ? (
+                          <Button
+                            aria-label={text(`延长 ${taskName} 的释放时间`, `Extend the release of ${taskName}`)}
+                            className="h-9 px-2"
+                            variant="ghost"
+                            onClick={() => setExtendTask(task)}
+                          >
+                            <Clock className="h-4 w-4" />
+                            {text("延长", "Extend")}
+                          </Button>
+                        ) : null}
                         {release ? (
                           <Button
                             aria-label={text(`释放实例 ${taskName}`, `Release instance ${taskName}`)}
@@ -2334,6 +2408,7 @@ export function TasksPage() {
                           showSshInfo={logAttention}
                           task={task}
                           onClone={openCloneTask}
+                          onExtend={setExtendTask}
                           onCommit={confirmCommitTask}
                           onDelete={confirmDeleteTask}
                           onDownload={handleDownloadTask}
@@ -2627,6 +2702,7 @@ export function TasksPage() {
         ) : editTask ? (
           <CreateTaskDialog mode="edit" editTaskId={editTask.id} initialTask={editTask} open onClose={closeEditTask} />
         ) : null}
+        {extendTask ? <ExtendReleaseDialog task={extendTask} onClose={() => setExtendTask(null)} /> : null}
         <TaskLogDialog task={logTask} onClose={() => setLogTask(null)} />
         <TerminalDialog
           task={sshInfoTask}
@@ -2655,6 +2731,7 @@ export function TasksPage() {
           onClose={closeMoreMenu}
           onLog={setLogTask}
           onClone={openCloneTask}
+          onExtend={setExtendTask}
           onSshInfo={openSshInfo}
           onMonitor={openMonitorDashboard}
           onRaw={setRawTask}

@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  canExtendRelease,
   formatReleaseCountdown,
+  formatReleaseMoment,
   formatReleaseTimeInput,
+  getExtendedReleaseAt,
+  getExtensionCost,
   getLiveTimedReleaseAt,
   getUpcomingTimedReleaseNotification,
   parseReleaseTime,
@@ -44,6 +48,33 @@ describe("formatReleaseTimeInput", () => {
   });
 });
 
+describe("release extension", () => {
+  const now = Date.parse("2026-10-26T09:55:00");
+
+  it("extends only live timed releases", () => {
+    expect(canExtendRelease(timedTask())).toBe(true);
+    expect(canExtendRelease(timedTask({ status: 7 }))).toBe(false);
+    expect(canExtendRelease(timedTask({ releace_conditions: 1 }))).toBe(false);
+  });
+
+  it("adds the hours to the release time, or to now when it is overdue or unreadable", () => {
+    expect(getExtendedReleaseAt({ releace_time: "2026-10-26 10:00:00" }, 1, now)).toBe(Date.parse("2026-10-26T11:00:00"));
+    expect(getExtendedReleaseAt({ releace_time: "2026-10-26 09:00:00" }, 3, now)).toBe(now + 3 * 3_600_000);
+    expect(getExtendedReleaseAt({ releace_time: "soon" }, 24, now)).toBe(now + 24 * 3_600_000);
+  });
+
+  it("prices the extra hours at the instance's own rate", () => {
+    expect(getExtensionCost({ price: 48 }, 3)).toBe(144);
+    expect(getExtensionCost({ price: "12.5" }, 1)).toBe(12.5);
+    expect(getExtensionCost({}, 1)).toBeNull();
+  });
+
+  it("formats a release moment for reading", () => {
+    expect(formatReleaseMoment(Date.parse("2026-10-26T10:00:00"), "zh-CN")).toBe("10/26 10:00");
+    expect(formatReleaseMoment(Date.parse("2026-10-26T10:00:00"), "en-US")).toBe("10/26, 10:00");
+  });
+});
+
 describe("getUpcomingTimedReleaseNotification", () => {
   const now = Date.parse("2026-10-26T09:55:00");
   const inFive = "2026-10-26 10:00:00";
@@ -53,7 +84,9 @@ describe("getUpcomingTimedReleaseNotification", () => {
     expect(notification).not.toBeNull();
     expect(notification!.routeId).toBe("7");
     expect(notification!.taskId).toBe("task-7");
-    expect(notification!.body).toContain("2026-10-26 10:00:00");
+    expect(notification!.body).toContain("10/26 10:00");
+    // The system notification has no buttons, so its body carries the consequence.
+    expect(notification!.body).toContain("数据会被清理");
     expect(notification!.dedupeKey).toBe(`7@${inFive}`);
   });
 
