@@ -14,6 +14,7 @@ import { AppShell } from "./components/AppShell";
 import { AppUpdateDialog } from "./components/AppUpdateDialog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { LoadingState } from "./components/DataState";
+import { DesktopWindowActions } from "./components/DesktopWindowActions";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { SshWorkspaceGate, SshWorkspaceProvider } from "./components/ssh/SshWorkspaceProvider";
 import { TrayMenu } from "./components/TrayMenu";
@@ -118,6 +119,7 @@ function AppRoot() {
               <AppUpdateProvider>
                 <SshWorkspaceProvider>
                   <ErrorBoundary showHomeInFallback={false}>
+                    {browserRuntime.isDesktop && <DesktopWindowActions />}
                     <Suspense fallback={<LoadingState />}>
                       <DeepLinkHandler />
                       <Outlet />

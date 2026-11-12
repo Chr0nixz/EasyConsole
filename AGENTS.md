@@ -138,6 +138,7 @@ The following production identity values are fixed for 1.x. Do not change them a
 - `src/lib/ssh-info.ts`: task SSH field extraction and normalized connection request mapping.
 - `src/lib/upload-queue.ts`: upload queue state helpers for storage uploads.
 - `src/lib/webssh.ts`: WebSSH URL and message formatting.
+- `src/lib/window-chrome.ts`: macOS overlay title bar (`data-titlebar="overlay"`, full-screen tracking) and `titleBarDragRegion()` for shell chrome that should drag the window. Only the macOS main window opts in; other windows and platforms keep native title bars.
 - `src/lib/overlay-stack.ts`: open-overlay stack; new dialogs, menus, and popovers that listen for Escape/Tab on `document` register with `useOverlay` and gate their keys with `claimOverlayKey`.
 - `src/lib/download.ts`: browser download helper boundary.
 - `src/lib/monitor-dashboard.ts`: Grafana monitor URL generation for task rows.
@@ -145,6 +146,7 @@ The following production identity values are fixed for 1.x. Do not change them a
 - `src/components/*`: shared UI and feature dialogs.
 - `tools/easy-console/*`: Node runtime, CLI, MCP server/tools, and sidecar build scripts.
 - `src-tauri/src/lib.rs`: Tauri commands for app storage, external links, system terminal SSH, VS Code Remote-SSH setup, and in-app SSH sessions.
+- `src-tauri/src/macos.rs` and `src-tauri/tauri.macos.conf.json`: macOS shell. Localized menu bar (rebuilt on `set_locale`), native status-bar menu with a template icon instead of the webview tray popup, Dock reopen, overlay title bar, and bundle signing/entitlements. macOS defaults to keeping the app running when the main window closes; the defaults live in both `lib.rs` and `app-settings.ts` and must stay in sync.
 - `src-tauri/src/runtime_storage.rs` and `src-tauri/src/runtime_storage_lock.rs`: per-key runtime persistence, legacy JSON migration, per-key backups/tombstones, disk-backed CAS, and the cross-process `.lock` directory protocol shared with Node sidecars.
 - `tools/easy-console/local-data-store.ts`: Node implementation of the Tauri per-key store, lock protocol, legacy CLI JSON migration, and separate local credential storage. CLI/MCP use the desktop app-data path by default; `EASY_CONSOLE_LOCAL_DATA_PATH` overrides the shared store anchor.
 

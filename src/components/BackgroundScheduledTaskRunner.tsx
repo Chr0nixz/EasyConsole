@@ -311,18 +311,23 @@ export function BackgroundScheduledTaskRunner() {
     let removeDesktopRunDue: (() => void) | null = null;
 
     void executeDueTasks();
-    const timer = window.setInterval(() => void executeDueTasks(), CHECK_INTERVAL_MS);
+    const timer = window.setInterval(runDue, CHECK_INTERVAL_MS);
     window.addEventListener("focus", runDue);
     window.addEventListener("online", runDue);
     window.addEventListener("pageshow", runDue);
     document.addEventListener("visibilitychange", runDue);
-    void browserRuntime.onDesktopRunDueScheduledTasks(runDue).then((remove) => {
-      if (disposed) {
-        remove();
-        return;
-      }
-      removeDesktopRunDue = remove;
-    });
+    if (browserRuntime.isDesktop) {
+      void browserRuntime.onDesktopRunDueScheduledTasks(runDue).then((remove) => {
+        if (disposed) {
+          remove();
+          return;
+        }
+        removeDesktopRunDue = remove;
+        // Native ticks keep working when the webview throttles its timers.
+        // Keep the JS timer only as a fallback if IPC registration fails.
+        window.clearInterval(timer);
+      }).catch((error: unknown) => console.warn("Could not listen for native schedule ticks.", error));
+    }
 
     return () => {
       disposed = true;

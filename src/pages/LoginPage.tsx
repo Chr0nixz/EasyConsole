@@ -4,6 +4,7 @@ import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { LoadingState } from "../components/DataState";
 import { LanguageSwitch } from "../components/LanguageSwitch";
+import { StandaloneWindow } from "../components/StandaloneWindow";
 import { ThemeSwitch } from "../components/ThemeSwitch";
 import { Button, Input } from "../components/ui";
 import { getTransportBlockReason } from "../lib/api";
@@ -133,7 +134,7 @@ export function LoginPage() {
   }
 
   return (
-    <main className="flex h-full min-w-0 flex-col items-center overflow-x-hidden overflow-y-auto overscroll-contain bg-app-bg px-4 py-10 text-app-text sm:px-6">
+    <StandaloneWindow className="flex h-full min-w-0 flex-col items-center overflow-x-hidden overflow-y-auto overscroll-contain bg-app-bg px-4 py-10 text-app-text sm:px-6">
       <div className="my-auto flex w-full min-w-0 max-w-[360px] flex-col">
         <div className="mb-7 flex flex-col items-center text-center">
           <img src="/favicon.svg" alt="" className="h-14 w-14" draggable={false} />
@@ -296,6 +297,6 @@ export function LoginPage() {
         </div>
       </div>
       {confirm.confirmDialog}
-    </main>
+    </StandaloneWindow>
   );
 }

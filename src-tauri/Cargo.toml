@@ -48,6 +48,10 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-autostart = "2.5.1"
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust"] }
 
+# macOS decodes its menu bar template icon from PNG (see src/macos.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri = { version = "2.11.2", features = ["image-png"] }
+
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 

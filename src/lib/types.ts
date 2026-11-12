@@ -502,6 +502,10 @@ export type RuntimeTransport = {
   quitDesktopApp(): Promise<void>;
   /** macOS / iOS keyboards label the command modifier ⌘ rather than Ctrl. */
   isApplePlatform?: boolean;
+  /** The packaged macOS app: native menu bar, overlay title bar, Dock. */
+  isMacDesktop?: boolean;
+  /** macOS menu bar "Settings…" (⌘,). No-op elsewhere. */
+  onDesktopOpenSettings?(handler: () => void): Promise<() => void>;
   /** Match native window chrome to the app theme; `null` follows the OS. No-op outside desktop. */
   setNativeTheme?(theme: "light" | "dark" | null): Promise<void>;
   onDesktopCloseRequested(handler: () => void): Promise<() => void>;

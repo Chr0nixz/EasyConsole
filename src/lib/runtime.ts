@@ -749,6 +749,15 @@ async function ensureGlobalSshListen() {
   }
 }
 
+function isApplePlatform() {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+/** The packaged macOS desktop app (not Safari, not iOS). */
+function isMacDesktop() {
+  return runtimeKind === "desktop" && isApplePlatform();
+}
+
 export const browserRuntime: RuntimeTransport = {
   get isDesktop() {
     return runtimeKind === "desktop";
@@ -786,7 +795,10 @@ export const browserRuntime: RuntimeTransport = {
     return runtimeKind === "desktop";
   },
   get isApplePlatform() {
-    return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    return isApplePlatform();
+  },
+  get isMacDesktop() {
+    return isMacDesktop();
   },
   storage: isTauri() ? tauriStorageAdapter : localStorageAdapter,
   secureStorage: isTauri() ? tauriSecureStorageAdapter : localStorageAdapter,
@@ -1123,6 +1135,11 @@ export const browserRuntime: RuntimeTransport = {
     if (runtimeKind !== "desktop") return () => undefined;
     const { listen } = await import("@tauri-apps/api/event");
     return listen("desktop-run-due-scheduled-tasks", handler);
+  },
+  async onDesktopOpenSettings(handler) {
+    if (!isMacDesktop()) return () => undefined;
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen("desktop-open-settings", handler);
   },
   async onDeepLink(handler: (urls: string[]) => void) {
     if (runtimeKind !== "desktop") return () => undefined;

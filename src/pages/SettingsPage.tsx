@@ -64,6 +64,7 @@ import {
   getAccountAppSettings,
 } from "../lib/app-settings";
 import { useAuth } from "../lib/use-auth";
+import { StandaloneWindow } from "../components/StandaloneWindow";
 import { resolveSavedAccountId } from "../lib/saved-accounts";
 import { APP_UPDATE_ENDPOINT_URL, GITHUB_API_RELEASE_URL } from "../lib/app-update";
 import { useAppUpdate } from "../lib/app-update-context";
@@ -1383,7 +1384,9 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
           <SectionHeader
             icon={PanelTopClose}
               title={text("窗口与启动", "Window & Startup")}
-            description={text("控制桌面端关闭确认、托盘行为和开机自启。", "Control close confirmation, tray behavior, and launch at login on desktop.")}
+            description={browserRuntime.isMacDesktop
+              ? text("控制关闭确认、关闭窗口后是否继续在后台运行，以及登录时启动。", "Control close confirmation, whether the app keeps running after its window closes, and launch at login.")
+              : text("控制桌面端关闭确认、托盘行为和开机自启。", "Control close confirmation, tray behavior, and launch at login on desktop.")}
           />
           <div className="grid gap-3 p-4 sm:grid-cols-2">
             <label className="flex items-start gap-3 rounded-md border border-app-border bg-app-panel px-3 py-2 text-sm transition-colors hover:border-app-accent/40 hover:bg-app-surface">
@@ -1396,7 +1399,9 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               <span>
                 <span className="block font-medium text-app-text">{text("关闭窗口前确认", "Confirm before closing")}</span>
                 <span className="mt-1 block text-xs leading-5 text-app-muted">
-                  {text("开启后点击关闭会先选择彻底退出或最小化到托盘。", "When enabled, closing asks whether to exit or minimize to tray.")}
+                  {browserRuntime.isMacDesktop
+                    ? text("开启后点击关闭会先选择退出应用或隐藏窗口。⌘Q 始终直接退出。", "When enabled, closing asks whether to quit or hide the window. ⌘Q always quits.")
+                    : text("开启后点击关闭会先选择彻底退出或最小化到托盘。", "When enabled, closing asks whether to exit or minimize to tray.")}
                 </span>
               </span>
             </label>
@@ -1408,9 +1413,13 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 onChange={(event) => setForm((value) => ({ ...value, desktopCloseToTray: event.target.checked }))}
               />
               <span>
-                <span className="block font-medium text-app-text">{text("关闭窗口时最小化到托盘", "Minimize to tray on close")}</span>
+                <span className="block font-medium text-app-text">
+                  {browserRuntime.isMacDesktop ? text("关闭窗口后继续在后台运行", "Keep running after closing the window") : text("关闭窗口时最小化到托盘", "Minimize to tray on close")}
+                </span>
                 <span className="mt-1 block text-xs leading-5 text-app-muted">
-                  {text("未启用关闭确认时生效：关闭主窗口会隐藏到托盘而不是退出。", "Applies when close confirmation is off: closing the main window hides it to tray instead of exiting.")}
+                  {browserRuntime.isMacDesktop
+                    ? text("未启用关闭确认时生效：关闭主窗口只会隐藏窗口，应用继续留在程序坞和菜单栏中；关闭此项则关闭窗口即退出。", "Applies when close confirmation is off: closing the main window only hides it and the app stays in the Dock and menu bar. Turn off to quit when the window closes.")
+                    : text("未启用关闭确认时生效：关闭主窗口会隐藏到托盘而不是退出。", "Applies when close confirmation is off: closing the main window hides it to tray instead of exiting.")}
                 </span>
               </span>
             </label>
@@ -1422,12 +1431,19 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
                 onChange={(event) => setForm((value) => ({ ...value, desktopAutostart: event.target.checked }))}
               />
               <span>
-                <span className="block font-medium text-app-text">{text("开机自动启动", "Launch at login")}</span>
+                <span className="block font-medium text-app-text">
+                  {browserRuntime.isMacDesktop ? text("登录时启动", "Open at login") : text("开机自动启动", "Launch at login")}
+                </span>
                 <span className="mt-1 block text-xs leading-5 text-app-muted">
-                  {text(
-                    "登录系统后自动启动 EasyConsole，本地定时任务才能在后台按计划执行。可配合“关闭窗口时最小化到托盘”使用。",
-                    "Start EasyConsole when you sign in to the system so local scheduled tasks keep running. Pairs well with minimize-to-tray.",
-                  )}
+                  {browserRuntime.isMacDesktop
+                    ? text(
+                        "登录 macOS 后自动启动 EasyConsole，本地定时任务才能在后台按计划执行。可配合“关闭窗口后继续在后台运行”使用。",
+                        "Start EasyConsole when you log in to macOS so local scheduled tasks keep running. Pairs well with keeping it running after the window closes.",
+                      )
+                    : text(
+                        "登录系统后自动启动 EasyConsole，本地定时任务才能在后台按计划执行。可配合“关闭窗口时最小化到托盘”使用。",
+                        "Start EasyConsole when you sign in to the system so local scheduled tasks keep running. Pairs well with minimize-to-tray.",
+                      )}
                 </span>
               </span>
             </label>
@@ -2462,7 +2478,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
   if (!standalone) return content;
 
   return (
-    <main className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain bg-app-bg px-3 py-4 text-app-text sm:p-6">
+    <StandaloneWindow className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain bg-app-bg px-3 py-4 text-app-text sm:p-6">
       <div className="mx-auto max-w-5xl min-w-0 space-y-4">
         <Link className="app-interactive inline-flex h-9 items-center gap-2 rounded-md px-2 text-sm text-app-muted hover:bg-app-panel hover:text-app-text" to="/login">
           <ArrowLeft className="h-4 w-4" />
@@ -2470,6 +2486,6 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
         </Link>
         {content}
       </div>
-    </main>
+    </StandaloneWindow>
   );
 }

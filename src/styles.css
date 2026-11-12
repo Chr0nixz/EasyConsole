@@ -419,6 +419,29 @@ details[open] > :not(summary) {
   box-shadow: 0 1px 0 var(--color-app-border), 0 8px 18px -14px var(--app-shadow-ink);
 }
 
+/* macOS overlay title bar (see window-chrome.ts): the traffic lights sit in the
+   sidebar header, so the brand starts after them. Full screen hides the lights. */
+:root[data-titlebar="overlay"]:not([data-fullscreen]) .app-sidebar-header {
+  padding-left: 5.5rem;
+}
+
+:root[data-fullscreen] .app-standalone-titlebar {
+  display: none;
+}
+
+/* Title bar regions act like native chrome: no text selection or I-beam. */
+[data-tauri-drag-region] {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+/* WebKit will not edit a field inside an unselectable subtree. */
+[data-tauri-drag-region] :is(input, textarea, [contenteditable]:not([contenteditable="false"])) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 .app-nav-resize-handle {
   cursor: col-resize;
   touch-action: none;

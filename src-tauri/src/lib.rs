@@ -16,12 +16,18 @@ use tauri_plugin_opener::OpenerExt;
 #[cfg(desktop)]
 use std::process::Command;
 #[cfg(desktop)]
+use tauri::{RunEvent, WindowEvent};
+// macOS uses a native status-bar menu (see `macos.rs`) instead of the webview
+// tray popup, so the popup plumbing only exists on Windows and Linux.
+#[cfg(all(desktop, not(target_os = "macos")))]
 use {
     tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    tauri::{PhysicalPosition, Position, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent},
+    tauri::{PhysicalPosition, Position, WebviewUrl, WebviewWindowBuilder},
 };
 
 mod i18n;
+#[cfg(target_os = "macos")]
+mod macos;
 mod runtime_storage;
 mod runtime_storage_lock;
 #[cfg(target_os = "windows")]
@@ -59,7 +65,14 @@ use ssh::vscode::{
 /// the Android installer messages.
 #[tauri::command]
 fn set_locale(locale: String) {
+    let was_english = i18n::is_english();
     i18n::set_locale(&locale);
+    #[cfg(target_os = "macos")]
+    if was_english != i18n::is_english() {
+        macos::refresh_menus();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = was_english;
 }
 
 const I18N_STORAGE_KEY: &str = "easy-console-language";
@@ -140,10 +153,17 @@ const APP_SETTINGS_STORAGE_KEY: &str = "easy-console.settings";
 const DESKTOP_RUN_DUE_INTERVAL_SECS: u64 = 30;
 #[cfg(desktop)]
 const TRAY_MENU_LABEL: &str = "tray-menu";
-#[cfg(desktop)]
+#[cfg(all(desktop, not(target_os = "macos")))]
 const TRAY_MENU_WIDTH: f64 = 320.0;
-#[cfg(desktop)]
+#[cfg(all(desktop, not(target_os = "macos")))]
 const TRAY_MENU_HEIGHT: f64 = 244.0;
+/// Close-button defaults when the user has not chosen yet. macOS convention is
+/// that closing the window keeps the app running (Dock + menu bar) and ⌘Q
+/// quits, so it neither prompts nor exits there. Must match `app-settings.ts`.
+#[cfg(desktop)]
+const DEFAULT_CLOSE_TO_TRAY: bool = cfg!(target_os = "macos");
+#[cfg(desktop)]
+const DEFAULT_CLOSE_PROMPT: bool = !cfg!(target_os = "macos");
 
 #[cfg(desktop)]
 #[derive(Default)]
@@ -891,7 +911,8 @@ async fn keychain_remove_for_service(service: String, key: String) -> Result<(),
 
 /// Reads both close preferences from the current store, or from the legacy
 /// snapshot before migration. Startup never migrates data on the UI thread.
-/// Returns `(close_to_tray, close_prompt)` with defaults `false` and `true`.
+/// Returns `(close_to_tray, close_prompt)`, falling back to the platform
+/// defaults (`DEFAULT_CLOSE_TO_TRAY`, `DEFAULT_CLOSE_PROMPT`).
 #[cfg(desktop)]
 fn read_close_settings(app: &AppHandle) -> Result<(bool, bool), String> {
     let path = runtime_storage_path(app)?;
@@ -900,19 +921,29 @@ fn read_close_settings(app: &AppHandle) -> Result<(bool, bool), String> {
     let Some(raw) =
         runtime_storage::RuntimeStore::read_existing_value(&path, APP_SETTINGS_STORAGE_KEY)?
     else {
-        return Ok((false, true));
+        return Ok((DEFAULT_CLOSE_TO_TRAY, DEFAULT_CLOSE_PROMPT));
     };
     let value = serde_json::from_str::<serde_json::Value>(&raw)
         .map_err(|error| format!("invalid app settings json: {error}"))?;
     let close_to_tray = value
         .get("desktopCloseToTray")
         .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
+        .unwrap_or(DEFAULT_CLOSE_TO_TRAY);
     let close_prompt = value
         .get("desktopClosePrompt")
         .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true);
+        .unwrap_or(DEFAULT_CLOSE_PROMPT);
     Ok((close_to_tray, close_prompt))
+}
+
+/// The interface language the user picked last time, so native menus built
+/// during startup already match it before the webview pushes `set_locale`.
+#[cfg(target_os = "macos")]
+fn read_stored_locale(app: &AppHandle) -> Option<String> {
+    let path = runtime_storage_path(app).ok()?;
+    runtime_storage::RuntimeStore::read_existing_value(&path, I18N_STORAGE_KEY)
+        .ok()
+        .flatten()
 }
 
 #[cfg(desktop)]
@@ -943,7 +974,7 @@ fn get_close_to_tray_state(state: &Arc<DesktopRuntimeState>) -> bool {
         .close_to_tray
         .lock()
         .map(|value| *value)
-        .unwrap_or(false)
+        .unwrap_or(DEFAULT_CLOSE_TO_TRAY)
 }
 
 #[cfg(desktop)]
@@ -952,7 +983,7 @@ fn get_close_prompt_state(state: &Arc<DesktopRuntimeState>) -> bool {
         .close_prompt_enabled
         .lock()
         .map(|value| *value)
-        .unwrap_or(true)
+        .unwrap_or(DEFAULT_CLOSE_PROMPT)
 }
 
 #[cfg(desktop)]
@@ -974,6 +1005,9 @@ fn is_quit_requested(state: &Arc<DesktopRuntimeState>) -> bool {
 #[cfg(desktop)]
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        // Cmd+H hides the application, not just its windows.
+        #[cfg(target_os = "macos")]
+        let _ = app.show();
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -994,7 +1028,7 @@ fn hide_tray_menu(app: &AppHandle) {
     }
 }
 
-#[cfg(desktop)]
+#[cfg(all(desktop, not(target_os = "macos")))]
 fn ensure_tray_menu_window(app: &AppHandle) -> tauri::Result<()> {
     if app.get_webview_window(TRAY_MENU_LABEL).is_some() {
         return Ok(());
@@ -1023,7 +1057,7 @@ fn ensure_tray_menu_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-#[cfg(desktop)]
+#[cfg(all(desktop, not(target_os = "macos")))]
 fn show_tray_menu(app: &AppHandle, position: PhysicalPosition<f64>) {
     if let Err(error) = ensure_tray_menu_window(app) {
         log::warn!("failed to create tray menu window: {error}");
@@ -1041,7 +1075,7 @@ fn show_tray_menu(app: &AppHandle, position: PhysicalPosition<f64>) {
     }
 }
 
-#[cfg(desktop)]
+#[cfg(all(desktop, not(target_os = "macos")))]
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     // Tray menu window is created lazily by `show_tray_menu` on first right-click,
     // avoiding a hidden webview at startup.
@@ -1080,9 +1114,10 @@ fn start_desktop_run_due_timer(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval =
             tokio::time::interval(Duration::from_secs(DESKTOP_RUN_DUE_INTERVAL_SECS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            let _ = app.emit(DESKTOP_RUN_DUE_EVENT, ());
+            let _ = app.emit_to("main", DESKTOP_RUN_DUE_EVENT, ());
         }
     });
 }
@@ -1467,7 +1502,7 @@ fn hide_desktop_tray_menu(app: AppHandle, window: tauri::WebviewWindow) -> Resul
 fn run_due_scheduled_tasks(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
     require_tray_menu_window(window.label())?;
     hide_tray_menu(&app);
-    let _ = app.emit(DESKTOP_RUN_DUE_EVENT, ());
+    let _ = app.emit_to("main", DESKTOP_RUN_DUE_EVENT, ());
     Ok(())
 }
 
@@ -1560,17 +1595,27 @@ pub fn run() {
                     .with_handler(|app, _shortcut, event| {
                         if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
                             if let Some(window) = app.get_webview_window("main") {
-                                if window.is_visible().unwrap_or(false) {
+                                if window.is_visible().unwrap_or(false)
+                                    && !window.is_minimized().unwrap_or(false)
+                                {
                                     let _ = window.hide();
                                 } else {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
+                                    show_main_window(app);
                                 }
                             }
                         }
                     })
                     .build(),
             );
+    }
+
+    // `macos::install` sets a localized menu bar during setup; Tauri's
+    // English default menu would only be replaced a moment later.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .enable_macos_default_menu(false)
+            .on_menu_event(handle_macos_menu_event);
     }
 
     builder = builder
@@ -1625,14 +1670,22 @@ pub fn run() {
                 if let Err(error) = app.global_shortcut().register("Alt+Shift+E") {
                     log::warn!("failed to register default global shortcut: {error}");
                 }
-                let (close_to_tray, close_prompt) =
-                    read_close_settings(app.handle()).unwrap_or((false, true));
+                let (close_to_tray, close_prompt) = read_close_settings(app.handle())
+                    .unwrap_or((DEFAULT_CLOSE_TO_TRAY, DEFAULT_CLOSE_PROMPT));
                 if let Err(error) = set_close_to_tray_state(&desktop_state, close_to_tray) {
                     log::warn!("failed to initialize close-to-tray state: {error}");
                 }
                 if let Err(error) = set_close_prompt_state(&desktop_state, close_prompt) {
                     log::warn!("failed to initialize close prompt state: {error}");
                 }
+                #[cfg(target_os = "macos")]
+                {
+                    if let Some(locale) = read_stored_locale(app.handle()) {
+                        i18n::set_locale(&locale);
+                    }
+                    macos::install(app)?;
+                }
+                #[cfg(not(target_os = "macos"))]
                 setup_tray(app)?;
                 start_desktop_run_due_timer(app.handle().clone());
             }
@@ -1791,6 +1844,12 @@ fn handle_desktop_event(
             } else if get_close_to_tray_state(desktop_state) {
                 api.prevent_close();
                 hide_main_window(app);
+            } else if cfg!(target_os = "macos") {
+                // On macOS, quit-on-close must also work with SSH pop-outs
+                // open; otherwise the main window is destroyed and cannot reopen.
+                api.prevent_close();
+                set_quit_requested(desktop_state, true);
+                app.exit(0);
             }
         }
         RunEvent::WindowEvent {
@@ -1819,6 +1878,7 @@ fn handle_desktop_event(
             // memory for the rest of the process lifetime.
             pending_ssh_windows.remove_request(label);
         }
+        #[cfg(not(target_os = "macos"))]
         RunEvent::ExitRequested { api, .. } if !is_quit_requested(desktop_state) => {
             if get_close_prompt_state(desktop_state) {
                 api.prevent_exit();
@@ -1827,6 +1887,32 @@ fn handle_desktop_event(
                 api.prevent_exit();
                 hide_main_window(app);
             }
+        }
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } if macos::should_restore_main_window(app) => {
+            show_main_window(app);
+        }
+        _ => {}
+    }
+}
+
+/// Menu bar and status-bar menu actions on macOS.
+#[cfg(target_os = "macos")]
+fn handle_macos_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
+    match event.id().as_ref() {
+        macos::MENU_OPEN_SETTINGS => {
+            show_main_window(app);
+            let _ = app.emit_to("main", macos::OPEN_SETTINGS_EVENT, ());
+        }
+        macos::MENU_SHOW_MAIN => show_main_window(app),
+        macos::MENU_RUN_DUE => {
+            let _ = app.emit_to("main", DESKTOP_RUN_DUE_EVENT, ());
+        }
+        macos::MENU_QUIT => {
+            if let Some(state) = app.try_state::<Arc<DesktopRuntimeState>>() {
+                set_quit_requested(&state, true);
+            }
+            app.exit(0);
         }
         _ => {}
     }

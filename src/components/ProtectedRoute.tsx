@@ -4,6 +4,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { useI18n } from "../lib/i18n";
 import { DEFAULT_SHELL_NAV_WIDTH, readStoredShellNavWidth } from "../lib/shell-nav-width";
 import { useAuth } from "../lib/use-auth";
+import { titleBarDragRegion } from "../lib/window-chrome";
 
 function storedNavWidth() {
   try {
@@ -21,7 +22,8 @@ function RestoringShell({ label }: { label: string }) {
   return (
     <div className="flex h-dvh bg-app-bg" role="status" aria-live="polite" aria-busy="true" aria-label={label}>
       <div aria-hidden="true" className="hidden shrink-0 flex-col bg-app-sidebar px-3 md:flex" style={{ width: storedNavWidth() }}>
-        <div className="flex h-14 items-center gap-2.5 px-1">
+        {/* Same box as AppShell's header, so it shares the macOS traffic-light inset. */}
+        <div className="app-sidebar-header -mx-3 flex h-14 items-center gap-2.5 px-4" {...titleBarDragRegion()}>
           <img src="/favicon.svg" alt="" className="h-8 w-8 shrink-0" draggable={false} />
           <div className="h-3.5 w-24 animate-pulse rounded bg-app-neutralSoft" />
         </div>
@@ -32,7 +34,7 @@ function RestoringShell({ label }: { label: string }) {
         </div>
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
-        <div aria-hidden="true" className="flex h-14 shrink-0 items-center px-6">
+        <div aria-hidden="true" className="flex h-14 shrink-0 items-center px-6" {...titleBarDragRegion()}>
           <div className="h-4 w-28 animate-pulse rounded bg-app-neutralSoft" />
         </div>
         <p className="px-6 pt-6 text-sm text-app-muted">{label}</p>

@@ -18,6 +18,7 @@ import { AuthProvider } from "./lib/auth-context";
 import { I18nProvider, applyInitialDocumentLang } from "./lib/i18n";
 import { initRuntimeKind } from "./lib/runtime";
 import { applyInitialTheme } from "./lib/theme";
+import { applyWindowChrome } from "./lib/window-chrome";
 import { TrayMenu } from "./components/TrayMenu";
 
 const queryClient = new QueryClient({
@@ -54,6 +55,7 @@ applyInitialTheme();
 // renderer can pick capability flags without race conditions. On web this
 // resolves immediately.
 initRuntimeKind().finally(() => {
+  applyWindowChrome(windowLabel);
   const SshTerminalPage = lazy(() => import("./pages/SshTerminalPage").then((module) => ({ default: module.SshTerminalPage })));
   createRoot(document.getElementById("root")!).render(
     <StrictMode>

@@ -138,8 +138,19 @@ export const DEFAULT_TIMED_RELEASE_LEAD_MS = 10 * 60_000;
 // deliberate terminal color values themselves live in ssh-terminal-colors.ts.
 export { DEFAULT_CUSTOM_COLORS } from "./ssh-terminal-colors";
 
+/**
+ * macOS defaults differ from Windows: Consolas is absent there (the stack would
+ * fall through to WebKit's Courier), and closing a window conventionally keeps
+ * the app running. Decided from the user agent so module-level defaults work
+ * before the runtime kind is known; jsdom and Node never match.
+ */
+const MAC_DEFAULTS = typeof navigator !== "undefined"
+  && /\bMacintosh\b/i.test(navigator.userAgent ?? "")
+  && (navigator.maxTouchPoints ?? 0) < 2; // iPad Safari can send a desktop Mac user agent.
+
 export const SSH_FONT_PRESETS: Array<{ id: string; zh: string; en: string; value: string }> = [
   { id: "consolas", zh: "Consolas", en: "Consolas", value: 'Consolas, "SFMono-Regular", "Cascadia Mono", monospace' },
+  { id: "menlo", zh: "Menlo", en: "Menlo", value: 'Menlo, Monaco, "SF Mono", Consolas, monospace' },
   { id: "cascadia", zh: "Cascadia Mono", en: "Cascadia Mono", value: '"Cascadia Mono", "Cascadia Code", Consolas, monospace' },
   { id: "jetbrains", zh: "JetBrains Mono", en: "JetBrains Mono", value: '"JetBrains Mono", "Fira Code", Consolas, monospace' },
   { id: "fira", zh: "Fira Code", en: "Fira Code", value: '"Fira Code", "JetBrains Mono", Consolas, monospace' },
@@ -163,7 +174,7 @@ export const DEFAULT_SSH_SETTINGS: SshSettings = {
   portForwards: [],
   maxHistoryEntries: 20,
   terminal: {
-    fontFamily: 'Consolas, "SFMono-Regular", "Cascadia Mono", monospace',
+    fontFamily: MAC_DEFAULTS ? 'Menlo, Monaco, "SF Mono", Consolas, monospace' : 'Consolas, "SFMono-Regular", "Cascadia Mono", monospace',
     fontSize: 13,
     scrollback: 10_000,
     cursorBlink: true,
@@ -171,7 +182,7 @@ export const DEFAULT_SSH_SETTINGS: SshSettings = {
     webglRenderer: true,
     webLinks: true,
     customColors: DEFAULT_CUSTOM_COLORS,
-    fontPreset: "consolas",
+    fontPreset: MAC_DEFAULTS ? "menlo" : "consolas",
     logAutoName: true,
   },
 };
@@ -190,8 +201,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   timedReleaseReminderLeadMs: DEFAULT_TIMED_RELEASE_LEAD_MS,
   idleReminderWindowMs: DEFAULT_IDLE_REMINDER_WINDOW_MS,
   idleAutoRelease: false,
-  desktopCloseToTray: false,
-  desktopClosePrompt: true,
+  // Must match DEFAULT_CLOSE_TO_TRAY / DEFAULT_CLOSE_PROMPT in src-tauri/src/lib.rs.
+  desktopCloseToTray: MAC_DEFAULTS,
+  desktopClosePrompt: !MAC_DEFAULTS,
   desktopAutostart: false,
   runLogLimit: DEFAULT_RUN_LOG_LIMIT,
   runLogRetentionDays: DEFAULT_RUN_LOG_RETENTION_DAYS,
@@ -349,8 +361,12 @@ function normalizePortForwards(value: unknown): PortForwardRule[] {
   return rules;
 }
 
+function normalizeBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
 function normalizeFontPreset(value: unknown): string {
-  if (typeof value !== "string") return "consolas";
+  if (typeof value !== "string") return DEFAULT_SSH_SETTINGS.terminal.fontPreset;
   const preset = SSH_FONT_PRESETS.find((p) => p.id === value);
   return preset ? value : "custom";
 }
@@ -401,8 +417,8 @@ export function normalizeAppSettings(settings: Partial<AppSettings>): AppSetting
     timedReleaseReminderLeadMs: normalizeTimedReleaseLead(settings.timedReleaseReminderLeadMs),
     idleReminderWindowMs: normalizeIdleReminderWindow(settings.idleReminderWindowMs),
     idleAutoRelease: settings.idleAutoRelease === true,
-    desktopCloseToTray: settings.desktopCloseToTray === true,
-    desktopClosePrompt: settings.desktopClosePrompt !== false,
+    desktopCloseToTray: normalizeBoolean(settings.desktopCloseToTray, DEFAULT_APP_SETTINGS.desktopCloseToTray),
+    desktopClosePrompt: normalizeBoolean(settings.desktopClosePrompt, DEFAULT_APP_SETTINGS.desktopClosePrompt),
     desktopAutostart: settings.desktopAutostart === true,
     runLogLimit: normalizePositiveInteger(settings.runLogLimit, DEFAULT_APP_SETTINGS.runLogLimit),
     runLogRetentionDays: normalizePositiveInteger(settings.runLogRetentionDays, DEFAULT_APP_SETTINGS.runLogRetentionDays),

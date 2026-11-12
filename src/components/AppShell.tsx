@@ -1,4 +1,4 @@
-import { AlertCircle, ArrowUpCircle, DownloadCloud, ExternalLink, FolderOpen, LogOut, Minimize2, MoreHorizontal, Power, RotateCcw, Save, Search, WifiOff, X } from "lucide-react";
+import { AlertCircle, ArrowUpCircle, DownloadCloud, ExternalLink, FolderOpen, LogOut, MoreHorizontal, RotateCcw, Save, Search, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState, type RefObject, type UIEvent } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
@@ -9,15 +9,13 @@ import { ShortcutsDialog } from "./ShortcutsDialog";
 import { TaskNotificationWatcher } from "./TaskNotificationWatcher";
 import { IdleInstanceWatcher } from "./IdleInstanceWatcher";
 import { ThemeSwitch } from "./ThemeSwitch";
-import { Button, Dialog, ProgressBar } from "./ui";
-import { GLOBAL_SETTINGS_ACCOUNT_ID, getRuntimeSettings, saveAccountSettings, setRuntimeSettings } from "../lib/app-settings";
+import { Button, ProgressBar } from "./ui";
 import { getTransportBlockReason, subscribeTransportPolicy } from "../lib/api";
 import { useAppUpdate } from "../lib/app-update-context";
 import { useCommitQueue } from "../lib/commit-queue-context";
 import { downloadStatusText } from "../lib/download-queue";
 import { formatDownloadProgress, useDownloadQueue } from "../lib/use-download-queue";
 import { browserRuntime } from "../lib/runtime";
-import { resolveSavedAccountId } from "../lib/saved-accounts";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { useConfirmAction } from "../lib/use-confirm-action";
 import { useAuth } from "../lib/use-auth";
@@ -39,6 +37,7 @@ import { exitPresets, useExitGhost } from "../lib/exit-motion";
 import { claimOverlayKey, hasOpenModalOverlay, useOverlay } from "../lib/overlay-stack";
 import { navItems } from "../lib/nav-items";
 import { useExecutionReviewCount } from "../lib/use-execution-review";
+import { titleBarDragRegion } from "../lib/window-chrome";
 
 const primaryMobileNav = navItems.slice(0, 3);
 const secondaryMobileNav = navItems.slice(3);
@@ -131,8 +130,6 @@ export function AppShell() {
   const [commitQueueOpen, setCommitQueueOpen] = useState(false);
   const [statusPopoverOpen, setStatusPopoverOpen] = useState(false);
   const [statusPopoverPosition, setStatusPopoverPosition] = useState({ left: 12, top: 64 });
-  const [closePromptOpen, setClosePromptOpen] = useState(false);
-  const [rememberCloseChoice, setRememberCloseChoice] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [transportBlocked, setTransportBlocked] = useState(() => Boolean(getTransportBlockReason()));
   const moreMenuRef = useRef<HTMLDivElement>(null);
@@ -489,55 +486,6 @@ export function AppShell() {
 
   useEffect(() => () => finishNavResize(), []);
 
-  useEffect(() => {
-    let disposed = false;
-    let removeListener: (() => void) | null = null;
-    void browserRuntime.onDesktopCloseRequested(() => {
-      setClosePromptOpen((open) => {
-        if (!open) setRememberCloseChoice(false);
-        return true;
-      });
-    }).then((remove) => {
-      if (disposed) {
-        remove();
-        return;
-      }
-      removeListener = remove;
-    });
-
-    return () => {
-      disposed = true;
-      removeListener?.();
-    };
-  }, []);
-
-  function closeClosePrompt() {
-    setClosePromptOpen(false);
-    setRememberCloseChoice(false);
-    void browserRuntime.cancelDesktopClosePrompt();
-  }
-
-  async function chooseCloseAction(action: "tray" | "exit") {
-    if (rememberCloseChoice) {
-      const nextSettings = {
-        ...getRuntimeSettings(),
-        desktopClosePrompt: false,
-        desktopCloseToTray: action === "tray",
-      };
-      const accountId = auth.user
-        ? resolveSavedAccountId(auth.user.username ?? auth.user.name ?? "", auth.user)
-        : GLOBAL_SETTINGS_ACCOUNT_ID;
-      setRuntimeSettings(nextSettings);
-      await saveAccountSettings(browserRuntime.storage, accountId, nextSettings);
-      await browserRuntime.setDesktopClosePrompt(false);
-      await browserRuntime.setDesktopCloseToTray(nextSettings.desktopCloseToTray);
-    }
-
-    setClosePromptOpen(false);
-    setRememberCloseChoice(false);
-    await browserRuntime.completeDesktopClosePrompt(action);
-  }
-
   function openDownloadedPath(path: string) {
     void browserRuntime.openLocalPath(path).catch((error) => {
       toast.error(text("打开文件失败", "Failed to open file"), error instanceof Error ? error.message : text("请确认文件仍然存在。", "Check that the file still exists."));
@@ -577,47 +525,10 @@ export function AppShell() {
       <BackgroundScheduledTaskRunner />
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
-      <Dialog
-        open={closePromptOpen}
-        title={text("关闭 EasyConsole", "Close EasyConsole")}
-        onClose={closeClosePrompt}
-        width="max-w-md"
-        closeOnOverlayClick={false}
-      >
-        <div className="space-y-4 p-4">
-          <p className="text-sm leading-6 text-app-muted">
-            {text(
-              "要彻底退出应用，还是最小化到托盘继续执行后台计划任务？",
-              "Exit the app completely, or minimize to tray so background scheduled tasks can continue?",
-            )}
-          </p>
-          <label className="flex items-center gap-2 text-sm text-app-muted">
-            <input
-              type="checkbox"
-              checked={rememberCloseChoice}
-              onChange={(event) => setRememberCloseChoice(event.target.checked)}
-            />
-            {text("不再提示，记住本次选择", "Do not ask again, remember this choice")}
-          </label>
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <Button type="button" variant="secondary" onClick={closeClosePrompt}>
-              {text("继续使用", "Keep open")}
-            </Button>
-            <Button type="button" variant="secondary" onClick={() => void chooseCloseAction("tray")}>
-              <Minimize2 className="h-4 w-4" />
-              {text("最小化到托盘", "Minimize to tray")}
-            </Button>
-            <Button type="button" variant="danger" onClick={() => void chooseCloseAction("exit")}>
-              <Power className="h-4 w-4" />
-              {text("彻底退出", "Exit")}
-            </Button>
-          </div>
-        </div>
-      </Dialog>
       {confirm.confirmDialog}
       <div className="relative hidden h-full shrink-0 md:flex" style={{ width: navWidth }}>
         <aside className="flex h-full w-full min-w-0 flex-col overflow-hidden border-r border-app-border bg-app-sidebar">
-          <div className="app-sidebar-header flex h-14 shrink-0 items-center gap-2.5 px-4">
+          <div className="app-sidebar-header flex h-14 shrink-0 items-center gap-2.5 px-4" {...titleBarDragRegion()}>
             <img src="/favicon.svg" alt="" className="h-8 w-8 shrink-0" draggable={false} />
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold tracking-[-0.01em]">EasyConsole</div>
@@ -699,7 +610,7 @@ export function AppShell() {
         />
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <header ref={headerRef} className="app-shell-header z-40 flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-app-border bg-app-surface px-4 md:px-6" data-scrolled="false" style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}>
+        <header ref={headerRef} className="app-shell-header z-40 flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-app-border bg-app-surface px-4 md:px-6" data-scrolled="false" style={{ paddingTop: "env(safe-area-inset-top, 0px)" }} {...titleBarDragRegion()}>
           <div className="min-w-0">
             <h1 className="truncate text-[1.0625rem] font-semibold leading-6 tracking-[-0.015em]">{pageTitle}</h1>
             <p className="hidden truncate text-xs text-app-muted sm:block">{t(headerDescriptionKey(location.pathname))}</p>

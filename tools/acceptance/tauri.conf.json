@@ -6,7 +6,11 @@
     "beforeDevCommand": "node --import tsx tools/acceptance/dev-renderer.ts"
   },
   "app": {
-    "windows": [{ "label": "main", "title": "EasyConsole Acceptance", "width": 1280, "height": 820, "minWidth": 1024, "minHeight": 640 }]
+    "windows": [{
+      "label": "main", "title": "EasyConsole Acceptance", "width": 1280, "height": 820, "minWidth": 1024, "minHeight": 640,
+      "titleBarStyle": "Overlay", "hiddenTitle": true, "trafficLightPosition": { "x": 18, "y": 30 },
+      "center": true, "preventOverflow": true, "backgroundThrottling": "throttle"
+    }]
   },
   "bundle": { "active": false }
 }

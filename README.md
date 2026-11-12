@@ -26,6 +26,8 @@ The 1.0 distribution decision is to omit Windows Authenticode and Apple notariza
 - **Windows:** an unrecognized-app SmartScreen prompt may show an unknown publisher. Select **More info → Run anyway** only when you trust this download and the option is available. Smart App Control or enterprise policy can block unsigned executables without a user override; ask the device administrator to approve distribution. See [Microsoft's prompt instructions](https://learn.microsoft.com/en-us/troubleshoot/microsoft-edge/development/ie-mode-blocks-addon#check-uac-and-windows-defender-smartscreen-settings) and [reputation/policy explanation](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation).
 - **macOS:** after trying to open EasyConsole, open **System Settings → Privacy & Security → Open Anyway**, confirm the app's identity, then choose **Open**. This creates an exception for that app; availability depends on device policy. Damage or malware alerts require investigation rather than this developer-verification exception. See [Apple's opening instructions](https://support.apple.com/en-us/102445).
 
+Replacing an ad-hoc signed macOS build may prompt you again when EasyConsole restores saved credentials. [Apple ties an ad-hoc signature to a specific build](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements), and [Keychain asks before granting access to an unrecognized build](https://support.apple.com/guide/keychain-access/if-youre-asked-for-access-to-your-keychain-kyca1243/mac). Verify the new app before responding to the prompt.
+
 ### First sign-in
 
 Open EasyConsole, check the API host shown on the sign-in screen, then sign in with your console account. The sign-in screen's API Settings link can change the API and monitor URLs before login. The default lab service uses HTTP; use it on a trusted network, or select an HTTPS endpoint / secure local tunnel. See [transport configuration](#local-credentials).
@@ -52,6 +54,8 @@ Use the matching desktop release's `easy-console-mcp.exe` on Windows or `easy-co
   }
 }
 ```
+
+On macOS, use `/Applications/EasyConsole.app/Contents/MacOS/easy-console-mcp` if you placed the app in Applications.
 
 Authenticate the separate CLI/MCP config using the [stdin login instructions](#local-credentials), then restart the MCP connection. For the default HTTP lab service, add `EASY_CONSOLE_ALLOW_INSECURE_HTTP=1` to the client's environment explicitly. Check `easyconsole_user_info` before any remote change. Template/preset resources are local and work without remote authentication. See the [complete tool and compatibility contract](CLI_MCP_CONTRACT.md) and [AI skill](skills/easy-console-ai/SKILL.md).
 
@@ -96,6 +100,8 @@ npm.cmd run sidecars:placeholders
 ```
 
 `dev:tauri` starts only the Tauri-targeted Vite dev server; `tauri:dev` is the normal desktop entrypoint and starts that server through Tauri's `beforeDevCommand`.
+
+On macOS, install the Xcode Command Line Tools (`xcode-select --install`), use Node 22 (see `.nvmrc`), and make sure `cargo` and `rustc` are on your shell's `PATH`. Then run `npm ci`, `npm run build:sidecars`, and `npm run tauri:dev`.
 
 ## Environment
 
@@ -238,6 +244,18 @@ The desktop app is built with Tauri 2 and is the primary product target. Web cod
 - VS Code Remote-SSH setup creates an EasyConsole-managed key, installs the public key on the target host through password SSH, and writes an EasyConsole-marked block in the user's SSH config.
 - New platform behavior should be designed for Tauri first, then exposed through the browser runtime only when it has a clean equivalent.
 
+### macOS
+
+macOS uses a native menu bar, Dock behavior and window controls (`src-tauri/src/macos.rs`, `src-tauri/tauri.macos.conf.json`):
+
+- The main window starts centered and fits the available screen area. The sidebar and page header act as the title bar; sign-in and its settings reserve space above the page for the traffic lights. Pop-out SSH windows keep their standard title bar.
+- The menu bar follows the interface language. **Settings…** (⌘,) opens connection settings before sign-in and account settings afterward. Use ⌘W to close the window, ⌘H to hide the app, ⌘0 to restore the main window, and ⌘Q to quit.
+- The menu bar extra is a monochrome template icon with a native menu (show main window, run due schedules, quit) instead of the webview tray popup. On a crowded menu bar with a notch, macOS may hide it behind the notch.
+- By default, closing the main window keeps the app running in the Dock and menu bar, without a prompt; clicking the Dock icon brings the window back and ⌘Q quits. Settings → Window & Startup can turn on the close prompt or quit-on-close. Explicit choices saved earlier are kept.
+- **Open in system terminal** opens a new Terminal.app window through a self-deleting `.command` file, so no Automation permission is required.
+- In the in-app SSH terminal, Ctrl chords go to the remote shell (Ctrl+C interrupts, Ctrl+F moves the cursor), ⌘C/⌘V copy and paste, ⌘F searches, and Option-drag selects text inside mouse-capturing programs. New installs default to the Menlo terminal font.
+- Use **Open at login** with keep-running-on-close for local schedules. On macOS 14+, the hidden main window limits background processing while continuing to handle schedule checks. Hidden-window schedule execution on macOS 11–13 has not been validated; keep the main window visible for time-sensitive plans until it is. The Mac must be awake for schedules to run; scheduled wake-up is Windows-only.
+
 ## Packaging
 
 Desktop packaging produces the GUI app plus two AI/script sidecar executables:
@@ -305,6 +323,13 @@ Installers and app bundles include both sidecars. For portable/manual distributi
 
 Current sidecar packaging supports Windows, macOS, and Linux on x64 and arm64. The sidecars are generated artifacts and are ignored by git.
 
+On macOS, bundles use [ad-hoc signing](https://v2.tauri.app/distribute/sign/macos/#ad-hoc-signing) unless `APPLE_SIGNING_IDENTITY` is set. `src-tauri/Entitlements.plist` supplies the JIT entitlements the Node sidecars need under the hardened runtime. For a local app bundle without the updater private key, build and check the executables inside it:
+
+```bash
+npm run tauri:build -- --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+node --import tsx tools/acceptance/macos-bundle-smoke.ts src-tauri/target/release/bundle/macos/EasyConsole.app
+```
+
 ## Desktop Updates
 
 The packaged desktop app uses Tauri's updater plugin. The stable update feed is the public GitHub Release asset:
@@ -327,7 +352,7 @@ For GitHub Actions releases, copy the private key content into `TAURI_SIGNING_PR
 
 GitHub Actions workflows live in `.github/workflows/`:
 
-- `ci.yml`: runs on pull requests and pushes to `main`/`master`; verifies Windows, macOS arm64, and Linux with version consistency, app/tools typechecks, lint, coverage gates, rustfmt, clippy, Rust unit/storage interoperability tests, SSH integration tests, desktop input build, Tauri shell check, and sidecar artifact upload.
+- `ci.yml`: runs on pull requests and pushes to `main`/`master`; verifies Windows, macOS arm64, and Linux with version consistency, app/tools typechecks, lint, coverage gates, rustfmt, clippy, Rust unit/storage interoperability tests, SSH integration tests, desktop input build, Tauri shell check, and sidecar artifact upload. The macOS job also verifies the signed app bundle and runs both sidecars inside it.
 - `android-ci.yml`: runs on pull requests, pushes to `main`/`master`, and manual dispatch; checks the app and tools, builds desktop inputs, and builds an Android aarch64 debug APK. This does not verify production signing or upgrades of installed release APKs.
 - `release.yml`: runs on `v*` tags or manual dispatch; verifies the project (including rustfmt/clippy), builds Windows, Linux, and macOS arm64/x64 desktop bundles serially, signs updater artifacts, then builds signed Android aarch64/x86_64 release APKs. A tag run publishes the GitHub release directly; a manual run creates a `manual-N` draft prerelease for rehearsal. Draft prereleases do not reach clients using the production `releases/latest/download/latest.json` endpoint.
 

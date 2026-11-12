@@ -309,6 +309,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange, prefere
         fontSize: browserRuntime.isMobile ? Math.max(sshTerminal.fontSize, 15) : sshTerminal.fontSize,
         scrollback: sshTerminal.scrollback,
         theme: resolveTerminalTheme(sshTerminal.theme, sshTerminal.customColors),
+        // Option-drag selects text even when tmux/vim capture the mouse, as in Terminal and iTerm2.
+        macOptionClickForcesSelection: true,
       });
       fitAddon = new FitAddon();
       terminal.loadAddon(fitAddon);
@@ -352,20 +354,25 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange, prefere
         if (nearBottom) setHasNewOutput(false);
       });
       terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-        if (event.type !== "keydown" || !event.ctrlKey || event.altKey || event.metaKey) return true;
-        if (event.key === "c" || event.key === "C") {
-          const selection = terminal!.getSelection();
-          if (selection) {
-            void browserRuntime.copyText(selection);
-            return false;
-          }
-          return true;
+        if (event.type !== "keydown" || event.isComposing || event.altKey) return true;
+        const apple = browserRuntime.isApplePlatform;
+        // On Mac, Ctrl+C and Ctrl+F belong to the remote shell. Use Cmd for
+        // terminal UI actions and let Cmd+V reach the native paste handler.
+        if (apple ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey) return true;
+        const key = event.key.toLowerCase();
+        if (key === "c") {
+          const selection = terminal?.getSelection();
+          if (!selection) return true;
+          event.preventDefault();
+          void browserRuntime.copyText(selection);
+          return false;
         }
-        if (event.key === "v" || event.key === "V") {
+        if (key === "v" && !apple) {
           // Suppress \x16; native paste → onData handles clipboard once.
           return false;
         }
-        if (event.key === "f" || event.key === "F") {
+        if (key === "f") {
+          event.preventDefault();
           setShowSearch(true);
           setTimeout(() => searchInputRef.current?.focus(), 0);
           return false;
@@ -669,8 +676,8 @@ export function SshTerminalTab({ request, tabId, active, onStatusChange, prefere
               showSearch ? "bg-app-terminalBg text-app-terminalAccent" : "text-app-terminalText hover:bg-app-terminalBg",
             )}
             type="button"
-            title={text("搜索 (Ctrl+F)", "Search (Ctrl+F)")}
-            aria-label={text("搜索 (Ctrl+F)", "Search (Ctrl+F)")}
+            title={browserRuntime.isApplePlatform ? text("搜索 (⌘F)", "Search (⌘F)") : text("搜索 (Ctrl+F)", "Search (Ctrl+F)")}
+            aria-label={browserRuntime.isApplePlatform ? text("搜索 (⌘F)", "Search (⌘F)") : text("搜索 (Ctrl+F)", "Search (Ctrl+F)")}
             aria-pressed={showSearch}
             onClick={toggleSearch}
           >

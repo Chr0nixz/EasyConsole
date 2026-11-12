@@ -33,13 +33,14 @@ fn ssh_args(request: &SshConnectionRequest) -> Result<Vec<String>, String> {
 }
 
 /// Windows Terminal re-parses its own command line (`;` separates wt commands
-/// and quotes group arguments), so a backend-provided task name must never
-/// reach `wt --title` unfiltered.
-#[cfg(all(desktop, target_os = "windows"))]
+/// and quotes group arguments), and on macOS the title is echoed to the
+/// terminal as an escape sequence, so a backend-provided task name must never
+/// reach either unfiltered.
+#[cfg(all(desktop, any(target_os = "windows", target_os = "macos")))]
 fn sanitize_terminal_title(value: &str) -> String {
     let cleaned: String = value
         .chars()
-        .filter(|ch| !matches!(ch, ';' | '"' | '\'' | '`' | '\n' | '\r'))
+        .filter(|ch| !matches!(ch, ';' | '"' | '\'' | '`') && !ch.is_control())
         .collect();
     let trimmed = cleaned.trim();
     if trimmed.is_empty() {
@@ -89,26 +90,80 @@ fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
 }
 
 #[cfg(all(desktop, target_os = "macos"))]
-fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
-    let args = ssh_args(request)?;
-    let escaped = args
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Body of the `.command` file Terminal.app runs. It deletes itself first, so
+/// nothing is left behind in the temp directory once the window is open.
+#[cfg(all(desktop, target_os = "macos"))]
+fn macos_command_script(request: &SshConnectionRequest) -> Result<String, String> {
+    let args = ssh_args(request)?
         .iter()
-        .map(|arg| format!("'{}'", arg.replace('\'', "'\\''")))
+        .map(|arg| shell_single_quote(arg))
         .collect::<Vec<_>>()
         .join(" ");
-    Command::new("osascript")
-        .args([
-            "-e",
-            &format!("tell application \"Terminal\" to do script \"ssh {escaped}\""),
-        ])
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| {
-            trf!(
-                "无法打开系统终端：{error}",
-                "Failed to open the system terminal: {error}"
-            )
-        })
+    let title = request
+        .task_name
+        .as_deref()
+        .map(sanitize_terminal_title)
+        .unwrap_or_else(|| "EasyConsole SSH".to_string());
+    Ok(format!(
+        "#!/bin/sh\nrm -f \"$0\"\nprintf '\\033]0;%s\\007' {title}\nexec ssh {args}\n",
+        title = shell_single_quote(&title),
+    ))
+}
+
+/// Opens a new Terminal.app window running `ssh`.
+///
+/// Terminal runs `.command` files through the user's login shell, so `ssh`
+/// resolves with the user's full PATH and config. Unlike scripting Terminal
+/// through `osascript`, this needs no Automation permission prompt and keeps
+/// working under the hardened runtime of a signed build.
+#[cfg(all(desktop, target_os = "macos"))]
+fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let script = macos_command_script(request)?;
+    let path = std::env::temp_dir().join(format!(
+        "easyconsole-ssh-{}.command",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let write_error = |error: std::io::Error| {
+        trf!(
+            "无法创建终端启动脚本：{error}",
+            "Failed to create the terminal launch script: {error}"
+        )
+    };
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(&path)
+        .map_err(write_error)?;
+    if let Err(error) = file.write_all(script.as_bytes()) {
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        return Err(write_error(error));
+    }
+    drop(file);
+
+    let result = Command::new("/usr/bin/open")
+        .args(["-b", "com.apple.Terminal"])
+        .arg(&path)
+        .output();
+    let error = match result {
+        Ok(output) if output.status.success() => return Ok(()),
+        Ok(output) if output.stderr.is_empty() => output.status.to_string(),
+        Ok(output) => String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        Err(error) => error.to_string(),
+    };
+    let _ = std::fs::remove_file(&path);
+    Err(trf!(
+        "无法打开系统终端：{error}",
+        "Failed to open the system terminal: {error}"
+    ))
 }
 
 #[cfg(all(desktop, target_os = "linux"))]
@@ -145,12 +200,15 @@ fn spawn_ssh_terminal(request: &SshConnectionRequest) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn open_system_ssh_terminal(
+pub async fn open_system_ssh_terminal(
     window: tauri::WebviewWindow,
     request: SshConnectionRequest,
 ) -> Result<(), String> {
     crate::require_main_window(window.label())?;
-    spawn_ssh_terminal(&request)
+    // LaunchServices can take a moment to answer.
+    tauri::async_runtime::spawn_blocking(move || spawn_ssh_terminal(&request))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]
@@ -196,7 +254,45 @@ mod tests {
         assert!(ssh_args(&request("example.com", None, Some("-root"), None)).is_err());
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_command_script_passes_literal_arguments_and_removes_itself() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let mock_ssh = directory.path().join("ssh");
+        fs::write(&mock_ssh, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        fs::set_permissions(&mock_ssh, fs::Permissions::from_mode(0o700)).unwrap();
+        let script = macos_command_script(&request(
+            "10.0.0.8",
+            Some("30222"),
+            Some("root"),
+            Some("gpu'job $(exit 42)\u{1b}]0;x\u{7}"),
+        ))
+        .unwrap();
+        let script_path = directory.path().join("SSH with spaces.command");
+        fs::write(&script_path, script).unwrap();
+        let output = Command::new("/bin/sh")
+            .arg(&script_path)
+            .env("PATH", format!("{}:/bin", directory.path().display()))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "\u{1b}]0;gpujob $(exit 42)]0x\u{7}-p\n30222\n--\nroot@10.0.0.8\n"
+        );
+        assert!(!script_path.exists());
+
+        let untitled = macos_command_script(&request("example.com", None, None, None)).unwrap();
+        assert!(untitled.contains("'EasyConsole SSH'"));
+        assert!(untitled.ends_with("exec ssh '--' 'example.com'\n"));
+
+        assert!(macos_command_script(&request("-oProxyCommand=calc", None, None, None)).is_err());
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     #[test]
     fn sanitize_terminal_title_strips_injection_characters() {
         assert_eq!(sanitize_terminal_title("task;calc"), "taskcalc");
