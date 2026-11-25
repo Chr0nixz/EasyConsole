@@ -355,16 +355,20 @@ export function ScheduledTasksPage() {
     return errors;
   }, [cpu, gpu, imageId, memory, name, price, releaseCondition, releaseTime, scheduleTime, scriptEnv, scriptPath, text, workDirectory]);
 
+  /** Re-read the shared store; resolves to the fresh list, or null when it could not be read. */
   const reload = useCallback(
-    () =>
+    (): Promise<ScheduledTask[] | null> =>
       loadScheduledTasks(browserRuntime.storage)
         .then((loaded) => {
-          setItems(sortScheduledTasks(loaded));
+          const sorted = sortScheduledTasks(loaded);
+          setItems(sorted);
           setLoadError(null);
+          return sorted;
         })
-        .catch((error) =>
-          setLoadError(error instanceof Error ? error : new Error(i18nText("定时任务读取失败", "Failed to read scheduled tasks"))),
-        )
+        .catch((error) => {
+          setLoadError(error instanceof Error ? error : new Error(i18nText("定时任务读取失败", "Failed to read scheduled tasks")));
+          return null;
+        })
         .finally(() => setLoading(false)),
     [],
   );
@@ -667,6 +671,14 @@ export function ScheduledTasksPage() {
             if (result.skipped) {
               if (result.reason === "in-flight") {
                 toast.info(text("定时任务正在执行", "Scheduled task is already running"), target.name);
+              } else if (result.reason === "not-due") {
+                toast.info(
+                  text("计划已不再到期，未创建实例", "Plan is no longer due; nothing was created"),
+                  text(
+                    `${target.name} 可能已在别处执行，下一次：${formatScheduleTime(result.task.scheduleTime)}`,
+                    `${target.name} may have run elsewhere; next run: ${formatScheduleTime(result.task.scheduleTime)}`,
+                  ),
+                );
               } else if (result.task.lastError) {
                 toast.info(text("定时任务待确认", "Scheduled task needs review"), result.task.lastError);
               }
@@ -740,8 +752,31 @@ export function ScheduledTasksPage() {
     });
   }
 
-  function retryItem(item: ScheduledTask) {
-    setRunPreview({ targets: [item], force: true });
+  /**
+   * The list on screen is a snapshot: the background runner, another window or a second app
+   * process may have run or advanced a plan since. Previews are built from a fresh read.
+   */
+  async function openDuePreview() {
+    const latest = (await reload()) ?? items;
+    const due = latest.filter((item) => isScheduleDue(item));
+    if (due.length === 0) {
+      toast.info(
+        text("没有到期的计划", "No plans are due"),
+        text("列表已刷新，原先到期的计划可能已经执行。", "The list was refreshed; plans that were due may already have run."),
+      );
+      return;
+    }
+    setRunPreview({ targets: due, force: false });
+  }
+
+  async function retryItem(item: ScheduledTask) {
+    const latest = await reload();
+    const current = latest ? latest.find((candidate) => candidate.id === item.id) : item;
+    if (!current) {
+      toast.info(text("计划已不存在", "Plan no longer exists"), text(`${item.name} 已在别处删除。`, `${item.name} was deleted elsewhere.`));
+      return;
+    }
+    setRunPreview({ targets: [current], force: true });
   }
 
   function runPreviewMeta(item: ScheduledTask) {
@@ -874,7 +909,7 @@ export function ScheduledTasksPage() {
           title={text("立即执行", "Run now")}
           type="button"
           variant="ghost"
-          onClick={() => retryItem(item)}
+          onClick={() => void retryItem(item)}
         >
           <Zap className="h-4 w-4" />
           {text("执行", "Run")}
@@ -933,7 +968,7 @@ export function ScheduledTasksPage() {
           <p className="text-sm leading-6 text-app-muted">{text("客户端关闭或休眠期间错过的计划，恢复后按设置处理：默认等待确认，也可改为自动补跑或跳过（可在设置中调整）。", "Runs missed while the app was closed or asleep follow your settings: ask by default, or catch up / skip automatically (configurable in Settings).")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => setRunPreview({ targets: items.filter((item) => isScheduleDue(item)), force: false })}>
+          <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => void openDuePreview()}>
             <CalendarCheck className="h-4 w-4" />
             {text("执行到期", "Run due")} {dueCount > 0 ? dueCount : ""}
           </Button>

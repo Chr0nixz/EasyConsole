@@ -134,6 +134,36 @@ describe("ScheduledTasksPage execution safety", () => {
     expect(ledger).toEqual(expect.arrayContaining([expect.objectContaining({ outcome: "unknown" })]));
   });
 
+  it("refreshes the list before Run due and creates nothing for a slot that already ran", async () => {
+    const task = seedTask({ recurrence: { type: "daily" } });
+    renderPage();
+    await taskRow();
+    // The background runner ran this slot and moved the plan to tomorrow after the page loaded.
+    const tomorrow = new Date(Date.parse(task.scheduleTime) + 24 * 60 * 60 * 1000).toISOString();
+    window.localStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify([{ ...task, scheduleTime: tomorrow, lastRemoteTaskId: "remote-earlier" }]));
+
+    fireEvent.click(screen.getByRole("button", { name: /执行到期|Run due/ }));
+
+    expect(await screen.findByText(/没有到期的计划|No plans are due/)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: /确认执行到期计划|Run Due Plans/ })).not.toBeInTheDocument();
+    expect(mocks.createTask).not.toHaveBeenCalled();
+  });
+
+  it("creates nothing when a due slot runs elsewhere while the Run due preview is open", async () => {
+    const task = seedTask({ recurrence: { type: "daily" } });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /执行到期|Run due/ }));
+    const preview = within(await screen.findByRole("dialog", { name: /确认执行到期计划|Run Due Plans/ }));
+    const tomorrow = new Date(Date.parse(task.scheduleTime) + 24 * 60 * 60 * 1000).toISOString();
+    window.localStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify([{ ...task, scheduleTime: tomorrow, lastRemoteTaskId: "remote-earlier" }]));
+
+    fireEvent.click(preview.getByRole("button", { name: /创建 1 个实例|Create 1 instance/ }));
+
+    expect(await screen.findByText(/计划已不再到期|Plan is no longer due/)).toBeInTheDocument();
+    expect(mocks.createTask).not.toHaveBeenCalled();
+    expect(storedTasks()[0]).toMatchObject({ status: "pending", scheduleTime: tomorrow, lastRemoteTaskId: "remote-earlier" });
+  });
+
   it("rechecks ownership if the account changes while the impact preview is open", async () => {
     seedTask();
     renderPage();

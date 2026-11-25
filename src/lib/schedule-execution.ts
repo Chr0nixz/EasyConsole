@@ -1,4 +1,4 @@
-import { holdScheduledTaskForReview, LEGACY_SCHEDULED_TASK_OWNER_KEY, mutateScheduledTasks, scheduledTaskOwnerMismatch, scheduleNextRun, STALE_LEASE_MS, resetStaleRunningTasks, updateScheduledTask } from "./scheduled-tasks";
+import { holdScheduledTaskForReview, isScheduleDue, LEGACY_SCHEDULED_TASK_OWNER_KEY, mutateScheduledTasks, scheduledTaskOwnerMismatch, scheduleNextRun, STALE_LEASE_MS, resetStaleRunningTasks, updateScheduledTask } from "./scheduled-tasks";
 import type { AccountScope } from "./account-scope";
 import { applyScheduledReleasePolicy } from "./scheduled-release";
 import { isOutcomeUnknown } from "./api-client";
@@ -172,7 +172,13 @@ export type ExecuteScheduledTaskDeps = {
   persistRetryDelayMs?: number;
 };
 
-export type ExecuteScheduledTaskSkipReason = "already-completed" | "in-flight" | "not-runnable";
+/**
+ * Why a claim was skipped. `not-due` means a non-forced run found the latest row
+ * no longer due: the caller's list was a snapshot, and the slot has since run
+ * elsewhere (another window, the background runner, a second app process) and
+ * the plan moved on to its next occurrence.
+ */
+export type ExecuteScheduledTaskSkipReason = "already-completed" | "in-flight" | "not-runnable" | "not-due";
 
 /** How a non-skipped execution ended: fully recorded, or remote-created but unpersistable locally. */
 export type ExecuteScheduledTaskOutcome = "completed" | "local-persist-failed";
@@ -368,6 +374,14 @@ export async function executeScheduledTask(
       return current;
     } else if (!force && latest.status !== "pending") {
       claim = { kind: "skipped", reason: "not-runnable", task: latest };
+      return current;
+    } else if (!force && !isScheduleDue(latest, now)) {
+      // Due lists are computed from snapshots (a round of the background
+      // runner, a page left open across the slot). A recurring row that already
+      // ran comes back as pending with its next scheduleTime, so the status and
+      // execution key alone cannot tell; only the due check against the latest
+      // row stops a second create for the same slot.
+      claim = { kind: "skipped", reason: "not-due", task: latest };
       return current;
     }
 

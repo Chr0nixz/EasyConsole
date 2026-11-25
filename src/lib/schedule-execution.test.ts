@@ -161,6 +161,46 @@ describe("executeScheduledTask", () => {
     expect(submittedAt - Date.parse(task.scheduleTime)).toBe(24 * 60 * 60 * 1000);
   });
 
+  it("never creates a second instance for a slot that already ran from a stale due list", async () => {
+    const storage = createMemoryStorage();
+    await saveScheduledTasks(storage, [makeTask({ recurrence: { type: "daily" } })]);
+    let creates = 0;
+    const createTask = async () => {
+      creates += 1;
+      return { id: `remote-${creates}` };
+    };
+    const now = new Date("2026-07-21T10:00:05.000Z");
+
+    // The background runner runs the 10:00 slot and moves the plan to tomorrow.
+    const first = await executeScheduledTask(storage, "sch-1", { createTask, now });
+    expect(first.skipped).toBe(false);
+
+    // A page that loaded the list before 10:00 still shows the row as due and runs it.
+    const second = await executeScheduledTask(storage, "sch-1", { createTask, trigger: "manual", now: new Date("2026-07-21T10:01:00.000Z") });
+
+    expect(second).toMatchObject({ skipped: true, reason: "not-due", task: { status: "pending" } });
+    expect(creates).toBe(1);
+    expect(await listExecutionLedger(storage)).toHaveLength(1);
+  });
+
+  it("still runs a plan that is not due when the run is forced", async () => {
+    const storage = createMemoryStorage();
+    await saveScheduledTasks(storage, [makeTask({ scheduleTime: "2026-07-28T10:00:00.000Z" })]);
+
+    const notForced = await executeScheduledTask(storage, "sch-1", {
+      createTask: async () => ({ id: "remote-early" }),
+      now: new Date("2026-07-21T10:00:05.000Z"),
+    });
+    const forced = await executeScheduledTask(storage, "sch-1", {
+      createTask: async () => ({ id: "remote-early" }),
+      force: true,
+      now: new Date("2026-07-21T10:00:05.000Z"),
+    });
+
+    expect(notForced).toMatchObject({ skipped: true, reason: "not-due" });
+    expect(forced).toMatchObject({ skipped: false, remoteTaskId: "remote-early" });
+  });
+
   it("advances a recurring task instead of marking it done", async () => {
     const storage = createMemoryStorage();
     const task = makeTask({
