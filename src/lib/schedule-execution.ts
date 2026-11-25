@@ -402,7 +402,10 @@ export async function executeScheduledTask(
   // a backdated value would make the entry look older than the retention window.
   const startedAt = new Date().toISOString();
   try {
-    const releaseAdjustedPayload = applyScheduledReleasePolicy(leased.payload, leased.scheduleTime);
+    // A timed release counts from when this run is submitted, not from its
+    // planned slot: a "run now" on next week's plan, or a run caught up late,
+    // still gets its full 24 hours and never a release time in the past.
+    const releaseAdjustedPayload = applyScheduledReleasePolicy(leased.payload, now);
     const prepared = deps.preparePayload ? await deps.preparePayload(releaseAdjustedPayload) : releaseAdjustedPayload;
     if (accountScope && deps.getAccountScope?.().key !== accountScope.key) {
       const reviewed = holdScheduledTaskForReview(leased, i18nText(

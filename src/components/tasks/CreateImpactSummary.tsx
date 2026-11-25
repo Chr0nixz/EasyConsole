@@ -9,7 +9,17 @@ import type { CreateTaskPayload } from "../../lib/types";
  * holds, what they bill per hour together, and that EasyConsole cannot take a creation back. The creation counterpart of
  * `BatchReleaseImpact`, so spending never reads lighter than releasing.
  */
-export function CreateImpactSummary({ payloads }: { payloads: CreateTaskPayload[] }) {
+export function CreateImpactSummary({
+  payloads,
+  releaseHoursAfterSubmit,
+}: {
+  payloads: CreateTaskPayload[];
+  /**
+   * Set when a timed release counts from submission (scheduled runs): the payloads then carry
+   * a release time estimated from when the preview opened, and the row says so.
+   */
+  releaseHoursAfterSubmit?: number;
+}) {
   const { locale, text } = useI18n();
   const gpus = payloads.reduce((total, payload) => {
     const value = Number(payload.gpu);
@@ -23,6 +33,10 @@ export function CreateImpactSummary({ payloads }: { payloads: CreateTaskPayload[
   const shapes = new Set(payloads.map(formatPayloadResources));
   const conditions = new Set(payloads.map((payload) => Number(payload.releace_conditions)));
   const condition = conditions.size === 1 ? releaseConditionText[[...conditions][0]] : undefined;
+  // A timed release ends billing at a moment; name it, since the condition alone does not.
+  const timed = conditions.size === 1 && conditions.has(2);
+  const releaseTimes = new Set(payloads.map((payload) => String(payload.releace_time ?? "").slice(0, 16)));
+  const releaseAt = releaseTimes.size === 1 ? [...releaseTimes][0] : null;
 
   return (
     <div className="space-y-3">
@@ -40,6 +54,20 @@ export function CreateImpactSummary({ payloads }: { payloads: CreateTaskPayload[
         <dd className="app-numeric text-app-text">{totalRate !== null ? formatHourlyRate(totalRate, locale) : "—"}</dd>
         <dt>{text("释放条件", "Release condition")}</dt>
         <dd className="text-app-text">{condition ? localizedText(condition, locale) : text("各不相同", "Varies")}</dd>
+        {timed ? (
+          <>
+            <dt>{text("释放时间", "Releases at")}</dt>
+            <dd className="app-numeric text-app-text">
+              {releaseAt === null
+                ? text("各不相同", "Varies")
+                : !releaseAt
+                  ? "—"
+                  : releaseHoursAfterSubmit
+                    ? text(`提交后 ${releaseHoursAfterSubmit} 小时，约 ${releaseAt}`, `${releaseHoursAfterSubmit} hours after submission, about ${releaseAt}`)
+                    : releaseAt}
+            </dd>
+          </>
+        ) : null}
       </dl>
       <p className="text-xs leading-5">
         {text(

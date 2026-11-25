@@ -258,7 +258,8 @@ export function ScheduledTasksPage() {
   const [isExecuting, setIsExecuting] = useState(false);
   // Every manual run creates billable instances, so it opens the same impact preview as a
   // batch create before anything is submitted. `force` runs a plan that is not due yet.
-  const [runPreview, setRunPreview] = useState<{ targets: ScheduledTask[]; force: boolean } | null>(null);
+  // `openedAt` prices the preview's timed release: it counts from submission, not from the slot.
+  const [runPreview, setRunPreview] = useState<{ targets: ScheduledTask[]; force: boolean; openedAt: Date } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   // The list leads; the 14-field form opens on demand (new plan, edit, or the empty state).
   const [formOpen, setFormOpen] = useState(false);
@@ -766,7 +767,7 @@ export function ScheduledTasksPage() {
       );
       return;
     }
-    setRunPreview({ targets: due, force: false });
+    setRunPreview({ targets: due, force: false, openedAt: new Date() });
   }
 
   async function retryItem(item: ScheduledTask) {
@@ -776,7 +777,7 @@ export function ScheduledTasksPage() {
       toast.info(text("计划已不存在", "Plan no longer exists"), text(`${item.name} 已在别处删除。`, `${item.name} was deleted elsewhere.`));
       return;
     }
-    setRunPreview({ targets: [current], force: true });
+    setRunPreview({ targets: [current], force: true, openedAt: new Date() });
   }
 
   function runPreviewMeta(item: ScheduledTask) {
@@ -1400,7 +1401,12 @@ export function ScheduledTasksPage() {
           tone="default"
           items={runPreview.targets.map((item) => ({ key: item.id, name: item.name, meta: runPreviewMeta(item) }))}
           account={{ displayName: username }}
-          summary={<CreateImpactSummary payloads={runPreview.targets.map((item) => item.payload)} />}
+          summary={(
+            <CreateImpactSummary
+              payloads={runPreview.targets.map((item) => applyScheduledReleasePolicy(item.payload, runPreview.openedAt))}
+              releaseHoursAfterSubmit={SCHEDULED_RELEASE_DELAY_HOURS}
+            />
+          )}
           confirmLabel={text(`创建 ${runPreview.targets.length} 个实例`, `Create ${runPreview.targets.length} instance${runPreview.targets.length === 1 ? "" : "s"}`)}
           onConfirm={() => {
             const { targets, force } = runPreview;

@@ -16,6 +16,7 @@ import { normalizeStoragePath } from "../../src/lib/remote-storage";
 import { appendRunLog, type RunLogChannel } from "../../src/lib/run-logs";
 import { createScheduledTask, loadScheduledTasks, pauseScheduledTask, resumeScheduledTask, saveScheduledTasks, updateScheduledTask } from "../../src/lib/scheduled-tasks";
 import { executeScheduledTask } from "../../src/lib/schedule-execution";
+import { applyScheduledReleasePolicy } from "../../src/lib/scheduled-release";
 import { buildTaskSshInfo } from "../../src/lib/ssh-info";
 import { FAILURE_STATUSES } from "../../src/lib/task-status-notifications";
 import { withStorageTransaction } from "../../src/lib/storage-mutex";
@@ -932,12 +933,15 @@ export async function runScheduledTask(
   // caller has to verify and resume it first. Refused for the dry-run too, so
   // an agent learns this before it adds --yes.
   if (task.status === "needs_review") throw needsReviewRunError(task);
+  // A timed release counts from submission; the preview estimates it from now.
+  const releaseTime = applyScheduledReleasePolicy(task.payload, new Date()).releace_time;
   const preview = {
     taskId,
     taskName: task.name,
     status: task.status,
     executionKey: `${task.id}@${task.scheduleTime}`,
     ...(task.lastError ? { lastError: task.lastError } : {}),
+    ...(releaseTime ? { releaseTime } : {}),
   };
   return maybeMutate("schedule.run", preview, confirm, async () => {
     const scope = await resolveAccountScope?.();

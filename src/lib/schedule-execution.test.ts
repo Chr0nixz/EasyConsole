@@ -135,18 +135,20 @@ describe("executeScheduledTask", () => {
     expect(creates).toBe(0);
   });
 
-  it("recomputes timed release as 24 hours after the current scheduled run", async () => {
+  it("counts a timed release from when the run is submitted, not from its slot", async () => {
     const storage = createMemoryStorage();
+    // "Run now" on a plan whose slot is a week away: the release must not land a week plus a day out.
     const task = makeTask({
-      scheduleTime: "2026-07-21T10:00:00.000Z",
+      scheduleTime: "2026-07-28T10:00:00.000Z",
       payload: {
         name: "train",
         releace_conditions: 2,
-        releace_time: "2026-07-21 10:00:00",
+        releace_time: "2026-07-29 10:00:00",
       },
     });
     await saveScheduledTasks(storage, [task]);
     let submittedReleaseTime = "";
+    const now = new Date("2026-07-21T10:00:05.000Z");
 
     await executeScheduledTask(storage, task.id, {
       createTask: async (payload) => {
@@ -154,11 +156,13 @@ describe("executeScheduledTask", () => {
         return { id: "remote-24h" };
       },
       force: true,
-      now: new Date("2026-07-21T10:00:05.000Z"),
+      now,
     });
 
+    // The submitted time has minute resolution in local time.
     const submittedAt = Date.parse(submittedReleaseTime.replace(" ", "T"));
-    expect(submittedAt - Date.parse(task.scheduleTime)).toBe(24 * 60 * 60 * 1000);
+    const expected = now.getTime() + 24 * 60 * 60 * 1000;
+    expect(Math.abs(submittedAt - expected)).toBeLessThan(60_000);
   });
 
   it("never creates a second instance for a slot that already ran from a stale due list", async () => {

@@ -542,6 +542,30 @@ describe("easy-console MCP tools", () => {
     expect(result).toMatchObject({ dryRun: true, action: "schedule.run" });
   });
 
+  it("previews a timed-release schedule run with a release time counted from now", async () => {
+    const context = createFakeContext();
+    const day = 24 * 60 * 60 * 1000;
+    await context.storage.set(
+      SCHEDULED_TASKS_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: "sch-1",
+          name: "weekly-train",
+          scheduleTime: new Date(Date.now() + 7 * day).toISOString(),
+          status: "pending",
+          payload: { name: "weekly-train", releace_conditions: 2 },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ]),
+    );
+
+    const result = await invokeMcpToolDefinition(getTool("easyconsole_schedule_run"), context, { taskId: "sch-1" });
+
+    const releaseTime = (result as { payload: { releaseTime: string } }).payload.releaseTime;
+    expect(Math.abs(Date.parse(releaseTime.replace(" ", "T")) - (Date.now() + day))).toBeLessThan(2 * 60_000);
+  });
+
   it("returns dry-run for schedule_delete without confirm", async () => {
     const context = createFakeContext();
     const scheduledTask = {

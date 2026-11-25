@@ -164,6 +164,27 @@ describe("ScheduledTasksPage execution safety", () => {
     expect(storedTasks()[0]).toMatchObject({ status: "pending", scheduleTime: tomorrow, lastRemoteTaskId: "remote-earlier" });
   });
 
+  it("previews a timed release as 24 hours after submission", async () => {
+    // The slot is a week out; a run now must not inherit the slot's release moment.
+    const day = 24 * 60 * 60 * 1000;
+    seedTask({
+      scheduleTime: new Date(Date.now() + 7 * day).toISOString(),
+      payload: { name: "train", img: 1, price: 1, cpu: 4, memory: 16, releace_conditions: 2 },
+    });
+    renderPage();
+
+    const preview = await openRunPreview();
+
+    expect(preview.getByText(/释放时间|Releases at/)).toBeInTheDocument();
+    const release = preview.getByText(/提交后 24 小时|24 hours after submission/);
+    const localDate = (ms: number) => {
+      const date = new Date(ms);
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    };
+    expect(release).toHaveTextContent(localDate(Date.now() + day));
+    expect(release).not.toHaveTextContent(localDate(Date.now() + 8 * day));
+  });
+
   it("rechecks ownership if the account changes while the impact preview is open", async () => {
     seedTask();
     renderPage();
