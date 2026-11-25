@@ -32,6 +32,8 @@ mod runtime_storage;
 mod runtime_storage_lock;
 #[cfg(target_os = "windows")]
 mod scheduled_wake;
+#[cfg(target_os = "macos")]
+mod scheduled_wake_macos;
 /// SSH internals. Everything here is implementation detail for the packaged
 /// app; `pub` only so `tests/ssh_integration.rs` can drive it against a local
 /// mock server.
@@ -1568,7 +1570,26 @@ async fn desktop_scheduled_wake(
         .await
         .map_err(|error| error.to_string())?
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        let path = app_data_file(&app, "runtime-storage.json")?;
+        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+        // LaunchServices reports resolved paths; match them in the running check.
+        let exe = fs::canonicalize(&exe).unwrap_or(exe);
+        let launch_agents = app
+            .path()
+            .home_dir()
+            .map_err(|error| error.to_string())?
+            .join("Library/LaunchAgents");
+        let identifier = app.config().identifier.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            scheduled_wake_macos::configure(&exe, &path, &identifier, &launch_agents, enabled)
+                .map(Some)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = (app, enabled);
         Ok(None)
