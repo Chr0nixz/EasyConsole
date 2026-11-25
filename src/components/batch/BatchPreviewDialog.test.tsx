@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { I18nProvider } from "../../lib/i18n";
@@ -85,6 +85,11 @@ describe("BatchPreviewDialog", () => {
 
     expect(onConfirm).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("opens with focus on Cancel, not on the impact list or the confirm button", async () => {
+    renderDialog({ tone: "danger" });
+    await waitFor(() => expect(screen.getByRole("button", { name: /^(取消|Cancel)$/ })).toHaveFocus());
   });
 
   it("styles the confirm button with the danger variant only for danger tone", () => {

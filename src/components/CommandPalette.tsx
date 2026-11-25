@@ -43,6 +43,8 @@ type PaletteCommand = {
   id: string;
   label: string;
   description: string;
+  /** Matched by the filter but never shown, e.g. a page's route. */
+  keywords?: string;
   icon: typeof LayoutDashboard;
   shortcut?: string;
   /** When true, selecting the command leaves the palette open (e.g. confirm dialog). */
@@ -192,14 +194,14 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   const staticCommands = useMemo<PaletteCommand[]>(
     () => [
-      { id: "dashboard", label: t("nav.dashboard"), description: "/dashboard", icon: LayoutDashboard, shortcut: "g d", run: () => navigate("/dashboard") },
-      { id: "tasks", label: t("nav.tasks"), description: "/tasks", icon: Server, shortcut: "g t", run: () => navigate("/tasks") },
-      { id: "scheduled", label: t("nav.scheduledTasks"), description: "/scheduled-tasks", icon: CalendarClock, shortcut: "g c", run: () => navigate("/scheduled-tasks") },
-      { id: "templates", label: t("nav.taskTemplates"), description: "/task-templates", icon: SquareStack, shortcut: "g m", run: () => navigate("/task-templates") },
-      { id: "storage", label: t("nav.storage"), description: "/storage", icon: Database, shortcut: "g s", run: () => navigate("/storage") },
-      { id: "images", label: t("nav.images"), description: "/images", icon: Image, shortcut: "g i", run: () => navigate("/images") },
-      { id: "logs", label: t("nav.runLogs"), description: "/run-logs", icon: ScrollText, shortcut: "g r", run: () => navigate("/run-logs") },
-      { id: "settings", label: t("nav.settings"), description: "/settings", icon: Settings, shortcut: "g e", run: () => navigate("/settings") },
+      { id: "dashboard", label: t("nav.dashboard"), description: text("打开页面", "Open page"), keywords: "/dashboard", icon: LayoutDashboard, shortcut: "g d", run: () => navigate("/dashboard") },
+      { id: "tasks", label: t("nav.tasks"), description: text("打开页面", "Open page"), keywords: "/tasks", icon: Server, shortcut: "g t", run: () => navigate("/tasks") },
+      { id: "scheduled", label: t("nav.scheduledTasks"), description: text("打开页面", "Open page"), keywords: "/scheduled-tasks", icon: CalendarClock, shortcut: "g c", run: () => navigate("/scheduled-tasks") },
+      { id: "templates", label: t("nav.taskTemplates"), description: text("打开页面", "Open page"), keywords: "/task-templates", icon: SquareStack, shortcut: "g m", run: () => navigate("/task-templates") },
+      { id: "storage", label: t("nav.storage"), description: text("打开页面", "Open page"), keywords: "/storage", icon: Database, shortcut: "g s", run: () => navigate("/storage") },
+      { id: "images", label: t("nav.images"), description: text("打开页面", "Open page"), keywords: "/images", icon: Image, shortcut: "g i", run: () => navigate("/images") },
+      { id: "logs", label: t("nav.runLogs"), description: text("打开页面", "Open page"), keywords: "/run-logs", icon: ScrollText, shortcut: "g r", run: () => navigate("/run-logs") },
+      { id: "settings", label: t("nav.settings"), description: text("打开页面", "Open page"), keywords: "/settings", icon: Settings, shortcut: "g e", run: () => navigate("/settings") },
       // Actions, not just pages: the placeholder promises 操作, so the palette carries them.
       {
         id: "action-new-task",
@@ -272,7 +274,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const commands = useMemo<PaletteCommand[]>(() => {
     const filtered = staticCommands.filter((command) => {
       if (!normalizedQuery) return true;
-      return `${command.label} ${command.description}`.toLowerCase().includes(normalizedQuery);
+      return `${command.label} ${command.description} ${command.keywords ?? ""}`.toLowerCase().includes(normalizedQuery);
     });
     const taskCommands = (taskQuery.data?.items ?? []).flatMap((task) =>
       buildTaskPaletteCommands(task, { text, navigate, onRelease }),

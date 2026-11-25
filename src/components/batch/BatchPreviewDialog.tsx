@@ -111,7 +111,8 @@ export function BatchPreviewDialog({ open, title, tone, items, account, confirmL
         )}
 
         <div className="flex justify-end gap-2 border-t border-app-border pt-4">
-          <Button type="button" variant="secondary" onClick={onClose} disabled={pending}>
+          {/* Focus opens on Cancel, as in the single confirm; the consequences are read through describedBy. */}
+          <Button data-autofocus="" type="button" variant="secondary" onClick={onClose} disabled={pending}>
             {text("取消", "Cancel")}
           </Button>
           <Button type="button" variant={tone === "danger" ? "danger" : "primary"} onClick={onConfirm} disabled={confirmDisabled}>

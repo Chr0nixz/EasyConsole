@@ -894,7 +894,8 @@ export function ScheduledTasksPage() {
             <CalendarCheck className="h-4 w-4" />
             {text("执行到期", "Run due")} {dueCount > 0 ? dueCount : ""}
           </Button>
-          {formOpen ? null : (
+          {/* An empty list offers the same action in its empty state; one is enough. */}
+          {formOpen || items.length === 0 ? null : (
             <Button onClick={() => setFormOpen(true)}>
               <Plus className="h-4 w-4" />
               {text("新建计划", "New plan")}

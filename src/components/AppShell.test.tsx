@@ -198,7 +198,7 @@ describe("AppShell", () => {
 
   it("titles the document after the page and restores it on unmount", () => {
     const view = renderShell();
-    expect(document.title).toMatch(/^(运行总览|Runtime Overview) · EasyConsole$/);
+    expect(document.title).toMatch(/^(总览|Overview) · EasyConsole$/);
     view.unmount();
     expect(document.title).toBe("EasyConsole");
   });

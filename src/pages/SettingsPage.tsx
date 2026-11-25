@@ -390,7 +390,11 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     return labels;
   }, [text]);
 
+  // The group last picked from the section nav, until the user scrolls on their own.
+  const pickedGroupRef = useRef<SettingsGroupKey | null>(null);
+
   function goToGroup(key: SettingsGroupKey) {
+    pickedGroupRef.current = key;
     setActiveGroup(key);
     setOpenGroups((current) => (current[key] ? current : { ...current, [key]: true }));
     scrollSeqRef.current += 1;
@@ -415,14 +419,23 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
       if (scrollable && scroller.scrollTop > 0 && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2) {
         current = SETTINGS_GROUPS[SETTINGS_GROUPS.length - 1].key;
       }
-      setActiveGroup(current);
+      // A group picked from the nav stays marked while the page settles: near the end of the
+      // page its header cannot reach the top, and the bottom rule above would mark the last group.
+      setActiveGroup(pickedGroupRef.current ?? current);
     };
     const schedule = () => {
       if (!frame) frame = window.requestAnimationFrame(measure);
     };
+    // The user's own scrolling hands the marker back to the scroll position.
+    const release = () => {
+      pickedGroupRef.current = null;
+    };
+    const releaseEvents = ["wheel", "touchmove", "pointerdown", "keydown"] as const;
     schedule();
     scroller.addEventListener("scroll", schedule, { passive: true });
+    for (const name of releaseEvents) scroller.addEventListener(name, release, { passive: true });
     return () => {
+      for (const name of releaseEvents) scroller.removeEventListener(name, release);
       scroller.removeEventListener("scroll", schedule);
       if (frame) window.cancelAnimationFrame(frame);
     };

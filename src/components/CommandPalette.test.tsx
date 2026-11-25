@@ -79,6 +79,17 @@ describe("CommandPalette", () => {
     expect(finalOptions.at(-1)).toHaveAttribute("aria-selected", "true");
   });
 
+  it("describes pages in words and still finds them by route", async () => {
+    renderCommandPalette();
+
+    expect(screen.queryByText("/dashboard")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/^(打开页面|Open page)$/).length).toBeGreaterThanOrEqual(8);
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "/run-logs" } });
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    expect(screen.getByRole("option")).toHaveTextContent(/运行日志|Run Logs/);
+  });
+
   it("scrolls the active result into view as the selection moves", async () => {
     const scrolled: Element[] = [];
     const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element) {

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -32,6 +32,25 @@ describe("ConfirmDialog", () => {
     );
 
     expect(screen.getByRole("dialog", { name: "确认释放实例" })).toHaveAccessibleDescription("容器内的本地数据会被清理");
+  });
+
+  it("anchors to the bottom edge on phones, with Cancel last in thumb reach", () => {
+    render(
+      <ConfirmDialog
+        options={{ title: "确认释放实例", description: "容器内的本地数据会被清理", confirmLabel: "释放", tone: "danger", run: vi.fn() }}
+        pending={false}
+        onCancel={vi.fn()}
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "确认释放实例" });
+    expect(dialog.className).toContain("items-end");
+    expect(dialog.className).toContain("sm:items-start");
+    const buttons = within(dialog).getAllByRole("button").filter((button) => !button.hasAttribute("data-dialog-close"));
+    // DOM order is Cancel then confirm; the column is reversed below sm, so Cancel sits at the bottom.
+    expect(buttons.map((button) => button.textContent)).toEqual([expect.stringMatching(/取消|Cancel/), "释放"]);
+    expect(buttons[0].parentElement?.className).toContain("flex-col-reverse");
   });
 
   it("runs confirm action and exposes cancel", () => {

@@ -319,6 +319,19 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
             {text("定位", "Jump to line")}
           </Button>
         </div>
+      ) : failedTask && rawLog && !query.isError ? (
+        // No error line to point at: say so, and what the state leaves to do, rather than a bare status.
+        <p className="border-b border-app-border bg-app-panel px-3 py-1.5 text-xs leading-5 text-app-muted">
+          {Number(task.status) === 8
+            ? text(
+                "平台将此实例标记为异常，日志中没有找到明确的报错行。实例已结束，无需释放；可克隆并修改后重跑。",
+                "The platform marked this instance as an exception, and the log has no clear error line. The instance has ended and needs no release; clone and modify it to rerun.",
+              )
+            : text(
+                "日志中没有找到明确的报错行。实例已结束，无需释放；可克隆并修改后重跑。",
+                "The log has no clear error line. The instance has ended and needs no release; clone and modify it to rerun.",
+              )}
+        </p>
       ) : null}
       {showLongHint ? (
         <div className="border-b border-app-border bg-app-panel px-3 py-1.5 text-xs text-app-muted">

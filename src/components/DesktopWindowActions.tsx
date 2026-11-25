@@ -111,7 +111,8 @@ export function DesktopWindowActions() {
             <Minimize2 className="h-4 w-4" />
             {isMac ? text("隐藏窗口", "Hide window") : text("最小化到托盘", "Minimize to tray")}
           </Button>
-          <Button type="button" variant="danger" disabled={busy} onClick={() => void chooseCloseAction("exit")}>
+          {/* Quitting destroys nothing, so it takes no danger fill; that one is kept for release and delete. */}
+          <Button type="button" disabled={busy} onClick={() => void chooseCloseAction("exit")}>
             <Power className="h-4 w-4" />
             {isMac ? text("退出", "Quit") : text("彻底退出", "Exit")}
           </Button>

@@ -265,7 +265,7 @@ export function SegmentedControl<T extends string>({
           aria-label={option.ariaLabel}
           aria-pressed={option.value === value}
           className={cn(
-            "app-interactive relative inline-flex h-7 items-center justify-center gap-1.5 rounded-[6px] px-2.5 text-xs font-medium text-app-muted hover:text-app-text aria-pressed:text-app-text [@media(pointer:coarse)]:min-h-10",
+            "app-interactive relative inline-flex h-7 items-center justify-center gap-1.5 rounded-[6px] px-2.5 text-xs font-medium text-app-muted hover:text-app-text aria-pressed:text-app-text [@media(pointer:coarse)]:min-h-11",
             optionClassName,
           )}
           title={option.title}
@@ -463,6 +463,8 @@ export function Dialog({
               ? "flex min-h-0 flex-1 flex-col overflow-hidden"
               : "max-h-[calc(100vh-5rem)] overflow-auto sm:max-h-[calc(100vh-8rem)]",
             !contained && mobileMode === "fullscreen" && "min-h-0 flex flex-1 flex-col !h-auto max-h-none sm:block sm:flex-none sm:!h-auto sm:max-h-[calc(100vh-8rem)]",
+            // A sheet ends at the screen edge, so its last row clears the home indicator.
+            mobileMode === "bottom-sheet" && "pb-[env(safe-area-inset-bottom)] sm:pb-0",
           )}
         >
           {children}

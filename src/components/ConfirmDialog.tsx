@@ -30,6 +30,8 @@ export function ConfirmDialog({
     <Dialog
       closeOnOverlayClick={!pending}
       describedBy={descriptionId}
+      // Phones: a bottom sheet, so Cancel (last in the reversed column) sits under the thumb.
+      mobileMode="bottom-sheet"
       open={Boolean(options)}
       title={options?.title ?? t("confirm.title")}
       width="max-w-md"

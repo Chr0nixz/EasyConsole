@@ -33,7 +33,8 @@ export function ReleaseConfirmDescription({ task }: { task: Task }) {
           </>
         ) : null}
       </dl>
-      <p className="text-xs leading-5">
+      {/* What cannot be undone reads at body size in ink, not as the dialog's small print. */}
+      <p className="text-app-text">
         {text(
           "容器内的本地临时数据会被清理，无法找回；需要保留的结果请先确认已写入存储路径。此操作不可从 EasyConsole 撤销。",
           "Local data inside the container is destroyed and cannot be recovered; make sure results you need are written to the storage path first. EasyConsole cannot undo this.",
@@ -83,7 +84,7 @@ export function BatchReleaseImpact({ tasks }: { tasks: Task[] }) {
         <dt>{text("存储路径", "Storage paths")}</dt>
         <dd className="app-numeric text-app-text">{storagePaths.size > 0 ? text(`${storagePaths.size} 个，逐项见下方`, `${storagePaths.size}, listed per item below`) : "—"}</dd>
       </dl>
-      <p className="text-xs leading-5">
+      <p className="text-app-text">
         {text(
           "每个容器内的本地临时数据都会被清理，无法找回；需要保留的结果请先确认已写入各自的存储路径。",
           "Local data inside every container is destroyed and cannot be recovered; make sure results you need are written to each storage path first.",

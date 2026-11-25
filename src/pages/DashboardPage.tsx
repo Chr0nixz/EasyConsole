@@ -116,7 +116,8 @@ function DashboardTaskRow({ task, meta }: { task: Task; meta: string }) {
         </Link>
         <StatusBadge status={task.status} />
       </div>
-      {meta ? <p className="mt-0.5 truncate text-xs text-app-muted">{meta}</p> : null}
+      {/* Wraps instead of truncating: the cost is the last segment, and the first one a clipped line loses. */}
+      {meta ? <p className="mt-0.5 text-xs leading-5 text-app-muted">{meta}</p> : null}
       {releaseAt !== null || idle ? (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           {idle ? <IdleInstancePill task={task} /> : null}
@@ -126,6 +127,10 @@ function DashboardTaskRow({ task, meta }: { task: Task; meta: string }) {
     </li>
   );
 }
+
+// A text link sized as a 44px touch target without moving the line it sits on.
+const COARSE_TEXT_LINK_CLASS =
+  "[@media(pointer:coarse)]:-my-3.5 [@media(pointer:coarse)]:inline-flex [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:items-center";
 
 function AttentionGroup({
   title,
@@ -149,19 +154,19 @@ function AttentionGroup({
         <h2 className="text-sm font-semibold text-app-text">
           {links ? title : <Link
             to={href}
-            className="text-app-text hover:underline"
+            className={cn("text-app-text hover:underline", COARSE_TEXT_LINK_CLASS)}
           >
             {title}
           </Link>}
           <span className="ml-2 text-xs font-normal text-app-muted">{tasks.length}</span>
         </h2>
-        {/* On touch screens the links keep a ~40px hit area via padding that negative margins cancel out of the layout. */}
+        {/* On touch screens each link is a 44px target; negative margins cancel the extra height out of the layout. */}
         <div className="flex shrink-0 gap-3">
           {(links ?? [{ label: text("查看全部", "View all"), href }]).map((link) => (
             <Link
               key={link.href}
               to={link.href}
-              className="text-xs text-app-accent hover:underline [@media(pointer:coarse)]:-my-3 [@media(pointer:coarse)]:min-h-0 [@media(pointer:coarse)]:py-3"
+              className={cn("text-xs text-app-accent hover:underline", COARSE_TEXT_LINK_CLASS)}
             >
               {link.label}
             </Link>
@@ -353,8 +358,8 @@ export function DashboardPage() {
     </span>
   ) : null;
   const autoRefreshControl = (
-    <label className="flex items-center gap-1.5 text-xs text-app-muted">
-      <span className="whitespace-nowrap">{text("自动刷新", "Auto refresh")}</span>
+    <label className="flex shrink-0 items-center gap-1.5 text-xs text-app-muted">
+      <span className={compactLayout ? "sr-only" : "whitespace-nowrap"}>{text("自动刷新", "Auto refresh")}</span>
       <Select
         value={String(autoRefreshMs)}
         onChange={(event) => changeAutoRefresh(Number(event.target.value))}
@@ -384,26 +389,9 @@ export function DashboardPage() {
           billingRate={runningBillingRate(runningTasks)}
         />
         {compactLayout ? (
-          // Phones: the range choice spans the row with refresh in thumb reach beside it,
-          // and the freshness line sits under it as small print rather than a third control row.
-          <div className="w-full space-y-1.5">
-            <div className="flex items-center gap-2">
-              {rangeControl}
-              <Button
-                aria-label={text("刷新", "Refresh")}
-                className="shrink-0 px-0"
-                title={text("刷新", "Refresh")}
-                variant="secondary"
-                onClick={refreshAll}
-              >
-                <RefreshCw className={consoleQuery.isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"} aria-hidden="true" />
-              </Button>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              {freshness ?? <span />}
-              {autoRefreshControl}
-            </div>
-          </div>
+          // Phones: only the freshness line stays up here, so the first instance that needs
+          // attention is on the first screen. Range and refresh sit below the columns.
+          freshness ? <div className="w-full">{freshness}</div> : null
         ) : (
           <div className="flex flex-wrap items-center gap-2">
             {rangeControl}
@@ -472,6 +460,22 @@ export function DashboardPage() {
           now={tasksFetchedAt}
         />
       </div>}
+
+      {compactLayout ? (
+        <div className="flex items-center gap-2">
+          {rangeControl}
+          {autoRefreshControl}
+          <Button
+            aria-label={text("刷新", "Refresh")}
+            className="shrink-0 px-0"
+            title={text("刷新", "Refresh")}
+            variant="secondary"
+            onClick={refreshAll}
+          >
+            <RefreshCw className={consoleQuery.isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"} aria-hidden="true" />
+          </Button>
+        </div>
+      ) : null}
 
       {taskDataAvailable && showRecentPanel ? <Panel>
         <div className="flex items-center justify-between border-b border-app-border px-4 py-3">
