@@ -2431,7 +2431,11 @@ export function TasksPage() {
   }, [closeViewMenu, viewMenuLayerRef, viewMenuOpen]);
 
   return (
-    <div className="space-y-4">
+    <>
+    {/* On desktop the toolbar, table, pager and batch bar share what <main> shows: the table
+        panel gives up height so the table region becomes the scroller, which keeps its sticky
+        header in view and gives the row virtualizer a real viewport. History sits below. */}
+    <div className="space-y-4 md:flex md:max-h-[var(--app-main-content-height)] md:flex-col md:gap-4 md:space-y-0">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
           {/* Phones keep search and 新建 on one row and the filters on the next, so the list starts sooner. */}
@@ -2580,7 +2584,7 @@ export function TasksPage() {
         )}
       </div>
 
-      <Panel className="overflow-hidden">
+      <Panel className="overflow-hidden md:flex md:min-h-0 md:flex-col">
         {!query.data && query.isLoading ? (
           <TableSkeleton columns={7} />
         ) : query.isError ? (
@@ -2992,8 +2996,9 @@ export function TasksPage() {
       </div>
 
       {/* Below the list, so selecting rows never shifts the table under the pointer.
-          It floats over the bottom edge on desktop and above the tab bar on phones;
-          z-40 keeps it above the table's sticky action cells (z-30). */}
+          On desktop it takes the last slot of the capped column, under the pager, so it never
+          covers rows; on phones it floats above the tab bar. z-40 keeps it above the table's
+          sticky action cells (z-30). */}
       {selectedTasks.length > 0 || (batchBackgrounded && batchState?.pending) ? (
         <Panel className="app-mobile-batch-bar flex flex-wrap items-center justify-between gap-3 px-3 py-2 md:sticky md:bottom-3 md:z-40 md:bg-app-elevated md:shadow-popover">
           {batchBackgrounded && batchState?.pending ? (
@@ -3182,8 +3187,6 @@ export function TasksPage() {
         onChange={updateQuickActions}
         onClose={() => setQuickActionsOpen(false)}
       />
-      {/* Recent batch operations (review 6.3); refreshes when a batch lands its record. */}
-      <BatchHistoryPanel refreshSignal={batchState?.record?.id} retryableActions={["release", "delete"]} onRetryFailed={retryHistoryRecord} />
       {batchPreview ? (
         <BatchPreviewDialog
           open
@@ -3232,5 +3235,9 @@ export function TasksPage() {
       ) : null}
       {confirmDialog}
     </div>
+    {/* Recent batch operations (review 6.3); refreshes when a batch lands its record. Outside the
+        capped column, so a long history scrolls the page instead of squeezing the table. */}
+    <BatchHistoryPanel className="mt-4" refreshSignal={batchState?.record?.id} retryableActions={["release", "delete"]} onRetryFailed={retryHistoryRecord} />
+    </>
   );
 }

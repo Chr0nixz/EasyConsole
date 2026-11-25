@@ -8,6 +8,7 @@ import { listBatchOperations } from "../../lib/change-list";
 import { useI18n } from "../../lib/i18n";
 import type { Locale } from "../../lib/i18n-text";
 import { browserRuntime } from "../../lib/runtime";
+import { cn } from "../../lib/utils";
 
 type ActionFilter = BatchOperationAction | "all";
 type ResultFilter = "all" | "succeeded" | "with-failures";
@@ -69,10 +70,13 @@ function recordHasUnknown(record: BatchOperationRecord) {
  * automatically, and the retry goes through the host's normal confirm step.
  */
 export function BatchHistoryPanel({
+  className,
   refreshSignal,
   onRetryFailed,
   retryableActions = [],
 }: {
+  /** Spacing from the host's layout, applied only while the panel renders. */
+  className?: string;
   refreshSignal?: string;
   /** Re-run the failed items of a record through the host page's confirm step. */
   onRetryFailed?: (record: BatchOperationRecord) => void;
@@ -133,7 +137,7 @@ export function BatchHistoryPanel({
   if (!loading && !loadError && records.length === 0) return null;
 
   return (
-    <Panel className="overflow-hidden">
+    <Panel className={cn("overflow-hidden", className)}>
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-app-border px-3 py-2">
         <button
           type="button"

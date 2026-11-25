@@ -151,6 +151,7 @@ export function AppShell() {
   const mobileNavRef = useRef<HTMLElement>(null);
   const mobileIndicatorRef = useRef<HTMLSpanElement>(null);
   const headerRef = useRef<HTMLElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
   const downloadQueueRef = useRef<HTMLDivElement>(null);
   const commitQueueRef = useRef<HTMLDivElement>(null);
   const moreScrimRef = useRef<HTMLDivElement>(null);
@@ -262,6 +263,19 @@ export function AppShell() {
   }
 
   useEffect(() => subscribeTransportPolicy(() => setTransportBlocked(Boolean(getTransportBlockReason()))), []);
+
+  // The height <main> shows inside its padding, as --app-main-content-height. A page that keeps
+  // its own scroll box (the task table) caps itself to it, so its sticky header and row
+  // virtualizer work against a box that really scrolls instead of growing with every row.
+  useEffect(() => {
+    const main = mainRef.current;
+    if (!main || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      main.style.setProperty("--app-main-content-height", `${Math.floor(entry.contentRect.height)}px`);
+    });
+    observer.observe(main);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const onShowShortcuts = () => setShortcutsOpen(true);
@@ -941,7 +955,7 @@ export function AppShell() {
             </Button>
           </div>
         ) : null}
-        <main id="main-content" className="app-main-content min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain px-3 py-4 pb-32 sm:p-5 sm:pb-32 md:px-6 md:pb-6" onScroll={handleMainScroll}>
+        <main ref={mainRef} id="main-content" className="app-main-content min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain px-3 py-4 pb-32 sm:p-5 sm:pb-32 md:px-6 md:pb-6" onScroll={handleMainScroll}>
           <div key={location.pathname} className="app-page-enter">
             {/* Pages load lazily; their loading state stays inside the shell instead of replacing it. */}
             <Suspense fallback={<LoadingState />}>

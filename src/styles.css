@@ -244,9 +244,18 @@
   [role="separator"]:focus-visible,
   input[type="checkbox"]:focus-visible,
   input[type="radio"]:focus-visible,
-  input[type="file"]:focus-visible {
+  input[type="file"]:focus-visible,
+  /* A file picker is a styled label around an sr-only input, whose own ring is clipped away;
+     the ring goes on the label the eye sees. */
+  label:has(input[type="file"]:focus-visible) {
     outline: 2px solid var(--app-focus-color);
     outline-offset: 2px;
+  }
+
+  /* File-picker labels anchor their sr-only input. Unanchored, the absolute input lands against
+     <body>, far below the fold, and focusing it scrolled the whole shell out of view to reach it. */
+  label:has(> input[type="file"]) {
+    position: relative;
   }
 
   /* Text fields signal focus with an accent edge plus a soft halo instead of a detached outline. */

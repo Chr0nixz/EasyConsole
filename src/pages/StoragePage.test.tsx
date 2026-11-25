@@ -84,6 +84,19 @@ describe("StoragePage", () => {
     expect(mocks.list).toHaveBeenCalledWith({ path: "/" });
   });
 
+  it("keeps the folder picker input out of the Tab order while the upload input stays labelled", async () => {
+    const { container } = renderStorage();
+
+    await waitFor(() => expect(screen.getByText("notes.txt")).toBeInTheDocument());
+    const fileInputs = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="file"]'));
+    const uploadInput = fileInputs.find((input) => input.closest("label"));
+    const folderInput = fileInputs.find((input) => !input.closest("label"));
+    expect(uploadInput?.closest("label")).toHaveTextContent(/上传到远程|Upload to remote/);
+    expect(uploadInput?.tabIndex).toBe(0);
+    expect(folderInput?.tabIndex).toBe(-1);
+    expect(folderInput).toHaveAttribute("aria-hidden", "true");
+  });
+
   it("shows list errors instead of an empty directory", async () => {
     mocks.list.mockRejectedValue(new Error("storage offline"));
     renderStorage();

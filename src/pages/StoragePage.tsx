@@ -474,10 +474,13 @@ export function StoragePage() {
               {text("上传文件夹", "Upload folder")}
             </Button>
           )}
+          {/* Only hosts the folder picker: 上传文件夹 is the control, so this input is not a Tab stop of its own. */}
           <input
             ref={folderInputRef}
+            aria-hidden="true"
             className="sr-only"
             multiple
+            tabIndex={-1}
             type="file"
             onChange={(event) => void uploadFolder(event)}
           />

@@ -146,11 +146,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 <div className="text-sm font-medium text-app-text">{toast.title}</div>
                 {toast.description ? <div className="mt-1 text-xs leading-5 text-app-muted">{toast.description}</div> : null}
                 {toast.action || toast.secondaryAction ? (
-                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                  // 24px targets with room between them: the release reminder's extend and
+                  // other-duration actions sit side by side and spend money (WCAG 2.5.8).
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
                     {toast.action ? (
                       <button
                         type="button"
-                        className="app-interactive rounded-md border border-app-borderStrong px-2 py-0.5 text-xs font-medium text-app-text hover:bg-app-panel"
+                        className="app-interactive inline-flex min-h-6 items-center rounded-md border border-app-borderStrong px-2 py-0.5 text-xs font-medium text-app-text hover:bg-app-panel"
                         onClick={() => {
                           toast.action?.onClick();
                           remove(toast.id);
@@ -162,7 +164,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                     {toast.secondaryAction ? (
                       <button
                         type="button"
-                        className="app-interactive rounded-md px-2 py-0.5 text-xs font-medium text-app-muted hover:bg-app-panel hover:text-app-text"
+                        className="app-interactive inline-flex min-h-6 items-center rounded-md px-2 py-0.5 text-xs font-medium text-app-muted hover:bg-app-panel hover:text-app-text"
                         onClick={() => {
                           toast.secondaryAction?.onClick();
                           remove(toast.id);
@@ -175,7 +177,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 ) : null}
               </div>
               <button
-                className="app-interactive rounded-md p-1 text-app-muted hover:bg-app-panel hover:text-app-text"
+                className="app-interactive inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-app-muted hover:bg-app-panel hover:text-app-text"
                 type="button"
                 onClick={() => remove(toast.id)}
               >
