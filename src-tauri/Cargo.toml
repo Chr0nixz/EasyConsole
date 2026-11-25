@@ -46,7 +46,11 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-deep-link = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-autostart = "2.5.1"
-keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust"] }
+# keyring 4's default `v1` feature wires in the platform store: the macOS login
+# keychain, Windows Credential Manager ("{user}.{service}" targets) and the
+# Secret Service via zbus on Linux. These are the same item names keyring 3
+# used, so existing `easy-console` entries keep working.
+keyring = "4.2"
 
 # macOS decodes its menu bar template icon from PNG (see src/macos.rs).
 [target.'cfg(target_os = "macos")'.dependencies]

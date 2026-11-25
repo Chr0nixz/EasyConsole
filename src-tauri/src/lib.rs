@@ -2413,16 +2413,20 @@ mod tests {
     async fn keychain_roundtrip_uses_persistent_platform_store() {
         let key = format!("easy-console-selftest-{}", uuid::Uuid::new_v4());
 
-        // The entry must come from a real OS keystore, not the in-memory mock
-        // keyring falls back to when no platform feature is enabled.
-        let probe =
-            keyring::Entry::new(KEYCHAIN_SERVICE, &key).expect("keyring entry creation failed");
-        if probe.get_credential().is::<keyring::mock::MockCredential>() {
-            panic!("keyring fell back to its in-memory mock keystore; platform keystore features are not enabled");
-        }
-
+        // keyring 4's `v1` mode always uses the real OS keystore (it has no
+        // in-memory fallback), but it connects to that store once, up front.
         // Headless Linux machines may lack a Secret Service daemon; treat that
         // as a skip instead of a failure there.
+        if let Err(e) = keyring::Entry::store_status() {
+            if cfg!(target_os = "linux") {
+                eprintln!("skipping keychain roundtrip: no platform keystore available ({e})");
+                return;
+            }
+            panic!("platform keystore unavailable: {e}");
+        }
+        let probe =
+            keyring::Entry::new(KEYCHAIN_SERVICE, &key).expect("keyring entry creation failed");
+
         match probe.set_password("selftest-probe") {
             Ok(()) => {
                 probe
