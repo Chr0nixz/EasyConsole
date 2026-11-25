@@ -6,6 +6,7 @@ import { EmptyState, ErrorState, LoadingState } from "../DataState";
 import { StatusBadge } from "../StatusBadge";
 import { Button, Panel, Select, StatePill, TableRegion, type StateTone } from "../ui";
 import { instanceApi } from "../../lib/api";
+import { createTimeProximity, parseTaskCreatedAt } from "../../lib/create-time-match";
 import {
   isPendingReviewEntry,
   listExecutionLedger,
@@ -27,25 +28,21 @@ type LedgerFilter = "all" | "needs-review" | ExecutionOutcome;
 
 const isPendingReview = isPendingReviewEntry;
 
-/** How far from the execution start a remote instance may have been created and still count as this run. */
-const MATCH_WINDOW_MS = 30 * 60 * 1000;
 const MATCH_SCAN_PAGE_SIZE = 100;
 
 type MatchState = { loading: true } | { loading: false; tasks: Task[] } | { loading: false; error: string };
 
-function taskCreatedAt(task: Task) {
-  const raw = String(task.create_time ?? task.created_at ?? "").trim();
-  if (!raw) return Number.NaN;
-  return Date.parse(raw.includes("T") ? raw : raw.replace(" ", "T"));
-}
-
-/** Instances whose name starts with the schedule's name (auto-numbering appends a suffix) created near the run. */
+/**
+ * Instances whose name starts with the schedule's name (auto-numbering appends a suffix) and
+ * that this run may have created. A creation time without a zone is the server's wall clock,
+ * so it only rules an instance out beyond any possible zone difference (see create-time-match).
+ */
 function matchingInstances(entry: ExecutionLedgerEntry, tasks: Task[]) {
   const started = Date.parse(entry.startedAt);
   return tasks.filter((task) => {
     if (!getTaskName(task).startsWith(entry.scheduledTaskName)) return false;
-    const created = taskCreatedAt(task);
-    return !Number.isFinite(created) || !Number.isFinite(started) || Math.abs(created - started) <= MATCH_WINDOW_MS;
+    const created = parseTaskCreatedAt(task);
+    return created === null || !Number.isFinite(started) || createTimeProximity(created, started) !== "outside";
   });
 }
 
@@ -326,8 +323,8 @@ export function ExecutionLedgerPanel() {
                           <span className="text-app-danger">{match.error}</span>
                         ) : match.tasks.length === 0 ? (
                           text(
-                            `最近 ${MATCH_SCAN_PAGE_SIZE} 个实例里没有以「${entry.scheduledTaskName}」开头、且在执行前后 30 分钟内创建的实例，这次执行很可能没有创建成功。`,
-                            `No instance among the latest ${MATCH_SCAN_PAGE_SIZE} starts with "${entry.scheduledTaskName}" and was created within 30 minutes of this run, so it most likely was not created.`,
+                            `最近 ${MATCH_SCAN_PAGE_SIZE} 个实例里没有以「${entry.scheduledTaskName}」开头、且创建时间可能对得上这次执行的实例，这次执行很可能没有创建成功。`,
+                            `No instance among the latest ${MATCH_SCAN_PAGE_SIZE} starts with "${entry.scheduledTaskName}" and has a creation time that could match this run, so it most likely was not created.`,
                           )
                         ) : (
                           <ul className="space-y-1.5">

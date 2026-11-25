@@ -1,5 +1,6 @@
 import type { BatchItemOutcome } from "../../lib/batch-runner";
 import type { BatchItemResolution } from "../../lib/change-list";
+import { createTimeProximity, parseTaskCreatedAt } from "../../lib/create-time-match";
 import { getTaskName } from "../../lib/format";
 import type { Task } from "../../lib/types";
 import type { PreviewItem } from "./BatchResultDialog";
@@ -13,7 +14,6 @@ import type { PreviewItem } from "./BatchResultDialog";
  * double-creates a billed instance or hides one that exists.
  */
 
-const MATCH_WINDOW_MS = 30 * 60 * 1000;
 const SCAN_PAGE_SIZE = 100;
 /** Bound lookups; exhausting this budget leaves all items unknown. */
 const SCAN_MAX_PAGES = 3;
@@ -24,12 +24,6 @@ export type VerifyUnknownItemsOptions = {
   /** Fetch task-list pages; injected so tests stay offline. */
   listTasks: (query: { page: number; page_size: number }) => Promise<{ items: Task[]; total?: number }>;
 };
-
-function taskCreatedAt(task: Task) {
-  const raw = String(task.create_time ?? task.created_at ?? "").trim();
-  if (!raw) return Number.NaN;
-  return Date.parse(raw.includes("T") ? raw : raw.replace(" ", "T"));
-}
 
 function remoteTaskId(task: Task) {
   const id = task.task_id ?? task.id;
@@ -56,9 +50,16 @@ async function scanTasks(options: VerifyUnknownItemsOptions): Promise<{ items: T
 
 /**
  * Resolutions for every decidable `unknown` outcome:
- * - exactly one in-window name match → `confirmed-created` (with the remote id);
- * - no in-window name match in a complete scan → `confirmed-not-created`;
- * - ambiguous matches (several, or an unreadable creation time) → omitted.
+ * - exactly one in-window name match, and no other that could be in the window under a zone
+ *   difference → `confirmed-created` (with the remote id);
+ * - no name match that could be in the window under any zone, in a complete scan →
+ *   `confirmed-not-created`;
+ * - anything else (several candidates, an unreadable creation time) → omitted.
+ *
+ * Creation times without a zone are the server's wall clock. Read as this machine's, an
+ * instance created seconds ago on a server eight hours ahead looks eight hours old; a fixed
+ * 30-minute window would then call the create missing and make it retryable, which starts a
+ * second billed instance. Such times only rule a candidate out beyond any possible zone gap.
  *
  * An incomplete scan cannot establish absence or uniqueness, so it resolves
  * nothing. In particular, hitting the page limit never makes a create retryable.
@@ -90,11 +91,14 @@ export async function verifyUnknownCreateItems(
     });
     // An undated same-named task could be this create or another candidate.
     // Ignoring it would incorrectly prove either absence or uniqueness.
-    if (candidates.some((task) => !Number.isFinite(taskCreatedAt(task)))) continue;
-    const matches = candidates.filter((task) => Math.abs(taskCreatedAt(task) - started) <= MATCH_WINDOW_MS);
-    if (matches.length === 1) {
-      resolutions.push({ key: outcome.item.key, status: "confirmed-created", remoteTaskId: remoteTaskId(matches[0]) });
-    } else if (matches.length === 0) {
+    const dated = candidates.map((task) => ({ task, createdAt: parseTaskCreatedAt(task) }));
+    if (dated.some(({ createdAt }) => createdAt === null)) continue;
+    const near = dated
+      .map(({ task, createdAt }) => ({ task, proximity: createTimeProximity(createdAt!, started) }))
+      .filter(({ proximity }) => proximity !== "outside");
+    if (near.length === 1 && near[0].proximity === "inside") {
+      resolutions.push({ key: outcome.item.key, status: "confirmed-created", remoteTaskId: remoteTaskId(near[0].task) });
+    } else if (near.length === 0) {
       resolutions.push({ key: outcome.item.key, status: "confirmed-not-created" });
     }
   }

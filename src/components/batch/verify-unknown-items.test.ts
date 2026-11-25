@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { BatchItemOutcome } from "../../lib/batch-runner";
+import { formatReleaseTimeInput } from "../../lib/task-release-notifications";
 import type { Task } from "../../lib/types";
 import { verifyUnknownCreateItems } from "./verify-unknown-items";
 import type { PreviewItem } from "./BatchResultDialog";
@@ -64,6 +65,42 @@ describe("verifyUnknownCreateItems", () => {
     });
 
     expect(resolutions).toEqual([{ key: "0", status: "confirmed-not-created" }]);
+  });
+
+  describe("creation times without a zone", () => {
+    // The backend's wall clock, no zone marker ("YYYY-MM-DD HH:mm:ss").
+    const start = new Date(2026, 9, 25, 10, 0, 0);
+    const wallClock = (offsetMs: number) => formatReleaseTimeInput(new Date(start.getTime() + offsetMs));
+    const HOUR = 3_600_000;
+
+    async function verify(items: Task[]) {
+      return verifyUnknownCreateItems([unknownOutcome("0", "train-a")], {
+        startedAt: start.toISOString(),
+        listTasks: async () => ({ items }),
+      });
+    }
+
+    it("never calls a create missing when the server's zone is ahead of this machine", async () => {
+      // Created five seconds after the batch started, on a server eight hours ahead. Read as
+      // local time it looks eight hours off; calling it missing would make it retryable.
+      expect(await verify([task(1, "train-a", wallClock(8 * HOUR + 5_000))])).toEqual([]);
+      expect(await verify([task(1, "train-a", wallClock(-9 * HOUR))])).toEqual([]);
+    });
+
+    it("still confirms a lone in-window match and rules out matches beyond any zone gap", async () => {
+      expect(await verify([task(1, "train-a", wallClock(5_000))])).toEqual([
+        { key: "0", status: "confirmed-created", remoteTaskId: "task-1" },
+      ]);
+      expect(await verify([task(1, "train-a", wallClock(-48 * HOUR))])).toEqual([
+        { key: "0", status: "confirmed-not-created" },
+      ]);
+    });
+
+    it("leaves an in-window match unknown while another one could be it under a zone gap", async () => {
+      expect(
+        await verify([task(1, "train-a", wallClock(5_000)), task(2, "train-a", wallClock(-8 * HOUR))]),
+      ).toEqual([]);
+    });
   });
 
   it("returns nothing when there are no unknown outcomes", async () => {

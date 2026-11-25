@@ -1,15 +1,24 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { I18nProvider } from "../../lib/i18n";
 import { ToastProvider } from "../Toast";
 import type { ExecutionLedgerEntry } from "../../lib/execution-ledger";
+import { formatReleaseTimeInput } from "../../lib/task-release-notifications";
 import { ExecutionLedgerPanel } from "./ExecutionLedgerPanel";
 
 const ledgerMocks = vi.hoisted(() => ({
   list: vi.fn(),
   resolve: vi.fn(),
 }));
+
+const apiMocks = vi.hoisted(() => ({ tasks: vi.fn() }));
+
+vi.mock("../../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/api")>();
+  return { ...actual, instanceApi: { ...actual.instanceApi, tasks: apiMocks.tasks } };
+});
 
 vi.mock("../../lib/execution-ledger", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/execution-ledger")>()),
@@ -57,11 +66,13 @@ const entryPersistFailed: ExecutionLedgerEntry = {
 
 function renderLedger() {
   render(
-    <I18nProvider>
-      <ToastProvider>
-        <ExecutionLedgerPanel />
-      </ToastProvider>
-    </I18nProvider>,
+    <MemoryRouter>
+      <I18nProvider>
+        <ToastProvider>
+          <ExecutionLedgerPanel />
+        </ToastProvider>
+      </I18nProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -147,6 +158,20 @@ describe("ExecutionLedgerPanel", () => {
     const region = historyRegion();
     expect(region.getByText("dawn-eval")).toBeInTheDocument();
     expect(region.getByText(/Verified: created|已核对：已创建/)).toBeInTheDocument();
+  });
+
+  it("lists an instance whose zone-less creation time is hours off instead of calling the run failed", async () => {
+    // The backend writes its own wall clock without a zone; on a server eight hours ahead,
+    // an instance created five seconds into the run reads as eight hours later here.
+    const serverClock = formatReleaseTimeInput(new Date(Date.parse(entryUnknown.startedAt) + 8 * 3_600_000 + 5_000));
+    apiMocks.tasks.mockResolvedValue({ items: [{ id: 10077, name: "dawn-eval-01", status: 2, create_time: serverClock }], raw: null });
+    renderLedger();
+
+    const row = await screen.findAllByText("dawn-eval").then((nodes) => nodes[0].closest("li"));
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: /Find matching instance|查找匹配实例/ }));
+
+    expect(await within(row as HTMLElement).findByText("dawn-eval-01")).toBeInTheDocument();
+    expect(within(row as HTMLElement).queryByText(/most likely was not created|很可能没有创建成功/)).not.toBeInTheDocument();
   });
 
   it("confirms a run was not created and reloads the ledger", async () => {
