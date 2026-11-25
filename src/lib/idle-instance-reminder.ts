@@ -34,14 +34,26 @@ function normalizeTimestampMs(timestamp: number) {
   return timestamp > 1e11 ? timestamp : timestamp * 1000;
 }
 
+/**
+ * A sample value as a number, or null when there is none. `Number(null)` and `Number("")`
+ * are both 0, so a monitoring gap reported as null points would otherwise read as a fresh,
+ * perfectly idle sample and even satisfy auto-release's zero-network rule.
+ */
+function sampleNumber(raw: unknown): number | null {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
 function windowedPoints(series: MonitorMetricSeries | undefined, nowMs: number, windowMs: number): IdlePoint[] {
   if (!series?.data) return [];
   const from = nowMs - windowMs;
   const points: IdlePoint[] = [];
   for (const point of series.data) {
-    const value = Number(point?.value);
-    const timestamp = Number(point?.timestamp);
-    if (!Number.isFinite(value) || !Number.isFinite(timestamp)) continue;
+    const value = sampleNumber(point?.value);
+    const timestamp = sampleNumber(point?.timestamp);
+    if (value === null || timestamp === null) continue;
     const timestampMs = normalizeTimestampMs(timestamp);
     if (timestampMs >= from && timestampMs <= nowMs) points.push({ timestampMs, value });
   }

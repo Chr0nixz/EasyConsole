@@ -55,6 +55,20 @@ describe("evaluateIdleInstance", () => {
     expect(evaluateIdleInstance({ cpu: [series([1, 1, 1, 1, 1, 1])] }, NOW, 2 * WINDOW_MS)).toBe("unknown");
   });
 
+  it("never reads null or blank samples as zero", () => {
+    // A monitoring gap: two real readings an hour ago, then empty points up to now. Read as
+    // zeros, the gap would look like a fresh, fully idle window with zero network traffic.
+    const gap = (raw: unknown): MonitorMetricSeries => ({
+      data: series([1, 1, 0, 0, 0, 0, 0]).data!.map((point, index) => (index < 2 ? point : { ...point, value: raw as number })),
+    });
+    for (const raw of [null, "", "  "]) {
+      expect(evaluateIdleInstance({ cpu: [gap(raw)], network: [gap(raw)] }, NOW, WINDOW_MS)).toBe("unknown");
+      expect(hasFreshIdleMetrics({ cpu: [gap(raw)], network: [gap(raw)] }, NOW, WINDOW_MS)).toBe(false);
+    }
+    // Numeric strings are still real samples.
+    expect(evaluateIdleInstance({ cpu: [gap("0")], network: [gap("0")] }, NOW, WINDOW_MS)).toBe("idle");
+  });
+
   it("ignores points outside the window", () => {
     // The spike is 2 hours old; the recent window is quiet.
     const stale = series([1, 1, 1, 1, 1, 1, 90]);

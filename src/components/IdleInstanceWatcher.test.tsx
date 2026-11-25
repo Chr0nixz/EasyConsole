@@ -7,6 +7,7 @@ import { makeAccountScope, resetAccountScope, setActiveAccountScope } from "../l
 import { I18nProvider } from "../lib/i18n";
 import { useIdleEvidence } from "../lib/idle-instance-state";
 import { browserRuntime } from "../lib/runtime";
+import { loadRunLogs } from "../lib/run-logs";
 import { taskSnapshotQueryKey } from "../lib/task-snapshot-query";
 import { ToastContext } from "../lib/use-toast";
 
@@ -90,6 +91,30 @@ describe("idle watcher acceptance", () => {
     await waitFor(() => expect(mocks.release).toHaveBeenCalledExactlyOnceWith(42));
     await tick();
     expect(mocks.release).toHaveBeenCalledTimes(1);
+    expect(mocks.success).toHaveBeenCalled();
+  });
+
+  it("records a sent release even when the snapshot refreshes while it is in flight", async () => {
+    let finishRelease!: (value: unknown) => void;
+    mocks.release.mockImplementation(() => new Promise((done) => { finishRelease = done; }));
+    renderWatcher();
+    await waitFor(() => expect(mocks.notify).toHaveBeenCalledTimes(1));
+    for (let minute = 1; minute <= 30; minute++) await tick();
+    await waitFor(() => expect(mocks.release).toHaveBeenCalledExactlyOnceWith(42));
+    // The shared snapshot polls every 10 seconds; a refresh re-runs the effect mid-request.
+    mocks.now += 10_000;
+    await act(async () => {
+      client.setQueryData(taskSnapshotQueryKey(), { items: [{ ...mocks.task }], total: 1 });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => { finishRelease({}); await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    await waitFor(async () => {
+      const logs = await loadRunLogs(browserRuntime.storage);
+      expect(logs.filter((entry) => entry.action === "task.idleRelease")).toEqual([
+        expect.objectContaining({ result: "success", targetId: 42 }),
+      ]);
+    });
     expect(mocks.success).toHaveBeenCalled();
   });
 

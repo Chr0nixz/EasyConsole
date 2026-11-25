@@ -134,15 +134,18 @@ export function IdleInstanceWatcher() {
                   isCurrent: () => isCurrent() && getRuntimeSettings().idleAutoRelease,
                   release: () => instanceApi.operateTask(task.id),
                 });
-                if (result === "released" && isCurrent()) {
-                  toast.success(text("闲置实例已释放", "Idle instance released"), String(task.name ?? task.id));
+                if (result === "released") {
+                  // The release went out, so the instance and its container data may be gone.
+                  // Always record it: a snapshot refresh while the request was in flight re-runs
+                  // this effect and makes isCurrent() false, which must not erase the audit trail.
                   void appendRunLog(browserRuntime.storage, {
                     channel: browserRuntime.runLogChannel, source: "task", level: "info", action: "task.idleRelease", result: "success",
-                    title: text("闲置实例已释放", "Idle instance released"), targetId: task.id, metadata: { accountScope: scope },
+                    title: text("闲置实例已释放", "Idle instance released"), targetName: String(task.name ?? task.id), targetId: task.id, metadata: { accountScope: scope },
                   }).catch(() => undefined);
+                  if (getActiveAccountScope().key === scope) toast.success(text("闲置实例已释放", "Idle instance released"), String(task.name ?? task.id));
                 }
               } catch (error) {
-                if (isCurrent()) toast.error(text("自动释放未确认，请手动核对", "Auto-release unconfirmed; review manually"), error instanceof Error ? error.message : String(error));
+                if (getActiveAccountScope().key === scope) toast.error(text("自动释放未确认，请手动核对", "Auto-release unconfirmed; review manually"), error instanceof Error ? error.message : String(error));
                 void appendRunLog(browserRuntime.storage, {
                   channel: browserRuntime.runLogChannel, source: "task", level: "warning", action: "task.idleRelease", result: "failure",
                   title: text("自动释放未确认，请手动核对", "Auto-release unconfirmed; review manually"), targetId: task.id,
