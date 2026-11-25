@@ -373,6 +373,26 @@ describe("executeScheduledTask failure boundaries", () => {
     const [entry] = await listExecutionLedger(storage);
     expect(entry).toMatchObject({ outcome: "unknown" });
   });
+
+  it("refuses a forced run of a needs_review row when the caller asks it to", async () => {
+    const storage = createMemoryStorage();
+    await saveScheduledTasks(storage, [makeTask({ status: "needs_review", lastError: "outcome unknown" })]);
+    let creates = 0;
+
+    const result = await executeScheduledTask(storage, "sch-1", {
+      createTask: async () => {
+        creates += 1;
+        return { id: "remote-duplicate" };
+      },
+      force: true,
+      refuseNeedsReview: true,
+      now: new Date("2026-07-21T10:01:00.000Z"),
+    });
+
+    expect(result).toMatchObject({ skipped: true, reason: "not-runnable", task: { status: "needs_review" } });
+    expect(creates).toBe(0);
+  });
+
   it("never re-creates the remote task when a manual re-run hits the persisted needs_review row", async () => {
     // set#2 completion write fails; set#3 review marker succeeds.
     const storage = createScriptedStorage([2]);

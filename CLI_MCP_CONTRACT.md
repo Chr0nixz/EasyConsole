@@ -88,8 +88,8 @@
 | `easyconsole_schedule_create` | `name, scheduleTime, payload, description?, recurrence?, confirm?` | Mutation；执行后另含本地调度说明 |
 | `easyconsole_schedule_update` | `taskId: string, patch, confirm?` | Mutation |
 | `easyconsole_schedule_pause` | `taskId: string, confirm?` | Mutation |
-| `easyconsole_schedule_resume` | `taskId: string, confirm?` | Mutation |
-| `easyconsole_schedule_run` | `taskId: string, confirm?` | Mutation；验证已知账号归属，执行结果含计划和远程结果 |
+| `easyconsole_schedule_resume` | `taskId: string, confirm?` | Mutation；预览含 `status, scheduleTime`。待确认（needs_review）的重复计划若已过当前时间点，恢复后从下一次继续，预览另含 `skippedScheduleTime`；没有下一次时含 `endsPlan: true` |
+| `easyconsole_schedule_run` | `taskId: string, confirm?` | Mutation；验证已知账号归属，执行结果含计划和远程结果。预览含 `status`，有错误时含 `lastError`。计划处于待确认（needs_review）时预览和执行都报错，须先核实并 resume |
 | `easyconsole_schedule_delete` | `taskId: string, confirm?` | Mutation |
 | `easyconsole_backup_export` | 无 | v1 非机密备份对象；不提供 includeSecrets 参数 |
 | `easyconsole_backup_import` | `backupText, sections?: string[], confirm?` | Mutation；拒绝 token/savedAccounts sections |
@@ -157,6 +157,6 @@ Resources 不读取远程 API，不要求 token 或远程 HTTP opt-in，不额�
 
 在 1.0 冻结前补齐确认门：CLI login、account refresh-token、三种 download、backup export --output，以及 MCP account_refresh_token。旧 0.4.x 脚本要添加 `--yes` / `confirm: true`。工具名称保持 54 个，未新增别名；MCP task_update 纠正为接受不含 name 的 PATCH；CLI 不再对长 ID 舍入，用法错误在 --json 下也返回 JSON。
 
-2026-11-25 起（新增字段，不删除旧字段）：批量回执逐项增加 `status`，`template apply` 结果增加 `unknown`；运行日志写入失败不再覆盖已完成操作的结果。
+2026-11-25 起（新增字段，不删除旧字段）：批量回执逐项增加 `status`，`template apply` 结果增加 `unknown`；`schedule run` 拒绝待确认的计划；`schedule resume` 不再重放待确认重复计划已过的时间点；运行日志写入失败不再覆盖已完成操作的结果。
 
 自动化证据位于 cli / mcp-tools / mcp-resources 测试；安装包、真实服务与旧数据 fixture 的验收边界继续参见 [发布清单](RELEASE_CHECKLIST_1.0.0.md)。

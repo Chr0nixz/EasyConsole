@@ -47,11 +47,12 @@ import {
   mutateScheduledTasks,
   pauseScheduledTask,
   resumeScheduledTask,
+  resumeSkipsReviewedSlot,
   skipMissedScheduleInList,
   sortScheduledTasks,
 } from "../lib/scheduled-tasks";
 import { executeScheduledTask } from "../lib/schedule-execution";
-import { describeRecurrence, previewNextRuns, RecurrenceValidationError, validateRecurrence } from "../lib/task-recurrence";
+import { describeRecurrence, isRecurring, previewNextRuns, RecurrenceValidationError, validateRecurrence } from "../lib/task-recurrence";
 import { maybeAllocateUniqueCreateTaskNames } from "../lib/task-name-unique";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import type { CreateTaskPayload, ImageItem, ScheduledTask, ScheduledTaskStatus, TaskRecurrence, TaskRecurrenceType } from "../lib/types";
@@ -760,16 +761,52 @@ export function ScheduledTasksPage() {
     logPlanChange(item, "scheduledTask.pause", text("定时任务已暂停", "Scheduled task paused"));
   }
 
-  async function resumeItem(item: ScheduledTask) {
-    let changed = false;
+  async function applyResume(item: ScheduledTask) {
+    let resumed = null as ScheduledTask | null;
     await persistOne(item.id, (latest) => {
       const next = resumeScheduledTask(latest);
-      changed = next !== latest;
+      if (next !== latest) resumed = next;
       return next;
     });
-    if (!changed) return;
-    toast.success(text("定时任务已恢复", "Scheduled task resumed"), item.name);
+    if (!resumed) return;
+    if (resumed.status === "done") {
+      toast.success(text("计划已结束", "Plan ended"), text(`${item.name} 没有下一次执行`, `${item.name} has no next run`));
+    } else if (resumed.scheduleTime !== item.scheduleTime) {
+      toast.success(
+        text("定时任务已恢复", "Scheduled task resumed"),
+        text(`${item.name}，从 ${formatScheduleTime(resumed.scheduleTime)} 继续`, `${item.name}, continues at ${formatScheduleTime(resumed.scheduleTime)}`),
+      );
+    } else {
+      toast.success(text("定时任务已恢复", "Scheduled task resumed"), item.name);
+    }
     logPlanChange(item, "scheduledTask.resume", text("定时任务已恢复", "Scheduled task resumed"));
+  }
+
+  /**
+   * A slot held for review may already have its instance. Resuming says what happens to that
+   * slot first: a recurring plan skips it, a one-time plan can still run it inside the grace window.
+   */
+  function resumeItem(item: ScheduledTask) {
+    if (!resumeSkipsReviewedSlot(item)) {
+      void applyResume(item);
+      return;
+    }
+    const slot = formatScheduleTime(item.scheduleTime);
+    const graceMinutes = Math.max(1, Math.round(missedGraceMs / 60_000));
+    confirm({
+      title: text("恢复待确认的计划", "Resume Plan Under Review"),
+      description: isRecurring(item)
+        ? text(
+            `${item.name} 原定 ${slot} 的这次执行待确认，可能已经创建了实例。恢复后从下一次继续，不会重放这一次。如果确认这次没有创建、需要补跑，请改用「立即执行」。`,
+            `The ${slot} run of ${item.name} is under review and may already have created an instance. Resuming continues from the next occurrence and does not replay this run. To make up this run after confirming nothing was created, use Run now instead.`,
+          )
+        : text(
+            `${item.name} 原定 ${slot} 的这次执行待确认，可能已经创建了实例。单次计划恢复后，如果仍在 ${graceMinutes} 分钟宽限期内会立即再次创建，超过宽限期则按错过处理。请先确认实例没有创建。`,
+            `The ${slot} run of ${item.name} is under review and may already have created an instance. A one-time plan resumed within the ${graceMinutes}-minute grace window creates again right away; after that it counts as missed. Confirm nothing was created first.`,
+          ),
+      confirmLabel: text("恢复", "Resume"),
+      run: () => applyResume(item),
+    });
   }
 
   /** Skipping ends a one-shot plan for good, so it asks first; recurring plans just advance. */
@@ -825,7 +862,7 @@ export function ScheduledTasksPage() {
             title={text("恢复", "Resume")}
             type="button"
             variant="ghost"
-            onClick={() => void resumeItem(item)}
+            onClick={() => resumeItem(item)}
           >
             <Play className="h-4 w-4" />
             {text("恢复", "Resume")}

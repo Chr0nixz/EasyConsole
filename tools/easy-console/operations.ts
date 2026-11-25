@@ -889,12 +889,32 @@ export async function resumeScheduledTaskRecord(storage: RuntimeStorage, taskId:
     const items = await loadScheduledTasks(storage);
     const task = items.find((item) => item.id === taskId);
     if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
-    return maybeMutate("schedule.resume", { taskId, taskName: task.name }, confirm, async () => {
+    // Show where the plan resumes: a reviewed recurring slot is skipped, not replayed.
+    const preview = resumeScheduledTask(task);
+    const payload = {
+      taskId,
+      taskName: task.name,
+      status: task.status,
+      scheduleTime: preview.scheduleTime,
+      ...(preview.scheduleTime !== task.scheduleTime ? { skippedScheduleTime: task.scheduleTime } : {}),
+      ...(preview.status === "done" && task.status !== "done" ? { endsPlan: true } : {}),
+    };
+    return maybeMutate("schedule.resume", payload, confirm, async () => {
       const resumed = resumeScheduledTask(task);
       await saveScheduledTasks(storage, updateScheduledTask(items, resumed));
       return resumed;
     });
   });
+}
+
+function needsReviewRunError(task: ScheduledTask) {
+  const reason = task.lastError ?? i18nText("上次执行的结果未知", "its last run has an unknown outcome");
+  return new Error(
+    i18nText(
+      `定时任务 ${task.name} 待确认：${reason}。请先在控制台核对实例是否已创建，再用 schedule resume（MCP：easyconsole_schedule_resume）恢复后重新运行。重复计划恢复后从下一次继续。`,
+      `Scheduled task ${task.name} needs review: ${reason}. Verify on the console whether the instance was created, then resume it with \`schedule resume\` (MCP: easyconsole_schedule_resume) before running it again. A recurring plan resumes at its next occurrence.`,
+    ),
+  );
 }
 
 export async function runScheduledTask(
@@ -907,12 +927,25 @@ export async function runScheduledTask(
   const items = await loadScheduledTasks(storage);
   const task = items.find((item) => item.id === taskId);
   if (!task) throw new Error(`Scheduled task not found: ${taskId}`);
-  return maybeMutate("schedule.run", { taskId, taskName: task.name, executionKey: `${task.id}@${task.scheduleTime}` }, confirm, async () => {
+  // A needs_review plan's last create may have landed. Running it again here
+  // would replay that create with no step that shows why it was held, so the
+  // caller has to verify and resume it first. Refused for the dry-run too, so
+  // an agent learns this before it adds --yes.
+  if (task.status === "needs_review") throw needsReviewRunError(task);
+  const preview = {
+    taskId,
+    taskName: task.name,
+    status: task.status,
+    executionKey: `${task.id}@${task.scheduleTime}`,
+    ...(task.lastError ? { lastError: task.lastError } : {}),
+  };
+  return maybeMutate("schedule.run", preview, confirm, async () => {
     const scope = await resolveAccountScope?.();
     const executed = await executeScheduledTask(storage, taskId, {
       createTask: (payload) => api.instanceApi.createTask(payload),
       trigger: "cli",
       force: true,
+      refuseNeedsReview: true,
       getAccountScope: scope ? () => scope : undefined,
       allowLegacyOwner: true,
     });

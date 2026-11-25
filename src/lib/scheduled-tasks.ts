@@ -287,7 +287,20 @@ export function pauseScheduledTask(task: ScheduledTask): ScheduledTask {
   return { ...task, status: "paused", updatedAt: nowIso() };
 }
 
-export function resumeScheduledTask(task: ScheduledTask): ScheduledTask {
+/**
+ * True when resuming this task would hand the runner a slot that may already
+ * have produced an instance: the task is waiting for review and its current
+ * slot time has passed. A recurring task in this state resumes at its next
+ * occurrence instead; a one-shot task has no next occurrence, so callers must
+ * warn before resuming it.
+ */
+export function resumeSkipsReviewedSlot(task: ScheduledTask, now = new Date()): boolean {
+  if (task.status !== "needs_review") return false;
+  const slot = Date.parse(task.scheduleTime);
+  return Number.isFinite(slot) && slot <= now.getTime();
+}
+
+export function resumeScheduledTask(task: ScheduledTask, now = new Date()): ScheduledTask {
   if (task.status !== "paused" && task.status !== "failed" && task.status !== "needs_review") return task;
   // Resuming is the user's explicit decision to run the task under the current
   // account: adopt it as owner. This is also the migration path for legacy or
@@ -295,7 +308,7 @@ export function resumeScheduledTask(task: ScheduledTask): ScheduledTask {
   const scope = getActiveAccountScope();
   const owner =
     scope.key === ANONYMOUS_ACCOUNT_SCOPE_KEY ? task.owner ?? LEGACY_SCHEDULED_TASK_OWNER : activeScheduleOwner();
-  return {
+  const resumed: ScheduledTask = {
     ...task,
     status: "pending",
     lastError: undefined,
@@ -304,6 +317,17 @@ export function resumeScheduledTask(task: ScheduledTask): ScheduledTask {
     owner,
     updatedAt: nowIso(),
   };
+  // A needs_review slot may already have created its instance (the create timed
+  // out, say, and the user confirmed it landed). Resuming must never replay that
+  // slot by itself, even inside the missed-run grace window: a recurring task
+  // continues from its next occurrence. Replaying the slot stays an explicit
+  // "run now".
+  if (isRecurring(task) && resumeSkipsReviewedSlot(task, now)) {
+    const nextRun = computeNextRunTime(task, now);
+    if (!nextRun) return { ...resumed, status: "done" };
+    return { ...resumed, scheduleTime: nextRun.toISOString() };
+  }
+  return resumed;
 }
 
 /**

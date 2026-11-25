@@ -15,6 +15,7 @@ import {
   normalizeRecurrence,
   pauseScheduledTask,
   resumeScheduledTask,
+  resumeSkipsReviewedSlot,
   saveScheduledTasks,
   scheduledTaskOwnerMismatch,
   skipMissedScheduleInList,
@@ -88,6 +89,55 @@ describe("scheduled tasks", () => {
       lastError: undefined,
     });
     expect(resumeScheduledTask(makeTask({ status: "needs_review", lastError: "lease" })).status).toBe("pending");
+  });
+
+  it("resumes a reviewed recurring slot at its next occurrence instead of replaying it", () => {
+    // 09:00 create timed out; the user confirmed it landed and resumes at 09:04,
+    // still inside the missed-run grace window.
+    const now = new Date(2026, 4, 24, 9, 4);
+    const reviewed = makeTask({
+      status: "needs_review",
+      scheduleTime: new Date(2026, 4, 24, 9, 0).toISOString(),
+      recurrence: { type: "daily" },
+      lastError: "outcome unknown",
+    });
+
+    expect(resumeSkipsReviewedSlot(reviewed, now)).toBe(true);
+    const resumed = resumeScheduledTask(reviewed, now);
+
+    expect(resumed.status).toBe("pending");
+    expect(new Date(resumed.scheduleTime).getTime()).toBe(new Date(2026, 4, 25, 9, 0).getTime());
+    expect(isScheduleDue(resumed, now)).toBe(false);
+  });
+
+  it("keeps the slot for failed, not-yet-due and one-time resumes", () => {
+    const now = new Date(2026, 4, 24, 9, 4);
+    const pastSlot = new Date(2026, 4, 24, 9, 0).toISOString();
+    const futureSlot = new Date(2026, 4, 24, 10, 0).toISOString();
+
+    // A definite failure created nothing, so retrying the slot is allowed.
+    const failed = makeTask({ status: "failed", scheduleTime: pastSlot, recurrence: { type: "daily" } });
+    expect(resumeScheduledTask(failed, now).scheduleTime).toBe(pastSlot);
+
+    const notDue = makeTask({ status: "needs_review", scheduleTime: futureSlot, recurrence: { type: "daily" } });
+    expect(resumeSkipsReviewedSlot(notDue, now)).toBe(false);
+    expect(resumeScheduledTask(notDue, now).scheduleTime).toBe(futureSlot);
+
+    // A one-time plan has no next occurrence: the caller warns before resuming it.
+    const oneTime = makeTask({ status: "needs_review", scheduleTime: pastSlot });
+    expect(resumeSkipsReviewedSlot(oneTime, now)).toBe(true);
+    expect(resumeScheduledTask(oneTime, now)).toMatchObject({ status: "pending", scheduleTime: pastSlot });
+  });
+
+  it("ends a reviewed recurring plan that has no next occurrence", () => {
+    const now = new Date(2026, 4, 24, 9, 4);
+    const reviewed = makeTask({
+      status: "needs_review",
+      scheduleTime: new Date(2026, 4, 24, 9, 0).toISOString(),
+      recurrence: { type: "daily", endDate: new Date(2026, 4, 24, 9, 2).toISOString() },
+    });
+
+    expect(resumeScheduledTask(reviewed, now).status).toBe("done");
   });
 
   it("keeps active schedules before completed schedules", () => {

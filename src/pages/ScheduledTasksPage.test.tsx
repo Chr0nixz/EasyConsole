@@ -167,6 +167,23 @@ describe("ScheduledTasksPage execution safety", () => {
     expect(mocks.createTask).not.toHaveBeenCalled();
   });
 
+  it("resumes a reviewed recurring plan at its next occurrence after explaining it", async () => {
+    const slot = new Date(Date.now() - 5 * 60_000).toISOString();
+    seedTask({ status: "needs_review", scheduleTime: slot, recurrence: { type: "daily" }, lastError: "Remote create outcome unknown" });
+    renderPage();
+
+    fireEvent.click((await taskRow()).getByRole("button", { name: /^(恢复|Resume)$/ }));
+    const dialog = within(await screen.findByRole("dialog", { name: /恢复待确认的计划|Resume Plan Under Review/ }));
+    expect(dialog.getByText(/不会重放这一次|does not replay this run/)).toBeInTheDocument();
+    expect(storedTasks()[0].status).toBe("needs_review");
+
+    fireEvent.click(dialog.getByRole("button", { name: /^(恢复|Resume)$/ }));
+
+    await waitFor(() => expect(storedTasks()[0].status).toBe("pending"));
+    expect(Date.parse(storedTasks()[0].scheduleTime)).toBeGreaterThan(Date.now());
+    expect(mocks.createTask).not.toHaveBeenCalled();
+  });
+
   it("keeps unsaved input and the current execution when another window runs a plan being edited", async () => {
     const task = seedTask({ scheduleTime: new Date(Date.now() + 3_600_000).toISOString() });
     renderPage();

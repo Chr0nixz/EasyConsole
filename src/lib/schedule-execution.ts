@@ -152,6 +152,14 @@ export type ExecuteScheduledTaskDeps = {
    */
   force?: boolean;
   /**
+   * With `force`, still refuse a row in needs_review. The CLI/MCP run has no
+   * confirmation step that shows the review reason, so a row whose last create
+   * may have landed must be resumed explicitly before it can run again. The
+   * check sits under the claim lock, so a row that turns needs_review after
+   * the caller's snapshot is refused too.
+   */
+  refuseNeedsReview?: boolean;
+  /**
    * How the execution ledger classifies this run: the background schedule
    * (default), a manual "Run now" ("manual"), or the CLI/MCP wrapper ("cli").
    */
@@ -330,6 +338,11 @@ export async function executeScheduledTask(
       const reviewed = holdScheduledTaskForReview(latest, mismatch.reason, now);
       claim = { kind: "skipped", reason: "not-runnable", task: reviewed };
       return updateScheduledTask(current, reviewed);
+    }
+
+    if (deps.refuseNeedsReview && latest.status === "needs_review") {
+      claim = { kind: "skipped", reason: "not-runnable", task: latest };
+      return current;
     }
 
     if (latest.status === "running") {

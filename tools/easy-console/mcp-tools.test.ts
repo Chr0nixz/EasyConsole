@@ -837,4 +837,29 @@ describe("easy-console MCP outcome reporting", () => {
     expect(receipts.map((item) => item.status)).toEqual(["succeeded", "unknown"]);
   });
 
+  it("previews that resuming a reviewed recurring plan skips the reviewed slot", async () => {
+    const context = createFakeContext();
+    const slot = new Date(Date.now() - 5 * 60_000).toISOString();
+    await context.storage.set(
+      SCHEDULED_TASKS_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: "sch-1",
+          name: "daily-train",
+          scheduleTime: slot,
+          status: "needs_review",
+          recurrence: { type: "daily" },
+          payload: { name: "daily-train" },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ]),
+    );
+
+    const result = await invokeMcpToolDefinition(getTool("easyconsole_schedule_resume"), context, { taskId: "sch-1" });
+
+    expect(result).toMatchObject({ dryRun: true, action: "schedule.resume", payload: { status: "needs_review", skippedScheduleTime: slot } });
+    const payload = (result as { payload: { scheduleTime: string } }).payload;
+    expect(Date.parse(payload.scheduleTime)).toBeGreaterThan(Date.now());
+  });
 });

@@ -935,4 +935,30 @@ describe("easy-console cli outcome reporting", () => {
     ]);
   });
 
+  it("refuses to run a scheduled task that needs review, even as a dry-run", async () => {
+    const context = createFakeContext();
+    const create = vi.spyOn(context.api.instanceApi, "createTask");
+    await context.storage.set(
+      SCHEDULED_TASKS_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: "sch-1",
+          name: "nightly",
+          scheduleTime: new Date().toISOString(),
+          status: "needs_review",
+          lastError: "Remote create outcome unknown: bad gateway",
+          payload: { name: "nightly" },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ]),
+    );
+
+    for (const args of [["--json", "schedule", "run", "sch-1"], ["--json", "schedule", "run", "sch-1", "--yes"]]) {
+      const result = await runCli(args, { createContext: async () => context });
+      expect(result.exitCode).toBe(1);
+      expect(JSON.parse(result.stderr).error.message).toMatch(/needs review|待确认/);
+    }
+    expect(create).not.toHaveBeenCalled();
+  });
 });
