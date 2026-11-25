@@ -109,7 +109,7 @@ describe("TasksPage row stability", () => {
     fireEvent.click(screen.getByRole("button", { name: /^(列设置|Columns)$/ }));
 
     const width = await screen.findByRole("spinbutton", { name: /实例名称列宽|Instance name column width/ });
-    expect(width).toHaveValue(240);
+    expect(width).toHaveValue(224);
     fireEvent.change(width, { target: { value: "9999" } });
     fireEvent.blur(width);
 
@@ -124,7 +124,7 @@ describe("TasksPage row stability", () => {
     renderPage();
 
     const resizeHandle = await screen.findByRole("separator", { name: /调整实例名称列宽|Resize Instance name column/i });
-    expect(resizeHandle).toHaveAttribute("aria-valuenow", "240");
+    expect(resizeHandle).toHaveAttribute("aria-valuenow", "224");
     const selectionHandle = screen.getByRole("separator", { name: /调整选择列宽|Resize Selection column/i });
     const actionsHandle = screen.getByRole("separator", { name: /调整操作列宽|Resize Actions column/i });
     expect(selectionHandle).toHaveAttribute("aria-valuenow", "48");
@@ -140,17 +140,17 @@ describe("TasksPage row stability", () => {
 
     fireEvent.keyDown(resizeHandle, { key: "ArrowRight" });
 
-    expect(resizeHandle).toHaveAttribute("aria-valuenow", "256");
+    expect(resizeHandle).toHaveAttribute("aria-valuenow", "240");
 
     fireEvent.mouseDown(resizeHandle, { clientX: 100 });
     fireEvent.mouseMove(document, { clientX: 150 });
     fireEvent.mouseUp(document, { clientX: 150 });
 
-    expect(resizeHandle).toHaveAttribute("aria-valuenow", "306");
+    expect(resizeHandle).toHaveAttribute("aria-valuenow", "290");
     await waitFor(() => {
       expect(storageSet).toHaveBeenCalledWith(
         "easy-console.tasks.columnSizing",
-        expect.stringContaining('"name":306'),
+        expect.stringContaining('"name":290'),
       );
     });
     storageSet.mockRestore();
@@ -164,9 +164,12 @@ describe("TasksPage row stability", () => {
     expect(screen.getByRole("separator", { name: /调整实例名称列宽|Resize Instance name column/i })).toHaveAttribute("aria-valuenow", "300");
     unmount();
 
-    window.localStorage.setItem("easy-console.tasks.columnSizing", JSON.stringify({ releaseCondition: 160 }));
+    // Name and resources were narrowed so the default columns fit the default window.
+    window.localStorage.setItem("easy-console.tasks.columnSizing", JSON.stringify({ releaseCondition: 160, name: 240, resource: 152 }));
     renderPage();
     await waitFor(async () => expect(await releaseHandle()).toHaveAttribute("aria-valuenow", "160"));
+    expect(screen.getByRole("separator", { name: /调整实例名称列宽|Resize Instance name column/i })).toHaveAttribute("aria-valuenow", "224");
+    expect(screen.getByRole("separator", { name: /调整资源列宽|Resize Resources column/i })).toHaveAttribute("aria-valuenow", "120");
     window.localStorage.removeItem("easy-console.tasks.columnSizing");
   });
 
@@ -213,6 +216,9 @@ describe("TasksPage row stability", () => {
     expect(failedCommit).toHaveAttribute("aria-disabled", "true");
     expect(failedCommit).toHaveAccessibleDescription(/仅运行中实例可提交镜像|Only running instances can be committed/);
     expect(commit).not.toHaveAttribute("aria-disabled");
+    // An ended task has nothing to release, so its release slot stays empty instead of disabled.
+    expect(screen.getByRole("button", { name: /释放实例 running-job|Release instance running-job/ })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /释放实例 failed-job|Release instance failed-job/ })).not.toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByRole("separator", { name: /调整操作列宽|Resize Actions column/i })).toHaveAttribute("aria-valuenow", "304");
     });

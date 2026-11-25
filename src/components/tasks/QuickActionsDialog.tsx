@@ -26,11 +26,14 @@ const ROW_CLASS = "flex min-h-10 items-center gap-2 rounded-md px-2 text-sm text
 export function QuickActionsDialog({
   open,
   actions,
+  folded = false,
   onChange,
   onClose,
 }: {
   open: boolean;
   actions: readonly TaskQuickActionId[];
+  /** Whether the table's bar is folded right now, so the choice here is not what the rows show. */
+  folded?: boolean;
   onChange: (next: TaskQuickActionId[]) => void;
   onClose: () => void;
 }) {
@@ -199,12 +202,21 @@ export function QuickActionsDialog({
           </div>
         ) : null}
 
-        <p className="text-xs leading-5 text-app-muted">
-          {text(
-            "表格区域较窄时，快捷按钮会暂时收进「更多」，让状态、费用和释放条件留在视野内。",
-            "When the table is narrow, the shortcuts fold into More so status, cost and the release condition stay in view.",
-          )}
-        </p>
+        {folded ? (
+          <p className="rounded-md bg-app-panel px-3 py-2 text-xs leading-5 text-app-text" role="status">
+            {text(
+              "表格区域现在较窄，操作栏已收起：每行只留一个按状态选的按钮（运行中为终端，其余为日志），其余在「更多」里。加宽窗口或隐藏几列后，这里选的按钮会显示出来。",
+              "The table is narrow right now, so the bar is folded: each row keeps one button picked by status (the terminal while running, the log otherwise) and the rest are in More. Widen the window or hide a few columns to show the buttons chosen here.",
+            )}
+          </p>
+        ) : (
+          <p className="text-xs leading-5 text-app-muted">
+            {text(
+              "表格区域较窄时，操作栏会收起：每行只留一个按状态选的按钮（运行中为终端，其余为日志），让状态、费用和释放条件留在视野内。",
+              "When the table is narrow, the bar folds: each row keeps one button picked by status (the terminal while running, the log otherwise) so status, cost and the release condition stay in view.",
+            )}
+          </p>
+        )}
 
         <div className="flex justify-end gap-2 border-t border-app-border pt-3">
           <Button type="button" variant="secondary" onClick={() => onChange([...DEFAULT_TASK_QUICK_ACTIONS])}>

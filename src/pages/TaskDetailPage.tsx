@@ -13,7 +13,7 @@ import { TaskLogPanel } from "../components/tasks/TaskLogPanel";
 import { TaskSshPanel } from "../components/tasks/TaskSshPanel";
 import { Button, Panel, Select } from "../components/ui";
 import { instanceApi } from "../lib/api";
-import { formatCost, formatHourlyRate, formatSecondsDuration, getTaskName, getTaskNodeName, getTaskReleaseCondition } from "../lib/format";
+import { formatBackendDateTime, formatCost, formatHourlyRate, formatSecondsDuration, getTaskName, getTaskNodeName, getTaskReleaseCondition } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { buildMonitorDashboardUrl } from "../lib/monitor-dashboard";
 import { browserRuntime } from "../lib/runtime";
@@ -269,7 +269,7 @@ export function TaskDetailPage() {
   };
   const requestDelete = () => {
     confirm({
-      title: text("确认删除实例", "Confirm Instance Deletion"),
+      title: text("确认删除记录", "Delete Instance Record?"),
       description: text(
         `将删除 ${getTaskName(task)} 的记录，从列表中移除。此操作不可从 EasyConsole 撤销。`,
         `Delete the record of ${getTaskName(task)} and remove it from the list. EasyConsole cannot undo this.`,
@@ -289,7 +289,8 @@ export function TaskDetailPage() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="min-w-0 flex-1">
-          <h2 className={cn("text-lg font-semibold tracking-[-0.015em] text-app-text", compactLayout ? "wrap-anywhere" : "truncate")}>{getTaskName(task)}</h2>
+          {/* An h2 under the shell's h1, so it takes the Headline step and never a larger one. */}
+          <h2 className={cn("text-[1.0625rem] font-semibold leading-6 tracking-[-0.015em] text-app-text", compactLayout ? "wrap-anywhere" : "truncate")}>{getTaskName(task)}</h2>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
             <span className="font-mono">#{String(task.id)}</span>
             {secondaryId ? <span className="font-mono">{text(`任务 ID ${secondaryId}`, `Task ID ${secondaryId}`)}</span> : null}
@@ -360,7 +361,7 @@ export function TaskDetailPage() {
           label={text("资源", "Resources")}
           value={`${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`}
         />
-        <SummaryField kind="figure" label={text("创建时间", "Created")} value={String(task.create_time ?? task.created_at ?? "-")} />
+        <SummaryField kind="figure" label={text("创建时间", "Created")} value={formatBackendDateTime(task.create_time ?? task.created_at)} />
         <div className="col-span-full min-w-0">
           <details className="group" open={!compactLayout}>
             <summary className={cn("flex min-h-11 cursor-pointer list-none items-center justify-between text-sm font-medium text-app-text", !compactLayout && "sm:hidden")}>

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { consumePendingCreateTaskRequest, requestCreateTask, subscribeCreateTaskRequests } from "./task-create-request";
+import { consumePendingCreateTaskRequest, requestCreateTask, subscribeCreateTaskRequests, takeCreateTaskPreset } from "./task-create-request";
 
 describe("task create request", () => {
   it("keeps a request made before the task list mounts, once", () => {
@@ -16,5 +16,15 @@ describe("task create request", () => {
     expect(listener).toHaveBeenCalledOnce();
     expect(consumePendingCreateTaskRequest()).toBe(false);
     unsubscribe();
+  });
+
+  it("carries a starting image once, so a later plain create starts fresh", () => {
+    requestCreateTask({ imageId: "11" });
+    expect(consumePendingCreateTaskRequest()).toBe(true);
+    expect(takeCreateTaskPreset()).toEqual({ imageId: "11" });
+    expect(takeCreateTaskPreset()).toEqual({});
+    requestCreateTask();
+    expect(takeCreateTaskPreset()).toEqual({});
+    consumePendingCreateTaskRequest();
   });
 });

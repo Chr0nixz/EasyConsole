@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CalendarCheck, CalendarClock, FolderOpen, Pause, Pencil, Play, Plus, SkipForward, Trash2, X, Zap } from "lucide-react";
+import { CalendarCheck, CalendarClock, FolderOpen, Pause, Pencil, Play, Plus, SkipForward, Trash2, X, Zap } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -11,10 +11,13 @@ import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
 import { CreateImpactSummary } from "../components/tasks/CreateImpactSummary";
 import { ResourcePresetPicker } from "../components/tasks/ResourcePresetPicker";
 import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
+import { ReleasePolicyFields } from "../components/tasks/ReleasePolicyFields";
+import { SPEC_FOOTER_CLASS, SpecSummary } from "../components/tasks/SpecSummary";
 import { ScriptEnvFields } from "../components/tasks/ScriptEnvFields";
 import { ExecutionLedgerPanel } from "../components/scheduled/ExecutionLedgerPanel";
 import { WorkspaceAccountBanner } from "../components/scheduled/WorkspaceAccountBanner";
 import { Button, Input, Panel, SegmentedControl, Select, StatePill, TableRegion, Textarea, type StateTone } from "../components/ui";
+import { pickDefaultImage } from "../lib/image-defaults";
 import { imageApi, instanceApi } from "../lib/api";
 import { isOutcomeUnknown } from "../lib/api-client";
 import { getActiveAccountScope } from "../lib/account-scope";
@@ -61,7 +64,8 @@ import { useConfirmAction } from "../lib/use-confirm-action";
 import { errorMessage, useRunLogger } from "../lib/use-run-logger";
 import { useToast } from "../lib/use-toast";
 
-const DEFAULT_PRICE = "1";
+// No rate is invented for a new plan: the price list fills it, or the user does.
+const DEFAULT_PRICE = "";
 const DEFAULT_CPU = "4";
 const DEFAULT_GPU = "0";
 const DEFAULT_MEMORY = "16";
@@ -221,15 +225,13 @@ function SchedulePlanSummary({
   }
 
   return (
-    <div className="min-w-0 flex-1 text-xs text-app-muted" role="group" aria-label={text("计划摘要", "Plan summary")}>
-      <p className="app-numeric font-medium text-app-text">{headline.join(" · ")}</p>
-      {note ? (
-        <p id="scheduled-plan-cost" className={cn("mt-1 flex gap-1.5 leading-5", warning && "text-app-warningText")}>
-          {warning ? <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : null}
-          <span>{note}</span>
-        </p>
-      ) : null}
-    </div>
+    <SpecSummary
+      label={text("计划摘要", "Plan summary")}
+      headline={headline}
+      note={note ?? undefined}
+      noteId="scheduled-plan-cost"
+      warning={warning}
+    />
   );
 }
 
@@ -384,7 +386,8 @@ export function ScheduledTasksPage() {
   }, [reload]);
 
   useEffect(() => {
-    if (!imageId && imageOptions[0]) setImageId(String(imageOptions[0].id));
+    const defaultImage = pickDefaultImage(imageOptions);
+    if (!imageId && defaultImage) setImageId(String(defaultImage.id));
   }, [imageId, imageOptions]);
 
   useEffect(() => {
@@ -450,7 +453,8 @@ export function ScheduledTasksPage() {
     setFormError(null);
     setStoragePickerTarget(null);
     resetTouched();
-    if (imageOptions[0]) setImageId(String(imageOptions[0].id));
+    const defaultImage = pickDefaultImage(imageOptions);
+    if (defaultImage) setImageId(String(defaultImage.id));
   }
 
   function beginEdit(item: ScheduledTask) {
@@ -964,9 +968,12 @@ export function ScheduledTasksPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        {/* The shell header already says plans run locally; this lead only adds what that means for missed runs. */}
+        {/* The shell header already says plans run locally; this lead only adds what that means for
+            missed runs, which only matters once there is a plan to miss. */}
         <div className="min-w-0 max-w-2xl">
-          <p className="text-sm leading-6 text-app-muted">{text("客户端关闭或休眠期间错过的计划，恢复后按设置处理：默认等待确认，也可改为自动补跑或跳过（可在设置中调整）。", "Runs missed while the app was closed or asleep follow your settings: ask by default, or catch up / skip automatically (configurable in Settings).")}</p>
+          {items.length > 0 ? (
+            <p className="text-sm leading-6 text-app-muted">{text("客户端关闭或休眠期间错过的计划，恢复后按设置处理：默认等待确认，也可改为自动补跑或跳过（可在设置中调整）。", "Runs missed while the app was closed or asleep follow your settings: ask by default, or catch up / skip automatically (configurable in Settings).")}</p>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button disabled={dueCount === 0 || isExecuting} variant="secondary" onClick={() => void openDuePreview()}>
@@ -1166,45 +1173,13 @@ export function ScheduledTasksPage() {
               </label>
             </div>
           </FormSection>
-          <FormSection divided title={text("存储", "Storage")}>
-            <div className="grid gap-4 text-sm md:grid-cols-2">
-              <div>
-                <span className="mb-1 block text-app-muted">{text("存储路径", "Storage path")}</span>
-                <div className="flex gap-2">
-                  <Input className="w-full font-mono text-xs" value={storagePath} onChange={(event) => setStoragePath(event.target.value)} />
-                  <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
-                    <FolderOpen className="h-4 w-4" />
-                    {text("选择", "Select")}
-                  </Button>
-                </div>
-              </div>
-              <label className="block">
-                <span className="mb-1 block text-app-muted">{text("挂载路径", "Mount path")}</span>
-                <Input className="w-full font-mono text-xs" value={mountPath} onChange={(event) => setMountPath(event.target.value)} />
-              </label>
-            </div>
-          </FormSection>
           <FormSection divided title={text("释放策略", "Release")}>
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("释放条件", "Release condition")}</span>
-                <Select className="w-full" value={releaseCondition} onChange={(event) => handleReleaseConditionChange(event.target.value)}>
-                  {Object.entries(releaseConditionText).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {localizedText(label, locale)}
-                    </option>
-                  ))}
-                </Select>
-              </label>
-              {releaseCondition === "2" ? (
-                <label className="block text-sm">
-                  <span className="mb-1 block text-app-muted">{text("释放时间（执行后 24 小时）", "Release time (24 hours after execution)")}</span>
-                  <Input className={cn("w-full bg-app-panel text-app-muted", fieldBorderClass(Boolean(fieldErrors.releaseTime)))} type="datetime-local" value={releaseTime} readOnly aria-readonly="true" required />
-                  <FieldError message={touchedFields.has("releaseTime") ? fieldErrors.releaseTime : undefined} />
-                </label>
-              ) : null}
-            </div>
-            {releaseCondition === "3" ? (
+            <ReleasePolicyFields
+              condition={releaseCondition}
+              hourlyRate={parsePositivePrice(price)}
+              onConditionChange={handleReleaseConditionChange}
+              timed={{ kind: "fixed", hours: SCHEDULED_RELEASE_DELAY_HOURS }}
+            >
               <div className="space-y-4">
                 <div className="block text-sm">
                   <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
@@ -1235,10 +1210,29 @@ export function ScheduledTasksPage() {
                   error={touchedFields.has("scriptEnv") ? fieldErrors.scriptEnv : undefined}
                 />
               </div>
-            ) : null}
+            </ReleasePolicyFields>
+          </FormSection>
+          <FormSection divided title={text("存储", "Storage")}>
+            <div className="grid gap-4 text-sm md:grid-cols-2">
+              <div>
+                <span className="mb-1 block text-app-muted">{text("存储路径", "Storage path")}</span>
+                <div className="flex gap-2">
+                  <Input className="w-full font-mono text-xs" value={storagePath} onChange={(event) => setStoragePath(event.target.value)} />
+                  <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
+                    <FolderOpen className="h-4 w-4" />
+                    {text("选择", "Select")}
+                  </Button>
+                </div>
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-app-muted">{text("挂载路径", "Mount path")}</span>
+                <Input className="w-full font-mono text-xs" value={mountPath} onChange={(event) => setMountPath(event.target.value)} />
+              </label>
+            </div>
           </FormSection>
           {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
-          <div className="flex flex-col gap-3 border-t border-app-border pt-3 sm:flex-row sm:items-center sm:justify-between">
+          {/* Pinned to the bottom of the page while the plan is long, so its cost and save stay in view. */}
+          <div className={cn("sticky bottom-0 z-10 -mx-4 -mb-4 rounded-b-lg", SPEC_FOOTER_CLASS)}>
             <SchedulePlanSummary
               price={price}
               recurrence={buildFormRecurrence(recurrenceType, recurrenceIntervalMin, recurrenceCron, recurrenceWeekdays)}

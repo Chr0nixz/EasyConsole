@@ -1,14 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderOpen } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { ErrorState } from "../DataState";
 import { FieldError, FormSection, useFormFieldErrors } from "../form-fields";
 import { RemoteStoragePicker } from "../storage/RemoteStoragePicker";
 import { ResourcePriceFields } from "./ResourcePriceFields";
+import { ReleasePolicyFields } from "./ReleasePolicyFields";
+import { SPEC_FOOTER_CLASS, SpecSummary } from "./SpecSummary";
 import { ResourcePresetPicker } from "./ResourcePresetPicker";
 import { ScriptEnvFields } from "./ScriptEnvFields";
 import { Button, Dialog, Input, Select } from "../ui";
+import { pickDefaultImage } from "../../lib/image-defaults";
+import type { ReleaseConditionValue } from "../../lib/release-policy";
 import { imageApi, instanceApi } from "../../lib/api";
 import { getRuntimeSettings } from "../../lib/app-settings";
 import { BatchPreviewDialog } from "../batch/BatchPreviewDialog";
@@ -22,8 +26,10 @@ import type { BatchRunResult } from "../../lib/batch-runner";
 import type { BatchOperationRecord } from "../../lib/change-list";
 import {
   DEFAULT_CREATE_TASK_UI_PREFS,
+  initialReleaseCondition,
   loadCreateTaskUiPrefs,
   saveCreateTaskUiPrefs,
+  withLastReleaseCondition,
   sectionsForFieldErrors,
   type CreateTaskSectionId,
   type CreateTaskUiPrefs,
@@ -114,6 +120,13 @@ function buildFormSnapshot({
   username: string;
 }): FormSnapshot {
   const parsedScript = parseScriptCommandEnv(initialTask?.script_path ?? "");
+  const releaseCondition = String(initialTask?.releace_conditions ?? initialTask?.release_condition ?? "1");
+  const sourceReleaseTime = formatClonedReleaseTime(initialTask?.releace_time);
+  // A clone's source release time has usually passed; a timed clone starts on the default
+  // duration instead, so it is not released the moment it starts. An edit shows the real value.
+  const releaseTime = !isEditMode && releaseCondition === "2" && !(Date.parse(sourceReleaseTime) > Date.now())
+    ? getDefaultReleaseTime(String(initialTask?.gpu ?? DEFAULT_GPU))
+    : sourceReleaseTime;
   return {
     // A clone keeps its source's name under a new timestamp, so a rerun stays beside what it reran.
     name: isEditMode
@@ -126,8 +139,8 @@ function buildFormSnapshot({
     cpu: String(initialTask?.cpu ?? DEFAULT_CPU),
     gpu: String(initialTask?.gpu ?? DEFAULT_GPU),
     memory: String(initialTask?.memory ?? DEFAULT_MEMORY),
-    releaseCondition: String(initialTask?.releace_conditions ?? initialTask?.release_condition ?? "1"),
-    releaseTime: formatClonedReleaseTime(initialTask?.releace_time),
+    releaseCondition,
+    releaseTime,
     storagePath: initialTask?.storage_path || `/${username}`,
     mountPath: initialTask?.mount_path || `/home/ubuntu/${username}`,
     workDirectory: initialTask?.work_directory ?? "",
@@ -156,30 +169,6 @@ function createBatchItemMeta(payload: CreateTaskPayload, imageOptions: ImageItem
 
 function normalizeId(value: string) {
   return /^\d+$/.test(value) ? Number(value) : value;
-}
-
-function numericScore(value: unknown) {
-  if (typeof value !== "string" && typeof value !== "number") return 0;
-  const digits = String(value).match(/\d+/g)?.join("") ?? "";
-  const number = Number(digits);
-  return Number.isFinite(number) ? number : 0;
-}
-
-function timeScore(value: unknown) {
-  if (typeof value !== "string") return 0;
-  const time = Date.parse(value);
-  return Number.isFinite(time) ? time : 0;
-}
-
-function getImageFreshnessScore(image: ImageItem) {
-  return Math.max(numericScore(image.tag), timeScore(image.update_time), timeScore(image.create_time), timeScore(image.created_at), numericScore(image.id));
-}
-
-function getLatestImage(images: ImageItem[]) {
-  return images.reduce<ImageItem | null>((latest, image) => {
-    if (!latest) return image;
-    return getImageFreshnessScore(image) > getImageFreshnessScore(latest) ? image : latest;
-  }, null);
 }
 
 function parsePositiveNumber(value: string) {
@@ -236,12 +225,15 @@ export function CreateTaskDialog({
   open,
   onClose,
   initialTask,
+  initialImageId,
   mode = "create",
   editTaskId,
 }: {
   open: boolean;
   onClose: () => void;
   initialTask?: Task | null;
+  /** A new instance's starting image, when the request named one; a clone or an edit keeps its own. */
+  initialImageId?: string;
   mode?: "create" | "edit";
   editTaskId?: string | number;
 }) {
@@ -294,6 +286,8 @@ export function CreateTaskDialog({
   const [batchCount, setBatchCount] = useState("1");
   const [formError, setFormError] = useState<string | null>(null);
   const [resolvingNames, setResolvingNames] = useState(false);
+  // Set once the user picks a release condition, so last-used loading late never overrides it.
+  const releaseConditionChosenRef = useRef(false);
   const [uiPrefs, setUiPrefs] = useState<CreateTaskUiPrefs>(() => ({
     ...DEFAULT_CREATE_TASK_UI_PREFS,
     sections: { ...DEFAULT_CREATE_TASK_UI_PREFS.sections },
@@ -367,7 +361,6 @@ export function CreateTaskDialog({
       title: text("放弃未保存的更改？", "Discard unsaved changes?"),
       description: unsavedMessage,
       confirmLabel: text("放弃并关闭", "Discard and close"),
-      tone: "danger",
       run: onClose,
     });
   }
@@ -412,7 +405,8 @@ export function CreateTaskDialog({
 
   useEffect(() => {
     if (open) {
-      const snapshot = buildFormSnapshot({ isEditMode, initialTask, username });
+      const built = buildFormSnapshot({ isEditMode, initialTask, username });
+      const snapshot = !isEditMode && !initialTask && initialImageId ? { ...built, imageId: initialImageId } : built;
       setInitialSnapshot(snapshot);
       setName(snapshot.name);
       setImageId(snapshot.imageId);
@@ -432,6 +426,7 @@ export function CreateTaskDialog({
       setFormError(null);
       setResolvingNames(false);
       resetTouched();
+      releaseConditionChosenRef.current = false;
       void loadCreateTaskUiPrefs(browserRuntime.storage).then((prefs) => {
         void browserRuntime.storage.get(MOBILE_DEFAULTS_APPLIED_KEY).then((applied) => {
           const shouldApplyMobileDefaults = browserRuntime.isMobile && !isEditMode && applied !== "1";
@@ -443,7 +438,20 @@ export function CreateTaskDialog({
             : prefs;
           setUiPrefs(nextPrefs);
           if (shouldApplyMobileDefaults) void browserRuntime.storage.set(MOBILE_DEFAULTS_APPLIED_KEY, "1");
-          if (!isEditMode && nextPrefs.syncNameWithExperimentId && snapshot.releaseCondition === "3") {
+          // A new instance starts on the release condition this account last created with; a
+          // clone keeps its source's, and an edit keeps the instance's own.
+          let startCondition = snapshot.releaseCondition;
+          if (!isEditMode && !initialTask && !releaseConditionChosenRef.current) {
+            const last = initialReleaseCondition(nextPrefs, username);
+            if (last !== snapshot.releaseCondition) {
+              const nextTime = last === "2" ? getDefaultReleaseTime(snapshot.gpu) : "";
+              startCondition = last;
+              setReleaseCondition(last);
+              setReleaseTime(nextTime);
+              setInitialSnapshot((current) => current ? { ...current, releaseCondition: last, releaseTime: nextTime } : current);
+            }
+          }
+          if (!isEditMode && nextPrefs.syncNameWithExperimentId && startCondition === "3") {
             const id = getScriptEnvValue(JSON.parse(snapshot.scriptEnvJson) as ScriptEnvVar[], EXPERIMENT_ID_ENV_KEY);
             if (id) {
               setName((current) => current === snapshot.name ? id : current);
@@ -455,11 +463,11 @@ export function CreateTaskDialog({
     } else {
       setInitialSnapshot(null);
     }
-  }, [initialTask, isEditMode, open, resetTouched, username]);
+  }, [initialImageId, initialTask, isEditMode, open, resetTouched, username]);
 
   useEffect(() => {
     if (!open || !initialSnapshot || imageId || imageOptions.length === 0 || touchedFields.has("image")) return;
-    const latest = getLatestImage(imageOptions);
+    const latest = pickDefaultImage(imageOptions);
     if (latest) {
       const nextImageId = String(latest.id);
       setImageId(nextImageId);
@@ -486,7 +494,8 @@ export function CreateTaskDialog({
     }
   }
 
-  function handleReleaseConditionChange(value: string) {
+  function handleReleaseConditionChange(value: ReleaseConditionValue) {
+    releaseConditionChosenRef.current = true;
     setReleaseCondition(value);
     if (value === "2") {
       setReleaseTime(getDefaultReleaseTime(gpu));
@@ -501,7 +510,8 @@ export function CreateTaskDialog({
 
   function handleGpuChange(value: string) {
     setGpu(value);
-    if (releaseCondition === "2") {
+    // The default release time follows the GPU count until the user sets the time themselves.
+    if (releaseCondition === "2" && !touchedFields.has("releaseTime")) {
       setReleaseTime(getDefaultReleaseTime(value));
     }
   }
@@ -554,7 +564,7 @@ export function CreateTaskDialog({
       }
       // The single-instance path never batches, so there is no delay text here.
       const description = firstName;
-      const title = initialTask ? text("复制创建已提交", "Clone creation submitted") : text("实例创建已提交", "Instance creation submitted");
+      const title = initialTask ? text("克隆已提交", "Clone submitted") : text("实例创建已提交", "Instance creation submitted");
       toast.success(title, description);
       void runLogger.log({
         source: "task",
@@ -649,7 +659,7 @@ export function CreateTaskDialog({
       // Skipped items were never sent; here that means the account was switched mid-run.
       const skipped = result.summary.skipped > 0;
       const title = initialTask
-        ? text("复制创建已完成", "Clone creation finished")
+        ? text("克隆已完成", "Clone finished")
         : text("批量创建已完成", "Batch creation finished");
       if (failed || unknown || skipped) {
         const detail =
@@ -794,6 +804,13 @@ export function CreateTaskDialog({
       window.setTimeout(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
+    // A clone copies its source's release time, which has usually passed; submitting it would
+    // release the new instance as soon as it starts.
+    if (releaceConditions === 2 && !isEditMode && Date.parse(releaseTime) <= Date.now()) {
+      openSectionsForErrors({ releaseTime: "past" });
+      setFormError(text("释放时间已经过去，请选一个将来的时间", "The release time has passed; pick one in the future"));
+      return;
+    }
     if (releaceConditions === 3 && (!workDirectory.trim() || !scriptPath.trim())) {
       openSectionsForErrors({ workDirectory: "required", scriptPath: "required" });
       setFormError(text("请填写工作目录和脚本路径", "Enter the working directory and script path"));
@@ -839,6 +856,9 @@ export function CreateTaskDialog({
       setFormError(text(`批量数量必须在 1-${MAX_BATCH_COUNT} 之间`, `Batch count must be between 1 and ${MAX_BATCH_COUNT}`));
       return;
     }
+    // The next new instance starts on the condition this one was submitted with.
+    const rememberedPrefs = withLastReleaseCondition(uiPrefs, username, releaseCondition);
+    if (rememberedPrefs !== uiPrefs) persistUiPrefs(rememberedPrefs);
 
     // Sync mode: name = EXPERIMENT_ID + timestamp; EXPERIMENT_ID itself stays unnumbered.
     const createBaseName = syncActive ? formatExperimentTimedTaskName(taskName) : taskName;
@@ -1087,50 +1107,6 @@ export function CreateTaskDialog({
           </FormSection>
 
           <FormSection
-            title={text("存储", "Storage")}
-            divided
-            collapsible
-            open={uiPrefs.sections.storage}
-            onOpenChange={(next) => setSectionOpen("storage", next)}
-            hint={storagePath.trim() || undefined}
-          >
-            <div className="grid gap-4 text-sm md:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-app-muted" htmlFor="create-task-storage-path">{text("存储路径", "Storage path")}</label>
-                <div className="flex gap-2">
-                  <Input
-                    id="create-task-storage-path"
-                    aria-describedby="create-task-storage-path-hint"
-                    className="w-full font-mono text-xs"
-                    value={storagePath}
-                    onChange={(event) => setStoragePath(event.target.value)}
-                  />
-                  <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
-                    <FolderOpen className="h-4 w-4" />
-                    {text("选择", "Select")}
-                  </Button>
-                </div>
-                <span className="mt-1 block text-xs leading-5 text-app-muted" id="create-task-storage-path-hint">
-                  {text("远端存储目录；清空时默认", "Remote storage directory; defaults to")} /{username}
-                </span>
-              </div>
-              <div>
-                <label className="mb-1 block text-app-muted" htmlFor="create-task-mount-path">{text("挂载路径", "Mount path")}</label>
-                <Input
-                  id="create-task-mount-path"
-                  aria-describedby="create-task-mount-path-hint"
-                  className="w-full font-mono text-xs"
-                  value={mountPath}
-                  onChange={(event) => setMountPath(event.target.value)}
-                />
-                <span className="mt-1 block text-xs leading-5 text-app-muted" id="create-task-mount-path-hint">
-                  {text("挂载到实例内的路径；清空时默认", "Mount point inside the instance; defaults to")} /home/ubuntu/{username}
-                </span>
-              </div>
-            </div>
-          </FormSection>
-
-          <FormSection
             title={text("释放策略", "Release")}
             divided
             collapsible
@@ -1138,26 +1114,21 @@ export function CreateTaskDialog({
             onOpenChange={(next) => setSectionOpen("release", next)}
             hint={localizedText(releaseConditionText[Number(releaseCondition)], locale)}
           >
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("释放条件", "Release condition")}</span>
-                <Select className="w-full" value={releaseCondition} onChange={(event) => handleReleaseConditionChange(event.target.value)}>
-                  {Object.entries(releaseConditionText).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {localizedText(label, locale)}
-                    </option>
-                  ))}
-                </Select>
-              </label>
-            </div>
-            {releaseCondition === "2" ? (
-              <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("释放时间", "Release time")}</span>
-                <Input aria-invalid={Boolean(touchedFields.has("releaseTime") && fieldErrors.releaseTime)} className={cn("w-full", touchedFields.has("releaseTime") && fieldErrors.releaseTime && "border-app-danger")} type="datetime-local" value={releaseTime} onChange={(event) => setReleaseTime(event.target.value)} onBlur={() => markTouched("releaseTime")} required />
-                <FieldError message={touchedFields.has("releaseTime") ? fieldErrors.releaseTime : undefined} />
-              </label>
-            ) : null}
-            {releaseCondition === "3" ? (
+            <ReleasePolicyFields
+              condition={releaseCondition}
+              hourlyRate={parsePositivePrice(price)}
+              onConditionChange={handleReleaseConditionChange}
+              timed={{
+                kind: "at",
+                value: releaseTime,
+                onChange: (next) => {
+                  markTouched("releaseTime");
+                  setReleaseTime(next);
+                },
+                onBlur: () => markTouched("releaseTime"),
+                error: touchedFields.has("releaseTime") ? fieldErrors.releaseTime : undefined,
+              }}
+            >
               <div className="space-y-4">
                 <div className="block text-sm">
                   <label className="mb-1 block text-app-muted" htmlFor="create-task-work-directory">{text("工作目录", "Working directory")}</label>
@@ -1233,7 +1204,51 @@ export function CreateTaskDialog({
                   </label>
                 )}
               </div>
-            ) : null}
+            </ReleasePolicyFields>
+          </FormSection>
+
+          <FormSection
+            title={text("存储", "Storage")}
+            divided
+            collapsible
+            open={uiPrefs.sections.storage}
+            onOpenChange={(next) => setSectionOpen("storage", next)}
+            hint={storagePath.trim() || undefined}
+          >
+            <div className="grid gap-4 text-sm md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-app-muted" htmlFor="create-task-storage-path">{text("存储路径", "Storage path")}</label>
+                <div className="flex gap-2">
+                  <Input
+                    id="create-task-storage-path"
+                    aria-describedby="create-task-storage-path-hint"
+                    className="w-full font-mono text-xs"
+                    value={storagePath}
+                    onChange={(event) => setStoragePath(event.target.value)}
+                  />
+                  <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
+                    <FolderOpen className="h-4 w-4" />
+                    {text("选择", "Select")}
+                  </Button>
+                </div>
+                <span className="mt-1 block text-xs leading-5 text-app-muted" id="create-task-storage-path-hint">
+                  {text("远端存储目录；清空时默认", "Remote storage directory; defaults to")} /{username}
+                </span>
+              </div>
+              <div>
+                <label className="mb-1 block text-app-muted" htmlFor="create-task-mount-path">{text("挂载路径", "Mount path")}</label>
+                <Input
+                  id="create-task-mount-path"
+                  aria-describedby="create-task-mount-path-hint"
+                  className="w-full font-mono text-xs"
+                  value={mountPath}
+                  onChange={(event) => setMountPath(event.target.value)}
+                />
+                <span className="mt-1 block text-xs leading-5 text-app-muted" id="create-task-mount-path-hint">
+                  {text("挂载到实例内的路径；清空时默认", "Mount point inside the instance; defaults to")} /home/ubuntu/{username}
+                </span>
+              </div>
+            </div>
           </FormSection>
 
           {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
@@ -1249,17 +1264,19 @@ export function CreateTaskDialog({
             </div>
           ) : mutation.isError ? <ErrorState error={mutation.error} /> : null}
         </div>
-        <div className="app-mobile-form-actions flex shrink-0 flex-col gap-3 border-t border-app-border bg-app-surface px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0 flex-1 text-xs text-app-muted" role="group" aria-label={text("提交摘要", "Submission summary")}>
-            <p className="flex flex-wrap gap-x-3 gap-y-1 font-medium text-app-text">
-              <span>{text(`${isEditMode ? "1" : batchCount || "-"} 个实例`, `${isEditMode ? "1" : batchCount || "-"} ${isEditMode || Number(batchCount) === 1 ? "instance" : "instances"}`)}</span>
-              {rateOnButton ? null : <span className="app-numeric">{priceSummary}</span>}
-              {gpuSummary ? <span className="app-numeric">{gpuSummary}</span> : null}
-              <span>{releaseSummary}{releaseCondition === "2" && releaseTime ? ` · ${formatDateTimeForApi(releaseTime)}` : ""}</span>
-            </p>
-            <p className="mt-1 truncate" title={imageSummary}>{text(`镜像：${imageSummary}`, `Image: ${imageSummary}`)}</p>
-            {directCreate ? <p className="mt-1 leading-5" id="create-task-commit-note">{commitNote}</p> : null}
-          </div>
+        <div className={cn("app-mobile-form-actions", SPEC_FOOTER_CLASS)}>
+          <SpecSummary
+            label={text("提交摘要", "Submission summary")}
+            headline={[
+              text(`${isEditMode ? "1" : batchCount || "-"} 个实例`, `${isEditMode ? "1" : batchCount || "-"} ${isEditMode || Number(batchCount) === 1 ? "instance" : "instances"}`),
+              rateOnButton ? null : priceSummary,
+              gpuSummary,
+              `${releaseSummary}${releaseCondition === "2" && releaseTime ? ` · ${formatDateTimeForApi(releaseTime).slice(0, 16)}` : ""}`,
+            ]}
+            detail={<span title={imageSummary}>{text(`镜像：${imageSummary}`, `Image: ${imageSummary}`)}</span>}
+            note={directCreate ? commitNote : undefined}
+            noteId={directCreate ? "create-task-commit-note" : undefined}
+          />
           <div className="flex shrink-0 justify-end gap-2">
             <Button type="button" variant="secondary" onClick={requestClose}>
               {text("取消", "Cancel")}

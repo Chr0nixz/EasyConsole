@@ -1336,7 +1336,7 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
               </div>
               <div>
                 <dt className="mb-1 font-medium text-app-muted">{t("settings.scope")}</dt>
-                <dd className="leading-5 text-app-muted">{t("settings.scopeDescription")}</dd>
+                <dd className="leading-5 text-app-muted">{standalone ? t("settings.scopeDescriptionPreLogin") : t("settings.scopeDescription")}</dd>
               </div>
             </dl>
           </aside>

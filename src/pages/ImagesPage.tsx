@@ -1,10 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
-import { BadgeCheck, Download, Eye, Pencil, RefreshCw, Search, Star, Trash2 } from "lucide-react";
+import { BadgeCheck, Download, Eye, Pencil, Plus, RefreshCw, Search, Star, Trash2 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 
 import { EmptyState, ErrorState, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { ImageDetailDialog } from "../components/images/ImageDetailDialog";
 import { Button, Dialog, Input, Panel, Select, SettingTag, TableRegion } from "../components/ui";
+import { isDefaultImage } from "../lib/image-defaults";
+import { requestCreateTask } from "../lib/task-create-request";
 import { imageApi } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { useDownloadQueue } from "../lib/use-download-queue";
@@ -37,10 +40,6 @@ function imageDescription(image: ImageItem) {
   return typeof image.description === "string" && image.description.trim() ? image.description : "-";
 }
 
-function isDefaultImage(image: ImageItem) {
-  return image.is_default === true || image.default === true || image.isDefault === true;
-}
-
 function getImageUpdatedAt(image: ImageItem) {
   const value = image.update_time ?? image.updated_at ?? image.create_time ?? image.created_at;
   return typeof value === "string" && value.trim() ? value : "-";
@@ -53,6 +52,12 @@ function getImageKeyword(image: ImageItem) {
 export function ImagesPage() {
   const toast = useToast();
   const { text } = useI18n();
+  const navigate = useNavigate();
+  // An image is picked to run something on it: start the create form on this image.
+  const createFromImage = (image: ImageItem) => {
+    requestCreateTask({ imageId: String(image.id) });
+    navigate("/tasks");
+  };
   const runLogger = useRunLogger();
   const downloadQueue = useDownloadQueue();
   const { confirm, confirmDialog } = useConfirmAction();
@@ -348,6 +353,14 @@ export function ImagesPage() {
                   </dl>
                   <div className="flex flex-wrap gap-1.5">
                     <Button
+                      aria-label={text(`用 ${imageName(image)} 新建实例`, `New instance from ${imageName(image)}`)}
+                      variant="secondary"
+                      onClick={() => createFromImage(image)}
+                    >
+                      <Plus className="h-4 w-4" />
+                      {text("新建实例", "New instance")}
+                    </Button>
+                    <Button
                       aria-label={text(`收藏 ${imageName(image)}`, `Favorite ${imageName(image)}`)}
                       aria-pressed={favorites.includes(String(image.id))}
                       variant="ghost"
@@ -453,6 +466,16 @@ export function ImagesPage() {
                     <td className="app-numeric whitespace-nowrap px-3 py-2 align-middle text-app-text">{getImageUpdatedAt(image)}</td>
                     <td className="sticky right-0 bg-app-surface px-3 py-2 align-middle shadow-stickyColumnSubtle">
                       <div className="flex justify-end gap-1">
+                        <Button
+                          aria-label={text(`用 ${imageName(image)} 新建实例`, `New instance from ${imageName(image)}`)}
+                          className="h-8 px-2"
+                          title={text("用此镜像新建实例", "New instance from this image")}
+                          variant="secondary"
+                          onClick={() => createFromImage(image)}
+                        >
+                          <Plus className="h-4 w-4" />
+                          {text("新建实例", "New instance")}
+                        </Button>
                         <Button
                           aria-label={text(`收藏 ${imageName(image)}`, `Favorite ${imageName(image)}`)}
                           aria-pressed={favorites.includes(String(image.id))}

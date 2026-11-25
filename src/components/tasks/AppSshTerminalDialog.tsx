@@ -139,7 +139,6 @@ export function AppSshTerminalDialog() {
           `${tabTitle(tab.request)} still has an active SSH connection. Closing will terminate the session and discard scrollback. Close anyway?`,
         ),
         confirmLabel: text("关闭", "Close"),
-        tone: "danger",
         run: () => closeTab(id),
       });
     } else {
@@ -181,7 +180,6 @@ export function AppSshTerminalDialog() {
           `${liveCount} active SSH connection${liveCount > 1 ? "s" : ""} will be terminated. Close anyway?`,
         ),
         confirmLabel: text("关闭", "Close"),
-        tone: "danger",
         run: () => workspace.closeAllTabs(),
       });
     } else {

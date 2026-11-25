@@ -30,7 +30,8 @@ export function ConfirmDialog({
     <Dialog
       closeOnOverlayClick={!pending}
       describedBy={descriptionId}
-      // Phones: a bottom sheet, so Cancel (last in the reversed column) sits under the thumb.
+      // Phones: a bottom sheet with Cancel and the action side by side, Cancel first, so a
+      // destructive action is never a full-width bar stacked straight on top of Cancel.
       mobileMode="bottom-sheet"
       open={Boolean(options)}
       title={options?.title ?? t("confirm.title")}
@@ -39,7 +40,7 @@ export function ConfirmDialog({
     >
       <div className="space-y-4 p-4">
         <div id={descriptionId} className="text-sm leading-6 text-app-muted">{options?.description}</div>
-        <div className="flex flex-col-reverse gap-2 border-t border-app-border pt-3 sm:flex-row sm:justify-end">
+        <div className="grid grid-cols-2 gap-3 border-t border-app-border pt-3 sm:flex sm:justify-end sm:gap-2">
           <Button disabled={pending} type="button" variant="secondary" onClick={onCancel}>
             {t("common.cancel")}
           </Button>

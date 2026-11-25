@@ -13,8 +13,6 @@ import {
 } from "../../lib/resource-price";
 import { cn } from "../../lib/utils";
 
-const DEFAULT_PRICE = "1";
-
 type ResourcePriceFieldsProps = {
   price: string;
   onPriceChange: (price: string) => void;
@@ -79,21 +77,18 @@ export function ResourcePriceFields({
   useEffect(() => {
     // A fresh form starts on the first listed rate; a rate the list does not contain is only
     // replaced while the caller still allows defaults (new and untouched), never on an edit.
-    if (!allowDefaultPrice) return;
-    if (price.trim() && (priceOptions.length === 0 || matchedPriceOptionId)) return;
-    if (priceOptions.length > 0) {
-      onDefaultPriceChange(String(priceOptions[0].value));
-      return;
-    }
-    if (!price.trim() && !pricesQuery.isLoading && !pricesQuery.isError) {
-      onDefaultPriceChange(DEFAULT_PRICE);
-    }
-  }, [allowDefaultPrice, matchedPriceOptionId, onDefaultPriceChange, price, priceOptions, pricesQuery.isError, pricesQuery.isLoading]);
+    // With no list there is no rate to start on: the field stays empty and required, so a
+    // made-up number never reaches the create button or the bill.
+    if (!allowDefaultPrice || priceOptions.length === 0) return;
+    if (price.trim() && matchedPriceOptionId) return;
+    onDefaultPriceChange(String(priceOptions[0].value));
+  }, [allowDefaultPrice, matchedPriceOptionId, onDefaultPriceChange, price, priceOptions]);
 
   const loadHint =
     resourcesQuery.isError || pricesQuery.isError
       ? text("规格或价格列表加载失败，可继续手动填写", "Spec/price list failed to load; you can still enter values manually")
       : null;
+  const emptyPriceList = priceOptions.length === 0 && !pricesQuery.isLoading && !pricesQuery.isError;
 
   return (
     <div className="space-y-3">
@@ -169,9 +164,15 @@ export function ResourcePriceFields({
               value={price}
               onBlur={onPriceBlur}
               onChange={(event) => onPriceChange(event.target.value)}
+              placeholder={emptyPriceList ? text("按平台实际单价填写", "Enter the platform's actual rate") : undefined}
               required
             />
           )}
+          {emptyPriceList && !price.trim() ? (
+            <span className="mt-1 block text-xs text-app-muted">
+              {text("价格列表为空，没有可预填的单价。", "The price list is empty, so there is no rate to prefill.")}
+            </span>
+          ) : null}
           {hasUnlistedPrice ? (
             <span id={priceHintId} className="mt-1 block text-xs text-app-muted">
               {text("此单价不在当前价格列表中，请确认后保留或另选。", "This rate is not in the current price list. Verify it before keeping it, or select another rate.")}

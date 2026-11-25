@@ -85,6 +85,12 @@ function renderDialog(props?: Partial<React.ComponentProps<typeof CreateTaskDial
   return render(<RouterProvider router={router} />);
 }
 
+/** The mocked price list is empty, so no rate is prefilled; tests that submit enter one. */
+async function enterRate(value = "1") {
+  const rate = await screen.findByRole("spinbutton", { name: "计费单价（元/小时）" });
+  fireEvent.change(rate, { target: { value } });
+}
+
 describe("CreateTaskDialog", () => {
   beforeEach(() => {
     mocks.imageList.mockReset();
@@ -101,6 +107,46 @@ describe("CreateTaskDialog", () => {
     mocks.taskLog.mockResolvedValue("RuntimeError: CUDA out of memory\nprocess exited with code 137\n");
     mocks.resources.mockResolvedValue([]);
     mocks.prices.mockResolvedValue([]);
+    // Prefs remember the last release condition per account; each test starts without one.
+    localStorage.removeItem(CREATE_TASK_UI_PREFS_STORAGE_KEY);
+  });
+
+  it("starts a new create on the release condition the account last used, and remembers a new choice", async () => {
+    localStorage.setItem(CREATE_TASK_UI_PREFS_STORAGE_KEY, JSON.stringify({ lastReleaseConditionByAccount: { tester: "2", other: "3" } }));
+    const { unmount } = renderDialog();
+    await waitFor(() => expect(screen.getByRole("button", { name: /定时释放/ })).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.getByLabelText("释放时间")).not.toHaveValue("");
+
+    fireEvent.click(screen.getByRole("button", { name: /手动释放/ }));
+    await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+    await enterRate();
+    fireEvent.submit(document.querySelector("form")!);
+    await waitFor(() => expect(mocks.createTask).toHaveBeenCalledWith(expect.objectContaining({ releace_conditions: 1 })));
+    await waitFor(() => {
+      const saved = JSON.parse(localStorage.getItem(CREATE_TASK_UI_PREFS_STORAGE_KEY) ?? "{}") as { lastReleaseConditionByAccount?: Record<string, string> };
+      expect(saved.lastReleaseConditionByAccount).toEqual({ tester: "1", other: "3" });
+    });
+    unmount();
+  });
+
+  it("starts on the image a request named, ahead of the default image", async () => {
+    mocks.imageList.mockResolvedValue({ items: [{ id: "img1", name: "ubuntu", tag: "22.04" }, { id: "img2", name: "cuda", tag: "12.4" }] });
+    renderDialog({ initialImageId: "img2" });
+    await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img2"));
+  });
+
+  it("moves a timed clone's past release time into the future instead of copying it", async () => {
+    renderDialog({ initialTask: { id: 9, name: "timed-source", status: 4, price: 2, cpu: 4, gpu: 1, memory: 16, releace_conditions: 2, releace_time: "2020-01-01 08:00:00" } as never });
+    await waitFor(() => expect(screen.getByText("克隆实例")).toBeInTheDocument());
+    const releaseTime = screen.getByLabelText("释放时间") as HTMLInputElement;
+    await waitFor(() => expect(Date.parse(releaseTime.value)).toBeGreaterThan(Date.now()));
+  });
+
+  it("keeps a clone on its source's release condition, whatever the account used last", async () => {
+    localStorage.setItem(CREATE_TASK_UI_PREFS_STORAGE_KEY, JSON.stringify({ lastReleaseConditionByAccount: { tester: "2" } }));
+    renderDialog({ initialTask: { id: 9, name: "source-instance", status: 6, price: 1, cpu: 4, memory: 16, releace_conditions: 1 } as never });
+    await waitFor(() => expect(screen.getByText("克隆实例")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: /手动释放/ })).toHaveAttribute("aria-pressed", "true"));
   });
 
   it("renders dialog with create title and a visible billing rate field", async () => {
@@ -129,6 +175,7 @@ describe("CreateTaskDialog", () => {
     mocks.createTask.mockRejectedValue(new ApiError("bad gateway", { kind: "http", status: 504 }));
     renderDialog();
     await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+    await enterRate();
 
     fireEvent.submit(document.querySelector("form")!);
 
@@ -142,6 +189,7 @@ describe("CreateTaskDialog", () => {
     mocks.createTask.mockRejectedValue(new ApiError("quota exceeded", { kind: "business", code: 10040 }));
     renderDialog();
     await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+    await enterRate();
 
     fireEvent.submit(document.querySelector("form")!);
 
@@ -197,13 +245,15 @@ describe("CreateTaskDialog", () => {
     }
   });
 
-  it("keeps an intentionally cleared manual rate empty and blocks submission", async () => {
+  it("never invents a rate when the price list is empty, and blocks submission until one is entered", async () => {
     renderDialog();
     const rate = screen.getByRole("spinbutton", { name: "计费单价（元/小时）" });
-    await waitFor(() => expect(rate).toHaveValue(1));
     await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+    expect(rate).toHaveValue(null);
+    expect(screen.getByText("价格列表为空，没有可预填的单价。")).toBeInTheDocument();
+    // With no rate the button names none.
+    expect(screen.getByRole("button", { name: "创建" })).toBeInTheDocument();
 
-    fireEvent.change(rate, { target: { value: "" } });
     fireEvent.blur(rate);
     fireEvent.submit(document.querySelector("form")!);
 
@@ -275,6 +325,7 @@ describe("CreateTaskDialog", () => {
 
     const nameInput = screen.getAllByRole("textbox")[0];
     fireEvent.change(nameInput, { target: { value: "my-task" } });
+    await enterRate();
     fireEvent.submit(document.querySelector("form")!);
 
     await waitFor(() => expect(mocks.createTask).toHaveBeenCalled());
@@ -287,7 +338,8 @@ describe("CreateTaskDialog", () => {
     await waitFor(() => expect(screen.getByText("新建实例")).toBeInTheDocument());
     await waitFor(() => expect(mocks.imageList).toHaveBeenCalled());
 
-    fireEvent.change(screen.getByDisplayValue("手动释放"), { target: { value: "3" } });
+    await enterRate();
+    fireEvent.click(screen.getByRole("button", { name: /任务结束释放/ }));
     await waitFor(() => expect(screen.getByText("工作目录")).toBeInTheDocument());
 
     fireEvent.click(screen.getByLabelText(/实例名称与 EXPERIMENT_ID 一致/));
@@ -302,13 +354,8 @@ describe("CreateTaskDialog", () => {
     fireEvent.change(envKey!, { target: { value: "EXPERIMENT_ID" } });
     fireEvent.change(envValue!, { target: { value: "exp-run" } });
 
-    const monoInputs = (screen.getAllByRole("textbox") as HTMLInputElement[]).filter((input) =>
-      input.className.includes("font-mono"),
-    );
-    const workDirectory = monoInputs.find((input) => input.closest("div")?.textContent?.includes("工作目录")) ?? monoInputs[2];
-    const scriptPath = monoInputs.find((input) => input.closest("div")?.textContent?.includes("脚本路径")) ?? monoInputs[3];
-    fireEvent.change(workDirectory, { target: { value: "/work" } });
-    fireEvent.change(scriptPath, { target: { value: "/work/run.sh" } });
+    fireEvent.change(screen.getByLabelText("工作目录"), { target: { value: "/work" } });
+    fireEvent.change(screen.getByLabelText("脚本路径"), { target: { value: "/work/run.sh" } });
 
     fireEvent.submit(document.querySelector("form")!);
 
@@ -356,6 +403,7 @@ describe("CreateTaskDialog", () => {
     const form = document.querySelector("form")!;
     const nameInput = screen.getAllByRole("textbox")[0];
     fireEvent.change(nameInput, { target: { value: "my-task" } });
+    await enterRate();
     fireEvent.submit(form);
 
     await waitFor(() => expect(screen.getAllByText("请选择镜像").length).toBeGreaterThan(0));
@@ -377,7 +425,7 @@ describe("CreateTaskDialog", () => {
     // The default release condition is manual, which never stops billing on its own.
     expect(note).toHaveTextContent("需要主动释放实例以停止计费");
     // The submit button names the rate it starts and reads the commitment when focused.
-    // The default rate arrives with the price list, so the label settles after the first render.
+    await enterRate();
     await waitFor(() => expect(document.querySelector(`button[aria-describedby="${note.id}"]`)).toHaveTextContent("创建 · 1.00 元/小时"));
   });
 
@@ -385,6 +433,7 @@ describe("CreateTaskDialog", () => {
     renderDialog();
     await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
     const name = screen.getByRole("textbox", { name: "实例名称" });
+    await enterRate();
 
     // A cancelled keydown is what stops the browser's implicit submission.
     expect(fireEvent.keyDown(name, { key: "Enter" })).toBe(false);

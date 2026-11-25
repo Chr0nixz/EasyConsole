@@ -248,14 +248,16 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
           <WrapText className="h-4 w-4" aria-hidden="true" />
           <span className="max-sm:sr-only">{text("自动换行", "Wrap lines")}</span>
         </Button>
+        {/* Only a running instance's log grows; an ended one has nothing to follow, so the toggle
+            is off and says why instead of showing as on. */}
         <Button
-          aria-pressed={followBottom}
-          className={cn("h-8 px-2", followBottom && "border-app-accent/40 text-app-accent")}
+          aria-pressed={Number(task.status) === 2 ? followBottom : undefined}
+          className={cn("h-8 px-2", Number(task.status) === 2 && followBottom && "border-app-accent/40 text-app-accent")}
+          disabled={Number(task.status) !== 2}
+          disabledReason={text("实例未在运行，日志不再更新", "The instance is not running, so its log no longer changes")}
           type="button"
           variant="secondary"
-          title={Number(task.status) === 2
-            ? text("跟随底部时每 6–60 秒读取日志全文；无变化或日志较大时降低频率", "While following, full logs are read every 6–60 seconds; idle or large logs are polled less often")
-            : text("实例未在运行，日志不再更新", "The instance is not running, so its log no longer changes")}
+          title={text("跟随底部时每 6–60 秒读取日志全文；无变化或日志较大时降低频率", "While following, full logs are read every 6–60 seconds; idle or large logs are polled less often")}
           onClick={() => {
             setFocusedLine(null);
             setFollowBottom((value) => !value);
@@ -310,9 +312,10 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
         ) : null}
       </div>
       {failedTask && failure ? (
-        <div className="flex min-w-0 items-center gap-2 border-b border-app-border bg-app-dangerSoft px-3 py-1.5 text-xs text-app-danger">
+        // On a phone the reason gets its own lines under the label instead of a few clipped words.
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-app-border bg-app-dangerSoft px-3 py-1.5 text-xs text-app-danger">
           <span className="shrink-0 font-medium">{text("失败原因", "Failure")}</span>
-          <span className="min-w-0 flex-1 truncate font-mono" title={failure.line}>{failure.line}</span>
+          <span className="min-w-0 flex-1 font-mono max-sm:order-last max-sm:line-clamp-3 max-sm:basis-full max-sm:[overflow-wrap:anywhere] sm:truncate" title={failure.line}>{failure.line}</span>
           {failure.exitCode ? <span className="app-numeric shrink-0">{text(`退出码 ${failure.exitCode}`, `exit code ${failure.exitCode}`)}</span> : null}
           <Button className="h-7 shrink-0 px-2 text-xs" type="button" variant="ghost" onClick={() => scrollToLine(failure.index)}>
             <Crosshair className="h-3.5 w-3.5" aria-hidden="true" />
@@ -325,7 +328,7 @@ export function TaskLogPanel({ task, toolbarEnd }: { task: Task; toolbarEnd?: Re
           {Number(task.status) === 8
             ? text(
                 "平台将此实例标记为异常，日志中没有找到明确的报错行。实例已结束，无需释放；可克隆并修改后重跑。",
-                "The platform marked this instance as an exception, and the log has no clear error line. The instance has ended and needs no release; clone and modify it to rerun.",
+                "The platform marked this instance as abnormal, and the log has no clear error line. The instance has ended and needs no release; clone and modify it to rerun.",
               )
             : text(
                 "日志中没有找到明确的报错行。实例已结束，无需释放；可克隆并修改后重跑。",

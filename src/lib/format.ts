@@ -61,7 +61,7 @@ export const taskStatusText: Record<number, LocalizedText> = {
   5: { zh: "耗尽", en: "Exhausted" },
   6: { zh: "成功", en: "Succeeded" },
   7: { zh: "失败", en: "Failed" },
-  8: { zh: "异常", en: "Exception" },
+  8: { zh: "异常", en: "Abnormal" },
 };
 
 export const releaseConditionText: Record<number, LocalizedText> = {
@@ -172,6 +172,52 @@ export function formatSecondsDuration(value: unknown, locale: Locale = "zh-CN") 
   if (days > 0) return `${days} 天 ${hours} 小时`;
   if (hours > 0) return `${hours} 小时 ${minutes} 分钟`;
   return `${minutes} 分钟`;
+}
+
+const BACKEND_WALL_CLOCK = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?$/;
+const ZONED_DATE_TIME = /(?:z|[+-]\d{2}:?\d{2})$/i;
+
+function wallClockParts(raw: string): [string, string, string, string, string, string] | null {
+  const text = raw.trim();
+  if (!text) return null;
+  const wall = BACKEND_WALL_CLOCK.exec(text);
+  if (wall) return [wall[1], wall[2], wall[3], wall[4], wall[5], wall[6] ?? "00"];
+  if (!ZONED_DATE_TIME.test(text)) return null;
+  const at = Date.parse(text);
+  if (!Number.isFinite(at)) return null;
+  const date = new Date(at);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    String(date.getFullYear()),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ];
+}
+
+/**
+ * A backend timestamp as `YYYY-MM-DD HH:mm:ss`. The backend's own wall-clock text is kept as
+ * it is (no zone is assumed for it); a zoned ISO value is shown in this machine's time.
+ * Anything else comes back unchanged, so an unexpected format is still visible.
+ */
+export function formatBackendDateTime(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) return "-";
+  const parts = wallClockParts(value);
+  if (!parts) return value;
+  const [year, month, day, hour, minute, second] = parts;
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+}
+
+/** The short form for a row's second line: `MM-DD HH:mm`, with the year only when it is not this year's. */
+export function formatCompactBackendDateTime(value: unknown, now = new Date()): string | null {
+  if (typeof value !== "string") return null;
+  const parts = wallClockParts(value);
+  if (!parts) return null;
+  const [year, month, day, hour, minute] = parts;
+  const date = `${month}-${day} ${hour}:${minute}`;
+  return Number(year) === now.getFullYear() ? date : `${year}-${date}`;
 }
 
 export function formatRelativeUpdatedAt(updatedAt: number, now: number, locale: Locale = "zh-CN") {

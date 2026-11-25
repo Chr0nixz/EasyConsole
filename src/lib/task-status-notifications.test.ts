@@ -50,7 +50,7 @@ describe("task status notifications", () => {
     });
     expect(getImportantTaskStatusNotification({ id: 2, name: "dev", status: 8 } as Task, 2, "en-US")).toMatchObject({
       title: "Instance abnormal",
-      body: "dev: Exception",
+      body: "dev: Abnormal",
     });
   });
 

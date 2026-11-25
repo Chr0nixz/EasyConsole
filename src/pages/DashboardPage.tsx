@@ -1,21 +1,23 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { AlertTriangle, Clock, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { IdleInstancePill } from "../components/IdleInstancePill";
 import { ReleaseConditionBadge } from "../components/ReleaseConditionBadge";
+import { ExtendReleaseDialog } from "../components/tasks/ExtendReleaseDialog";
 import { StatusBadge } from "../components/StatusBadge";
 import { Button, Panel, SegmentedControl, Select, TableRegion } from "../components/ui";
 import { instanceApi } from "../lib/api";
-import { formatCost, formatHours, formatNumber, formatRelativeUpdatedAt, formatSecondsDuration, getTaskName, getTaskNodeName } from "../lib/format";
+import { formatCost, formatHourlyRate, formatHours, formatNumber, formatRelativeUpdatedAt, formatSecondsDuration, getTaskName, getTaskNodeName } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import type { Locale } from "../lib/i18n-text";
 import { useIdleEvidence } from "../lib/idle-instance-state";
 import { useCompactLayout } from "../lib/use-compact-layout";
 import { EXECUTION_LEDGER_ROUTE, useExecutionReviewCount } from "../lib/use-execution-review";
 import { browserRuntime } from "../lib/runtime";
+import { getRuntimeSettings } from "../lib/app-settings";
 import { cn } from "../lib/utils";
 import { DEFAULT_TASK_PAGE, DEFAULT_TASK_PAGE_SIZE, serializeTaskListQuery, taskTimestamp } from "../lib/task-list-query";
 import { requestCreateTask } from "../lib/task-create-request";
@@ -67,8 +69,10 @@ function tasksHref(status: string) {
 }
 
 // Segments are omitted rather than placeholdered: "-" or "0 分钟" in a triage line reads as a measurement.
-function taskMetaLine(task: Task, now: number, locale: Locale, text: (zh: string, en: string) => string) {
+function taskMetaLine(task: Task, now: number, locale: Locale, text: (zh: string, en: string) => string, withGpus = false) {
   const segments: string[] = [];
+  // GPUs set the rate, so a row read for spend says how many it holds.
+  if (withGpus && gpuCount(task) > 0) segments.push(`${gpuCount(task)} GPU`);
   const hours = Number(task.use_time);
   if (Number.isFinite(hours) && hours >= 1 / 60) {
     segments.push(
@@ -95,13 +99,44 @@ function byRecency(tasks: Task[]) {
   return [...tasks].sort((left, right) => taskTimestamp(right, "updated") - taskTimestamp(left, "updated"));
 }
 
+function hourlyRate(task: Task) {
+  const price = Number(task.price);
+  return Number.isFinite(price) && price > 0 ? price : null;
+}
+
+/** Running instances by what they cost per hour, so the one burning the most money leads. */
+function byRate(tasks: Task[]) {
+  return byRecency(tasks).sort((left, right) => (hourlyRate(right) ?? 0) - (hourlyRate(left) ?? 0));
+}
+
+function gpuCount(task: Task) {
+  const gpu = Number(task.gpu);
+  return Number.isFinite(gpu) && gpu > 0 ? gpu : 0;
+}
+
 // The whole row is the link target (the name stretches over it), which also gives touch a full-height hit area.
 // A live timed release adds its countdown, since an extension is decided from here as often as from the detail page;
-// an instance the idle watcher judges idle says so on the same line until it is active again.
-function DashboardTaskRow({ task, meta }: { task: Task; meta: string }) {
-  const { text } = useI18n();
+// inside the reminder window it also offers the extension itself. An instance the idle watcher judges idle says so on
+// the same line until it is active again. In the running column the rate takes the status badge's place: the column
+// already says the status, and what each instance costs per hour is what the column is read for.
+function DashboardTaskRow({
+  task,
+  meta,
+  now,
+  showRate = false,
+  onExtend,
+}: {
+  task: Task;
+  meta: string;
+  now: number;
+  showRate?: boolean;
+  onExtend?: (task: Task) => void;
+}) {
+  const { locale, text } = useI18n();
   const releaseAt = getLiveTimedReleaseAt(task);
+  const releaseDueSoon = releaseAt !== null && now > 0 && releaseAt - now <= getRuntimeSettings().timedReleaseReminderLeadMs;
   const idle = useIdleEvidence(task) !== null && Number(task.status) === 2;
+  const rate = hourlyRate(task);
   return (
     <li className="relative px-3 py-2.5 transition-colors duration-150 hover:bg-app-panel/60">
       <div className="flex items-center justify-between gap-3">
@@ -114,7 +149,11 @@ function DashboardTaskRow({ task, meta }: { task: Task; meta: string }) {
         >
           {getTaskName(task)}
         </Link>
-        <StatusBadge status={task.status} />
+        {showRate ? (
+          <span className="app-numeric shrink-0 text-sm font-medium text-app-text">
+            {rate !== null ? formatHourlyRate(rate, locale) : <span className="font-normal text-app-muted">{text("单价未知", "Rate unknown")}</span>}
+          </span>
+        ) : <StatusBadge status={task.status} />}
       </div>
       {/* Wraps instead of truncating: the cost is the last segment, and the first one a clipped line loses. */}
       {meta ? <p className="mt-0.5 text-xs leading-5 text-app-muted">{meta}</p> : null}
@@ -122,6 +161,19 @@ function DashboardTaskRow({ task, meta }: { task: Task; meta: string }) {
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           {idle ? <IdleInstancePill task={task} /> : null}
           {releaseAt !== null ? <ReleaseConditionBadge condition={TIMED_RELEASE_CONDITION} releaseAt={releaseAt} /> : null}
+          {releaseDueSoon && onExtend ? (
+            // Above the stretched link, so the click extends instead of opening the detail page.
+            <Button
+              aria-label={text(`延长 ${getTaskName(task)} 的释放时间`, `Extend the release of ${getTaskName(task)}`)}
+              className="relative z-10 h-6 px-2 text-xs"
+              type="button"
+              variant="secondary"
+              onClick={() => onExtend(task)}
+            >
+              <Clock className="h-3.5 w-3.5" />
+              {text("延长", "Extend")}
+            </Button>
+          ) : null}
         </div>
       ) : null}
     </li>
@@ -139,6 +191,8 @@ function AttentionGroup({
   emptyLabel,
   now,
   links,
+  showRate = false,
+  onExtend,
 }: {
   title: string;
   href: string;
@@ -146,6 +200,8 @@ function AttentionGroup({
   emptyLabel: string;
   now: number;
   links?: Array<{ label: string; href: string }>;
+  showRate?: boolean;
+  onExtend?: (task: Task) => void;
 }) {
   const { locale, text } = useI18n();
   return (
@@ -178,7 +234,14 @@ function AttentionGroup({
       ) : (
         <ul className="mt-2.5 divide-y divide-app-border overflow-hidden rounded-lg border border-app-border bg-app-surface shadow-shell">
           {tasks.slice(0, 8).map((task) => (
-            <DashboardTaskRow key={String(task.id)} task={task} meta={taskMetaLine(task, now, locale, text)} />
+            <DashboardTaskRow
+              key={String(task.id)}
+              meta={taskMetaLine(task, now, locale, text, showRate)}
+              now={now}
+              showRate={showRate}
+              task={task}
+              onExtend={onExtend}
+            />
           ))}
         </ul>
       )}
@@ -288,6 +351,7 @@ export function DashboardPage() {
   const executionReviewCount = useExecutionReviewCount();
   const [autoRefreshMs, setAutoRefreshMs] = useState(DEFAULT_AUTO_REFRESH_MS);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [extendTask, setExtendTask] = useState<Task | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -323,7 +387,7 @@ export function DashboardPage() {
     : consoleQuery.dataUpdatedAt || staticsQuery.dataUpdatedAt;
   const taskDataAvailable = staticsQuery.data !== undefined;
   const failedTasks = byRecency(allTasks.filter((task) => Number(task.status) === 7 || Number(task.status) === 8));
-  const runningTasks = byRecency(allTasks.filter((task) => Number(task.status) === 2));
+  const runningTasks = byRate(allTasks.filter((task) => Number(task.status) === 2));
   // Initializing (0) has not started either; the backend's pending count includes it, so the column does too.
   const queuedTasks = byRecency(allTasks.filter((task) => Number(task.status) === 0 || Number(task.status) === 1));
   // The attention columns already list failed, running and queued instances; this panel carries
@@ -435,14 +499,14 @@ export function DashboardPage() {
           )
       ) : <div className="grid gap-5 lg:grid-cols-3">
         <AttentionGroup
-          title={text("失败 / 异常", "Failed / exception")}
+          title={text("失败 / 异常", "Failed / abnormal")}
           href={tasksHref("7")}
           links={[
             { label: text("查看失败", "View failed"), href: tasksHref("7") },
-            { label: text("查看异常", "View exceptions"), href: tasksHref("8") },
+            { label: text("查看异常", "View abnormal"), href: tasksHref("8") },
           ]}
           tasks={failedTasks}
-          emptyLabel={text("没有失败或异常实例", "No failed or exception instances")}
+          emptyLabel={text("没有失败或异常实例", "No failed or abnormal instances")}
           now={tasksFetchedAt}
         />
         <AttentionGroup
@@ -451,6 +515,8 @@ export function DashboardPage() {
           tasks={runningTasks}
           emptyLabel={text("没有运行中的实例", "No running instances")}
           now={tasksFetchedAt}
+          showRate
+          onExtend={setExtendTask}
         />
         <AttentionGroup
           title={text("队列中", "Queued")}
@@ -458,6 +524,7 @@ export function DashboardPage() {
           tasks={queuedTasks}
           emptyLabel={text("没有队列中的实例", "No queued instances")}
           now={tasksFetchedAt}
+          onExtend={setExtendTask}
         />
       </div>}
 
@@ -497,6 +564,7 @@ export function DashboardPage() {
               {recentTasks.map((task) => (
                 <DashboardTaskRow
                   key={String(task.id)}
+                  now={tasksFetchedAt}
                   task={task}
                   meta={[
                     `${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`,
@@ -571,6 +639,7 @@ export function DashboardPage() {
           />
         )}
       </Panel> : null}
+      {extendTask ? <ExtendReleaseDialog task={extendTask} onClose={() => setExtendTask(null)} /> : null}
     </div>
   );
 }

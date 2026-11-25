@@ -75,6 +75,8 @@ export function StoragePage() {
   const [directorySizes, setDirectorySizes] = useState<Record<string, { status: "done" | "loading" | "error"; size?: number; error?: string }>>({});
   const crumbs = useMemo(() => getStorageBreadcrumbs(path), [path]);
   const query = useQuery({ queryKey: ["storage", path], queryFn: () => remoteStorage.list({ path }) });
+  const listingFailed = query.isError;
+  const listingFailedReason = text("目录读取失败；重试或换个目录后再写入", "This folder could not be read; retry or open another folder before writing to it");
   const entries = useMemo(() => query.data?.items ?? [], [query.data?.items]);
   const uploadSummary = useMemo(() => summarizeUploadQueue(uploadQueue), [uploadQueue]);
   const visibleEntries = useMemo(() => {
@@ -444,6 +446,8 @@ export function StoragePage() {
           <Button
             aria-label={compactLayout ? text("新建文件夹", "New folder") : undefined}
             className={compactLayout ? "shrink-0 px-0" : undefined}
+            disabled={listingFailed}
+            disabledReason={listingFailedReason}
             title={compactLayout ? text("新建文件夹", "New folder") : undefined}
             variant="secondary"
             onClick={() => setMkdirOpen(true)}
@@ -451,13 +455,21 @@ export function StoragePage() {
             <FolderPlus className="h-4 w-4" aria-hidden="true" />
             {compactLayout ? null : text("新建", "New")}
           </Button>
-          <label className="app-interactive inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-md bg-app-accent px-3 text-sm font-medium text-app-onAccent hover:brightness-95 [@media(pointer:coarse)]:min-h-11">
-            <Upload className="h-4 w-4" aria-hidden="true" />
-            {compactLayout ? text("上传", "Upload") : text("上传到远程", "Upload to remote")}
-            <input className="sr-only" type="file" onChange={(event) => void upload(event)} />
-          </label>
+          {/* Writing into a folder that could not be read can't be checked afterwards, so uploads wait for a good listing. */}
+          {listingFailed ? (
+            <Button disabled disabledReason={listingFailedReason} type="button">
+              <Upload className="h-4 w-4" aria-hidden="true" />
+              {compactLayout ? text("上传", "Upload") : text("上传到远程", "Upload to remote")}
+            </Button>
+          ) : (
+            <label className="app-interactive inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-md bg-app-accent px-3 text-sm font-medium text-app-onAccent hover:brightness-95 [@media(pointer:coarse)]:min-h-11">
+              <Upload className="h-4 w-4" aria-hidden="true" />
+              {compactLayout ? text("上传", "Upload") : text("上传到远程", "Upload to remote")}
+              <input className="sr-only" type="file" onChange={(event) => void upload(event)} />
+            </label>
+          )}
           {compactLayout ? null : (
-            <Button type="button" variant="secondary" onClick={openFolderUploadDialog}>
+            <Button disabled={listingFailed} disabledReason={listingFailedReason} type="button" variant="secondary" onClick={openFolderUploadDialog}>
               <FolderOpen className="h-4 w-4" />
               {text("上传文件夹", "Upload folder")}
             </Button>
@@ -516,7 +528,23 @@ export function StoragePage() {
         {query.isLoading ? (
           <TableSkeleton columns={5} />
         ) : query.isError ? (
-          <ErrorState error={query.error} />
+          <ErrorState
+            error={query.error}
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button variant="secondary" onClick={() => query.refetch()}>
+                  <RefreshCw className="h-4 w-4" />
+                  {text("重试", "Retry")}
+                </Button>
+                {path !== "/" ? (
+                  <Button variant="secondary" onClick={() => setPath("/")}>
+                    <FolderOpen className="h-4 w-4" />
+                    {text("回到根目录", "Go to root folder")}
+                  </Button>
+                ) : null}
+              </div>
+            }
+          />
         ) : visibleEntries.length === 0 && searchKeyword.trim() ? (
           <EmptyState icon={SearchXIcon} title={text("未找到匹配文件", "No matching files")} action={<Button variant="secondary" onClick={() => setSearchKeyword("")}>{text("清空搜索", "Clear search")}</Button>} />
         ) : entries.length === 0 ? (

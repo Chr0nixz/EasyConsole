@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatBackendDateTime,
+  formatCompactBackendDateTime,
   addHours,
   formatDateTimeForApi,
   formatDateTimeLocalInput,
@@ -103,5 +105,24 @@ describe("format helpers", () => {
     expect(getTaskReleaseCondition({ releace_conditions: 3, release_condition: 1 })).toBe(3);
     expect(getTaskReleaseCondition({ releace_conditions: "2" })).toBe(2);
     expect(getTaskReleaseCondition({})).toBeUndefined();
+  });
+  it("shows backend timestamps as wall-clock text without assuming a zone", () => {
+    expect(formatBackendDateTime("2026-11-25 15:38:04")).toBe("2026-11-25 15:38:04");
+    expect(formatBackendDateTime("2026-11-25T15:38")).toBe("2026-11-25 15:38:00");
+    expect(formatBackendDateTime("not a time")).toBe("not a time");
+    expect(formatBackendDateTime(undefined)).toBe("-");
+    const zoned = new Date(Date.UTC(2026, 10, 25, 7, 38, 4));
+    const pad = (value: number) => String(value).padStart(2, "0");
+    expect(formatBackendDateTime(zoned.toISOString())).toBe(
+      `${zoned.getFullYear()}-${pad(zoned.getMonth() + 1)}-${pad(zoned.getDate())} ${pad(zoned.getHours())}:${pad(zoned.getMinutes())}:${pad(zoned.getSeconds())}`,
+    );
+  });
+
+  it("shortens a row's creation time, keeping the year only when it differs", () => {
+    const now = new Date(2026, 10, 25);
+    expect(formatCompactBackendDateTime("2026-11-25 15:38:04", now)).toBe("11-25 15:38");
+    expect(formatCompactBackendDateTime("2025-12-31 23:59:00", now)).toBe("2025-12-31 23:59");
+    expect(formatCompactBackendDateTime("garbled", now)).toBeNull();
+    expect(formatCompactBackendDateTime(undefined, now)).toBeNull();
   });
 });

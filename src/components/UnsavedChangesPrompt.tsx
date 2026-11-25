@@ -14,7 +14,6 @@ export function UnsavedChangesPrompt({ blocker, message }: { blocker: Blocker; m
             title: text("放弃未保存的更改？", "Discard unsaved changes?"),
             description: message,
             confirmLabel: text("放弃并离开", "Discard and leave"),
-            tone: "danger",
             run: () => blocker.proceed?.(),
           }
         : null}

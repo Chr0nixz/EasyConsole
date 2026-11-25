@@ -13,6 +13,11 @@ export type CreateTaskUiPrefs = {
    * in the form, then append a timestamp suffix on create. EXPERIMENT_ID itself is not numbered.
    */
   syncNameWithExperimentId: boolean;
+  /**
+   * The release condition each account last created with ("1" manual, "2" timed, "3" after the
+   * task ends). A new create starts on it; an account with none starts on manual release.
+   */
+  lastReleaseConditionByAccount: Record<string, "1" | "2" | "3">;
 };
 
 export const DEFAULT_CREATE_TASK_UI_PREFS: CreateTaskUiPrefs = {
@@ -24,6 +29,7 @@ export const DEFAULT_CREATE_TASK_UI_PREFS: CreateTaskUiPrefs = {
   },
   scriptEnvOpen: false,
   syncNameWithExperimentId: false,
+  lastReleaseConditionByAccount: {},
 };
 
 const SECTION_IDS: CreateTaskSectionId[] = ["basic", "resources", "storage", "release"];
@@ -32,13 +38,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function defaultPrefs(): CreateTaskUiPrefs {
+  return { ...DEFAULT_CREATE_TASK_UI_PREFS, sections: { ...DEFAULT_CREATE_TASK_UI_PREFS.sections }, lastReleaseConditionByAccount: {} };
+}
+
+function parseLastReleaseConditions(value: unknown): Record<string, "1" | "2" | "3"> {
+  if (!isRecord(value)) return {};
+  const result: Record<string, "1" | "2" | "3"> = {};
+  for (const [account, condition] of Object.entries(value)) {
+    if (condition === "1" || condition === "2" || condition === "3") result[account] = condition;
+  }
+  return result;
+}
+
+/** The release condition a new create for `account` starts on: its last one, else manual. */
+export function initialReleaseCondition(prefs: CreateTaskUiPrefs, account: string): "1" | "2" | "3" {
+  return prefs.lastReleaseConditionByAccount[account] ?? "1";
+}
+
+export function withLastReleaseCondition(prefs: CreateTaskUiPrefs, account: string, condition: string): CreateTaskUiPrefs {
+  if (!account || (condition !== "1" && condition !== "2" && condition !== "3")) return prefs;
+  if (prefs.lastReleaseConditionByAccount[account] === condition) return prefs;
+  return { ...prefs, lastReleaseConditionByAccount: { ...prefs.lastReleaseConditionByAccount, [account]: condition } };
+}
+
 export function parseCreateTaskUiPrefs(raw: string | null | undefined): CreateTaskUiPrefs {
-  if (!raw) return { ...DEFAULT_CREATE_TASK_UI_PREFS, sections: { ...DEFAULT_CREATE_TASK_UI_PREFS.sections } };
+  if (!raw) return defaultPrefs();
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) {
-      return { ...DEFAULT_CREATE_TASK_UI_PREFS, sections: { ...DEFAULT_CREATE_TASK_UI_PREFS.sections } };
-    }
+    if (!isRecord(parsed)) return defaultPrefs();
     const sectionsSource = isRecord(parsed.sections) ? parsed.sections : parsed;
     const sections = { ...DEFAULT_CREATE_TASK_UI_PREFS.sections };
     for (const id of SECTION_IDS) {
@@ -51,9 +79,10 @@ export function parseCreateTaskUiPrefs(raw: string | null | undefined): CreateTa
         typeof parsed.syncNameWithExperimentId === "boolean"
           ? parsed.syncNameWithExperimentId
           : DEFAULT_CREATE_TASK_UI_PREFS.syncNameWithExperimentId,
+      lastReleaseConditionByAccount: parseLastReleaseConditions(parsed.lastReleaseConditionByAccount),
     };
   } catch {
-    return { ...DEFAULT_CREATE_TASK_UI_PREFS, sections: { ...DEFAULT_CREATE_TASK_UI_PREFS.sections } };
+    return defaultPrefs();
   }
 }
 

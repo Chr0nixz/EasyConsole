@@ -13,6 +13,8 @@ export function ReleaseConfirmDescription({ task }: { task: Task }) {
   const runtime = Number(task.use_time);
   const cost = Number(task.cost);
   const storagePath = typeof task.storage_path === "string" && task.storage_path.trim() ? task.storage_path.trim() : "";
+  // Where the user actually writes inside the container: files under it land in the storage path and survive.
+  const mountPath = typeof task.mount_path === "string" && task.mount_path.trim() ? task.mount_path.trim() : "";
 
   return (
     <div className="space-y-3">
@@ -32,13 +34,24 @@ export function ReleaseConfirmDescription({ task }: { task: Task }) {
             <dd className="truncate font-mono text-app-text" title={storagePath}>{storagePath}</dd>
           </>
         ) : null}
+        {mountPath ? (
+          <>
+            <dt>{text("实例内挂载", "Mounted at")}</dt>
+            <dd className="truncate font-mono text-app-text" title={mountPath}>{mountPath}</dd>
+          </>
+        ) : null}
       </dl>
       {/* What cannot be undone reads at body size in ink, not as the dialog's small print. */}
       <p className="text-app-text">
-        {text(
-          "容器内的本地临时数据会被清理，无法找回；需要保留的结果请先确认已写入存储路径。此操作不可从 EasyConsole 撤销。",
-          "Local data inside the container is destroyed and cannot be recovered; make sure results you need are written to the storage path first. EasyConsole cannot undo this.",
-        )}
+        {mountPath
+          ? text(
+              `容器内的本地临时数据会被清理，无法找回；需要保留的结果请先确认已写入 ${mountPath}（即存储路径）。此操作不可从 EasyConsole 撤销。`,
+              `Local data inside the container is destroyed and cannot be recovered; make sure results you need are written under ${mountPath} (the storage path) first. EasyConsole cannot undo this.`,
+            )
+          : text(
+              "容器内的本地临时数据会被清理，无法找回；需要保留的结果请先确认已写入存储路径。此操作不可从 EasyConsole 撤销。",
+              "Local data inside the container is destroyed and cannot be recovered; make sure results you need are written to the storage path first. EasyConsole cannot undo this.",
+            )}
       </p>
     </div>
   );

@@ -8,8 +8,11 @@ import { MobileLongText } from "../components/MobileLongText";
 import { RemoteStoragePicker } from "../components/storage/RemoteStoragePicker";
 import { ResourcePriceFields } from "../components/tasks/ResourcePriceFields";
 import { ResourcePresetPicker } from "../components/tasks/ResourcePresetPicker";
+import { ReleasePolicyFields } from "../components/tasks/ReleasePolicyFields";
+import { SPEC_FOOTER_CLASS, SpecSummary } from "../components/tasks/SpecSummary";
 import { ScriptEnvFields } from "../components/tasks/ScriptEnvFields";
 import { Button, Dialog, Input, Panel, Select, TableRegion, Textarea } from "../components/ui";
+import { pickDefaultImage } from "../lib/image-defaults";
 import { imageApi, instanceApi } from "../lib/api";
 import { getRuntimeSettings } from "../lib/app-settings";
 import { BatchPreviewDialog } from "../components/batch/BatchPreviewDialog";
@@ -21,7 +24,7 @@ import { verifyUnknownCreateItems } from "../components/batch/verify-unknown-ite
 import type { BatchRunResult } from "../lib/batch-runner";
 import type { BatchOperationRecord } from "../lib/change-list";
 import { saveBlob } from "../lib/download";
-import { getReleaseConditionText } from "../lib/format";
+import { formatHourlyRate, getReleaseConditionText, localizedText, releaseConditionText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { parsePositivePrice } from "../lib/resource-price";
 import {
@@ -74,7 +77,8 @@ function templateApplyItemMeta(payload: CreateTaskPayload) {
 const DEFAULT_CPU = 4;
 const DEFAULT_GPU = 0;
 const DEFAULT_MEMORY = 16;
-const DEFAULT_PRICE = 1;
+// No rate is invented for a new template: the price list fills it, or the user does.
+const DEFAULT_PRICE = 0;
 const RUNNING_TASK_STATUS = 2;
 
 function getImageOptionLabel(image: ImageItem) {
@@ -133,7 +137,7 @@ function TemplateDialog({
   onClose: () => void;
   onSave: (value: EditableTaskTemplate) => void;
 }) {
-  const { text } = useI18n();
+  const { locale, text } = useI18n();
   const [form, setForm] = useState<EditableTaskTemplate>(() => getDefaultTemplate(username, "", text("默认开发环境模板", "Default dev environment")));
   const [storagePickerTarget, setStoragePickerTarget] = useState<StoragePickerTarget | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -148,7 +152,8 @@ function TemplateDialog({
         scriptEnv: envVarsFromLegacyExperimentId(initialValue.experimentId, initialValue.scriptEnv ?? []),
       });
     } else {
-      setForm(getDefaultTemplate(username, imageOptions[0] ? String(imageOptions[0].id) : "", text("默认开发环境模板", "Default dev environment")));
+      const defaultImage = pickDefaultImage(imageOptions);
+      setForm(getDefaultTemplate(username, defaultImage ? String(defaultImage.id) : "", text("默认开发环境模板", "Default dev environment")));
     }
     setFormError(null);
     setStoragePickerTarget(null);
@@ -171,6 +176,7 @@ function TemplateDialog({
     void savePreset({ ...values, name });
   }
 
+  const templateRate = parsePositivePrice(String(form.price ?? ""));
   const fieldErrors = useMemo(() => {
     const errors: Record<string, string> = {};
     if (!form.name.trim()) errors.name = text("模板名称不能为空", "Template name is required");
@@ -292,8 +298,9 @@ function TemplateDialog({
   const dialogTitle = initialValue?.id ? text("编辑实例模板", "Edit Instance Template") : initialValue ? text("复制实例模板", "Copy Instance Template") : text("新建实例模板", "New Instance Template");
 
   return (
-    <Dialog open={open} title={dialogTitle} onClose={onClose} width="max-w-4xl">
-      <form className="space-y-4 p-4" onSubmit={submit}>
+    <Dialog open={open} title={dialogTitle} onClose={onClose} width="max-w-4xl" mobileMode="fullscreen" contained>
+      <form className="flex h-full min-h-0 flex-col overflow-hidden" onSubmit={submit}>
+        <div className="app-mobile-form-body min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         <FormSection title={text("基础", "Basic")}>
           <div className="grid gap-4 md:grid-cols-2">
             <label className="block text-sm">
@@ -354,7 +361,7 @@ function TemplateDialog({
           />
           <ResourcePriceFields
             allowDefaultPrice={!initialValue && !touchedFields.has("price")}
-            price={String(form.price ?? DEFAULT_PRICE)}
+            price={templateRate === null ? (form.price === DEFAULT_PRICE ? "" : String(form.price ?? "")) : String(form.price)}
             resources={{ cpu: String(form.cpu), gpu: String(form.gpu), memory: String(form.memory) }}
             priceError={fieldErrors.price}
             priceTouched={touchedFields.has("price")}
@@ -380,43 +387,22 @@ function TemplateDialog({
             </label>
           </div>
         </FormSection>
-        <FormSection divided title={text("存储", "Storage")}>
-          <div className="grid gap-4 text-sm md:grid-cols-2">
-            <div>
-              <span className="mb-1 block text-app-muted">{text("存储路径", "Storage path")}</span>
-              <div className="flex gap-2">
-                <Input className="w-full font-mono text-xs" value={form.storagePath} onChange={(event) => update("storagePath", event.target.value)} />
-                <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
-                  <FolderOpen className="h-4 w-4" />
-                  {text("选择", "Select")}
-                </Button>
-              </div>
-            </div>
-            <label className="block">
-              <span className="mb-1 block text-app-muted">{text("挂载路径", "Mount path")}</span>
-              <Input className="w-full font-mono text-xs" value={form.mountPath} onChange={(event) => update("mountPath", event.target.value)} />
-            </label>
-          </div>
-        </FormSection>
         <FormSection divided title={text("释放策略", "Release")}>
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="block text-sm">
-              <span className="mb-1 block text-app-muted">{text("释放条件", "Release condition")}</span>
-              <Select className="w-full" value={form.releaseCondition} onChange={(event) => update("releaseCondition", Number(event.target.value) as 1 | 2 | 3)}>
-                <option value={1}>{text("手动释放", "Manual release")}</option>
-                <option value={2}>{text("定时释放", "Timed release")}</option>
-                <option value={3}>{text("任务结束释放", "Release after task ends")}</option>
-              </Select>
-            </label>
-            {form.releaseCondition === 2 ? (
-              <label className="block text-sm">
-                <span className="mb-1 block text-app-muted">{text("创建后释放小时数", "Release hours after creation")}</span>
-                <Input className={cn("w-full", fieldBorderClass(touchedFields.has("releaseAfterHours") && Boolean(fieldErrors.releaseAfterHours)))} min="0.1" step="0.1" type="number" value={form.releaseAfterHours ?? 24} onChange={(event) => update("releaseAfterHours", parseFormNumber(event.target.value, 24))} onBlur={() => markTouched("releaseAfterHours")} required />
-                <FieldError message={touchedFields.has("releaseAfterHours") ? fieldErrors.releaseAfterHours : undefined} />
-              </label>
-            ) : null}
-          </div>
-          {form.releaseCondition === 3 ? (
+          <ReleasePolicyFields
+            condition={String(form.releaseCondition)}
+            hourlyRate={templateRate}
+            onConditionChange={(value) => update("releaseCondition", Number(value) as 1 | 2 | 3)}
+            timed={{
+              kind: "hours",
+              hours: form.releaseAfterHours ?? 24,
+              onChange: (hours) => {
+                markTouched("releaseAfterHours");
+                update("releaseAfterHours", hours);
+              },
+              onBlur: () => markTouched("releaseAfterHours"),
+              error: touchedFields.has("releaseAfterHours") ? fieldErrors.releaseAfterHours : undefined,
+            }}
+          >
             <div className="space-y-4">
               <div className="block text-sm">
                 <span className="mb-1 block text-app-muted">{text("工作目录", "Working directory")}</span>
@@ -447,7 +433,25 @@ function TemplateDialog({
                 error={touchedFields.has("scriptEnv") ? fieldErrors.scriptEnv : undefined}
               />
             </div>
-          ) : null}
+          </ReleasePolicyFields>
+        </FormSection>
+        <FormSection divided title={text("存储", "Storage")}>
+          <div className="grid gap-4 text-sm md:grid-cols-2">
+            <div>
+              <span className="mb-1 block text-app-muted">{text("存储路径", "Storage path")}</span>
+              <div className="flex gap-2">
+                <Input className="w-full font-mono text-xs" value={form.storagePath} onChange={(event) => update("storagePath", event.target.value)} />
+                <Button className="shrink-0" type="button" variant="secondary" onClick={() => setStoragePickerTarget("storage")}>
+                  <FolderOpen className="h-4 w-4" />
+                  {text("选择", "Select")}
+                </Button>
+              </div>
+            </div>
+            <label className="block">
+              <span className="mb-1 block text-app-muted">{text("挂载路径", "Mount path")}</span>
+              <Input className="w-full font-mono text-xs" value={form.mountPath} onChange={(event) => update("mountPath", event.target.value)} />
+            </label>
+          </div>
         </FormSection>
         <div className="space-y-2 rounded-md border border-app-border bg-app-surface p-3 text-sm">
           <div className="flex items-center justify-between gap-2">
@@ -542,11 +546,29 @@ function TemplateDialog({
           )}
         </div>
         {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
-        <div className="flex justify-end gap-2 border-t border-app-border pt-4">
-          <Button type="button" variant="secondary" onClick={onClose}>
-            {text("取消", "Cancel")}
-          </Button>
-          <Button>{initialValue ? text("保存", "Save") : text("创建模板", "Create template")}</Button>
+        </div>
+        <div className={cn("app-mobile-form-actions", SPEC_FOOTER_CLASS)}>
+          <SpecSummary
+            label={text("模板摘要", "Template summary")}
+            headline={[
+              text(`每次 ${form.batchCount || 1} 个实例`, `${form.batchCount || 1} instance${Number(form.batchCount) > 1 ? "s" : ""} per use`),
+              templateRate !== null ? formatHourlyRate(templateRate, locale) : text("未设置单价", "Rate not set"),
+              Number(form.gpu) > 0 ? text(`每个 ${form.gpu} GPU`, `${form.gpu} GPU each`) : null,
+              form.releaseCondition === 2
+                ? text(`定时释放（创建后 ${form.releaseAfterHours ?? 24} 小时）`, `Timed release (${form.releaseAfterHours ?? 24} hours after creation)`)
+                : localizedText(releaseConditionText[form.releaseCondition], locale),
+            ]}
+            note={text(
+              "模板只保存配置；用它新建实例时才会创建并开始计费。",
+              "A template only saves the settings; instances are created, and billed, when you use it.",
+            )}
+          />
+          <div className="flex shrink-0 justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose}>
+              {text("取消", "Cancel")}
+            </Button>
+            <Button>{initialValue ? text("保存", "Save") : text("创建模板", "Create template")}</Button>
+          </div>
         </div>
       </form>
       <RemoteStoragePicker

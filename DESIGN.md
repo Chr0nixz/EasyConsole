@@ -265,7 +265,7 @@ The palette is defined once in `src/styles.css` under `@theme static` (light val
 
 ### Hierarchy
 - **Brand** (600, 1.25rem, -0.02em): the EasyConsole wordmark on the login column only.
-- **Headline** (600, 1.0625rem, 24px line, -0.015em): the shell header page title; task-detail name steps to 1.125rem.
+- **Headline** (600, 1.0625rem, 24px line, -0.015em): the shell header page title, and the task-detail name (an `h2` under that `h1`), which shares the step rather than outranking the page title.
 - **Title** (600, 0.9375rem, -0.01em): dialog and drawer titles; dashboard summary figures.
 - **Body** (400, 0.875rem): default UI text, table cells, nav items, buttons (500).
 - **Label** (500, 0.75rem, 20px line): badges, segmented options, field help, toast descriptions.

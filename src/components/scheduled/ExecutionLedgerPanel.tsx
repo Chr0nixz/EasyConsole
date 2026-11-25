@@ -14,7 +14,7 @@ import {
   type ExecutionLedgerEntry,
   type ExecutionOutcome,
 } from "../../lib/execution-ledger";
-import { getTaskName } from "../../lib/format";
+import { formatBackendDateTime, getTaskName } from "../../lib/format";
 import { useI18n } from "../../lib/i18n";
 import type { Locale } from "../../lib/i18n-text";
 import { i18nText } from "../../lib/i18n-text";
@@ -335,7 +335,7 @@ export function ExecutionLedgerPanel() {
                                 </Link>
                                 <span className="font-mono">#{task.id}</span>
                                 <StatusBadge status={task.status} />
-                                <span className="app-numeric">{String(task.create_time ?? task.created_at ?? "")}</span>
+                                <span className="app-numeric">{formatBackendDateTime(task.create_time ?? task.created_at)}</span>
                                 <Button className="h-7 px-2 text-xs" type="button" variant="secondary" onClick={() => confirmCreated(entry, String(task.id))}>
                                   {text("就是这个，确认已创建", "This one: confirm created")}
                                 </Button>

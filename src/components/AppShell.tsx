@@ -1,7 +1,8 @@
 import { AlertCircle, ArrowUpCircle, DownloadCloud, ExternalLink, FolderOpen, LogOut, MoreHorizontal, RotateCcw, Save, Search, WifiOff, X } from "lucide-react";
-import { useEffect, useRef, useState, type RefObject, type UIEvent } from "react";
+import { Suspense, useEffect, useRef, useState, type RefObject, type UIEvent } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
+import { LoadingState } from "./DataState";
 import { LanguageSwitch } from "./LanguageSwitch";
 import { BackgroundScheduledTaskRunner } from "./BackgroundScheduledTaskRunner";
 import { CommandPalette } from "./CommandPalette";
@@ -39,8 +40,12 @@ import { navItems } from "../lib/nav-items";
 import { useExecutionReviewCount } from "../lib/use-execution-review";
 import { titleBarDragRegion } from "../lib/window-chrome";
 
-const primaryMobileNav = navItems.slice(0, 3);
-const secondaryMobileNav = navItems.slice(3);
+// The phone is a companion (status, reminders, release or extend, an emergency terminal), so its
+// bar keeps what those need: the overview, the instances, and the log of what happened while away.
+// Planning work (scheduled tasks, templates) stays one tap further, under More.
+const PHONE_BAR_ROUTES = new Set(["/dashboard", "/tasks", "/run-logs"]);
+const primaryMobileNav = navItems.filter((item) => PHONE_BAR_ROUTES.has(item.to));
+const secondaryMobileNav = navItems.filter((item) => !PHONE_BAR_ROUTES.has(item.to));
 
 // Sidebar sections: workloads you launch, resources they use, and EasyConsole itself.
 const navGroups = [
@@ -510,7 +515,6 @@ export function AppShell() {
       title: t("shell.logoutConfirmTitle"),
       description: t("shell.logoutConfirmDescription"),
       confirmLabel: t("shell.logoutConfirmLabel"),
-      tone: "danger",
       run: () => auth.logout(),
     });
   }
@@ -939,7 +943,10 @@ export function AppShell() {
         ) : null}
         <main id="main-content" className="app-main-content min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain px-3 py-4 pb-32 sm:p-5 sm:pb-32 md:px-6 md:pb-6" onScroll={handleMainScroll}>
           <div key={location.pathname} className="app-page-enter">
-            <Outlet />
+            {/* Pages load lazily; their loading state stays inside the shell instead of replacing it. */}
+            <Suspense fallback={<LoadingState />}>
+              <Outlet />
+            </Suspense>
           </div>
         </main>
       </div>

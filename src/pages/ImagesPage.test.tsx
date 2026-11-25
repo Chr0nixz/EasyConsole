@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ToastProvider } from "../components/Toast";
@@ -54,7 +55,9 @@ function renderImages() {
     <RunLoggerContext.Provider value={{ log: async () => undefined }}>
       <ToastProvider>
         <QueryClientProvider client={client}>
-          <ImagesPage />
+          <MemoryRouter>
+            <ImagesPage />
+          </MemoryRouter>
         </QueryClientProvider>
       </ToastProvider>
     </RunLoggerContext.Provider>,

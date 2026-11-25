@@ -81,7 +81,7 @@ describe("MoreActionsMenu", () => {
 
     rerender(<MoreActionsMenu task={{ ...task, status: 1 }} {...defaultProps} onCommit={onCommit} />);
     fireEvent.click(screen.getByRole("button"));
-    expect(await screen.findByRole("menuitem", { name: /Commit image|提交镜像/ })).toBeDisabled();
+    expect(await screen.findByRole("menuitem", { name: /Commit image|提交镜像/ })).toHaveAttribute("aria-disabled", "true");
   });
 
   it("leaves logs out of More when they are on the row, and offers monitor", async () => {
@@ -173,7 +173,7 @@ describe("MoreActionsMenu", () => {
 
     fireEvent.click(screen.getByRole("button"));
     const items = await screen.findAllByRole("menuitem");
-    expect(items[items.length - 1]).toHaveTextContent(/Delete instance|删除实例/);
+    expect(items[items.length - 1]).toHaveTextContent(/Delete record|删除记录/);
     fireEvent.click(items[items.length - 1]);
     expect(onDelete).toHaveBeenCalledWith(ended);
     unmount();
@@ -181,7 +181,7 @@ describe("MoreActionsMenu", () => {
     render(<MoreActionsMenu task={task} {...defaultProps} onDelete={onDelete} />);
     fireEvent.click(screen.getByRole("button"));
     await screen.findAllByRole("menuitem");
-    expect(screen.queryByRole("menuitem", { name: /Delete instance|删除实例/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /Delete record|删除记录/ })).not.toBeInTheDocument();
   });
 
   it("keeps the menu open while the page scrolls", async () => {

@@ -36,7 +36,7 @@ import { lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 
-import { FAILURE_STATUSES, needsLogAttention } from "../lib/task-status-notifications";
+import { FAILURE_STATUSES } from "../lib/task-status-notifications";
 
 import { EmptyState, ErrorState, LoadingState, SearchXIcon, TableSkeleton } from "../components/DataState";
 import { IdleInstancePill } from "../components/IdleInstancePill";
@@ -61,7 +61,7 @@ import type { BatchOperationRecord } from "../lib/change-list";
 import { saveBlob } from "../lib/download";
 import { useCommitQueue } from "../lib/commit-queue-context";
 import { useDownloadQueueActions } from "../lib/use-download-queue";
-import { asJson, formatCost, formatSecondsDuration, getStatusText, getTaskName, getTaskNodeName, localizedText, taskStatusText } from "../lib/format";
+import { asJson, formatBackendDateTime, formatCompactBackendDateTime, formatCost, formatHourlyRate, formatSecondsDuration, getStatusText, getTaskName, getTaskNodeName, localizedText, taskStatusText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { useSshWorkspace } from "../lib/use-ssh-workspace";
 import { i18nText } from "../lib/i18n-text";
@@ -87,7 +87,7 @@ import {
   taskActionStripWidth,
   type TaskQuickActionId,
 } from "../lib/task-quick-actions";
-import { consumePendingCreateTaskRequest, subscribeCreateTaskRequests } from "../lib/task-create-request";
+import { consumePendingCreateTaskRequest, subscribeCreateTaskRequests, takeCreateTaskPreset } from "../lib/task-create-request";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import { canExtendRelease, getLiveTimedReleaseAt } from "../lib/task-release-notifications";
 import { queryKeys } from "../lib/query-keys";
@@ -112,8 +112,10 @@ const COLUMN_SIZING_KEY = "easy-console.tasks.columnSizing";
 const ALWAYS_VISIBLE_COLUMNS = new Set(["select", "actions"]);
 /** The action column's default width: the default bar of three quick actions (232px). */
 const ACTION_COLUMN_WIDTH = taskActionStripWidth(DEFAULT_TASK_QUICK_ACTIONS.length);
-/** The folded action bar (release + More) plus the cell's 12px padding each side. */
+/** The narrowest action bar (release + More) plus the cell's 12px padding each side. */
 const COMPACT_ACTION_COLUMN_WIDTH = TASK_ACTION_STRIP_BASE_WIDTH;
+/** A folded bar that keeps the row's one state-picked action (terminal or log) beside release and More. */
+const FOLDED_ACTION_COLUMN_WIDTH = taskActionStripWidth(1);
 // Pages at or under this many phone cards render whole (the 20-per-page option always does).
 const MOBILE_CARD_VIRTUALIZE_MIN = 30;
 const defaultColumnVisibility: VisibilityState = {
@@ -123,23 +125,31 @@ const defaultColumnVisibility: VisibilityState = {
   group: false,
   duration: false,
   billed: true,
+  rate: false,
+  // The creation time reads on the name's second line; its own column is optional.
+  created: false,
   release: false,
   deleted: false,
 };
 // Cost became a default column after many preferences were already saved with it hidden;
 // this flag shows it once for those, then the user's own choice stands.
 const COST_COLUMN_DEFAULTED_KEY = "easy-console.tasks.costColumnDefaulted";
+// The creation time moved under the instance name so the default columns fit the default
+// window; saved preferences that still show its column hide it once, then the user decides.
+const CREATED_COLUMN_FOLDED_KEY = "easy-console.tasks.createdColumnFolded";
 const taskColumnSizing = {
   select: { size: 48, minSize: 48, maxSize: 80 },
-  name: { size: 240, minSize: 160, maxSize: 560 },
+  name: { size: 224, minSize: 160, maxSize: 560 },
   status: { size: 112, minSize: 88, maxSize: 180 },
-  resource: { size: 152, minSize: 120, maxSize: 240 },
+  // GPUs on the first line, CPU and memory under them.
+  resource: { size: 120, minSize: 96, maxSize: 240 },
   node: { size: 160, minSize: 100, maxSize: 320 },
   endpoint: { size: 160, minSize: 100, maxSize: 360 },
   owner: { size: 140, minSize: 100, maxSize: 240 },
   group: { size: 160, minSize: 100, maxSize: 260 },
   duration: { size: 120, minSize: 96, maxSize: 180 },
   billed: { size: 112, minSize: 96, maxSize: 180 },
+  rate: { size: 112, minSize: 88, maxSize: 180 },
   created: { size: 190, minSize: 144, maxSize: 320 },
   release: { size: 190, minSize: 144, maxSize: 320 },
   // Wide enough for the longest live countdown in either language ("Releases in 23 hr 59 min").
@@ -151,7 +161,7 @@ const taskColumnSizing = {
  * Defaults that have since changed. A saved width still equal to the old default is the
  * default the user was given, not one they chose, so it follows the new default.
  */
-const SUPERSEDED_COLUMN_DEFAULTS: Partial<Record<string, number>> = { releaseCondition: 140 };
+const SUPERSEDED_COLUMN_DEFAULTS: Partial<Record<string, number>> = { releaseCondition: 140, name: 240, resource: 152 };
 const defaultColumnSizing: ColumnSizingState = Object.fromEntries(
   Object.entries(taskColumnSizing).map(([id, sizing]) => [id, sizing.size]),
 );
@@ -167,6 +177,7 @@ const columnLabels: Record<string, { zh: string; en: string }> = {
   duration: { zh: "时长", en: "Duration" },
   // Not "cost": that id once named the duration column and is migrated to it on load.
   billed: { zh: "费用", en: "Cost" },
+  rate: { zh: "单价", en: "Rate" },
   created: { zh: "创建时间", en: "Created" },
   release: { zh: "释放时间", en: "Release time" },
   releaseCondition: { zh: "释放条件", en: "Release condition" },
@@ -184,24 +195,27 @@ const COLUMN_SORT_FIELDS: Partial<Record<string, TaskListSortBy>> = {
 /** Columns grouped the way the list is read: what it is, what it costs and when it stops, where it runs. */
 const COLUMN_SETTING_GROUPS: Array<{ zh: string; en: string; ids: string[] }> = [
   { zh: "实例", en: "Instance", ids: ["name", "status", "resource"] },
-  { zh: "费用与释放", en: "Cost and release", ids: ["billed", "duration", "releaseCondition", "release"] },
+  { zh: "费用与释放", en: "Cost and release", ids: ["billed", "rate", "duration", "releaseCondition", "release"] },
   { zh: "位置与归属", en: "Location and owner", ids: ["node", "endpoint", "owner", "group"] },
   { zh: "记录与操作", en: "Record and actions", ids: ["created", "deleted", "actions"] },
 ];
 /**
- * What must stay in view beside the action bar: the default widths of select 48, name 240,
- * status 112, resources 152, cost 112 and release condition 200, rounded so the default
- * three-button bar (232px) keeps its 1100px fold point. A table region narrower than this
- * plus the bar's own width folds the bar's quick actions into More.
+ * What must stay in view beside the action bar: the default widths of select 48, name 224,
+ * status 112, resources 120, cost 112 and release condition 200. The default three-button bar
+ * (232px) folds below a 1048px table region; the default window's 990px region then shows the
+ * folded bar (160px) with every default column in view.
  */
-const COMPACT_ACTIONS_CONTENT_WIDTH = 868;
+const COMPACT_ACTIONS_CONTENT_WIDTH = 816;
 const NO_STRIP_ACTIONS: readonly TaskQuickActionId[] = [];
-const PHONE_LOG_STRIP: readonly TaskQuickActionId[] = ["log"];
-const PHONE_TERMINAL_STRIP: readonly TaskQuickActionId[] = ["terminal"];
+const LOG_STRIP: readonly TaskQuickActionId[] = ["log"];
+const TERMINAL_STRIP: readonly TaskQuickActionId[] = ["terminal"];
+// Unavailable items stay focusable (aria-disabled), so arrow keys reach them and their reason is read out.
 const MENU_ITEM_CLASS =
-  "flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel disabled:cursor-not-allowed disabled:opacity-50 [@media(pointer:coarse)]:min-h-11";
+  "flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-transparent [@media(pointer:coarse)]:min-h-11";
 const MENU_ITEM_DANGER_CLASS =
-  "flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-danger hover:bg-app-dangerSoft disabled:cursor-not-allowed disabled:opacity-50 [@media(pointer:coarse)]:min-h-11";
+  "flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-danger hover:bg-app-dangerSoft aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-transparent [@media(pointer:coarse)]:min-h-11";
+/** Tall enough for every More item (eleven, in four sections) without scrolling inside the menu. */
+const MORE_MENU_MAX_HEIGHT = 448;
 const CHECKBOX_HIT_CLASS =
   "inline-flex min-h-6 min-w-6 cursor-pointer items-center justify-center [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11";
 const commitPodFields = ["description", "pod_name", "podName", "pod", "k8s_pod_name", "k8sPodName"];
@@ -221,13 +235,34 @@ function quickActionsThatFit(regionWidth: number) {
   return Math.max(-1, Math.min(MAX_TASK_QUICK_ACTIONS, fit));
 }
 
-/** A phone card's own action row: the log for tasks that need it, the terminal for the rest. */
-function phoneCardStripActions(task: Task): readonly TaskQuickActionId[] {
-  return needsLogAttention(task) ? PHONE_LOG_STRIP : PHONE_TERMINAL_STRIP;
+/**
+ * The one action a row keeps when there is no room for the user's bar (a folded table bar, a
+ * phone card): the terminal while the instance runs, its log otherwise, since that is what a
+ * failed, finished or starting instance is opened for.
+ */
+function stateStripActions(task: Task): readonly TaskQuickActionId[] {
+  return isRunningTask(task) ? TERMINAL_STRIP : LOG_STRIP;
 }
 
 function resourceText(task: Task) {
   return `${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`;
+}
+
+/** GPUs lead the resource cell: they set the price. */
+function gpuText(task: Task) {
+  return `${task.gpu ?? "-"} GPU`;
+}
+
+function cpuMemoryText(task: Task) {
+  return `${task.cpu ?? "-"}C · ${task.memory ?? "-"}G`;
+}
+
+/** "96 元/时": the hourly rate short enough for a cost cell's second line; null when unknown. */
+function compactHourlyRate(value: unknown, locale: "zh-CN" | "en-US") {
+  const rate = Number(value);
+  if (!Number.isFinite(rate) || rate <= 0) return null;
+  const amount = rate.toLocaleString(locale, { maximumFractionDigits: 2 });
+  return locale === "en-US" ? `CNY ${amount}/hr` : `${amount} 元/时`;
 }
 
 /**
@@ -387,6 +422,8 @@ async function loadColumnVisibility(): Promise<VisibilityState> {
     const raw = await browserRuntime.storage.get(COLUMN_VISIBILITY_KEY);
     const costDefaulted = Boolean(await browserRuntime.storage.get(COST_COLUMN_DEFAULTED_KEY));
     if (!costDefaulted) void browserRuntime.storage.set(COST_COLUMN_DEFAULTED_KEY, "1");
+    const createdFolded = Boolean(await browserRuntime.storage.get(CREATED_COLUMN_FOLDED_KEY));
+    if (!createdFolded) void browserRuntime.storage.set(CREATED_COLUMN_FOLDED_KEY, "1");
     if (!raw) return defaultColumnVisibility;
     const parsed = JSON.parse(raw) as VisibilityState;
     delete parsed.actions;
@@ -397,12 +434,12 @@ async function loadColumnVisibility(): Promise<VisibilityState> {
     }
     if (Object.keys(parsed).length === 0) return defaultColumnVisibility;
     if (!costDefaulted) parsed.billed = true;
+    if (!createdFolded) parsed.created = false;
     if (!("release" in parsed)) {
       return {
         ...defaultColumnVisibility,
         ...parsed,
         node: false,
-        created: true,
         release: false,
       };
     }
@@ -453,6 +490,8 @@ type TaskTableMeta = {
   moreMenuTaskId: string | null;
   releasePending: boolean;
   compactActions: boolean;
+  /** While folded, whether the bar has room to keep the row's state-picked action (terminal or log). */
+  foldedQuickAction: boolean;
   /** The user's action bar, in order; the cell folds it into More while `compactActions` is set. */
   quickActions: readonly TaskQuickActionId[];
   canEdit: boolean;
@@ -596,7 +635,7 @@ type MoreMenuSection = { id: string; items: MoreMenuItem[] };
 function computeMoreMenuPosition(anchor: DOMRect, itemCount: number, sectionCount: number): MoreMenuPosition {
   const width = 176;
   const margin = 8;
-  const estimatedHeight = Math.min(320, 8 + itemCount * 32 + Math.max(0, sectionCount - 1) * 9);
+  const estimatedHeight = Math.min(MORE_MENU_MAX_HEIGHT, 8 + itemCount * 32 + Math.max(0, sectionCount - 1) * 9);
   const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
   const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 768;
   const left = Math.min(Math.max(margin, anchor.right - width), Math.max(margin, viewportWidth - width - margin));
@@ -759,7 +798,7 @@ function buildMoreMenuSections({
   const danger: MoreMenuItem[] = onDelete && !isReleasableTask(task)
     ? [{
         key: "delete",
-        label: text("删除实例", "Delete instance"),
+        label: text("删除记录", "Delete record"),
         icon: <Trash2 className="h-4 w-4" />,
         tone: "danger",
         onSelect: () => onDelete(task),
@@ -995,7 +1034,7 @@ function MoreActionsMenuPanel({
         className={cn(
           compactLayout
             ? "app-mobile-action-sheet max-h-[80dvh] w-full overflow-y-auto overscroll-contain rounded-t-lg border border-b-0 border-app-border bg-app-elevated p-2 shadow-popover"
-            : "app-pop-enter fixed z-[100] max-h-[min(20rem,calc(100vh-1rem))] w-44 origin-top-right overflow-y-auto overscroll-contain rounded-lg border border-app-border bg-app-elevated p-1 shadow-popover",
+            : "app-pop-enter fixed z-[100] max-h-[min(28rem,calc(100vh-1rem))] w-44 origin-top-right overflow-y-auto overscroll-contain rounded-lg border border-app-border bg-app-elevated p-1 shadow-popover",
         )}
         role="menu"
         aria-label={text(`实例操作 ${getTaskName(task)}`, `Instance actions for ${getTaskName(task)}`)}
@@ -1013,8 +1052,8 @@ function MoreActionsMenuPanel({
                 ref={(element) => {
                   menuItemRefs.current[index] = element;
                 }}
+                aria-disabled={item.disabled || undefined}
                 className={item.tone === "danger" ? MENU_ITEM_DANGER_CLASS : MENU_ITEM_CLASS}
-                disabled={item.disabled}
                 role="menuitem"
                 tabIndex={-1}
                 title={item.title}
@@ -1236,6 +1275,8 @@ export function TasksPage() {
   const { confirm, confirmDialog } = useConfirmAction();
   const compactLayout = useCompactLayout();
   const [createOpen, setCreateOpen] = useState(consumePendingCreateTaskRequest);
+  // The image a request asked to start from (the Images page's 用此镜像新建).
+  const [createImageId, setCreateImageId] = useState<string | undefined>(() => takeCreateTaskPreset().imageId);
   const [cloneTask, setCloneTask] = useState<Task | null>(null);
   const [extendTask, setExtendTask] = useState<Task | null>(null);
   // Phone cards offer extend inside the reminder window, so they need a clock that moves
@@ -1651,6 +1692,7 @@ export function TasksPage() {
   useEffect(() => subscribeCreateTaskRequests(() => {
     setCloneTask(null);
     setEditTask(null);
+    setCreateImageId(takeCreateTaskPreset().imageId);
     setCreateOpen(true);
   }), []);
 
@@ -1672,6 +1714,7 @@ export function TasksPage() {
   const closeCreateTask = () => {
     setCreateOpen(false);
     setCloneTask(null);
+    setCreateImageId(undefined);
   };
 
   const openEditTask = (task: Task) => {
@@ -1698,12 +1741,12 @@ export function TasksPage() {
 
   const confirmDeleteTask = useCallback((task: Task) => {
     confirm({
-      title: text("确认删除实例", "Confirm Instance Deletion"),
+      title: text("确认删除记录", "Delete Instance Record?"),
       description: text(
         `将删除 ${getTaskName(task)}。删除用于已结束等不可释放实例，从列表中移除记录；与「释放」不同，不会先停止仍在运行的任务。此操作不可从 EasyConsole 撤销。`,
         `Delete ${getTaskName(task)}. Delete removes finished / non-releasable instances from the list. Unlike Release, it is not for stopping a still-running task. EasyConsole cannot undo this.`,
       ),
-      confirmLabel: text("删除", "Delete"),
+      confirmLabel: text("删除记录", "Delete record"),
       tone: "danger",
       run: () => deleteTaskAsync(task),
     });
@@ -1794,6 +1837,8 @@ export function TasksPage() {
         header: text("实例名称", "Instance name"),
         cell: ({ row, getValue, table }) => {
           const pinned = isTaskPinned(taskTableMeta(table).pinnedTaskIds, row.original);
+          const createdRaw = row.original.create_time ?? row.original.created_at;
+          const created = formatCompactBackendDateTime(createdRaw);
           return (
             // 18rem keeps one long experiment name from pushing status under the action column;
             // the name wraps (at any character if it has to) instead of widening the table.
@@ -1802,7 +1847,17 @@ export function TasksPage() {
                 {pinned ? <Pin className="mt-1 h-3.5 w-3.5 shrink-0 text-app-accent" aria-label={text("已置顶", "Pinned")} /> : null}
                 <div className="min-w-0">
                   <TaskInstanceName name={getValue()} taskId={row.original.id} />
-                  <div className="mt-0.5 text-xs text-app-muted">#{row.original.id}</div>
+                  <div className="mt-0.5 text-xs text-app-muted">
+                    #{row.original.id}
+                    {created ? (
+                      <>
+                        {" · "}
+                        <time className="app-numeric" dateTime={String(createdRaw)} title={text(`创建于 ${formatBackendDateTime(createdRaw)}`, `Created ${formatBackendDateTime(createdRaw)}`)}>
+                          {created}
+                        </time>
+                      </>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             </div>
@@ -1824,7 +1879,12 @@ export function TasksPage() {
         id: "resource",
         ...taskColumnSizing.resource,
         header: text("资源", "Resources"),
-        cell: (info) => <span className="whitespace-nowrap text-app-text">{info.getValue()}</span>,
+        cell: (info) => (
+          <div className="whitespace-nowrap" title={info.getValue()}>
+            <div className="app-numeric font-medium text-app-text">{gpuText(info.row.original)}</div>
+            <div className="app-numeric mt-0.5 text-xs text-app-muted">{cpuMemoryText(info.row.original)}</div>
+          </div>
+        ),
       }),
       columnHelper.accessor((row) => getTaskNodeName(row) || "-", {
         id: "node",
@@ -1860,8 +1920,24 @@ export function TasksPage() {
         id: "billed",
         ...taskColumnSizing.billed,
         header: text("费用", "Cost"),
+        // A running instance also says what it costs per hour, under what it has cost so far.
+        cell: (info) => {
+          const task = info.row.original;
+          const rate = isRunningTask(task) ? compactHourlyRate(task.price, locale) : null;
+          return (
+            <div className="whitespace-nowrap">
+              <div className="app-numeric text-app-text">{Number(info.getValue()) > 0 ? formatCost(info.getValue(), locale) : "—"}</div>
+              {rate ? <div className="app-numeric mt-0.5 text-xs text-app-muted" title={formatHourlyRate(task.price, locale)}>{rate}</div> : null}
+            </div>
+          );
+        },
+      }),
+      columnHelper.accessor((row) => row.price, {
+        id: "rate",
+        ...taskColumnSizing.rate,
+        header: text("单价", "Rate"),
         cell: (info) => (
-          <span className="app-numeric whitespace-nowrap text-app-text">{Number(info.getValue()) > 0 ? formatCost(info.getValue(), locale) : "—"}</span>
+          <span className="app-numeric whitespace-nowrap text-app-text">{compactHourlyRate(info.getValue(), locale) ?? "—"}</span>
         ),
       }),
       // Release sits beside cost, ahead of the timestamps: when the table is wider than its region,
@@ -1877,7 +1953,7 @@ export function TasksPage() {
         id: "created",
         ...taskColumnSizing.created,
         header: text("创建时间", "Created"),
-        cell: (info) => <span className="app-numeric whitespace-nowrap text-app-text">{info.getValue()}</span>,
+        cell: (info) => <span className="app-numeric whitespace-nowrap text-app-text">{formatBackendDateTime(info.getValue())}</span>,
       }),
       columnHelper.accessor((row) => row.releace_time ?? "-", {
         id: "release",
@@ -1901,31 +1977,37 @@ export function TasksPage() {
           const task = row.original;
           const meta = taskTableMeta(table);
           const release = isReleasableTask(task);
-          // The user's quick actions lead the bar; a narrow region folds them into More (its
-          // connect, lifecycle and local sections) rather than off the screen.
-          const quickActions = meta.compactActions ? NO_STRIP_ACTIONS : meta.quickActions;
+          const paused = Number(task.status) === 3;
+          // The user's quick actions lead the bar. A narrow region folds them into More (its
+          // connect, lifecycle and local sections) and keeps the one this row is most likely
+          // opened for: the terminal while it runs, the log otherwise.
+          const quickActions = meta.compactActions
+            ? meta.foldedQuickAction ? stateStripActions(task) : NO_STRIP_ACTIONS
+            : meta.quickActions;
           return (
             <div className="grid items-center gap-1" style={{ gridTemplateColumns: actionGridColumns(quickActions.length) }}>
               {quickActions.map((id) => (
                 <RowQuickAction key={id} id={id} meta={meta} task={task} />
               ))}
-              {/* This slot only ever means release; deleting an ended task's record is in More. */}
-              <Button
-                aria-label={text(`释放实例 ${getTaskName(task)}`, `Release instance ${getTaskName(task)}`)}
-                className="h-8 w-16 justify-center px-1.5 hover:bg-app-warningSoft hover:text-app-warningText focus-visible:text-app-warningText aria-disabled:hover:bg-transparent aria-disabled:hover:text-app-muted"
-                disabled={!release || meta.releasePending}
-                disabledReason={release
-                  ? undefined
-                  : Number(task.status) === 3
-                    ? text("已暂停的实例不可释放", "Paused instances cannot be released")
-                    : text("已结束，无需释放；删除记录在「更多」中", "Ended, nothing to release; delete the record from More")}
-                title={text("释放：停止实例并回收资源", "Release: stop instance and reclaim resources")}
-                variant="ghost"
-                onClick={() => meta.onRelease(task)}
-              >
-                <Power className="h-4 w-4" />
-                {text("释放", "Release")}
-              </Button>
+              {/* This slot only ever means release. An ended instance has nothing to release, so
+                  the slot stays empty rather than filling the column with disabled buttons; its
+                  record is deleted from More. A paused one keeps the button with its reason. */}
+              {release || paused ? (
+                <Button
+                  aria-label={text(`释放实例 ${getTaskName(task)}`, `Release instance ${getTaskName(task)}`)}
+                  className="h-8 w-16 justify-center px-1.5 hover:bg-app-warningSoft hover:text-app-warningText focus-visible:text-app-warningText aria-disabled:hover:bg-transparent aria-disabled:hover:text-app-muted"
+                  disabled={!release || meta.releasePending}
+                  disabledReason={release ? undefined : text("已暂停的实例不可释放", "Paused instances cannot be released")}
+                  title={text("释放：停止实例并回收资源", "Release: stop instance and reclaim resources")}
+                  variant="ghost"
+                  onClick={() => meta.onRelease(task)}
+                >
+                  <Power className="h-4 w-4" />
+                  {text("释放", "Release")}
+                </Button>
+              ) : (
+                <span aria-hidden="true" data-release-slot="empty" />
+              )}
               <MoreActionsMenu
                 canEdit={meta.canEdit}
                 isPinned={isTaskPinned(meta.pinnedTaskIds, task)}
@@ -1960,14 +2042,16 @@ export function TasksPage() {
   const actionsColumnWidth = columnSizing.actions ?? quickActionStripWidth;
   // The bar folds into More in a narrow region, or when its column is narrower than its buttons.
   const actionBarFolded = compactActions || actionsColumnWidth < quickActionStripWidth;
-  // A narrow region also shrinks the sticky column to release + More; at full width it sat over
-  // the release condition at the default window.
+  // A narrow region also shrinks the sticky column to the folded bar: release, More and, when
+  // the region has room for one more button, the row's state-picked action. An empty bar is the
+  // user's choice and stays empty.
+  const foldedSlots = quickActions.length > 0 && regionQuickActionFit >= 1 ? 1 : 0;
+  const foldedColumnWidth = foldedSlots ? FOLDED_ACTION_COLUMN_WIDTH : COMPACT_ACTION_COLUMN_WIDTH;
+  const renderedActionsWidth = compactActions ? Math.min(actionsColumnWidth, foldedColumnWidth) : actionsColumnWidth;
+  const foldedQuickAction = foldedSlots > 0 && renderedActionsWidth >= FOLDED_ACTION_COLUMN_WIDTH;
   const tableColumnSizing = useMemo<ColumnSizingState>(
-    () => ({
-      ...columnSizing,
-      actions: compactActions ? Math.min(actionsColumnWidth, COMPACT_ACTION_COLUMN_WIDTH) : actionsColumnWidth,
-    }),
-    [actionsColumnWidth, columnSizing, compactActions],
+    () => ({ ...columnSizing, actions: renderedActionsWidth }),
+    [columnSizing, renderedActionsWidth],
   );
 
   /**
@@ -1991,6 +2075,7 @@ export function TasksPage() {
     moreMenuTaskId: moreMenu?.taskId ?? null,
     releasePending: releaseMutation.isPending,
     compactActions: actionBarFolded,
+    foldedQuickAction,
     quickActions,
     canEdit: getTaskEditableState(getRuntimeSettings().apiBaseUrl) !== false,
     onTerminal: openTerminal,
@@ -2598,7 +2683,8 @@ export function TasksPage() {
                   <div className="relative z-10 -mx-2 mt-1 flex flex-wrap gap-0.5 pl-[2.125rem] [@media(pointer:coarse)]:pl-8">
                     {(() => {
                       const terminalLabel = text("终端", "Terminal");
-                      const logAttention = needsLogAttention(task);
+                      // On a phone the card keeps one of the two, picked as the table's folded bar picks it.
+                      const logAttention = !isRunningTask(task);
                       const access = getTaskAccess(task);
                       // The same window that turns the release tag amber: the moment an extension still helps.
                       const releaseAt = getLiveTimedReleaseAt(task);
@@ -2665,7 +2751,7 @@ export function TasksPage() {
                           canEdit={getTaskEditableState(getRuntimeSettings().apiBaseUrl) !== false}
                           isPinned={isTaskPinned(pinnedTaskIds, task)}
                           open={moreMenu?.taskId === taskRowId(task)}
-                          stripActions={phoneCardStripActions(task)}
+                          stripActions={stateStripActions(task)}
                           task={task}
                           onClone={openCloneTask}
                           onExtend={setExtendTask}
@@ -2969,7 +3055,7 @@ export function TasksPage() {
             blocker while open, and a router supports only one blocker — two
             mounted forms would disable one form's unsaved-changes guard. */}
         {createOpen ? (
-          <CreateTaskDialog initialTask={cloneTask} open onClose={closeCreateTask} />
+          <CreateTaskDialog initialImageId={cloneTask ? undefined : createImageId} initialTask={cloneTask} open onClose={closeCreateTask} />
         ) : editTask ? (
           <CreateTaskDialog mode="edit" editTaskId={editTask.id} initialTask={editTask} open onClose={closeEditTask} />
         ) : null}
@@ -2992,12 +3078,14 @@ export function TasksPage() {
           initialFocusIndex={0}
           triggerRef={moreMenuTriggerRef}
           // One panel serves every row, so it carries what that row's surface leaves out: the
-          // table's action bar keeps the user's quick actions (none while it is folded); a phone
-          // card keeps only the log (failed tasks) or the terminal (the rest) as a button.
+          // table's action bar keeps the user's quick actions, or only the state-picked one while
+          // it is folded; a phone card keeps the terminal (running) or the log (the rest).
           stripActions={compactLayout
-            ? phoneCardStripActions(moreMenuTask)
+            ? stateStripActions(moreMenuTask)
             : actionBarFolded
-              ? NO_STRIP_ACTIONS
+              ? foldedQuickAction
+                ? stateStripActions(moreMenuTask)
+                : NO_STRIP_ACTIONS
               : quickActions}
           isPinned={isTaskPinned(pinnedTaskIds, moreMenuTask)}
           canEdit={getTaskEditableState(getRuntimeSettings().apiBaseUrl) !== false}
@@ -3051,7 +3139,13 @@ export function TasksPage() {
                           />
                           <span className="truncate">{name}</span>
                         </label>
-                        {visible && range ? (
+                        {visible && range && isActionsColumn(id) && compactActions ? (
+                          // The narrow region sets this column's width while the bar is folded; a typed
+                          // width would not show, so the setting says what is drawn instead of taking input.
+                          <span className="app-numeric shrink-0 text-xs text-app-muted" title={text("表格区域较窄，操作栏已收起", "The table is narrow, so the bar is folded")}>
+                            {text(`已收起 · ${Math.round(renderedActionsWidth)}`, `Folded · ${Math.round(renderedActionsWidth)}`)}
+                          </span>
+                        ) : visible && range ? (
                           <ColumnWidthInput
                             label={text(`${name}列宽（像素）`, `${name} column width in pixels`)}
                             range={range}
@@ -3084,6 +3178,7 @@ export function TasksPage() {
       <QuickActionsDialog
         open={quickActionsOpen}
         actions={quickActions}
+        folded={actionBarFolded}
         onChange={updateQuickActions}
         onClose={() => setQuickActionsOpen(false)}
       />
