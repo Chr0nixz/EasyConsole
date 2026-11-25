@@ -93,6 +93,8 @@ The [contract inventory](../../CLI_MCP_CONTRACT.md) covers all 54 tools, their a
 - `easyconsole_account_refresh_token` now requires `confirm: true`. CLI login, account refresh-token, all downloads and backup export --output need `--yes`; previews do not read a login password or replace credentials/files.
 - CLI JSON success goes to stdout, JSON errors to stderr; help is text. Inspect wait outcomes and batch per-item results even when the process exits 0.
 - Read each batch item's `status`, not only `ok`. `unknown` means the request may have taken effect (timeout, unreadable response, 5xx): list the tasks and verify before retrying, because a retried create can start a second billed instance. Only `failed` items are safe to retry as-is.
+- `easyconsole_storage_upload` only reads regular files inside the upload directory (`EASY_CONSOLE_UPLOAD_DIR`, default `~/.easy-console/uploads`). Ask the user to place a file there; do not try other paths or symlinks.
+- `easyconsole_backup_import` writes only the sections a backup carries and keeps this install's API and monitor URLs.
 - A scheduled task in `needs_review` cannot be run with `schedule run`. Verify on the console whether its last create landed, then `schedule resume` it; a recurring plan resumes at its next occurrence.
 
 ## CLI Usage

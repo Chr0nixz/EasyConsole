@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ApiClient } from "./api-client";
-import { createEasyConsoleApi } from "./api-factory";
+import { createEasyConsoleApi, pathSegment } from "./api-factory";
 import type { RuntimeHttpRequest, RuntimeTransport } from "./types";
 import { apiClient, authApi, instanceApi } from "./api";
 
@@ -217,5 +217,30 @@ describe("api factory", () => {
       expect.objectContaining({ responseType: "blob", signal, onDownloadProgress: onProgress }),
       expect.objectContaining({ responseType: "blob", signal, onDownloadProgress: onProgress }),
     ]);
+  });
+});
+
+describe("resource id path segments", () => {
+  it("encodes an id so it stays one segment of the intended endpoint", async () => {
+    const { runtime, calls } = createRuntime({ code: 0, data: null });
+    const api = createEasyConsoleApi(new ApiClient(runtime, "http://host/api"));
+
+    await api.instanceApi.deleteTask("x/../../image/image/7");
+    await api.imageApi.deleteImage(42);
+
+    expect(calls[0]).toMatchObject({ method: "DELETE", url: "http://host/api/instance/task/x%2F..%2F..%2Fimage%2Fimage%2F7" });
+    expect(new URL(calls[0].url).pathname).toBe("/api/instance/task/x%2F..%2F..%2Fimage%2Fimage%2F7");
+    expect(calls[1]).toMatchObject({ method: "DELETE", url: "http://host/api/image/image/42" });
+  });
+
+  it("refuses empty and dot-segment ids, which URL parsing would resolve", async () => {
+    const { runtime, calls } = createRuntime({ code: 0, data: null });
+    const api = createEasyConsoleApi(new ApiClient(runtime, "http://host/api"));
+
+    for (const id of ["", ".", ".."]) {
+      expect(() => pathSegment(id)).toThrow();
+    }
+    await expect(api.instanceApi.deleteTask("..")).rejects.toThrow();
+    expect(calls).toHaveLength(0);
   });
 });

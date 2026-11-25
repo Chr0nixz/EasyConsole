@@ -11,7 +11,15 @@ import { runBatch, type BatchItemOutcome } from "../../src/lib/batch-runner";
 import { fetchAllTasks } from "../../src/lib/fetch-all-tasks";
 import { getStatusText } from "../../src/lib/format";
 import { i18nText } from "../../src/lib/i18n-text";
-import { exportLocalDataBackup, importLocalDataBackup, parseLocalDataBackup, type LocalDataBackupSection } from "../../src/lib/local-data-backup";
+import {
+  exportLocalDataBackup,
+  importLocalDataBackup,
+  parseLocalDataBackup,
+  presentBackupSections,
+  summarizeBackup,
+  type ImportLocalDataBackupOptions,
+  type LocalDataBackupSection,
+} from "../../src/lib/local-data-backup";
 import { normalizeStoragePath } from "../../src/lib/remote-storage";
 import { appendRunLog, type RunLogChannel } from "../../src/lib/run-logs";
 import { createScheduledTask, loadScheduledTasks, pauseScheduledTask, resumeScheduledTask, saveScheduledTasks, updateScheduledTask } from "../../src/lib/scheduled-tasks";
@@ -25,6 +33,8 @@ import {
   loadTaskTemplates,
   recordTaskTemplateUsage,
   saveTaskTemplates,
+  findMissingRequiredVariables,
+  resolveTemplateVariables,
   taskTemplateToPayloads,
   updateTaskTemplate,
   type EditableTaskTemplate,
@@ -164,9 +174,14 @@ export type WriteBlobOptions = {
   allowOutsideRoot?: boolean;
 };
 
-function assertInsideDirectory(root: string, candidate: string) {
+/** Wording for the confined-path errors: downloads write into their root, uploads read from theirs. */
+type ConfinedRoot = { verb: "write" | "read"; directory: string };
+const DOWNLOAD_ROOT: ConfinedRoot = { verb: "write", directory: "download directory" };
+const UPLOAD_ROOT: ConfinedRoot = { verb: "read", directory: "upload directory" };
+
+function assertInsideDirectory(root: string, candidate: string, scope: ConfinedRoot = DOWNLOAD_ROOT) {
   if (candidate !== root && !candidate.startsWith(root + sep)) {
-    throw new Error(`Refusing to write outside the download directory (${root}). Got: ${candidate}`);
+    throw new Error(`Refusing to ${scope.verb} outside the ${scope.directory} (${root}). Got: ${candidate}`);
   }
 }
 
@@ -177,7 +192,7 @@ function assertInsideDirectory(root: string, candidate: string) {
  * the root, so the lexical prefix check alone is not enough. Segments that do
  * not exist yet are fine: `writeBlobToFile` creates them fresh.
  */
-function assertNoLinkSegmentsBelowRoot(root: string, target: string) {
+function assertNoLinkSegmentsBelowRoot(root: string, target: string, scope: ConfinedRoot = DOWNLOAD_ROOT) {
   let cursor = root;
   for (const segment of target.slice(root.length).split(sep)) {
     if (!segment) continue;
@@ -195,7 +210,7 @@ function assertNoLinkSegmentsBelowRoot(root: string, target: string) {
       throw error;
     }
     if (info.isSymbolicLink()) {
-      throw new Error(`Refusing to write through a symlink or junction below the download directory: ${cursor}`);
+      throw new Error(`Refusing to ${scope.verb} through a symlink or junction below the ${scope.directory}: ${cursor}`);
     }
   }
 }
@@ -207,7 +222,7 @@ function assertNoLinkSegmentsBelowRoot(root: string, target: string) {
  * is checked instead. Unexpected filesystem errors fail closed: if the real
  * location cannot be determined, the write is refused.
  */
-function assertRealPathInsideRoot(root: string, target: string) {
+function assertRealPathInsideRoot(root: string, target: string, scope: ConfinedRoot = DOWNLOAD_ROOT) {
   let realRoot: string;
   try {
     realRoot = realpathSync(root);
@@ -232,7 +247,7 @@ function assertRealPathInsideRoot(root: string, target: string) {
       }
       throw error;
     }
-    assertInsideDirectory(realRoot, real);
+    assertInsideDirectory(realRoot, real, scope);
     return;
   }
 }
@@ -247,6 +262,38 @@ function resolveDownloadPath(outputPath: string, allowOutsideRoot: boolean) {
   assertInsideDirectory(root, resolvedPath);
   assertNoLinkSegmentsBelowRoot(root, resolvedPath);
   assertRealPathInsideRoot(root, resolvedPath);
+  return resolvedPath;
+}
+
+/**
+ * Root that MCP uploads read from.
+ *
+ * An upload copies a local file to remote storage, where the read-text tools
+ * can fetch it back. Unconfined, a misled agent could ship `~/.ssh/id_rsa` or
+ * the CLI's token file out that way, so MCP only uploads files a person put
+ * here. Set `EASY_CONSOLE_UPLOAD_DIR` to move it.
+ */
+export function getUploadRoot() {
+  return resolve(process.env.EASY_CONSOLE_UPLOAD_DIR ?? join(homedir(), ".easy-console", "uploads"));
+}
+
+export type UploadLocalFileOptions = {
+  /**
+   * Allow reading from outside the upload root. Set by the CLI, where the
+   * local path is an explicit human instruction; never set from MCP.
+   */
+  allowOutsideRoot?: boolean;
+};
+
+function resolveUploadPath(localPath: string, allowOutsideRoot: boolean) {
+  if (allowOutsideRoot) return resolve(localPath);
+
+  const root = getUploadRoot();
+  const resolvedPath = isAbsolute(localPath) ? resolve(localPath) : resolve(root, localPath);
+  assertInsideDirectory(root, resolvedPath, UPLOAD_ROOT);
+  // The final component counts too: a link inside the root to ~/.ssh is refused.
+  assertNoLinkSegmentsBelowRoot(root, resolvedPath, UPLOAD_ROOT);
+  assertRealPathInsideRoot(root, resolvedPath, UPLOAD_ROOT);
   return resolvedPath;
 }
 
@@ -681,13 +728,25 @@ export function commitImage(api: EasyConsoleApi, payload: ImageCommitPayload, co
 
 // === Storage extensions ===
 
-export async function uploadLocalFile(api: EasyConsoleApi, localPath: string, remoteDirectory: string, confirm?: boolean) {
-  const buffer = await readFile(localPath);
-  const filename = basename(localPath);
-  const file = new File([buffer], filename);
-  return maybeMutate("storage.upload", { localPath, remoteDirectory, filename }, confirm, () =>
-    api.storageApi.uploadFile(file, normalizeStoragePath(remoteDirectory)),
-  );
+export async function uploadLocalFile(
+  api: EasyConsoleApi,
+  localPath: string,
+  remoteDirectory: string,
+  confirm?: boolean,
+  options: UploadLocalFileOptions = {},
+) {
+  const resolvedPath = resolveUploadPath(localPath, options.allowOutsideRoot === true);
+  // The preview only stats the file; its bytes are read once the upload is confirmed.
+  const info = await stat(resolvedPath);
+  // Only regular files: reading /dev/zero or a named pipe would exhaust memory or hang.
+  if (!info.isFile()) {
+    throw new Error(`Only regular files can be uploaded: ${resolvedPath}`);
+  }
+  const filename = basename(resolvedPath);
+  return maybeMutate("storage.upload", { localPath: resolvedPath, remoteDirectory, filename, bytes: info.size }, confirm, async () => {
+    const file = new File([await readFile(resolvedPath)], filename);
+    return api.storageApi.uploadFile(file, normalizeStoragePath(remoteDirectory));
+  });
 }
 
 export function getStorageInfo(api: EasyConsoleApi) {
@@ -754,13 +813,28 @@ export async function applyTaskTemplate(
   const templates = await loadTaskTemplates(storage);
   const template = templates.find((item) => item.id === templateId);
   if (!template) throw new Error(`Task template not found: ${templateId}`);
-  const payloads = taskTemplateToPayloads(template, undefined, variableValues);
+  // Same two steps as the desktop: defaults fill what the caller left out, and
+  // a required variable with no value refuses the run, so no instance is ever
+  // created with a literal `${dataset}` in its paths.
+  // Values for placeholders the template does not define pass through as given,
+  // as they did before defaults were applied here.
+  const resolvedVariables = { ...(variableValues ?? {}), ...resolveTemplateVariables(template, variableValues ?? {}) };
+  const missing = findMissingRequiredVariables(template, resolvedVariables);
+  if (missing.length > 0) {
+    throw new Error(
+      i18nText(
+        `模板 ${template.name} 缺少必填变量：${missing.join(", ")}。请通过 variableValues（CLI：--variables-json）提供。`,
+        `Template ${template.name} is missing required variables: ${missing.join(", ")}. Pass them in variableValues (CLI: --variables-json).`,
+      ),
+    );
+  }
+  const payloads = taskTemplateToPayloads(template, undefined, resolvedVariables);
   // Created tasks have no remote id until the batch runs, so the preview keys
   // payloads by their 1-based ordinal and shows the generated task name.
   const impact: BatchImpactItem[] = payloads.map((payload, index) => ({ id: index + 1, name: payload.name }));
   return maybeMutate(
     "template.apply",
-    { templateId, templateName: template.name, count: payloads.length, variableValues },
+    { templateId, templateName: template.name, count: payloads.length, variableValues: resolvedVariables },
     confirm,
     async () => {
       const batchId = createBatchId();
@@ -988,11 +1062,38 @@ export async function importBackup(
   sections: LocalDataBackupSection[],
   confirm?: boolean,
   credentialStorage = storage,
+  options: ImportLocalDataBackupOptions = {},
 ) {
   const backup = parseLocalDataBackup(backupText);
-  return maybeMutate("backup.import", { sections, includeSecrets: backup.includeSecrets }, confirm, () =>
+  // Only sections the file carries are written; the rest of the local data stays as it is.
+  const present = new Set(presentBackupSections(backup));
+  const applied = sections.filter((section) => present.has(section));
+  const skipped = sections.filter((section) => !present.has(section));
+  const counts = summarizeBackup(backup);
+  const payload = {
+    sections: applied,
+    ...(skipped.length > 0 ? { skippedSections: skipped } : {}),
+    includeSecrets: backup.includeSecrets,
+    counts: Object.fromEntries(applied.map((section) => [section, backupSectionCount(counts, section)])),
+    ...(options.keepEndpoints && applied.includes("settings") ? { keepsLocalEndpoints: true } : {}),
+  };
+  return maybeMutate("backup.import", payload, confirm, () =>
     // Keep shared-key writes from interleaving with other processes. Credential
     // keys use their own adapter and are never written into the shared store.
-    withStorageTransaction(storage, () => importLocalDataBackup({ storage, credentialStorage }, backup, sections)),
+    withStorageTransaction(storage, () => importLocalDataBackup({ storage, credentialStorage }, backup, applied, options)),
   );
+}
+
+/** What importing one section writes: an entry count for lists, true for single values. */
+function backupSectionCount(counts: ReturnType<typeof summarizeBackup>, section: LocalDataBackupSection): number | boolean {
+  switch (section) {
+    case "settings":
+      return counts.hasSettings;
+    case "language":
+      return counts.hasLanguage;
+    case "token":
+      return counts.hasToken;
+    default:
+      return counts[section];
+  }
 }

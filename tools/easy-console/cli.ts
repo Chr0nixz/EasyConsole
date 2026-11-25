@@ -662,7 +662,8 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
   storageUpload.action((localPath: string, remoteDir: string) =>
     run(storageUpload, (context) => {
       const options = storageUpload.opts<{ yes?: boolean }>();
-      return uploadLocalFile(context.api, localPath, remoteDir, options.yes);
+      // A local path typed on the command line is the user's own choice, like `curl -T`.
+      return uploadLocalFile(context.api, localPath, remoteDir, options.yes, { allowOutsideRoot: true });
     })(),
   );
 

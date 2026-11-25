@@ -22,6 +22,21 @@ import type {
   UserInfo,
 } from "./types";
 
+/**
+ * One path segment for a resource id. The id is percent-encoded, so `/`, `?`
+ * or `#` cannot reach another endpoint, and the dot segments `.` and `..` are
+ * refused outright: URL parsing resolves them even when encoded, so
+ * `x/../../image/image/7` (or a bare `..`) would otherwise turn a task delete
+ * into an image delete. Ids come from the API, the CLI and MCP callers alike.
+ */
+export function pathSegment(id: string | number): string {
+  const value = String(id);
+  if (!value || value === "." || value === "..") {
+    throw new ApiError(i18nText(`无效的资源 ID：${JSON.stringify(value)}`, `Invalid resource id: ${JSON.stringify(value)}`), { kind: "parse" });
+  }
+  return encodeURIComponent(value);
+}
+
 export const UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024;
 
 type DownloadRequestOptions = {
@@ -180,7 +195,7 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
         throw new Error(i18nText("后端不支持任务编辑，请删除后重建", "Backend does not support task editing. Delete and recreate instead"));
       }
       try {
-        const result = await apiClient.patch<unknown>(`/instance/task/${id}`, payload);
+        const result = await apiClient.patch<unknown>(`/instance/task/${pathSegment(id)}`, payload);
         taskEditableByBaseUrl.set(baseUrl, true);
         return result;
       } catch (error) {
@@ -196,11 +211,11 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
     checkTaskName(name: string) {
       return apiClient.get<unknown>(`/instance/checkTaskName?name=${encodeURIComponent(name)}`);
     },
-    operateTask(id: string | number) {
-      return apiClient.put<unknown>(`/instance/task/${id}`);
+    async operateTask(id: string | number) {
+      return apiClient.put<unknown>(`/instance/task/${pathSegment(id)}`);
     },
-    deleteTask(id: string | number) {
-      return apiClient.delete<unknown>(`/instance/task/${id}`);
+    async deleteTask(id: string | number) {
+      return apiClient.delete<unknown>(`/instance/task/${pathSegment(id)}`);
     },
     deleteTasks(ids: Array<string | number>) {
       return apiClient.delete<unknown>("/instance/task", { body: ids });
@@ -234,11 +249,11 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
       const raw = await apiClient.get<unknown>("/image/image_system", { query, signal: options?.signal });
       return extractList<ImageItem>(raw);
     },
-    detail(id: string | number) {
-      return apiClient.get<ImageItem>(`/image/image/${id}`);
+    async detail(id: string | number) {
+      return apiClient.get<ImageItem>(`/image/image/${pathSegment(id)}`);
     },
-    download(id: string | number, options?: DownloadRequestOptions) {
-      return apiClient.get<Blob>(`/image/image/download/${id}`, {
+    async download(id: string | number, options?: DownloadRequestOptions) {
+      return apiClient.get<Blob>(`/image/image/download/${pathSegment(id)}`, {
         responseType: "blob",
         signal: options?.signal,
         onDownloadProgress: options?.onProgress,
@@ -247,16 +262,16 @@ export function createEasyConsoleApi(apiClient: ApiClient) {
     commitImage(payload: ImageCommitPayload) {
       return apiClient.post<unknown>("/image/image_commit", payload);
     },
-    setDefault(id: string | number) {
-      return apiClient.post<unknown>(`/image/default/${id}`);
+    async setDefault(id: string | number) {
+      return apiClient.post<unknown>(`/image/default/${pathSegment(id)}`);
     },
     // Update/delete responses are unverified against the live API; typed as
     // unknown on purpose (envelope behavior confirmed only by real traffic).
-    updateImage(id: string | number, payload: UnknownRecord) {
-      return apiClient.put<unknown>(`/image/image/${id}`, payload);
+    async updateImage(id: string | number, payload: UnknownRecord) {
+      return apiClient.put<unknown>(`/image/image/${pathSegment(id)}`, payload);
     },
-    deleteImage(id: string | number) {
-      return apiClient.delete<unknown>(`/image/image/${id}`);
+    async deleteImage(id: string | number) {
+      return apiClient.delete<unknown>(`/image/image/${pathSegment(id)}`);
     },
   };
 

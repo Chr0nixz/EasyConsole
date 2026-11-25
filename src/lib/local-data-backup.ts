@@ -128,39 +128,78 @@ export function summarizeBackup(backup: LocalDataBackup) {
   };
 }
 
+/**
+ * Sections the backup actually carries. A section the backup leaves out (an
+ * older export without resource presets, a language-only file) is absent, not
+ * empty: importing it must leave the local data alone rather than clear it.
+ */
+export function presentBackupSections(backup: LocalDataBackup): LocalDataBackupSection[] {
+  const items = backup.items;
+  const present: LocalDataBackupSection[] = [];
+  if (items.settings && typeof items.settings === "object") present.push("settings");
+  if (typeof items.language === "string") present.push("language");
+  for (const section of ["taskTemplates", "resourcePresets", "scheduledTasks", "runLogs"] as const) {
+    if (Array.isArray(items[section])) present.push(section);
+  }
+  if (typeof items.token === "string" && items.token) present.push("token");
+  if (Array.isArray(items.savedAccounts)) present.push("savedAccounts");
+  return present;
+}
+
+export type ImportLocalDataBackupOptions = {
+  /**
+   * Keep this install's API and monitor URLs instead of the backup's. Imports a
+   * caller cannot vouch for (MCP) set it: the desktop applies the stored API URL
+   * before it restores the keychain token, so an imported URL would send that
+   * token to whatever host the backup names.
+   */
+  keepEndpoints?: boolean;
+};
+
 export async function importLocalDataBackup(
   storageOrAdapters: RuntimeStorage | BackupStorageAdapters,
   backup: LocalDataBackup,
   sections: LocalDataBackupSection[],
+  options: ImportLocalDataBackupOptions = {},
 ) {
   const { storage, credentialStorage } = resolveAdapters(storageOrAdapters);
-  const selected = new Set(sections);
-  if (selected.has("settings") && backup.items.settings) {
+  const present = new Set(presentBackupSections(backup));
+  // Selected but absent sections are skipped, never written as empty.
+  const selected = new Set(sections.filter((section) => present.has(section)));
+  if (selected.has("settings")) {
     const store = parseAccountSettingsStore(JSON.stringify(backup.items.settings));
+    if (options.keepEndpoints) {
+      const current = parseAccountSettingsStore(await storage.get(APP_SETTINGS_STORAGE_KEY));
+      for (const [accountId, settings] of Object.entries(store.byAccount)) {
+        // Endpoints come only from this install (or the built-in default), never the file.
+        const kept = getAccountAppSettings(current, accountId);
+        store.byAccount[accountId] = { ...settings, apiBaseUrl: kept.apiBaseUrl, monitorDashboardUrl: kept.monitorDashboardUrl };
+      }
+    }
     await storage.set(APP_SETTINGS_STORAGE_KEY, stringifyAccountSettingsStore(store));
   }
-  if (selected.has("language") && typeof backup.items.language === "string") {
-    await storage.set(I18N_STORAGE_KEY, backup.items.language);
+  if (selected.has("language")) {
+    await storage.set(I18N_STORAGE_KEY, backup.items.language as string);
   }
   if (selected.has("taskTemplates")) {
-    await saveTaskTemplates(storage, parseJsonArray(JSON.stringify(backup.items.taskTemplates ?? [])) as never);
+    await saveTaskTemplates(storage, parseJsonArray(JSON.stringify(backup.items.taskTemplates)) as never);
   }
   if (selected.has("resourcePresets")) {
-    await saveResourcePresets(storage, parseJsonArray(JSON.stringify(backup.items.resourcePresets ?? [])) as never);
+    await saveResourcePresets(storage, parseJsonArray(JSON.stringify(backup.items.resourcePresets)) as never);
   }
   if (selected.has("scheduledTasks")) {
-    await saveScheduledTasks(storage, parseJsonArray(JSON.stringify(backup.items.scheduledTasks ?? [])) as never);
+    await saveScheduledTasks(storage, parseJsonArray(JSON.stringify(backup.items.scheduledTasks)) as never);
   }
   if (selected.has("runLogs")) {
-    await storage.set(RUN_LOGS_STORAGE_KEY, JSON.stringify(parseRunLogs(JSON.stringify(backup.items.runLogs ?? []))));
+    await storage.set(RUN_LOGS_STORAGE_KEY, JSON.stringify(parseRunLogs(JSON.stringify(backup.items.runLogs))));
   }
-  if (selected.has("token") && backup.items.token) {
-    await credentialStorage.set(TOKEN_STORAGE_KEY, backup.items.token);
+  if (selected.has("token")) {
+    await credentialStorage.set(TOKEN_STORAGE_KEY, backup.items.token as string);
   }
   if (selected.has("savedAccounts")) {
     await credentialStorage.set(
       SAVED_ACCOUNTS_STORAGE_KEY,
-      stringifySavedAccounts(parseSavedAccounts(JSON.stringify(backup.items.savedAccounts ?? []))),
+      stringifySavedAccounts(parseSavedAccounts(JSON.stringify(backup.items.savedAccounts))),
     );
   }
 }

@@ -33,8 +33,8 @@
 - 运行日志写入失败不改变操作结果：操作已经完成时照常返回结果和退出码。MCP 把写入失败作为诊断写到 stderr，CLI 不输出。
 - MCP 成功及工具处理器错误使用上述 JSON envelope，放在 `content[0].text`；处理器错误另带 `isError: true`。JSON-RPC/协议层和 SDK 入参校验错误遵循 MCP 协议，不保证经过客户端 envelope。stdio stdout 只用于协议，诊断写 stderr。
 - 常见变更结果 `Mutation`：预览有 `dryRun: true, action, payload, message`，部分批量预览还有 impact；执行有 `dryRun: false, action, payload, result`。登录、令牌刷新、日志清空及 CLI 文件写入的执行结果另见下表，不强行包装为 Mutation。
-- `Id` 是字符串或数字。CLI 仅把规范且安全的十进制数字转换为 number，超出安全整数或带前导零的 ID 保留原字符串。任务接口的 `taskId` 与本地计划接口的字符串 `taskId` 不是同一种实体。
-- 日志/远程文本默认最多 200000 字节，返回 `text, bytes, limitBytes, truncated`。下载默认拒绝覆盖，需另传 `overwrite` / `--overwrite`；MCP 目标限定在 `EASY_CONSOLE_DOWNLOAD_DIR`（默认 `~/.easy-console/downloads`）内，CLI 显式 `--output` 可选任意本地路径。
+- `Id` 是字符串或数字。CLI 仅把规范且安全的十进制数字转换为 number，超出安全整数或带前导零的 ID 保留原字符串。MCP 的远程 `Id` 只接受非负整数，或只含字母、数字、`-`、`_` 的字符串。所有入口拼进接口路径时都会编码，空串、`.` 和 `..` 直接拒绝。任务接口的 `taskId` 与本地计划接口的字符串 `taskId` 不是同一种实体。
+- 日志/远程文本默认最多 200000 字节，返回 `text, bytes, limitBytes, truncated`。下载默认拒绝覆盖，需另传 `overwrite` / `--overwrite`；MCP 目标限定在 `EASY_CONSOLE_DOWNLOAD_DIR`（默认 `~/.easy-console/downloads`）内，CLI 显式 `--output` 可选任意本地路径。上传对称处理：MCP 的 `localPath` 必须是 `EASY_CONSOLE_UPLOAD_DIR`（默认 `~/.easy-console/uploads`）内的普通文件，相对路径按该目录解析，符号链接、目录和设备文件都拒绝；CLI 命令行给出的路径不受此限。上传预览只读取文件信息，确认执行后才读取内容。
 
 ## 54 个 MCP 工具
 
@@ -75,14 +75,14 @@
 | `easyconsole_image_detail` | `imageId` | 后端镜像详情 |
 | `easyconsole_image_download` | `imageId, outputPath?, overwrite?, confirm?` | Mutation；result 含 `path, bytes` |
 | `easyconsole_image_commit` | `payload, confirm?` | Mutation；提交容器环境为镜像 |
-| `easyconsole_storage_upload` | `localPath, remoteDirectory, confirm?` | Mutation |
+| `easyconsole_storage_upload` | `localPath, remoteDirectory, confirm?` | Mutation；预览含解析后的 `localPath, filename, bytes`；`localPath` 限定在上传目录内 |
 | `easyconsole_storage_info` | 无 | 后端存储用量信息 |
 | `easyconsole_account_change_password` | `payload, confirm?` | Mutation |
 | `easyconsole_account_refresh_token` | `confirm?` | 预览不含凭据；执行返回 `refreshed, token` 并写本地 config |
 | `easyconsole_template_list` | 无 | 本地实例模板数组 |
 | `easyconsole_template_create` | `template, confirm?` | Mutation；result 是新模板 |
 | `easyconsole_template_update` | `templateId: string, template, confirm?` | Mutation；result 是更新后的模板 |
-| `easyconsole_template_apply` | `templateId: string, variableValues?, confirm?` | 预览生成的 impact；执行 result 含 `batchId, created, unknown, results`，`unknown` 为结果未知、需先核实的创建数 |
+| `easyconsole_template_apply` | `templateId: string, variableValues?, confirm?` | 预览生成的 impact，`variableValues` 为应用默认值后的结果；必填变量缺少值时预览和执行都报错；执行 result 含 `batchId, created, unknown, results`，`unknown` 为结果未知、需先核实的创建数 |
 | `easyconsole_template_delete` | `templateId: string, confirm?` | Mutation |
 | `easyconsole_schedule_list` | 无 | 本地定时任务数组 |
 | `easyconsole_schedule_create` | `name, scheduleTime, payload, description?, recurrence?, confirm?` | Mutation；执行后另含本地调度说明 |
@@ -92,7 +92,7 @@
 | `easyconsole_schedule_run` | `taskId: string, confirm?` | Mutation；验证已知账号归属，执行结果含计划和远程结果。预览含 `status`，有错误时含 `lastError`；定时释放的计划另含 `releaseTime`，按提交时刻加 24 小时估算，执行时按实际提交时刻重算。计划处于待确认（needs_review）时预览和执行都报错，须先核实并 resume |
 | `easyconsole_schedule_delete` | `taskId: string, confirm?` | Mutation |
 | `easyconsole_backup_export` | 无 | v1 非机密备份对象；不提供 includeSecrets 参数 |
-| `easyconsole_backup_import` | `backupText, sections?: string[], confirm?` | Mutation；拒绝 token/savedAccounts sections |
+| `easyconsole_backup_import` | `backupText, sections?: string[], confirm?` | Mutation；拒绝 token/savedAccounts sections。只写入备份里实际存在的分区，预览含 `sections, skippedSections?, counts`；settings 保留本机的 API 地址和监控地址（`keepsLocalEndpoints: true`） |
 | `easyconsole_run_log_list` | `limit?, source?, channel?, result?, keyword?` | 过滤后的日志数组 |
 | `easyconsole_run_log_export` | 无 | JSON 日志导出对象 |
 | `easyconsole_run_log_clear` | `confirm?` | 预览；执行返回 `dryRun: false, action, cleared: true` |
@@ -141,7 +141,7 @@
 | `schedule update` | `<taskId>, --schedule-json` 必填 |
 | `schedule pause` / `schedule resume` / `schedule run` / `schedule delete` | `<taskId>`，本地计划 ID |
 | `backup export` | `--include-secrets, --output`；无 output 时只读导出，无机密 JSON 到 stdout；含机密须给 output，写文件须 --yes |
-| `backup import` | `<file>, --sections`（逗号分隔）, `--include-secrets`；导入凭据还需显式 include-secrets |
+| `backup import` | `<file>, --sections`（逗号分隔）, `--include-secrets`；导入凭据还需显式 include-secrets；备份里没有的分区跳过，不会写成空 |
 | `run-log list` | `--limit, --source, --channel, --result, --keyword` |
 | `run-log export` / `run-log clear` | 无其他专用参数 |
 
@@ -157,6 +157,6 @@ Resources 不读取远程 API，不要求 token 或远程 HTTP opt-in，不额�
 
 在 1.0 冻结前补齐确认门：CLI login、account refresh-token、三种 download、backup export --output，以及 MCP account_refresh_token。旧 0.4.x 脚本要添加 `--yes` / `confirm: true`。工具名称保持 54 个，未新增别名；MCP task_update 纠正为接受不含 name 的 PATCH；CLI 不再对长 ID 舍入，用法错误在 --json 下也返回 JSON。
 
-2026-11-25 起（新增字段，不删除旧字段）：批量回执逐项增加 `status`，`template apply` 结果增加 `unknown`；`schedule run` 拒绝待确认的计划；`schedule resume` 不再重放待确认重复计划已过的时间点；`schedule run` 预览增加 `releaseTime`，定时释放改为从实际提交时刻起算 24 小时；运行日志写入失败不再覆盖已完成操作的结果。
+2026-11-25 起（结果只新增字段、不删除旧字段；输入上的收紧只拒绝不安全的值）：批量回执逐项增加 `status`，`template apply` 结果增加 `unknown`；`schedule run` 拒绝待确认的计划；`schedule resume` 不再重放待确认重复计划已过的时间点；`schedule run` 预览增加 `releaseTime`，定时释放改为从实际提交时刻起算 24 小时；运行日志写入失败不再覆盖已完成操作的结果。MCP 上传限定在上传目录内，预览不再读取文件内容；MCP 远程 `Id` 收紧为整数或安全字符；备份导入跳过缺失的分区，MCP 导入保留本机接口地址；模板应用补齐变量默认值并检查必填项。
 
 自动化证据位于 cli / mcp-tools / mcp-resources 测试；安装包、真实服务与旧数据 fixture 的验收边界继续参见 [发布清单](RELEASE_CHECKLIST_1.0.0.md)。

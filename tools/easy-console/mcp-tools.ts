@@ -80,7 +80,13 @@ export type EasyConsoleMcpDeps = {
   createContext?: (options?: EasyConsoleContextOptions) => Promise<EasyConsoleContext>;
 };
 
-const idSchema = z.union([z.string(), z.number()]);
+// Remote ids are numeric on the live API. Strings are limited to a safe set so
+// an id can never carry a path (`7/../../image/image/3`); api-factory also
+// encodes every id segment, this is the boundary check for model-supplied input.
+const idSchema = z.union([
+  z.number().int().nonnegative(),
+  z.string().regex(/^[A-Za-z0-9_-]+$/, "Use the numeric id, or letters, digits, '-' and '_' only."),
+]);
 const optionalQuerySchema = z.record(z.string(), z.unknown()).optional();
 const numericInput = (minimum: number, integer: boolean, inclusive = true) =>
   z.union([z.number(), z.string().trim().min(1)]).refine((value) => {
@@ -575,7 +581,10 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
     },
     {
       name: "easyconsole_storage_upload",
-      description: "Upload a local file to a remote directory. Requires confirm=true to execute.",
+      description:
+        "Upload a local file to a remote directory. Requires confirm=true to execute. localPath must be a regular file " +
+        "inside the upload directory (EASY_CONSOLE_UPLOAD_DIR, default ~/.easy-console/uploads); relative paths resolve " +
+        "against it, and symlinks are refused.",
       inputSchema: {
         localPath: z.string(),
         remoteDirectory: z.string(),
@@ -810,7 +819,8 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
       name: "easyconsole_backup_import",
       description:
         "Import non-secret local data from a backup JSON text. Requires confirm=true to execute. " +
-        "Token and saved-account sections are rejected: importing them would overwrite local credentials.",
+        "Token and saved-account sections are rejected: importing them would overwrite local credentials. " +
+        "Sections the backup does not carry are skipped, and settings keep this install's API and monitor URLs.",
       inputSchema: {
         backupText: z.string(),
         sections: z.array(z.string()).optional(),
@@ -829,6 +839,9 @@ export function createMcpToolDefinitions(): EasyConsoleMcpToolDefinition[] {
           sections as never,
           asConfirm(input.confirm),
           context.credentialStorage ?? context.storage,
+          // An agent cannot vouch for a backup's endpoints: an imported API URL
+          // would receive the desktop's keychain token on its next start.
+          { keepEndpoints: true },
         );
       },
     },

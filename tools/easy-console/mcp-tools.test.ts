@@ -887,3 +887,102 @@ describe("easy-console MCP outcome reporting", () => {
     expect(Date.parse(payload.scheduleTime)).toBeGreaterThan(Date.now());
   });
 });
+
+describe("easy-console MCP input boundary", () => {
+  it("refuses ids that could carry a path, before any request", async () => {
+    const context = createFakeContext();
+    const deleteTask = vi.spyOn(context.api.instanceApi, "deleteTask");
+
+    for (const taskId of ["x/../../image/image/7", "..", "7?force=1", -1, 1.5]) {
+      await expect(invokeMcpToolDefinition(getTool("easyconsole_task_delete"), context, { taskId, confirm: true })).rejects.toThrow();
+    }
+    expect(deleteTask).not.toHaveBeenCalled();
+
+    await invokeMcpToolDefinition(getTool("easyconsole_task_delete"), context, { taskId: 7, confirm: true });
+    await invokeMcpToolDefinition(getTool("easyconsole_task_delete"), context, { taskId: "9007199254740993", confirm: true });
+    expect(deleteTask).toHaveBeenCalledTimes(2);
+  });
+
+  it("imports only what a backup carries and keeps this install's endpoints", async () => {
+    const context = createFakeContext();
+    const templates = JSON.stringify([{ id: "tpl-1", name: "keep me", imageId: "1" }]);
+    await context.storage.set(TASK_TEMPLATES_STORAGE_KEY, templates);
+    await context.storage.set(
+      "easy-console.settings",
+      JSON.stringify({ version: 2, byAccount: { __global__: { apiBaseUrl: "https://console.example/api" } } }),
+    );
+    const backupText = JSON.stringify({
+      app: "EasyConsole",
+      version: 1,
+      exportedAt: "2026-11-25T00:00:00.000Z",
+      includeSecrets: false,
+      items: { language: "en-US", settings: { version: 2, byAccount: { __global__: { apiBaseUrl: "https://attacker.example/api" } } } },
+    });
+
+    const preview = await invokeMcpToolDefinition(getTool("easyconsole_backup_import"), context, { backupText });
+    expect(preview).toMatchObject({
+      dryRun: true,
+      payload: {
+        sections: ["settings", "language"],
+        skippedSections: ["taskTemplates", "resourcePresets", "scheduledTasks", "runLogs"],
+        keepsLocalEndpoints: true,
+      },
+    });
+
+    await invokeMcpToolDefinition(getTool("easyconsole_backup_import"), context, { backupText, confirm: true });
+    expect(await context.storage.get(TASK_TEMPLATES_STORAGE_KEY)).toBe(templates);
+    expect(await context.storage.get("easy-console.settings")).toContain("https://console.example/api");
+    expect(await context.storage.get("easy-console.settings")).not.toContain("attacker.example");
+  });
+
+  it("applies template variable defaults and refuses a missing required variable", async () => {
+    const created: Array<Record<string, unknown>> = [];
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [], raw: [] }),
+        createTask: async (payload: Record<string, unknown>) => {
+          created.push(payload);
+          return { id: created.length };
+        },
+      },
+    });
+    await context.storage.set(
+      TASK_TEMPLATES_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: "tpl-1",
+          name: "sweep",
+          taskNamePrefix: "sweep",
+          batchCount: 1,
+          imageId: "1",
+          cpu: 4,
+          gpu: 0,
+          memory: 16,
+          storagePath: "/data/${dataset}/${split}",
+          mountPath: "/home/ubuntu",
+          releaseCondition: 1,
+          usageCount: 0,
+          variables: [
+            { key: "dataset", required: true },
+            { key: "split", defaultValue: "train" },
+          ],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ]),
+    );
+
+    await expect(
+      invokeMcpToolDefinition(getTool("easyconsole_template_apply"), context, { templateId: "tpl-1", confirm: true }),
+    ).rejects.toThrow(/dataset/);
+    expect(created).toHaveLength(0);
+
+    const result = await invokeMcpToolDefinition(getTool("easyconsole_template_apply"), context, {
+      templateId: "tpl-1",
+      variableValues: { dataset: "imagenet" },
+      confirm: true,
+    });
+    expect(result).toMatchObject({ payload: { variableValues: { dataset: "imagenet", split: "train" } } });
+    expect(created[0]).toMatchObject({ storage_path: "/data/imagenet/train" });
+  });
+});
