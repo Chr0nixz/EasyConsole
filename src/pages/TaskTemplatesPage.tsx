@@ -803,18 +803,22 @@ export function TaskTemplatesPage() {
       const failed = result.summary.failed > 0;
       // Unknown outcomes are undecided creates: verify before retrying.
       const unknown = result.summary.unknown > 0;
+      // Skipped items were never sent; here that means the account was switched mid-run.
+      const skipped = result.summary.skipped > 0;
       const firstName = result.outcomes[0]?.item.name ?? "";
       const title = text(`已按模板创建：${template.name}`, `Created from template: ${template.name}`);
-      if (failed || unknown) {
+      if (failed || unknown || skipped) {
         const detail =
           text(
-            `${result.summary.succeeded}/${result.summary.total} 成功，${result.summary.failed} 失败，${result.summary.unknown} 结果未知`,
-            `${result.summary.succeeded}/${result.summary.total} succeeded, ${result.summary.failed} failed, ${result.summary.unknown} unknown`,
+            `${result.summary.succeeded}/${result.summary.total} 成功，${result.summary.failed} 失败，${result.summary.unknown} 结果未知${skipped ? `，${result.summary.skipped} 未执行` : ""}`,
+            `${result.summary.succeeded}/${result.summary.total} succeeded, ${result.summary.failed} failed, ${result.summary.unknown} unknown${skipped ? `, ${result.summary.skipped} not run` : ""}`,
           ) + (unknown ? text("请先核对未知项再重试。", " Verify the unknown items before retrying.") : "");
         toast.error(
           failed
             ? text(`模板创建部分失败：${template.name}`, `Template creation partially failed: ${template.name}`)
-            : text(`模板创建有结果未知的项：${template.name}`, `Template creation has unknown outcomes: ${template.name}`),
+            : unknown
+              ? text(`模板创建有结果未知的项：${template.name}`, `Template creation has unknown outcomes: ${template.name}`)
+              : text(`模板创建未全部执行：${template.name}`, `Template creation stopped before every item ran: ${template.name}`),
           detail,
         );
       } else {
@@ -827,10 +831,10 @@ export function TaskTemplatesPage() {
       }
       void runLogger.log({
         source: "task-template",
-        level: failed ? "error" : unknown ? "warning" : "info",
+        level: failed ? "error" : unknown || skipped ? "warning" : "info",
         action: "taskTemplate.execute",
-        result: failed || unknown ? "failure" : "success",
-        title: failed || unknown ? text(`模板创建未全部成功：${template.name}`, `Template creation not fully successful: ${template.name}`) : title,
+        result: failed || unknown || skipped ? "failure" : "success",
+        title: failed || unknown || skipped ? text(`模板创建未全部成功：${template.name}`, `Template creation not fully successful: ${template.name}`) : title,
         targetName: template.name,
         targetId: template.id,
         metadata: {

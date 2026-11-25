@@ -1,8 +1,11 @@
 import { useCallback, useRef, useState } from "react";
 
+import { getActiveAccountScope } from "../../lib/account-scope";
+import { apiClient } from "../../lib/api";
 import type { BatchItemOutcome, BatchRunResult } from "../../lib/batch-runner";
 import { retryFailedBatchItems, runBatch } from "../../lib/batch-runner";
 import {
+  activeBatchOperationAccount,
   applyBatchItemResolutions,
   appendBatchOperation,
   createBatchOperationRecord,
@@ -12,6 +15,7 @@ import {
   type BatchOperationItem,
   type BatchOperationRecord,
 } from "../../lib/change-list";
+import { i18nText } from "../../lib/i18n-text";
 import { extractRemoteTaskId } from "../../lib/schedule-execution";
 import { browserRuntime } from "../../lib/runtime";
 import type { PreviewItem } from "./BatchResultDialog";
@@ -63,6 +67,26 @@ async function persistRecord(write: () => Promise<unknown>) {
   }
 }
 
+/**
+ * The account and API session a batch started under. Items run through the shared API client,
+ * so after a switch they would be created and billed under the other account; every item, and
+ * every retry of the batch, checks this first. The token is compared too because switching
+ * installs the new token before the account scope changes.
+ */
+type BatchSession = { accountKey: string; accountDisplayName: string; token: string | null; baseUrl: string };
+
+function captureBatchSession(): BatchSession {
+  return { ...activeBatchOperationAccount(), token: apiClient.getToken(), baseUrl: apiClient.getBaseUrl() };
+}
+
+function sessionChangedReason(session: BatchSession): string | undefined {
+  const same =
+    getActiveAccountScope().key === session.accountKey &&
+    apiClient.getToken() === session.token &&
+    apiClient.getBaseUrl() === session.baseUrl;
+  return same ? undefined : i18nText("发起这次批量操作的账号已切换，未执行", "Not run: the account that started this batch was switched");
+}
+
 export type BatchOperationState = {
   action: BatchOperationAction;
   result: BatchRunResult<PreviewItem>;
@@ -95,6 +119,7 @@ export function useBatchOperation() {
   const [state, setState] = useState<BatchOperationState | null>(null);
   const stateRef = useRef<BatchOperationState | null>(null);
   const runRef = useRef<StartBatchOperationArgs["run"] | null>(null);
+  const sessionRef = useRef<BatchSession | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const update = useCallback((next: BatchOperationState | null) => {
@@ -106,6 +131,8 @@ export function useBatchOperation() {
     async (args: StartBatchOperationArgs) => {
       const { action, items, run } = args;
       runRef.current = run;
+      const session = captureBatchSession();
+      sessionRef.current = session;
       const startedAt = new Date().toISOString();
       update({ action, result: { outcomes: [], summary: { total: items.length, succeeded: 0, failed: 0, skipped: 0, unknown: 0 } }, pending: true, records: [] });
       const controller = new AbortController();
@@ -113,6 +140,7 @@ export function useBatchOperation() {
       const result = await runBatch(items, {
         run,
         signal: controller.signal,
+        haltReason: () => sessionChangedReason(session),
         onProgress: (outcomes) => {
           if (stateRef.current) {
             update({ ...stateRef.current, result: { outcomes, summary: summarizeOutcomes(outcomes, items.length) }, pending: true });
@@ -128,6 +156,8 @@ export function useBatchOperation() {
         items: changeListItemsFromOutcomes(result.outcomes, args.remoteTaskIdFromItem),
         summary: result.summary,
         retryOf: args.retryOf,
+        accountKey: session.accountKey,
+        accountDisplayName: session.accountDisplayName,
       });
       await persistRecord(() => appendBatchOperation(browserRuntime.storage, record));
       update({ action, result, pending: false, record, records: [record] });
@@ -142,7 +172,8 @@ export function useBatchOperation() {
     async (args?: Pick<StartBatchOperationArgs, "onSettled">) => {
       const current = stateRef.current;
       const run = runRef.current;
-      if (!current || current.pending || !run || current.result.summary.failed === 0) return undefined;
+      const session = sessionRef.current;
+      if (!current || current.pending || !run || !session || current.result.summary.failed === 0) return undefined;
       const previous = current.result;
       const retryOutcomesByKey = new Map<string, BatchItemOutcome<PreviewItem>>();
       const startedAt = new Date().toISOString();
@@ -151,6 +182,7 @@ export function useBatchOperation() {
       const retryResult = await retryFailedBatchItems(previous, {
         run,
         signal: controller.signal,
+        haltReason: () => sessionChangedReason(session),
         onProgress: (_outcomes, settled) => {
           retryOutcomesByKey.set(settled.item.key, settled);
           update({
@@ -181,6 +213,8 @@ export function useBatchOperation() {
         items: changeListItemsFromOutcomes(retryResult.outcomes),
         summary: retryResult.summary,
         retryOf: current.record?.id,
+        accountKey: session.accountKey,
+        accountDisplayName: session.accountDisplayName,
       });
       await persistRecord(() => appendBatchOperation(browserRuntime.storage, record));
       update({ action: current.action, result: { outcomes: mergedOutcomes, summary: summarizeOutcomes(mergedOutcomes) }, pending: false, record, records: [...current.records, record] });

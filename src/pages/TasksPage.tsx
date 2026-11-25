@@ -1510,11 +1510,12 @@ export function TasksPage() {
   const handleBatchSettled = useCallback(
     (result: BatchRunResult<BatchPreviewItem>, record: BatchOperationRecord) => {
       const deleteFlow = record.action === "delete";
-      const { succeeded, failed: failedCount, unknown: unknownCount, total } = result.summary;
+      const { succeeded, failed: failedCount, unknown: unknownCount, skipped: skippedCount, total } = result.summary;
       const failed = failedCount > 0;
       // An unknown item may still be running (and billing) or may already be gone. Until
       // someone checks, the run is not finished: it is reported like a failure, never as done.
-      const incomplete = failed || unknownCount > 0;
+      // Skipped items were never sent (stopped, or the account was switched mid-run).
+      const incomplete = failed || unknownCount > 0 || skippedCount > 0;
       const title = deleteFlow
         ? text("批量删除完成", "Batch deletion finished")
         : text("批量释放完成", "Batch release finished");
@@ -1528,10 +1529,12 @@ export function TasksPage() {
           toast.error(
             unknownCount > 0
               ? text("批量操作有结果未知的项", "Some batch items have unknown results")
-              : text("批量操作部分失败", "Batch operation partially failed"),
+              : failed
+                ? text("批量操作部分失败", "Batch operation partially failed")
+                : text("批量操作未全部执行", "Batch operation stopped before every item ran"),
             text(
-              `${succeeded}/${total} 成功，${failedCount} 失败${unknownCount > 0 ? `，${unknownCount} 结果未知，请核对实例的实际状态` : ""}；可在任务实例页的「最近批量操作」中查看。`,
-              `${succeeded}/${total} succeeded, ${failedCount} failed${unknownCount > 0 ? `, ${unknownCount} unknown — check the instances' actual state` : ""}; see Recent batch operations on the task list.`,
+              `${succeeded}/${total} 成功，${failedCount} 失败${skippedCount > 0 ? `，${skippedCount} 未执行` : ""}${unknownCount > 0 ? `，${unknownCount} 结果未知，请核对实例的实际状态` : ""}；可在任务实例页的「最近批量操作」中查看。`,
+              `${succeeded}/${total} succeeded, ${failedCount} failed${skippedCount > 0 ? `, ${skippedCount} not run` : ""}${unknownCount > 0 ? `, ${unknownCount} unknown — check the instances' actual state` : ""}; see Recent batch operations on the task list.`,
             ),
           );
         } else {

@@ -89,6 +89,24 @@ describe("runBatch", () => {
     expect(result.outcomes.map((outcome) => outcome.status)).toEqual(["skipped", "skipped"]);
   });
 
+  it("halts for good once haltReason returns a reason, before the item is sent", async () => {
+    const run = vi.fn().mockResolvedValue("ok");
+    const reasons = [undefined, "account switched", undefined];
+    const haltReason = vi.fn(() => reasons.shift());
+
+    const result = await runBatch(["a", "b", "c"], { run, delayMs: 0, haltReason });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("a", 0);
+    expect(result.outcomes.map((outcome) => [outcome.status, outcome.error])).toEqual([
+      ["succeeded", undefined],
+      ["skipped", "account switched"],
+      // A later check that would pass again does not resume the run.
+      ["skipped", "account switched"],
+    ]);
+    expect(result.summary).toEqual({ total: 3, succeeded: 1, failed: 0, skipped: 2, unknown: 0 });
+  });
+
   it("marks the remaining items skipped when continueOnError is false", async () => {
     const ran: string[] = [];
     const result = await runBatch(["a", "b", "c"], {

@@ -15,6 +15,7 @@ const tasks: Task[] = [
 ];
 
 vi.mock("../lib/api", () => ({
+  apiClient: { getToken: () => null, getBaseUrl: () => "http://local/api" },
   instanceApi: {
     tasks: vi.fn(async () => ({ items: tasks, total: tasks.length })),
     operateTask: vi.fn(),

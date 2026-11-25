@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { makeAccountScope, resetAccountScope, setActiveAccountScope } from "../../lib/account-scope";
 import { listBatchOperations } from "../../lib/change-list";
 import { I18nProvider } from "../../lib/i18n";
 import { ApiError } from "../../lib/types";
@@ -40,6 +41,49 @@ function renderOperation() {
 describe("useBatchOperation", () => {
   beforeEach(() => {
     store.clear();
+    resetAccountScope();
+  });
+
+  it("stops before the next item once the account is switched, and keeps the record on the starting account", async () => {
+    setActiveAccountScope(makeAccountScope("alice", "Alice", "http://local/api"));
+    const { result } = renderOperation();
+    const run = vi.fn(async () => {
+      // The user switches to another account while the first create is in flight.
+      setActiveAccountScope(makeAccountScope("bob", "Bob", "http://local/api"));
+      return { id: "11" };
+    });
+
+    await act(async () => {
+      await result.current.start({ action: "create", items, run });
+    });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    const outcomes = result.current.state!.result.outcomes;
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(["succeeded", "skipped", "skipped"]);
+    expect(outcomes[1].error).toMatch(/account that started this batch was switched|账号已切换/);
+    const [record] = await listBatchOperations(memoryStorage);
+    expect(record).toMatchObject({ accountKey: "alice@local/api", accountDisplayName: "Alice" });
+    expect(record.summary).toMatchObject({ succeeded: 1, skipped: 2 });
+  });
+
+  it("never retries failed items under another account", async () => {
+    setActiveAccountScope(makeAccountScope("alice", "Alice", "http://local/api"));
+    const { result } = renderOperation();
+    const run = vi.fn().mockRejectedValueOnce(new Error("boom")).mockResolvedValue({ id: "22" });
+    await act(async () => {
+      await result.current.start({ action: "create", items: items.slice(0, 1), run });
+    });
+    expect(result.current.state?.result.summary.failed).toBe(1);
+
+    setActiveAccountScope(makeAccountScope("bob", "Bob", "http://local/api"));
+    await act(async () => {
+      await result.current.retryFailed();
+    });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.current.state?.result.outcomes[0].status).toBe("skipped");
+    const [retryRecord] = await listBatchOperations(memoryStorage);
+    expect(retryRecord).toMatchObject({ accountKey: "alice@local/api" });
   });
 
   it("keeps going after a failed item, reports live progress, and lands the change-list record", async () => {

@@ -646,19 +646,23 @@ export function CreateTaskDialog({
       // Unknown outcomes keep the result dialog open: they are undecided
       // creates that must be verified before anything is retried or closed.
       const unknown = result.summary.unknown > 0;
+      // Skipped items were never sent; here that means the account was switched mid-run.
+      const skipped = result.summary.skipped > 0;
       const title = initialTask
         ? text("复制创建已完成", "Clone creation finished")
         : text("批量创建已完成", "Batch creation finished");
-      if (failed || unknown) {
+      if (failed || unknown || skipped) {
         const detail =
           text(
-            `${result.summary.succeeded}/${result.summary.total} 成功，${result.summary.failed} 失败，${result.summary.unknown} 结果未知`,
-            `${result.summary.succeeded}/${result.summary.total} succeeded, ${result.summary.failed} failed, ${result.summary.unknown} unknown`,
+            `${result.summary.succeeded}/${result.summary.total} 成功，${result.summary.failed} 失败，${result.summary.unknown} 结果未知${skipped ? `，${result.summary.skipped} 未执行` : ""}`,
+            `${result.summary.succeeded}/${result.summary.total} succeeded, ${result.summary.failed} failed, ${result.summary.unknown} unknown${skipped ? `, ${result.summary.skipped} not run` : ""}`,
           ) + (unknown ? text("请先核对未知项再重试。", " Verify the unknown items before retrying.") : "");
         toast.error(
           failed
             ? text("批量创建部分失败", "Batch creation partially failed")
-            : text("批量创建有结果未知的项", "Batch creation has unknown outcomes"),
+            : unknown
+              ? text("批量创建有结果未知的项", "Batch creation has unknown outcomes")
+              : text("批量创建未全部执行", "Batch creation stopped before every item ran"),
           detail,
         );
       } else {
@@ -675,9 +679,9 @@ export function CreateTaskDialog({
       }
       void runLogger.log({
         source: "task",
-        level: failed ? "error" : unknown ? "warning" : "info",
+        level: failed ? "error" : unknown || skipped ? "warning" : "info",
         action: initialTask ? "task.cloneCreate" : "task.create",
-        result: failed || unknown ? "failure" : "success",
+        result: failed || unknown || skipped ? "failure" : "success",
         title,
         targetName: firstName,
         metadata: {

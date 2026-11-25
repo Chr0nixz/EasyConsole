@@ -27,6 +27,12 @@ export type BatchRunOptions<TItem, TResult> = {
   continueOnError?: boolean;
   /** Once aborted, every item that has not started yet becomes `skipped`; the whole run still resolves. */
   signal?: AbortSignal;
+  /**
+   * Checked right before each item starts. Returning a reason halts the run for good: that
+   * item and every later one land as `skipped` with the reason as their error, even if a
+   * later check would pass again.
+   */
+  haltReason?: () => string | undefined;
   /** Called once per settled item with the accumulated outcomes snapshot and the item that just settled. */
   onProgress?: (outcomes: BatchItemOutcome<TItem, TResult>[], current: BatchItemOutcome<TItem, TResult>) => void;
 };
@@ -72,6 +78,11 @@ export async function runBatch<TItem, TResult = unknown>(
     outcomes.push(outcome);
     options.onProgress?.([...outcomes], outcome);
   };
+  let halted: string | undefined;
+  const halt = () => {
+    halted ??= options.haltReason?.() || undefined;
+    return halted;
+  };
 
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
@@ -85,6 +96,12 @@ export async function runBatch<TItem, TResult = unknown>(
         emit({ item, status: "skipped" });
         continue;
       }
+    }
+    // Checked in the same synchronous step that calls run, after any delay.
+    const haltedBy = halt();
+    if (haltedBy) {
+      emit({ item, status: "skipped", error: haltedBy });
+      continue;
     }
     try {
       const result = await options.run(item, index);

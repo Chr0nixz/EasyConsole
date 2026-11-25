@@ -14,6 +14,7 @@ import { RunLoggerContext } from "../lib/use-run-logger";
 const mocks = vi.hoisted(() => ({ createTask: vi.fn(), tasks: vi.fn(), log: vi.fn() }));
 
 vi.mock("../lib/api", () => ({
+  apiClient: { getToken: () => null, getBaseUrl: () => "http://local/api" },
   imageApi: {
     list: async () => ({ items: [{ id: 1, name: "test-image" }] }),
     system: async () => ({ items: [] }),
