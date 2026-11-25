@@ -3,7 +3,8 @@ import { chmod, readFile, writeFile } from "node:fs/promises";
 
 import type { CreateTaskPayload, ImageCommitPayload, TaskQuery, TaskRecurrence, UnknownRecord } from "../../src/lib/types";
 import { applyEnvToScriptCommand, isValidEnvKey, isValidEnvValue } from "../../src/lib/script-command-env";
-import { appendRunLog, clearRunLogs, filterRunLogs, formatRunLogExport, loadRunLogs, type RunLogChannel, type RunLogResult, type RunLogSource } from "../../src/lib/run-logs";
+import { clearRunLogs, filterRunLogs, formatRunLogExport, loadRunLogs, type RunLogChannel, type RunLogResult, type RunLogSource } from "../../src/lib/run-logs";
+import { appendRunLogBestEffort } from "./run-log-store";
 import { nonSecretBackupSections, secretBackupSections, type LocalDataBackupSection } from "../../src/lib/local-data-backup";
 import { i18nText } from "../../src/lib/i18n-text";
 import { saveEasyConsoleConfig } from "./config";
@@ -332,7 +333,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
         context = await getContext(command);
         const data = await handler(context);
         if (shouldLogCommand(action)) {
-          await appendRunLog(context.runLogStorage, {
+          await appendRunLogBestEffort(context.runLogStorage, {
             channel: "cli",
             source: sourceForCommand(action),
             level: "info",
@@ -346,7 +347,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
         emitSuccess(command, data);
       } catch (error) {
         if (context && shouldLogCommand(action)) {
-          await appendRunLog(context.runLogStorage, {
+          await appendRunLogBestEffort(context.runLogStorage, {
             channel: "cli",
             source: sourceForCommand(action),
             level: "error",
@@ -395,7 +396,7 @@ export async function runCli(argv = process.argv.slice(2), deps: CliDeps = {}): 
         tokenSaved: true,
         user: currentUser,
       });
-      await appendRunLog(context.runLogStorage, {
+      await appendRunLogBestEffort(context.runLogStorage, {
         channel: "cli",
         source: "auth",
         level: "info",

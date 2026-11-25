@@ -2,7 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 
 import type { UnknownRecord } from "../../src/lib/types";
-import { appendRunLog, clearRunLogs, filterRunLogs, formatRunLogExport, loadRunLogs, type RunLogChannel, type RunLogResult, type RunLogSource } from "../../src/lib/run-logs";
+import { clearRunLogs, filterRunLogs, formatRunLogExport, loadRunLogs, type RunLogChannel, type RunLogResult, type RunLogSource } from "../../src/lib/run-logs";
+import { appendRunLogBestEffort, reportRunLogWriteFailure } from "./run-log-store";
 import { nonSecretBackupSections, secretBackupSections } from "../../src/lib/local-data-backup";
 import { i18nText } from "../../src/lib/i18n-text";
 import { saveEasyConsoleConfig } from "./config";
@@ -936,7 +937,7 @@ export function registerEasyConsoleTools(server: McpServer, deps: EasyConsoleMcp
           context = await createContext();
           const data = await definition.handler(context, input as Record<string, unknown>);
           if (shouldLogTool(definition.name)) {
-            await appendRunLog(context.runLogStorage, {
+            await appendRunLogBestEffort(context.runLogStorage, {
               channel: "mcp",
               source: sourceForTool(definition.name),
               level: "info",
@@ -945,12 +946,12 @@ export function registerEasyConsoleTools(server: McpServer, deps: EasyConsoleMcp
               title: i18nText(`MCP ${definition.name} 成功`, `MCP ${definition.name} succeeded`),
               durationMs: Date.now() - startedAt,
               metadata: { input },
-            });
+            }, reportRunLogWriteFailure);
           }
           return toMcpJsonResult(data);
         } catch (error) {
           if (context && shouldLogTool(definition.name)) {
-            await appendRunLog(context.runLogStorage, {
+            await appendRunLogBestEffort(context.runLogStorage, {
               channel: "mcp",
               source: sourceForTool(definition.name),
               level: "error",
@@ -960,7 +961,7 @@ export function registerEasyConsoleTools(server: McpServer, deps: EasyConsoleMcp
               durationMs: Date.now() - startedAt,
               error: error instanceof Error ? error.message : String(error),
               metadata: { input },
-            });
+            }, reportRunLogWriteFailure);
           }
           return toMcpJsonError(error);
         }

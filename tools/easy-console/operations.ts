@@ -82,9 +82,24 @@ export type BatchImpactItem = {
 export type BatchItemReceipt = {
   id: string | number;
   name: string;
+  /** Kept for 1.x callers: true only for `succeeded`. Check `status` to tell a failure from an unknown outcome. */
   ok: boolean;
+  /**
+   * `unknown` means the request may have taken effect (network failure,
+   * unreadable response, 5xx). Verify it before retrying: a retried create can
+   * start a second billed instance.
+   */
+  status: BatchItemReceiptStatus;
   error?: string;
 };
+
+export type BatchItemReceiptStatus = "succeeded" | "failed" | "unknown" | "skipped";
+
+function receiptStatus(status: BatchItemOutcome<unknown>["status"]): BatchItemReceiptStatus {
+  // The engine only lands terminal outcomes; pending/running never reach a receipt.
+  if (status === "succeeded" || status === "unknown" || status === "skipped") return status;
+  return "failed";
+}
 
 /** Where per-item batch run logs are written; the channel distinguishes CLI from MCP callers. */
 export type BatchRunLogSink = {
@@ -413,6 +428,7 @@ function toBatchItemReceipts(outcomes: BatchItemOutcome<string | number>[], impa
     id: outcome.item,
     name: names.get(String(outcome.item)) ?? `#${outcome.item}`,
     ok: outcome.status === "succeeded",
+    status: receiptStatus(outcome.status),
     error: outcome.error,
   }));
 }
@@ -432,12 +448,14 @@ async function appendBatchItemRunLogs(
       await appendRunLog(sink.storage, {
         channel: sink.channel,
         source: "task",
-        level: item.ok ? "info" : "error",
+        level: item.ok ? "info" : item.status === "unknown" ? "warning" : "error",
         action: input.action,
         result: item.ok ? "success" : "failure",
         title: item.ok
           ? i18nText(`批量操作成功：${item.name}`, `Batch operation succeeded: ${item.name}`)
-          : i18nText(`批量操作失败：${item.name}`, `Batch operation failed: ${item.name}`),
+          : item.status === "unknown"
+            ? i18nText(`批量操作结果未知：${item.name}`, `Batch operation outcome unknown: ${item.name}`)
+            : i18nText(`批量操作失败：${item.name}`, `Batch operation failed: ${item.name}`),
         targetId: item.id,
         targetName: item.name,
         error: item.error,
@@ -753,24 +771,32 @@ export async function applyTaskTemplate(
         id: impact[index]!.id,
         name: impact[index]!.name,
         ok: outcome.status === "succeeded",
+        status: receiptStatus(outcome.status),
         error: outcome.error,
       }));
       await appendBatchItemRunLogs(runLog, { action: "template.apply", batchId, items: results });
       const created = results.filter((item) => item.ok).length;
+      // Creates that may have landed: the caller must verify these before re-applying.
+      const unknown = results.filter((item) => item.status === "unknown").length;
       // Remote calls are kept outside the lock so a slow API cannot block other
       // processes. Re-read inside the transaction because `templates` is now a
       // stale snapshot from before those calls. Usage counts only when at
-      // least one task was actually created.
+      // least one task was actually created. Usage is bookkeeping: the tasks
+      // already exist, so a storage failure here must not replace the receipts.
       if (created > 0) {
-        await withStorageTransaction(storage, async () => {
-          const current = await loadTaskTemplates(storage);
-          await saveTaskTemplates(
-            storage,
-            current.map((item) => (item.id === templateId ? recordTaskTemplateUsage(item) : item)),
-          );
-        });
+        try {
+          await withStorageTransaction(storage, async () => {
+            const current = await loadTaskTemplates(storage);
+            await saveTaskTemplates(
+              storage,
+              current.map((item) => (item.id === templateId ? recordTaskTemplateUsage(item) : item)),
+            );
+          });
+        } catch {
+          // Intentional best-effort degradation; the receipts carry the truth.
+        }
       }
-      return { batchId, created, results };
+      return { batchId, created, unknown, results };
     },
     { impact },
   );

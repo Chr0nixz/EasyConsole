@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { EasyConsoleContext } from "./context";
 import { runCli } from "./cli";
 import { parseRunLogs, RUN_LOGS_STORAGE_KEY } from "../../src/lib/run-logs";
-import type { RuntimeStorage } from "../../src/lib/types";
+import { ApiError, type RuntimeStorage } from "../../src/lib/types";
 import { TASK_TEMPLATES_STORAGE_KEY } from "../../src/lib/task-templates";
 import { SCHEDULED_TASKS_STORAGE_KEY } from "../../src/lib/scheduled-tasks";
 
@@ -785,8 +785,8 @@ describe("easy-console cli", () => {
     expect(payload.data.result.batchId).toBeTruthy();
     expect(payload.data.result.count).toBe(2);
     expect(payload.data.result.results).toEqual([
-      { id: 1, name: "alpha", ok: false, error: "release 1 failed" },
-      { id: 2, name: "beta", ok: true },
+      { id: 1, name: "alpha", ok: false, status: "failed", error: "release 1 failed" },
+      { id: 2, name: "beta", ok: true, status: "succeeded" },
     ]);
   });
 
@@ -839,7 +839,7 @@ describe("easy-console cli", () => {
       const rows = [...(data.data.impact ?? []), ...(data.data.result?.results ?? [])];
       expect(rows.length).toBeGreaterThan(0);
       for (const row of rows) {
-        expect(Object.keys(row).sort()).toEqual(["error", "id", "name", "ok"].filter((key) => key in row).sort());
+        expect(Object.keys(row).sort()).toEqual(["error", "id", "name", "ok", "status"].filter((key) => key in row).sort());
       }
       expect(output).not.toContain("super-secret-token");
       expect(output).not.toContain("Bearer");
@@ -884,4 +884,55 @@ describe("easy-console cli", () => {
     }
     expect(createCount).toBe(0);
   });
+});
+
+describe("easy-console cli outcome reporting", () => {
+  function brokenRunLogStorage(): RuntimeStorage {
+    return {
+      async get() {
+        return null;
+      },
+      async set() {
+        throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      },
+      async remove() {},
+    };
+  }
+
+  it("keeps a finished operation's result when the run log cannot be written", async () => {
+    const context = createFakeContext();
+    (context as { runLogStorage: RuntimeStorage }).runLogStorage = brokenRunLogStorage();
+    const release = vi.spyOn(context.api.instanceApi, "operateTask");
+
+    const result = await runCli(["--json", "task", "release", "42", "--yes"], { createContext: async () => context });
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, data: { dryRun: false, action: "task.release" } });
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(result.stderr).toBe("");
+  });
+
+  it("tells an unknown outcome apart from a failure in batch receipts", async () => {
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [], raw: [] }),
+        operateTask: async (id: string | number) => {
+          if (String(id) === "2") throw new ApiError("bad gateway", { kind: "http", status: 502 });
+          if (String(id) === "3") throw new ApiError("not found", { kind: "http", status: 404 });
+          return { released: true };
+        },
+      },
+    });
+
+    const result = await runCli(["--json", "task", "release-batch", "1,2,3", "--yes"], { createContext: async () => context });
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout) as { data: { result: { results: Array<{ id: string; ok: boolean; status: string }> } } };
+    expect(payload.data.result.results.map(({ ok, status }) => ({ ok, status }))).toEqual([
+      { ok: true, status: "succeeded" },
+      { ok: false, status: "unknown" },
+      { ok: false, status: "failed" },
+    ]);
+  });
+
 });

@@ -29,6 +29,8 @@
 - 读取时的数据迁移、锁文件和审计日志属于运行时维护，不表示执行了预览中的业务变更。dry-run 可以读取影响列表或本地文件以验证输入；不能创建/释放实例、写目标文件或替换凭据。
 - CLI 成功的 `--json` 输出为 stdout 一行 `{ "ok": true, "data": ..., "error": null }`；操作/用法错误为 stderr 一行 `{ "ok": false, "data": null, "error": { "message": ..., "code"?: ..., "status"?: ..., "kind"?: ... } }`。正常/预览退出码为 0，错误为非零（当前为 1）。`--help` 属于文本帮助，退出码 0，即使同时传了 `--json` 也不作为业务 JSON。
 - `task wait` 的 `outcome: "failed" | "timeout"` 和批量操作中的失败项仍是成功读取到的业务结果，退出码可为 0。调用者必须检查 outcome 或逐项 results，不能只看顶层 ok。
+- 批量回执的每一项含 `id, name, ok, status, error?`。`status` 为 `succeeded`、`failed`、`unknown` 或 `skipped`；`ok` 为兼容 1.x 保留，只在 `succeeded` 时为 true。`unknown` 表示请求可能已经生效（网络中断或超时、响应无法解析、HTTP 5xx），重试前必须先核实，否则可能重复创建计费实例；只有 `failed` 可以直接重试。
+- 运行日志写入失败不改变操作结果：操作已经完成时照常返回结果和退出码。MCP 把写入失败作为诊断写到 stderr，CLI 不输出。
 - MCP 成功及工具处理器错误使用上述 JSON envelope，放在 `content[0].text`；处理器错误另带 `isError: true`。JSON-RPC/协议层和 SDK 入参校验错误遵循 MCP 协议，不保证经过客户端 envelope。stdio stdout 只用于协议，诊断写 stderr。
 - 常见变更结果 `Mutation`：预览有 `dryRun: true, action, payload, message`，部分批量预览还有 impact；执行有 `dryRun: false, action, payload, result`。登录、令牌刷新、日志清空及 CLI 文件写入的执行结果另见下表，不强行包装为 Mutation。
 - `Id` 是字符串或数字。CLI 仅把规范且安全的十进制数字转换为 number，超出安全整数或带前导零的 ID 保留原字符串。任务接口的 `taskId` 与本地计划接口的字符串 `taskId` 不是同一种实体。
@@ -80,7 +82,7 @@
 | `easyconsole_template_list` | 无 | 本地实例模板数组 |
 | `easyconsole_template_create` | `template, confirm?` | Mutation；result 是新模板 |
 | `easyconsole_template_update` | `templateId: string, template, confirm?` | Mutation；result 是更新后的模板 |
-| `easyconsole_template_apply` | `templateId: string, variableValues?, confirm?` | 预览生成的 impact；执行 result 含 `batchId, created, results` |
+| `easyconsole_template_apply` | `templateId: string, variableValues?, confirm?` | 预览生成的 impact；执行 result 含 `batchId, created, unknown, results`，`unknown` 为结果未知、需先核实的创建数 |
 | `easyconsole_template_delete` | `templateId: string, confirm?` | Mutation |
 | `easyconsole_schedule_list` | 无 | 本地定时任务数组 |
 | `easyconsole_schedule_create` | `name, scheduleTime, payload, description?, recurrence?, confirm?` | Mutation；执行后另含本地调度说明 |
@@ -154,5 +156,7 @@ Resources 不读取远程 API，不要求 token 或远程 HTTP opt-in，不额�
 ## 本次审阅的兼容变化
 
 在 1.0 冻结前补齐确认门：CLI login、account refresh-token、三种 download、backup export --output，以及 MCP account_refresh_token。旧 0.4.x 脚本要添加 `--yes` / `confirm: true`。工具名称保持 54 个，未新增别名；MCP task_update 纠正为接受不含 name 的 PATCH；CLI 不再对长 ID 舍入，用法错误在 --json 下也返回 JSON。
+
+2026-11-25 起（新增字段，不删除旧字段）：批量回执逐项增加 `status`，`template apply` 结果增加 `unknown`；运行日志写入失败不再覆盖已完成操作的结果。
 
 自动化证据位于 cli / mcp-tools / mcp-resources 测试；安装包、真实服务与旧数据 fixture 的验收边界继续参见 [发布清单](RELEASE_CHECKLIST_1.0.0.md)。

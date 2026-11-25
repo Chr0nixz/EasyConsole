@@ -92,6 +92,7 @@ The [contract inventory](../../CLI_MCP_CONTRACT.md) covers all 54 tools, their a
 - Keep old names as deprecated aliases before a rename/removal; remove no published tool or executable entrypoint before 2.0. Experimental status never bypasses confirmation.
 - `easyconsole_account_refresh_token` now requires `confirm: true`. CLI login, account refresh-token, all downloads and backup export --output need `--yes`; previews do not read a login password or replace credentials/files.
 - CLI JSON success goes to stdout, JSON errors to stderr; help is text. Inspect wait outcomes and batch per-item results even when the process exits 0.
+- Read each batch item's `status`, not only `ok`. `unknown` means the request may have taken effect (timeout, unreadable response, 5xx): list the tasks and verify before retrying, because a retried create can start a second billed instance. Only `failed` items are safe to retry as-is.
 
 ## CLI Usage
 

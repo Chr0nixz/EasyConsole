@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { EasyConsoleContext } from "./context";
-import type { RuntimeStorage } from "../../src/lib/types";
+import { ApiError, type RuntimeStorage } from "../../src/lib/types";
 import { parseRunLogs, RUN_LOGS_STORAGE_KEY } from "../../src/lib/run-logs";
 import { TASK_TEMPLATES_STORAGE_KEY } from "../../src/lib/task-templates";
 import { SCHEDULED_TASKS_STORAGE_KEY } from "../../src/lib/scheduled-tasks";
-import { createMcpToolDefinitions, invokeMcpToolDefinition, toMcpJsonError, toMcpJsonResult } from "./mcp-tools";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createMcpToolDefinitions, invokeMcpToolDefinition, registerEasyConsoleTools, toMcpJsonError, toMcpJsonResult } from "./mcp-tools";
 
 function memoryStorage(): RuntimeStorage {
   const values = new Map<string, string>();
@@ -656,8 +657,8 @@ describe("easy-console MCP tools", () => {
     expect(result.result.batchId).toBeTruthy();
     expect(result.result.count).toBe(2);
     expect(result.result.results).toEqual([
-      { id: 7, name: "pod-7", ok: false, error: "release 7 failed" },
-      { id: 8, name: "train-8", ok: true },
+      { id: 7, name: "pod-7", ok: false, status: "failed", error: "release 7 failed" },
+      { id: 8, name: "train-8", ok: true, status: "succeeded" },
     ]);
   });
 
@@ -717,7 +718,7 @@ describe("easy-console MCP tools", () => {
       ];
       expect(rows.length).toBeGreaterThan(0);
       for (const row of rows) {
-        expect(Object.keys(row).sort()).toEqual(["error", "id", "name", "ok"].filter((key) => key in row).sort());
+        expect(Object.keys(row).sort()).toEqual(["error", "id", "name", "ok", "status"].filter((key) => key in row).sort());
       }
       expect(serialized).not.toContain("super-secret-token");
       expect(serialized).not.toContain("Bearer");
@@ -755,4 +756,85 @@ describe("easy-console MCP tools", () => {
       expect(item.name).toContain("bench");
     }
   });
+});
+
+describe("easy-console MCP outcome reporting", () => {
+  function registeredHandlers(context: EasyConsoleContext) {
+    const handlers = new Map<string, (input: Record<string, unknown>) => Promise<{ isError?: boolean; content: Array<{ text: string }> }>>();
+    const server = {
+      registerTool(name: string, _meta: unknown, handler: (input: Record<string, unknown>) => Promise<never>) {
+        handlers.set(name, handler);
+      },
+    } as unknown as McpServer;
+    registerEasyConsoleTools(server, { createContext: async () => context });
+    return handlers;
+  }
+
+  it("keeps a finished operation's result when the run log cannot be written", async () => {
+    const context = createFakeContext();
+    (context as { runLogStorage: RuntimeStorage }).runLogStorage = {
+      async get() {
+        return null;
+      },
+      async set() {
+        throw new Error("ELOCKED: run log lock is held");
+      },
+      async remove() {},
+    };
+    const release = vi.spyOn(context.api.instanceApi, "operateTask");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      const result = await registeredHandlers(context).get("easyconsole_task_release")!({ taskId: 7, confirm: true });
+
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: true, data: { dryRun: false, action: "task.release" } });
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("ELOCKED"));
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("counts template creates with an unknown outcome so they get verified first", async () => {
+    let calls = 0;
+    const context = createFakeContext({
+      instanceApi: {
+        tasks: async () => ({ items: [], raw: [] }),
+        createTask: async () => {
+          calls += 1;
+          if (calls === 2) throw new ApiError("Network request failed", { kind: "network" });
+          return { id: calls };
+        },
+      },
+    });
+    await context.storage.set(
+      TASK_TEMPLATES_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: "tpl-1",
+          name: "test-template",
+          taskNamePrefix: "test",
+          batchCount: 2,
+          imageId: "1",
+          cpu: 4,
+          gpu: 0,
+          memory: 16,
+          storagePath: "/",
+          mountPath: "/home/ubuntu",
+          releaseCondition: 1,
+          usageCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ]),
+    );
+
+    const result = await invokeMcpToolDefinition(getTool("easyconsole_template_apply"), context, { templateId: "tpl-1", confirm: true });
+
+    expect(result).toMatchObject({ dryRun: false, result: { created: 1, unknown: 1 } });
+    const receipts = (result as { result: { results: Array<{ status: string }> } }).result.results;
+    expect(receipts.map((item) => item.status)).toEqual(["succeeded", "unknown"]);
+  });
+
 });

@@ -3,7 +3,8 @@ import { access, readFile, rename } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import type { RuntimeStorage } from "../../src/lib/types";
-import { parseRunLogs, pruneRunLogs, RUN_LOGS_STORAGE_KEY } from "../../src/lib/run-logs";
+import { i18nText } from "../../src/lib/i18n-text";
+import { appendRunLog, parseRunLogs, pruneRunLogs, RUN_LOGS_STORAGE_KEY, type RunLogInput } from "../../src/lib/run-logs";
 import { atomicWriteFile, withFileLock } from "./local-data-store";
 
 export function getDefaultRunLogPath(configPath: string) {
@@ -80,4 +81,33 @@ export function createFileRunLogStorage(runLogPath: string): RuntimeStorage {
       return withFileLock(runLogPath, fn);
     },
   };
+}
+
+/**
+ * Append a run-log entry without letting a broken store change the outcome.
+ * The operation being recorded has already happened: a write failure
+ * (read-only app data, a full disk, a lock held past its timeout) must not
+ * replace its result with a storage error, or a caller sees a created
+ * instance as a failure, gets no task id, and retries.
+ *
+ * `onError` receives the failure for diagnostics. MCP sends it to stderr; the
+ * CLI leaves it unset because its stderr carries the one-line JSON error
+ * envelope.
+ */
+export async function appendRunLogBestEffort(
+  storage: RuntimeStorage,
+  input: RunLogInput,
+  onError?: (error: unknown) => void,
+): Promise<void> {
+  try {
+    await appendRunLog(storage, input);
+  } catch (error) {
+    onError?.(error);
+  }
+}
+
+/** MCP diagnostics for a run-log write that failed; stdio stdout stays protocol-only. */
+export function reportRunLogWriteFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`${i18nText(`运行日志写入失败：${message}`, `Failed to write the run log: ${message}`)}\n`);
 }
