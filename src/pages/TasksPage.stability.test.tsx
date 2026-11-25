@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -33,12 +33,12 @@ vi.mock("../lib/use-download-queue", () => ({ useDownloadQueueActions: () => ({ 
 vi.mock("../lib/commit-queue-context", () => ({ useCommitQueue: () => ({ enqueue: vi.fn(), summary: { completed: 0 } }) }));
 vi.mock("../lib/use-ssh-workspace", () => ({ useSshWorkspace: () => ({ tabs: [], openTarget: vi.fn() }) }));
 
-function renderPage() {
+function renderPage(entry = "/tasks") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <I18nProvider>
       <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={["/tasks"]}>
+        <MemoryRouter initialEntries={[entry]}>
           <TasksPage />
         </MemoryRouter>
       </QueryClientProvider>
@@ -77,6 +77,43 @@ describe("TasksPage row stability", () => {
 
     expect(logButton.isConnected).toBe(true);
     expect(logButton).toHaveFocus();
+  });
+
+  it("keeps resize handles out of the Tab order and says how to move between rows", async () => {
+    renderPage();
+
+    const handles = await screen.findAllByRole("separator", { name: /列宽|Resize .* column/i });
+    expect(handles.length).toBeGreaterThan(0);
+    for (const handle of handles) expect(handle).toHaveAttribute("tabindex", "-1");
+
+    const region = screen.getByRole("region", { name: /任务实例表格|Task instances table/ });
+    expect(region).toHaveAccessibleDescription(/j \/ k/);
+  });
+
+  it("exposes the active sort on the column it applies to", async () => {
+    renderPage("/tasks?sortBy=cost&sortDir=asc");
+
+    const cost = await screen.findByRole("columnheader", { name: /费用|Cost/ });
+    expect(cost).toHaveAttribute("aria-sort", "ascending");
+    expect(screen.getByRole("columnheader", { name: /状态|Status/ })).not.toHaveAttribute("aria-sort");
+  });
+
+  it("sets a column width from the column settings without the drag handle", async () => {
+    window.localStorage.removeItem("easy-console.tasks.columnSizing");
+    renderPage();
+    await screen.findByRole("separator", { name: /调整实例名称列宽|Resize Instance name column/i });
+
+    fireEvent.click(screen.getByRole("button", { name: /^(视图|View)$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^(列设置|Columns)$/ }));
+
+    const width = await screen.findByRole("spinbutton", { name: /实例名称列宽|Instance name column width/ });
+    expect(width).toHaveValue(240);
+    fireEvent.change(width, { target: { value: "9999" } });
+    fireEvent.blur(width);
+
+    // Clamped to the column's range, exactly as a drag would be.
+    expect(width).toHaveValue(560);
+    expect(screen.getByRole("separator", { name: /调整实例名称列宽|Resize Instance name column/i, hidden: true })).toHaveAttribute("aria-valuenow", "560");
   });
 
   it("resizes a table column by drag or keyboard and saves its width", async () => {
@@ -129,5 +166,54 @@ describe("TasksPage row stability", () => {
     renderPage();
     await waitFor(async () => expect(await releaseHandle()).toHaveAttribute("aria-valuenow", "160"));
     window.localStorage.removeItem("easy-console.tasks.columnSizing");
+  });
+
+  it("customizes the row action bar from its header, resizes its column, and remembers the choice", async () => {
+    window.localStorage.removeItem("easy-console.tasks.columnSizing");
+    window.localStorage.removeItem("easy-console.tasks.quickActions");
+    const storageSet = vi.spyOn(browserRuntime.storage, "set");
+    renderPage();
+
+    await screen.findByRole("button", { name: /克隆实例 running-job|Clone instance running-job/ });
+    const actionsHandle = () => screen.getByRole("separator", { name: /调整操作列宽|Resize Actions column/i, hidden: true });
+    expect(actionsHandle()).toHaveAttribute("aria-valuenow", "232");
+
+    fireEvent.click(screen.getByRole("button", { name: /^(自定义操作栏|Customize action bar)$/ }));
+    const dialog = await screen.findByRole("dialog", { name: /自定义操作栏|Customize action bar/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: /添加 原始 JSON 到操作栏|Add Raw JSON to the bar/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /从操作栏移除 克隆实例|Remove Clone instance from the bar/ }));
+
+    // The row trades clone for raw JSON; the bar keeps three buttons, so the column keeps its width.
+    expect(screen.getByRole("button", { name: /查看 running-job 的原始 JSON|View raw JSON for running-job/, hidden: true })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /克隆实例 running-job|Clone instance running-job/, hidden: true })).not.toBeInTheDocument();
+    expect(actionsHandle()).toHaveAttribute("aria-valuenow", "232");
+
+    // A fourth button widens the column by its 36px slot, so the bar does not fold into More.
+    fireEvent.click(within(dialog).getByRole("button", { name: /添加 监控 到操作栏|Add Monitor to the bar/ }));
+    expect(actionsHandle()).toHaveAttribute("aria-valuenow", "268");
+    expect(screen.getByRole("button", { name: /打开 running-job 的监控|Open monitor for running-job/, hidden: true })).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(storageSet).toHaveBeenCalledWith("easy-console.tasks.quickActions", JSON.stringify(["terminal", "log", "raw", "monitor"]));
+    });
+    storageSet.mockRestore();
+    window.localStorage.removeItem("easy-console.tasks.quickActions");
+  });
+
+  it("restores a saved action bar and sizes a column saved without a width to fit it", async () => {
+    window.localStorage.setItem("easy-console.tasks.quickActions", JSON.stringify(["commit", "terminal", "log", "clone", "raw"]));
+    window.localStorage.removeItem("easy-console.tasks.columnSizing");
+    renderPage();
+
+    const commit = await screen.findByRole("button", { name: /提交 running-job 的镜像|Commit an image of running-job/ });
+    // A stopped task keeps commit in its slot, disabled with the reason, so the bar never shifts.
+    const failedCommit = screen.getByRole("button", { name: /提交 failed-job 的镜像|Commit an image of failed-job/ });
+    expect(failedCommit).toHaveAttribute("aria-disabled", "true");
+    expect(failedCommit).toHaveAccessibleDescription(/仅运行中实例可提交镜像|Only running instances can be committed/);
+    expect(commit).not.toHaveAttribute("aria-disabled");
+    await waitFor(() => {
+      expect(screen.getByRole("separator", { name: /调整操作列宽|Resize Actions column/i })).toHaveAttribute("aria-valuenow", "304");
+    });
+    window.localStorage.removeItem("easy-console.tasks.quickActions");
   });
 });

@@ -279,8 +279,8 @@ export function SegmentedControl<T extends string>({
   );
 }
 
-export const TableRegion = forwardRef<HTMLDivElement, { children: ReactNode; label: string; className?: string; "aria-activedescendant"?: string }>(
-  function TableRegion({ children, label, className, "aria-activedescendant": activeDescendant }, ref) {
+export const TableRegion = forwardRef<HTMLDivElement, { children: ReactNode; label: string; className?: string; "aria-activedescendant"?: string; "aria-describedby"?: string }>(
+  function TableRegion({ children, label, className, "aria-activedescendant": activeDescendant, "aria-describedby": describedBy }, ref) {
     return (
       <div
         ref={ref}
@@ -288,6 +288,7 @@ export const TableRegion = forwardRef<HTMLDivElement, { children: ReactNode; lab
         role="region"
         aria-label={label}
         aria-activedescendant={activeDescendant}
+        aria-describedby={describedBy}
         tabIndex={0}
       >
         {children}

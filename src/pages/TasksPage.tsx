@@ -27,6 +27,7 @@ import {
   Save,
   Search,
   Settings2,
+  SlidersHorizontal,
   TerminalSquare,
   Trash2,
   Upload,
@@ -44,6 +45,8 @@ import { StatusBadge } from "../components/StatusBadge";
 import { ExtendReleaseDialog } from "../components/tasks/ExtendReleaseDialog";
 import { BatchReleaseImpact, ReleaseConfirmDescription } from "../components/tasks/ReleaseConfirmDescription";
 import { TaskInstanceName } from "../components/tasks/TaskInstanceName";
+import { QuickActionsDialog } from "../components/tasks/QuickActionsDialog";
+import { taskQuickActionIcons } from "../components/tasks/task-quick-action-icons";
 import { Button, Dialog, Input, Panel, Select, TableRegion } from "../components/ui";
 import { instanceApi } from "../lib/api";
 import { getTaskEditableState } from "../lib/api-factory";
@@ -74,6 +77,16 @@ import {
 } from "../lib/task-pins";
 import { createTaskTemplate, loadTaskTemplates, saveTaskTemplates, taskToEditableTaskTemplate } from "../lib/task-templates";
 import { TASK_PAGE_SIZE_OPTIONS, type TaskListSortBy } from "../lib/task-list-query";
+import {
+  DEFAULT_TASK_QUICK_ACTIONS,
+  loadTaskQuickActions,
+  MAX_TASK_QUICK_ACTIONS,
+  saveTaskQuickActions,
+  TASK_ACTION_STRIP_BASE_WIDTH,
+  TASK_QUICK_ACTION_SLOT_WIDTH,
+  taskActionStripWidth,
+  type TaskQuickActionId,
+} from "../lib/task-quick-actions";
 import { consumePendingCreateTaskRequest, subscribeCreateTaskRequests } from "../lib/task-create-request";
 import { invalidateTaskQueries } from "../lib/task-snapshot-query";
 import { canExtendRelease, getLiveTimedReleaseAt } from "../lib/task-release-notifications";
@@ -97,9 +110,10 @@ const TerminalDialog = lazy(() => import("../components/tasks/TerminalDialog").t
 const COLUMN_VISIBILITY_KEY = "easy-console.tasks.columnVisibility";
 const COLUMN_SIZING_KEY = "easy-console.tasks.columnSizing";
 const ALWAYS_VISIBLE_COLUMNS = new Set(["select", "actions"]);
-const ACTION_COLUMN_WIDTH = 232;
-/** The compact action strip (release + More: 4rem + 2rem + gap) plus the cell's 12px padding each side. */
-const COMPACT_ACTION_COLUMN_WIDTH = 124;
+/** The action column's default width: the default bar of three quick actions (232px). */
+const ACTION_COLUMN_WIDTH = taskActionStripWidth(DEFAULT_TASK_QUICK_ACTIONS.length);
+/** The folded action bar (release + More) plus the cell's 12px padding each side. */
+const COMPACT_ACTION_COLUMN_WIDTH = TASK_ACTION_STRIP_BASE_WIDTH;
 // Pages at or under this many phone cards render whole (the 20-per-page option always does).
 const MOBILE_CARD_VIRTUALIZE_MIN = 30;
 const defaultColumnVisibility: VisibilityState = {
@@ -159,14 +173,31 @@ const columnLabels: Record<string, { zh: string; en: string }> = {
   deleted: { zh: "删除状态", en: "Delete status" },
   actions: { zh: "操作", en: "Actions" },
 };
-const ACTION_GRID_CLASS = "grid grid-cols-[2rem_2rem_2rem_4rem_2rem] items-center gap-1";
-const COMPACT_ACTION_GRID_CLASS = "grid grid-cols-[4rem_2rem] items-center gap-1";
+/** The sort field each column displays, so its header can show and expose the sort state. */
+const COLUMN_SORT_FIELDS: Partial<Record<string, TaskListSortBy>> = {
+  name: "name",
+  status: "status",
+  duration: "duration",
+  billed: "cost",
+  created: "created",
+};
+/** Columns grouped the way the list is read: what it is, what it costs and when it stops, where it runs. */
+const COLUMN_SETTING_GROUPS: Array<{ zh: string; en: string; ids: string[] }> = [
+  { zh: "实例", en: "Instance", ids: ["name", "status", "resource"] },
+  { zh: "费用与释放", en: "Cost and release", ids: ["billed", "duration", "releaseCondition", "release"] },
+  { zh: "位置与归属", en: "Location and owner", ids: ["node", "endpoint", "owner", "group"] },
+  { zh: "记录与操作", en: "Record and actions", ids: ["created", "deleted", "actions"] },
+];
 /**
- * Table regions narrower than this fold the row's terminal / log / clone buttons into More.
- * It is the default width of everything that must stay in view (select 48, name 240, status
- * 112, resources 152, cost 112, release condition 200) beside the full 232px action strip.
+ * What must stay in view beside the action bar: the default widths of select 48, name 240,
+ * status 112, resources 152, cost 112 and release condition 200, rounded so the default
+ * three-button bar (232px) keeps its 1100px fold point. A table region narrower than this
+ * plus the bar's own width folds the bar's quick actions into More.
  */
-const COMPACT_ACTIONS_MAX_WIDTH = 1100;
+const COMPACT_ACTIONS_CONTENT_WIDTH = 868;
+const NO_STRIP_ACTIONS: readonly TaskQuickActionId[] = [];
+const PHONE_LOG_STRIP: readonly TaskQuickActionId[] = ["log"];
+const PHONE_TERMINAL_STRIP: readonly TaskQuickActionId[] = ["terminal"];
 const MENU_ITEM_CLASS =
   "flex h-8 w-full items-center gap-2 rounded px-2 text-left text-sm text-app-text hover:bg-app-panel disabled:cursor-not-allowed disabled:opacity-50 [@media(pointer:coarse)]:min-h-11";
 const MENU_ITEM_DANGER_CLASS =
@@ -174,6 +205,26 @@ const MENU_ITEM_DANGER_CLASS =
 const CHECKBOX_HIT_CLASS =
   "inline-flex min-h-6 min-w-6 cursor-pointer items-center justify-center [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11";
 const commitPodFields = ["description", "pod_name", "podName", "pod", "k8s_pod_name", "k8sPodName"];
+
+/** The bar's grid: a 2rem cell per quick action, the 4rem release slot, then More. */
+function actionGridColumns(count: number) {
+  return [...Array.from({ length: count }, () => "2rem"), "4rem", "2rem"].join(" ");
+}
+
+/**
+ * How many quick actions a table region of this width can show before the sticky bar would
+ * cover the columns that must stay in view. Bucketed, so a resize only re-renders the page
+ * when the answer changes.
+ */
+function quickActionsThatFit(regionWidth: number) {
+  const fit = Math.floor((regionWidth - COMPACT_ACTIONS_CONTENT_WIDTH - TASK_ACTION_STRIP_BASE_WIDTH) / TASK_QUICK_ACTION_SLOT_WIDTH);
+  return Math.max(-1, Math.min(MAX_TASK_QUICK_ACTIONS, fit));
+}
+
+/** A phone card's own action row: the log for tasks that need it, the terminal for the rest. */
+function phoneCardStripActions(task: Task): readonly TaskQuickActionId[] {
+  return needsLogAttention(task) ? PHONE_LOG_STRIP : PHONE_TERMINAL_STRIP;
+}
 
 function resourceText(task: Task) {
   return `${task.cpu ?? "-"}C / ${task.gpu ?? "-"}GPU / ${task.memory ?? "-"}G`;
@@ -265,10 +316,70 @@ function isActionsColumn(id: string) {
 }
 
 // One visible "操作" label: each button names itself (aria-label + title), so the header
-// does not need a row of icons that only tooltips can explain.
-function ActionHeader() {
+// does not need a row of icons that only tooltips can explain. Beside it sits the way to
+// choose those buttons, where the bar is.
+function ActionHeader({ onCustomize }: { onCustomize: () => void }) {
   const { text } = useI18n();
-  return <div className="px-1 text-app-muted">{text("操作", "Actions")}</div>;
+  return (
+    <div className="flex items-center justify-between gap-1 px-1 text-app-muted">
+      <span className="truncate">{text("操作", "Actions")}</span>
+      <Button
+        aria-label={text("自定义操作栏", "Customize action bar")}
+        className="-my-1 h-6 w-6 shrink-0 px-0"
+        title={text("自定义操作栏", "Customize action bar")}
+        type="button"
+        variant="ghost"
+        onClick={onCustomize}
+      >
+        <SlidersHorizontal className="h-3.5 w-3.5" />
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * A column's width as a number field: the keyboard route to what the header's drag handle does.
+ * It commits on blur or Enter, clamped to the column's range, so a half-typed value never
+ * resizes the table mid-keystroke.
+ */
+function ColumnWidthInput({
+  label,
+  size,
+  range,
+  onCommit,
+}: {
+  label: string;
+  size: number;
+  range: { minSize: number; maxSize: number };
+  onCommit: (size: number) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const next = Number(draft);
+    if (draft.trim() && Number.isFinite(next)) onCommit(Math.min(range.maxSize, Math.max(range.minSize, Math.round(next))));
+    setDraft(null);
+  };
+  return (
+    <Input
+      aria-label={label}
+      className="app-numeric h-8 w-[4.5rem] shrink-0 px-2 text-right text-xs"
+      inputMode="numeric"
+      max={range.maxSize}
+      min={range.minSize}
+      step={8}
+      type="number"
+      value={draft ?? String(size)}
+      onBlur={commit}
+      onChange={(event) => setDraft(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commit();
+        }
+      }}
+    />
+  );
 }
 
 async function loadColumnVisibility(): Promise<VisibilityState> {
@@ -302,23 +413,26 @@ async function loadColumnVisibility(): Promise<VisibilityState> {
   }
 }
 
-async function loadColumnSizing(): Promise<ColumnSizingState> {
+/** `actionsWidth` is the width of the user's action bar, the action column's default. */
+async function loadColumnSizing(actionsWidth = ACTION_COLUMN_WIDTH): Promise<ColumnSizingState> {
+  const defaults = { ...defaultColumnSizing, actions: actionsWidth };
   try {
     const raw = await browserRuntime.storage.get(COLUMN_SIZING_KEY);
-    if (!raw) return defaultColumnSizing;
+    if (!raw) return defaults;
     const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return defaultColumnSizing;
-    return normalizeColumnSizing(parsed as Record<string, unknown>);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return defaults;
+    return normalizeColumnSizing(parsed as Record<string, unknown>, actionsWidth);
   } catch {
-    return defaultColumnSizing;
+    return defaults;
   }
 }
 
-function normalizeColumnSizing(sizing: Record<string, unknown>): ColumnSizingState {
+function normalizeColumnSizing(sizing: Record<string, unknown>, actionsWidth = ACTION_COLUMN_WIDTH): ColumnSizingState {
   return Object.fromEntries(
     Object.entries(taskColumnSizing).map(([id, bounds]) => {
       const value = sizing[id];
-      const width = typeof value === "number" && Number.isFinite(value) && value !== SUPERSEDED_COLUMN_DEFAULTS[id] ? value : bounds.size;
+      const fallback = id === "actions" ? actionsWidth : bounds.size;
+      const width = typeof value === "number" && Number.isFinite(value) && value !== SUPERSEDED_COLUMN_DEFAULTS[id] ? value : fallback;
       return [id, Math.min(bounds.maxSize, Math.max(bounds.minSize, width))];
     }),
   );
@@ -339,6 +453,9 @@ type TaskTableMeta = {
   moreMenuTaskId: string | null;
   releasePending: boolean;
   compactActions: boolean;
+  /** The user's action bar, in order; the cell folds it into More while `compactActions` is set. */
+  quickActions: readonly TaskQuickActionId[];
+  canEdit: boolean;
   onTerminal: TaskAction;
   onLog: TaskAction;
   onClone: TaskAction;
@@ -352,8 +469,111 @@ type TaskTableMeta = {
   onSaveTemplate: TaskAction;
   onSshInfo: TaskAction;
   onTogglePin: TaskAction;
+  onMonitor: TaskAction;
+  onCustomizeQuickActions: () => void;
   onMoreMenuOpenChange: (taskId: string, open: boolean, position?: MoreMenuPosition, trigger?: HTMLElement | null) => void;
 };
+
+/**
+ * One quick action on a row's action bar. An action the row cannot take right now stays in
+ * its slot, disabled with its reason, so the bar's buttons never shift between rows.
+ */
+function RowQuickAction({ id, task, meta }: { id: TaskQuickActionId; task: Task; meta: TaskTableMeta }) {
+  const { text } = useI18n();
+  const name = getTaskName(task);
+  const access = getTaskAccess(task);
+  let Icon = taskQuickActionIcons[id];
+  let label: string;
+  let title: string;
+  let disabled = false;
+  let disabledReason: string | undefined;
+  let onSelect: TaskAction;
+  switch (id) {
+    case "terminal":
+      label = text(`打开 ${name} 的终端`, `Open terminal for ${name}`);
+      title = text("终端", "Terminal");
+      disabled = !access.terminal;
+      disabledReason = access.terminalReason;
+      onSelect = meta.onTerminal;
+      break;
+    case "log":
+      label = text(`打开 ${name} 的日志`, `Open logs for ${name}`);
+      title = text("日志", "Logs");
+      disabled = !access.log;
+      disabledReason = access.logReason;
+      onSelect = meta.onLog;
+      break;
+    case "monitor":
+      label = text(`打开 ${name} 的监控`, `Open monitor for ${name}`);
+      title = text("监控", "Monitor");
+      onSelect = meta.onMonitor;
+      break;
+    case "clone":
+      label = text(`克隆实例 ${name}`, `Clone instance ${name}`);
+      title = text("克隆实例", "Clone instance");
+      onSelect = meta.onClone;
+      break;
+    case "extend":
+      label = text(`延长 ${name} 的释放时间`, `Extend the release of ${name}`);
+      title = text("延长释放", "Extend release");
+      disabled = !canExtendRelease(task);
+      disabledReason = text("只有定时释放且未结束的实例可以延长", "Only live instances on a timed release can be extended");
+      onSelect = meta.onExtend;
+      break;
+    case "edit":
+      label = text(`编辑实例 ${name}`, `Edit instance ${name}`);
+      title = text("编辑", "Edit");
+      disabled = !meta.canEdit;
+      disabledReason = text("后端不支持安全的任务编辑", "The backend does not support safe task editing");
+      onSelect = meta.onEdit;
+      break;
+    case "commit":
+      label = text(`提交 ${name} 的镜像`, `Commit an image of ${name}`);
+      title = text("提交镜像", "Commit image");
+      disabled = !isRunningTask(task);
+      disabledReason = text("仅运行中实例可提交镜像", "Only running instances can be committed");
+      onSelect = meta.onCommit;
+      break;
+    case "download":
+      label = text(`下载 ${name}`, `Download ${name}`);
+      title = text("下载", "Download");
+      onSelect = meta.onDownload;
+      break;
+    case "template":
+      label = text(`将 ${name} 存为模板`, `Save ${name} as a template`);
+      title = text("存为模板", "Save as template");
+      onSelect = meta.onSaveTemplate;
+      break;
+    case "pin": {
+      const pinned = isTaskPinned(meta.pinnedTaskIds, task);
+      if (pinned) Icon = PinOff;
+      label = pinned ? text(`取消置顶 ${name}`, `Unpin ${name}`) : text(`置顶 ${name}`, `Pin ${name}`);
+      title = pinned ? text("取消置顶", "Unpin") : text("置顶", "Pin");
+      onSelect = meta.onTogglePin;
+      break;
+    }
+    case "raw":
+      label = text(`查看 ${name} 的原始 JSON`, `View raw JSON for ${name}`);
+      title = text("原始 JSON", "Raw JSON");
+      onSelect = meta.onRaw;
+      break;
+  }
+  return (
+    <Button
+      aria-label={label}
+      className="h-8 w-8 px-0"
+      data-quick-action={id}
+      disabled={disabled}
+      disabledReason={disabled ? disabledReason : undefined}
+      title={title}
+      type="button"
+      variant="ghost"
+      onClick={() => onSelect(task)}
+    >
+      <Icon className="h-4 w-4" />
+    </Button>
+  );
+}
 
 function taskTableMeta(table: { options: { meta?: unknown } }) {
   return table.options.meta as TaskTableMeta;
@@ -389,9 +609,7 @@ function buildMoreMenuSections({
   task,
   isPinned,
   canEdit,
-  promoteLog,
-  promoteClone,
-  showSshInfo,
+  stripActions,
   text,
   onLog,
   onClone,
@@ -409,9 +627,8 @@ function buildMoreMenuSections({
   task: Task;
   isPinned: boolean;
   canEdit: boolean;
-  promoteLog: boolean;
-  promoteClone: boolean;
-  showSshInfo: boolean;
+  /** Actions the row already shows as buttons; More leaves them out. */
+  stripActions: readonly TaskQuickActionId[];
   text: (zh: string, en: string) => string;
   onLog: (task: Task) => void;
   onClone: (task: Task) => void;
@@ -428,43 +645,44 @@ function buildMoreMenuSections({
 }): MoreMenuSection[] {
   const running = isRunningTask(task);
   const access = getTaskAccess(task);
-  const logItem: MoreMenuItem = {
-    key: "log",
-    label: text("日志", "Logs"),
-    icon: <FileText className="h-4 w-4 text-app-muted" />,
-    disabled: !access.log,
-    title: access.logReason,
-    hint: access.log ? undefined : text("未启动", "Not started"),
-    onSelect: () => onLog(task),
-  };
-  const monitorItem: MoreMenuItem | null =
-    promoteLog && onMonitor
-      ? {
-          key: "monitor",
-          label: text("监控", "Monitor"),
-          icon: <ActivitySquare className="h-4 w-4 text-app-muted" />,
-          onSelect: () => onMonitor(task),
-        }
-      : null;
-  const sshInfoItem: MoreMenuItem | null = showSshInfo
-    ? {
-        key: "ssh-info",
-        label: text("终端", "Terminal"),
-        icon: <TerminalSquare className="h-4 w-4 text-app-muted" />,
-        disabled: !access.terminal,
-        title: access.terminalReason,
-        hint: access.terminal ? undefined : text("仅运行中", "Running only"),
-        onSelect: () => onSshInfo(task),
-      }
-    : null;
+  const offStrip = (id: TaskQuickActionId) => !stripActions.includes(id);
 
-  const connect: MoreMenuItem[] = promoteLog
-    ? [...(monitorItem ? [monitorItem] : []), ...(sshInfoItem ? [sshInfoItem] : [])]
-    : [logItem, ...(sshInfoItem ? [sshInfoItem] : [])];
+  // Watching (log, monitor), then connecting. Each stays out of More while it is on the row.
+  const connect: MoreMenuItem[] = [];
+  if (offStrip("log")) {
+    connect.push({
+      key: "log",
+      label: text("日志", "Logs"),
+      icon: <FileText className="h-4 w-4 text-app-muted" />,
+      disabled: !access.log,
+      title: access.logReason,
+      hint: access.log ? undefined : text("未启动", "Not started"),
+      onSelect: () => onLog(task),
+    });
+  }
+  if (onMonitor && offStrip("monitor")) {
+    connect.push({
+      key: "monitor",
+      label: text("监控", "Monitor"),
+      icon: <ActivitySquare className="h-4 w-4 text-app-muted" />,
+      onSelect: () => onMonitor(task),
+    });
+  }
+  if (offStrip("terminal")) {
+    connect.push({
+      key: "ssh-info",
+      label: text("终端", "Terminal"),
+      icon: <TerminalSquare className="h-4 w-4 text-app-muted" />,
+      disabled: !access.terminal,
+      title: access.terminalReason,
+      hint: access.terminal ? undefined : text("仅运行中", "Running only"),
+      onSelect: () => onSshInfo(task),
+    });
+  }
 
   const lifecycle: MoreMenuItem[] = [];
   // Extending is the lifecycle step that keeps a running job alive, so it leads the section.
-  if (onExtend && canExtendRelease(task)) {
+  if (onExtend && canExtendRelease(task) && offStrip("extend")) {
     lifecycle.push({
       key: "extend",
       label: text("延长释放…", "Extend release…"),
@@ -472,7 +690,7 @@ function buildMoreMenuSections({
       onSelect: () => onExtend(task),
     });
   }
-  if (!promoteClone) {
+  if (offStrip("clone")) {
     lifecycle.push({
       key: "clone",
       label: text("克隆", "Clone"),
@@ -480,7 +698,7 @@ function buildMoreMenuSections({
       onSelect: () => onClone(task),
     });
   }
-  if (canEdit) {
+  if (canEdit && offStrip("edit")) {
     lifecycle.push({
       key: "edit",
       label: text("编辑", "Edit"),
@@ -488,44 +706,53 @@ function buildMoreMenuSections({
       onSelect: () => onEdit(task),
     });
   }
-  lifecycle.push({
-    key: "commit",
-    label: text("提交镜像", "Commit image"),
-    icon: <Upload className="h-4 w-4 text-app-muted" />,
-    disabled: !running,
-    title: running
-      ? text("提交镜像", "Commit image")
-      : text("仅运行中实例可提交镜像", "Only running instances can be committed"),
-    hint: running ? undefined : text("仅运行中", "Running only"),
-    onSelect: () => onCommit(task),
-  });
+  if (offStrip("commit")) {
+    lifecycle.push({
+      key: "commit",
+      label: text("提交镜像", "Commit image"),
+      icon: <Upload className="h-4 w-4 text-app-muted" />,
+      disabled: !running,
+      title: running
+        ? text("提交镜像", "Commit image")
+        : text("仅运行中实例可提交镜像", "Only running instances can be committed"),
+      hint: running ? undefined : text("仅运行中", "Running only"),
+      onSelect: () => onCommit(task),
+    });
+  }
 
-  const local: MoreMenuItem[] = [
-    {
+  const local: MoreMenuItem[] = [];
+  if (offStrip("download")) {
+    local.push({
       key: "download",
       label: text("下载", "Download"),
       icon: <Download className="h-4 w-4 text-app-muted" />,
       onSelect: () => onDownload(task),
-    },
-    {
+    });
+  }
+  if (offStrip("template")) {
+    local.push({
       key: "template",
       label: text("存为模板", "Save as template"),
       icon: <Save className="h-4 w-4 text-app-muted" />,
       onSelect: () => onSaveTemplate(task),
-    },
-    {
+    });
+  }
+  if (offStrip("pin")) {
+    local.push({
       key: "pin",
       label: isPinned ? text("取消置顶", "Unpin") : text("置顶", "Pin"),
       icon: isPinned ? <PinOff className="h-4 w-4 text-app-muted" /> : <Pin className="h-4 w-4 text-app-muted" />,
       onSelect: () => onTogglePin(task),
-    },
-    {
+    });
+  }
+  if (offStrip("raw")) {
+    local.push({
       key: "raw",
       label: text("原始 JSON", "Raw JSON"),
       icon: <Braces className="h-4 w-4 text-app-muted" />,
       onSelect: () => onRaw(task),
-    },
-  ];
+    });
+  }
 
   // Delete lives here, last and apart, rather than in the row slot release uses: the row
   // slot never changes meaning when a task changes state between refreshes.
@@ -539,12 +766,13 @@ function buildMoreMenuSections({
       }]
     : [];
 
+  // A section whose every action is on the row leaves no empty divider behind.
   return [
     { id: "connect", items: connect },
     { id: "lifecycle", items: lifecycle },
     { id: "local", items: local },
-    ...(danger.length > 0 ? [{ id: "danger", items: danger }] : []),
-  ];
+    { id: "danger", items: danger },
+  ].filter((section) => section.items.length > 0);
 }
 
 function MoreActionsMenuPanel({
@@ -553,9 +781,7 @@ function MoreActionsMenuPanel({
   menuId,
   initialFocusIndex,
   triggerRef,
-  promoteLog,
-  promoteClone,
-  showSshInfo,
+  stripActions,
   isPinned,
   canEdit,
   onClose,
@@ -577,9 +803,7 @@ function MoreActionsMenuPanel({
   menuId: string;
   initialFocusIndex: number;
   triggerRef: MutableRefObject<HTMLElement | null>;
-  promoteLog: boolean;
-  promoteClone: boolean;
-  showSshInfo: boolean;
+  stripActions: readonly TaskQuickActionId[];
   isPinned: boolean;
   canEdit: boolean;
   onClose: (restoreFocus?: boolean) => void;
@@ -611,9 +835,7 @@ function MoreActionsMenuPanel({
         task,
         isPinned,
         canEdit,
-        promoteLog,
-        promoteClone,
-        showSshInfo,
+        stripActions,
         text,
         onLog,
         onClone,
@@ -643,9 +865,7 @@ function MoreActionsMenuPanel({
       onSaveTemplate,
       onSshInfo,
       onTogglePin,
-      promoteClone,
-      promoteLog,
-      showSshInfo,
+      stripActions,
       task,
       text,
     ],
@@ -823,9 +1043,7 @@ export function MoreActionsMenu({
   task,
   isPinned,
   canEdit,
-  promoteLog = false,
-  promoteClone = false,
-  showSshInfo = true,
+  stripActions = NO_STRIP_ACTIONS,
   open: openControlled,
   onLog,
   onClone,
@@ -844,10 +1062,8 @@ export function MoreActionsMenu({
   task: Task;
   isPinned: boolean;
   canEdit: boolean;
-  /** When true, logs are on the primary action strip; expose monitor in More instead (and omit Logs there). */
-  promoteLog?: boolean;
-  /** When true, clone is on the primary action strip; omit Clone from More. */
-  promoteClone?: boolean;
+  /** Actions this row already shows as buttons (the action bar, or a phone card's row); More omits them. */
+  stripActions?: readonly TaskQuickActionId[];
   /** Controlled open state. When set, the parent owns open/close (needed for virtualized rows). */
   open?: boolean;
   onLog: (task: Task) => void;
@@ -864,8 +1080,6 @@ export function MoreActionsMenu({
   onTogglePin: (task: Task) => void;
   /** Offered (as the last, danger item) only for tasks that can no longer be released. */
   onDelete?: (task: Task) => void;
-  /** When false, hide connection info in More (already on the action strip). */
-  showSshInfo?: boolean;
   /** Notify parent when the menu opens/closes. Position is included so the parent can host the portal. */
   onOpenChange?: (taskId: string, open: boolean, position?: MoreMenuPosition, trigger?: HTMLElement | null) => void;
 }) {
@@ -885,9 +1099,7 @@ export function MoreActionsMenu({
       task,
       isPinned,
       canEdit,
-      promoteLog,
-      promoteClone,
-      showSshInfo,
+      stripActions,
       text,
       onLog,
       onClone,
@@ -921,9 +1133,7 @@ export function MoreActionsMenu({
     onSaveTemplate,
     onSshInfo,
     onTogglePin,
-    promoteClone,
-    promoteLog,
-    showSshInfo,
+    stripActions,
     task,
     text,
   ]);
@@ -993,9 +1203,7 @@ export function MoreActionsMenu({
           menuId={menuId}
           initialFocusIndex={initialFocusIndex}
           triggerRef={triggerRef}
-          promoteLog={promoteLog}
-          promoteClone={promoteClone}
-          showSshInfo={showSshInfo}
+          stripActions={stripActions}
           isPinned={isPinned}
           canEdit={canEdit}
           onClose={closeMenu}
@@ -1067,15 +1275,19 @@ export function TasksPage() {
   // measures against <main> and offsets by where the list starts inside it. The offset moves
   // when anything above the list changes size, so it is re-read on every resize.
   const [cardScroll, setCardScroll] = useState<{ element: HTMLElement; margin: number } | null>(null);
+  // The row action bar's quick actions, chosen in 自定义操作栏 and kept on this device.
+  const [quickActions, setQuickActions] = useState<TaskQuickActionId[]>(() => [...DEFAULT_TASK_QUICK_ACTIONS]);
+  const [quickActionsOpen, setQuickActionsOpen] = useState(false);
   // When the table region itself is narrow (the 1024px minimum window, a wide sidebar, browser
-  // zoom), the sticky action column folds terminal, log and clone into More, so status and
-  // resources stay in view instead of sliding under a 232px action strip.
-  const [compactActions, setCompactActions] = useState(false);
+  // zoom), the sticky action column folds its quick actions into More, so status and resources
+  // stay in view instead of sliding under the bar. How narrow depends on how many there are.
+  const [regionQuickActionFit, setRegionQuickActionFit] = useState(MAX_TASK_QUICK_ACTIONS);
+  const compactActions = regionQuickActionFit < quickActions.length;
   const tableRegionCallbackRef = useCallback((node: HTMLDivElement | null) => {
     tableScrollRef.current = node;
     if (!node || typeof ResizeObserver === "undefined") return undefined;
     // The first callback fires as observation starts, so the initial width is covered too.
-    const observer = new ResizeObserver(([entry]) => setCompactActions(entry.contentRect.width < COMPACT_ACTIONS_MAX_WIDTH));
+    const observer = new ResizeObserver(([entry]) => setRegionQuickActionFit(quickActionsThatFit(entry.contentRect.width)));
     observer.observe(node);
     return () => {
       observer.disconnect();
@@ -1674,52 +1886,19 @@ export function TasksPage() {
       columnHelper.display({
         id: "actions",
         ...taskColumnSizing.actions,
-        header: () => <ActionHeader />,
+        header: ({ table }) => <ActionHeader onCustomize={taskTableMeta(table).onCustomizeQuickActions} />,
         cell: ({ row, table }) => {
           const task = row.original;
           const meta = taskTableMeta(table);
           const release = isReleasableTask(task);
-          const access = getTaskAccess(task);
-          // Narrow regions keep only the release slot and More; terminal, log and clone move
-          // into the menu (its connect and lifecycle sections) rather than off the screen.
-          const compact = meta.compactActions;
+          // The user's quick actions lead the bar; a narrow region folds them into More (its
+          // connect, lifecycle and local sections) rather than off the screen.
+          const quickActions = meta.compactActions ? NO_STRIP_ACTIONS : meta.quickActions;
           return (
-            <div className={compact ? COMPACT_ACTION_GRID_CLASS : ACTION_GRID_CLASS}>
-              {compact ? null : (
-                <>
-                  <Button
-                    aria-label={text(`打开 ${getTaskName(task)} 的终端`, `Open terminal for ${getTaskName(task)}`)}
-                    className="h-8 w-8 px-0"
-                    disabled={!access.terminal}
-                    disabledReason={access.terminalReason}
-                    variant="ghost"
-                    title={text("终端", "Terminal")}
-                    onClick={() => meta.onTerminal(task)}
-                  >
-                    <TerminalSquare className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    aria-label={text(`打开 ${getTaskName(task)} 的日志`, `Open logs for ${getTaskName(task)}`)}
-                    className="h-8 w-8 px-0"
-                    disabled={!access.log}
-                    disabledReason={access.logReason}
-                    title={text("日志", "Logs")}
-                    variant="ghost"
-                    onClick={() => meta.onLog(task)}
-                  >
-                    <FileText className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    aria-label={text(`克隆实例 ${getTaskName(task)}`, `Clone instance ${getTaskName(task)}`)}
-                    className="h-8 w-8 px-0"
-                    title={text("克隆实例", "Clone instance")}
-                    variant="ghost"
-                    onClick={() => meta.onClone(task)}
-                  >
-                    <CopyPlus className="h-4 w-4" />
-                  </Button>
-                </>
-              )}
+            <div className="grid items-center gap-1" style={{ gridTemplateColumns: actionGridColumns(quickActions.length) }}>
+              {quickActions.map((id) => (
+                <RowQuickAction key={id} id={id} meta={meta} task={task} />
+              ))}
               {/* This slot only ever means release; deleting an ended task's record is in More. */}
               <Button
                 aria-label={text(`释放实例 ${getTaskName(task)}`, `Release instance ${getTaskName(task)}`)}
@@ -1738,12 +1917,10 @@ export function TasksPage() {
                 {text("释放", "Release")}
               </Button>
               <MoreActionsMenu
-                canEdit={getTaskEditableState(getRuntimeSettings().apiBaseUrl) !== false}
+                canEdit={meta.canEdit}
                 isPinned={isTaskPinned(meta.pinnedTaskIds, task)}
                 open={meta.moreMenuTaskId === taskRowId(task)}
-                promoteClone={!compact}
-                promoteLog={!compact}
-                showSshInfo={compact}
+                stripActions={quickActions}
                 task={task}
                 onClone={meta.onClone}
                 onExtend={meta.onExtend}
@@ -1767,20 +1944,45 @@ export function TasksPage() {
     [locale, text],
   );
 
-  // A narrow region folds terminal, log and clone into More, and the sticky column shrinks
-  // with them; at its full 232px it sat over the release condition at the default window.
+  // The action column is as wide as its bar unless the user resized it; a double-click on its
+  // handle clears the saved width, so it follows the bar again.
+  const quickActionStripWidth = taskActionStripWidth(quickActions.length);
+  const actionsColumnWidth = columnSizing.actions ?? quickActionStripWidth;
+  // The bar folds into More in a narrow region, or when its column is narrower than its buttons.
+  const actionBarFolded = compactActions || actionsColumnWidth < quickActionStripWidth;
+  // A narrow region also shrinks the sticky column to release + More; at full width it sat over
+  // the release condition at the default window.
   const tableColumnSizing = useMemo<ColumnSizingState>(
-    () => (compactActions
-      ? { ...columnSizing, actions: Math.min(columnSizing.actions ?? ACTION_COLUMN_WIDTH, COMPACT_ACTION_COLUMN_WIDTH) }
-      : columnSizing),
-    [columnSizing, compactActions],
+    () => ({
+      ...columnSizing,
+      actions: compactActions ? Math.min(actionsColumnWidth, COMPACT_ACTION_COLUMN_WIDTH) : actionsColumnWidth,
+    }),
+    [actionsColumnWidth, columnSizing, compactActions],
   );
+
+  /**
+   * A new set of quick actions resizes the action column by the buttons it gained or lost,
+   * keeping any slack the user added; a column already too narrow for the old bar opens to
+   * fit the new one, since choosing buttons is asking to see them.
+   */
+  const updateQuickActions = (next: TaskQuickActionId[]) => {
+    const previousWidth = taskActionStripWidth(quickActions.length);
+    const nextWidth = taskActionStripWidth(next.length);
+    setQuickActions(next);
+    setColumnSizing((sizing) => {
+      const current = sizing.actions ?? previousWidth;
+      const resized = Math.max(nextWidth, current + nextWidth - previousWidth);
+      return { ...sizing, actions: Math.min(taskColumnSizing.actions.maxSize, resized) };
+    });
+  };
 
   const tableMeta: TaskTableMeta = {
     pinnedTaskIds,
     moreMenuTaskId: moreMenu?.taskId ?? null,
     releasePending: releaseMutation.isPending,
-    compactActions: compactActions || columnSizing.actions < ACTION_COLUMN_WIDTH,
+    compactActions: actionBarFolded,
+    quickActions,
+    canEdit: getTaskEditableState(getRuntimeSettings().apiBaseUrl) !== false,
     onTerminal: openTerminal,
     onLog: setLogTask,
     onClone: openCloneTask,
@@ -1794,6 +1996,8 @@ export function TasksPage() {
     onSaveTemplate: saveTemplateMutate,
     onSshInfo: openSshInfo,
     onTogglePin: handleTogglePin,
+    onMonitor: openMonitorDashboard,
+    onCustomizeQuickActions: () => setQuickActionsOpen(true),
     onMoreMenuOpenChange: handleMoreMenuOpenChange,
   };
 
@@ -1848,8 +2052,13 @@ export function TasksPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [savedVisibility, savedSizing] = await Promise.all([loadColumnVisibility(), loadColumnSizing()]);
+      const savedQuickActions = await loadTaskQuickActions(browserRuntime.storage);
+      const [savedVisibility, savedSizing] = await Promise.all([
+        loadColumnVisibility(),
+        loadColumnSizing(taskActionStripWidth(savedQuickActions.length)),
+      ]);
       if (cancelled) return;
+      setQuickActions(savedQuickActions);
       setColumnVisibility(savedVisibility);
       setColumnSizing(savedSizing);
       settingsHydratedRef.current = true;
@@ -1867,10 +2076,15 @@ export function TasksPage() {
   useEffect(() => {
     if (!settingsHydratedRef.current) return;
     const timeoutId = window.setTimeout(() => {
-      void browserRuntime.storage.set(COLUMN_SIZING_KEY, JSON.stringify(normalizeColumnSizing(columnSizing)));
+      void browserRuntime.storage.set(COLUMN_SIZING_KEY, JSON.stringify(normalizeColumnSizing(columnSizing, quickActionStripWidth)));
     }, 250);
     return () => window.clearTimeout(timeoutId);
-  }, [columnSizing]);
+  }, [columnSizing, quickActionStripWidth]);
+
+  useEffect(() => {
+    if (!settingsHydratedRef.current) return;
+    void saveTaskQuickActions(browserRuntime.storage, quickActions);
+  }, [quickActions]);
 
   const configurableColumns = table.getAllLeafColumns().filter((column) => !ALWAYS_VISIBLE_COLUMNS.has(column.id));
   const selectedTasks = table.getSelectedRowModel().flatRows.map((row) => row.original);
@@ -1984,6 +2198,14 @@ export function TasksPage() {
       ) {
         return;
       }
+      // n opens the create form from anywhere on the page, an empty list included.
+      if (key === "n") {
+        event.preventDefault();
+        setCloneTask(null);
+        setEditTask(null);
+        setCreateOpen(true);
+        return;
+      }
       if (filteredTasks.length === 0) return;
 
       if (!isListNavigationTarget()) {
@@ -2051,6 +2273,13 @@ export function TasksPage() {
       if (key === "e" && canExtendRelease(task)) {
         event.preventDefault();
         setExtendTask(task);
+        return;
+      }
+      if (key === "c") {
+        event.preventDefault();
+        setCloneTask(task);
+        setEditTask(null);
+        setCreateOpen(true);
       }
     };
 
@@ -2229,6 +2458,20 @@ export function TasksPage() {
                     <Settings2 className="h-4 w-4" />
                     {text("列设置", "Columns")}
                   </button>
+                  {/* Phone cards keep their own action row, so the bar is a table-only choice. */}
+                  {compactLayout ? null : (
+                    <button
+                      className={MENU_ITEM_CLASS}
+                      type="button"
+                      onClick={() => {
+                        setQuickActionsOpen(true);
+                        closeViewMenu();
+                      }}
+                    >
+                      <SlidersHorizontal className="h-4 w-4" />
+                      {text("操作栏", "Action bar")}
+                    </button>
+                  )}
                 </div>
               </div>
             ) : null}
@@ -2262,9 +2505,17 @@ export function TasksPage() {
           <p className="sr-only" aria-live="polite" aria-atomic="true">
             {rowAnnouncement}
           </p>
+          {/* Only the current row has Tab stops, so the list says how to reach the others. */}
+          <p id="task-list-keys" className="sr-only">
+            {text(
+              "按 j / k 或上下方向键在行间移动，Enter 打开详情，问号键查看全部快捷键。",
+              "Press j / k or the Up and Down Arrow keys to move between rows, Enter to open details, and the question mark key for all shortcuts.",
+            )}
+          </p>
           {compactLayout ? (
           <div
             ref={mobileCardsCallbackRef}
+            aria-describedby="task-list-keys"
             aria-labelledby="task-list-heading"
             className="divide-y divide-app-border"
             role="region"
@@ -2404,8 +2655,7 @@ export function TasksPage() {
                           canEdit={getTaskEditableState(getRuntimeSettings().apiBaseUrl) !== false}
                           isPinned={isTaskPinned(pinnedTaskIds, task)}
                           open={moreMenu?.taskId === taskRowId(task)}
-                          promoteLog={logAttention}
-                          showSshInfo={logAttention}
+                          stripActions={phoneCardStripActions(task)}
                           task={task}
                           onClone={openCloneTask}
                           onExtend={setExtendTask}
@@ -2432,6 +2682,7 @@ export function TasksPage() {
           ) : (
           <TableRegion
             ref={tableRegionCallbackRef}
+            aria-describedby="task-list-keys"
             label={text("任务实例表格", "Task instances table")}
           >
             <table
@@ -2447,10 +2698,14 @@ export function TasksPage() {
                       const canResize = header.column.getCanResize() && Boolean(columnSizingRange);
                       const actionsColumn = isActionsColumn(columnId);
                       const label = columnLabels[columnId];
+                      // Sorting is chosen under 视图; the header it applies to says so, to the eye and to a screen reader.
+                      const sorted = Boolean(queryState.sortBy) && COLUMN_SORT_FIELDS[columnId] === queryState.sortBy;
+                      const SortIcon = queryState.sortDir === "asc" ? ArrowUp : ArrowDown;
                       return (
                         <th
                           key={header.id}
                           scope="col"
+                          aria-sort={sorted ? (queryState.sortDir === "asc" ? "ascending" : "descending") : undefined}
                           style={{ width: header.getSize() }}
                           className={[
                             "sticky top-0 z-10 whitespace-nowrap border-b border-app-border bg-app-panel px-3 py-2 font-medium",
@@ -2458,6 +2713,7 @@ export function TasksPage() {
                           ].join(" ")}
                         >
                           {flexRender(header.column.columnDef.header, header.getContext())}
+                          {sorted ? <SortIcon className="ml-1 inline h-3 w-3 align-[-1px] text-app-text" aria-hidden="true" /> : null}
                           {canResize && columnSizingRange ? (
                             <span
                               aria-label={text(
@@ -2470,8 +2726,10 @@ export function TasksPage() {
                               aria-valuenow={Math.round(header.getSize())}
                               className="app-task-column-resize"
                               role="separator"
-                              tabIndex={0}
-                              title={text("拖动调整；双击恢复默认宽度；左右方向键微调", "Drag to resize; double-click to reset; use Left and Right Arrow keys for fine adjustment")}
+                              // Out of the Tab order: eight handles stood between the toolbar and the
+                              // first row. Keyboard users set widths from 列设置 instead.
+                              tabIndex={-1}
+                              title={text("拖动调整；双击恢复默认宽度", "Drag to resize; double-click to reset")}
                               onMouseDown={header.getResizeHandler()}
                               onTouchStart={header.getResizeHandler()}
                               onDoubleClick={() => header.column.resetSize()}
@@ -2564,9 +2822,12 @@ export function TasksPage() {
 
       <div className="app-task-pagination flex flex-wrap items-center justify-between gap-3 text-sm text-app-muted">
         <div>
-          {hasKnownTotal
-            ? text(`共 ${total} 个实例，第 ${queryState.page} / ${totalPages} 页`, `${total} instances, page ${queryState.page} / ${totalPages}`)
-            : text(`第 ${queryState.page} 页，当前返回 ${query.data?.items.length ?? 0} 个实例`, `Page ${queryState.page}, ${query.data?.items.length ?? 0} instances returned`)}
+          {/* With nothing matching on this page, a bare total would contradict the empty state above it. */}
+          {query.data && filteredTasks.length === 0 && (queryState.keyword.trim() || queryState.status)
+            ? text(`本页没有匹配的实例，第 ${queryState.page} 页`, `No matching instances on page ${queryState.page}`)
+            : hasKnownTotal
+              ? text(`共 ${total} 个实例，第 ${queryState.page} / ${totalPages} 页`, `${total} instances, page ${queryState.page} / ${totalPages}`)
+              : text(`第 ${queryState.page} 页，当前返回 ${query.data?.items.length ?? 0} 个实例`, `Page ${queryState.page}, ${query.data?.items.length ?? 0} instances returned`)}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span>{text("每页", "Per page")}</span>
@@ -2720,12 +2981,14 @@ export function TasksPage() {
           menuId={moreActionsMenuId}
           initialFocusIndex={0}
           triggerRef={moreMenuTriggerRef}
-          // One panel serves every row, so it carries what that row's surface leaves out:
-          // the narrow table moves terminal, log and clone in here; a phone card keeps only
-          // the log (failed tasks) or the terminal (the rest) as a button.
-          promoteLog={compactLayout ? needsLogAttention(moreMenuTask) : !compactActions}
-          promoteClone={!compactLayout && !compactActions}
-          showSshInfo={compactLayout ? needsLogAttention(moreMenuTask) : compactActions}
+          // One panel serves every row, so it carries what that row's surface leaves out: the
+          // table's action bar keeps the user's quick actions (none while it is folded); a phone
+          // card keeps only the log (failed tasks) or the terminal (the rest) as a button.
+          stripActions={compactLayout
+            ? phoneCardStripActions(moreMenuTask)
+            : actionBarFolded
+              ? NO_STRIP_ACTIONS
+              : quickActions}
           isPinned={isTaskPinned(pinnedTaskIds, moreMenuTask)}
           canEdit={getTaskEditableState(getRuntimeSettings().apiBaseUrl) !== false}
           onClose={closeMoreMenu}
@@ -2748,22 +3011,49 @@ export function TasksPage() {
           {asJson(rawTask)}
         </pre>
       </Dialog>
-      <Dialog open={columnSettingsOpen} title={text("列设置", "Columns")} onClose={() => setColumnSettingsOpen(false)} width="max-w-md">
-        <div className="space-y-3 p-4">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {configurableColumns.map((column) => (
-              <label
-                key={column.id}
-                className="flex h-9 cursor-pointer items-center gap-2 rounded-md border border-app-border bg-app-surface px-3 text-sm hover:bg-app-panel"
-              >
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 accent-app-accent"
-                  checked={column.getIsVisible()}
-                  onChange={column.getToggleVisibilityHandler()}
-                />
-                <span>{columnLabels[column.id] ? (locale === "en-US" ? columnLabels[column.id].en : columnLabels[column.id].zh) : column.id}</span>
-              </label>
+      <Dialog open={columnSettingsOpen} title={text("列设置", "Columns")} onClose={() => setColumnSettingsOpen(false)} width="max-w-lg">
+        <div className="space-y-4 p-4">
+          <p className="text-xs leading-5 text-app-muted">
+            {text("勾选要显示的列；右侧数字是列宽（像素）。", "Tick the columns to show. The number beside each is its width in pixels.")}
+          </p>
+          <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
+            {COLUMN_SETTING_GROUPS.map((group) => (
+              <fieldset key={group.en} className="min-w-0">
+                <legend className="text-xs font-medium text-app-muted">{text(group.zh, group.en)}</legend>
+                <div className="mt-1">
+                  {group.ids.map((id) => {
+                    // Actions are always shown (no column to toggle); only their width is a choice.
+                    const column = configurableColumns.find((candidate) => candidate.id === id);
+                    if (!column && !isActionsColumn(id)) return null;
+                    const name = localizedText(columnLabels[id] ?? { zh: id, en: id }, locale);
+                    const range = taskColumnSizing[id as keyof typeof taskColumnSizing];
+                    const visible = column ? column.getIsVisible() : true;
+                    return (
+                      <div key={id} className="flex min-h-9 items-center justify-between gap-2">
+                        <label className="flex min-h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 text-sm text-app-text">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 shrink-0 accent-app-accent"
+                            checked={visible}
+                            disabled={!column}
+                            title={column ? undefined : text("始终显示", "Always shown")}
+                            onChange={column?.getToggleVisibilityHandler()}
+                          />
+                          <span className="truncate">{name}</span>
+                        </label>
+                        {visible && range ? (
+                          <ColumnWidthInput
+                            label={text(`${name}列宽（像素）`, `${name} column width in pixels`)}
+                            range={range}
+                            size={Math.round(columnSizing[id] ?? (isActionsColumn(id) ? quickActionStripWidth : range.size))}
+                            onCommit={(next) => setColumnSizing((previous) => ({ ...previous, [id]: next }))}
+                          />
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </fieldset>
             ))}
           </div>
           <div className="flex justify-end gap-2 border-t border-app-border pt-3">
@@ -2771,7 +3061,8 @@ export function TasksPage() {
               variant="secondary"
               onClick={() => {
                 setColumnVisibility(defaultColumnVisibility);
-                setColumnSizing(defaultColumnSizing);
+                // The action column's default is the width of the bar the user chose.
+                setColumnSizing({ ...defaultColumnSizing, actions: quickActionStripWidth });
               }}
             >
               {text("恢复默认", "Restore defaults")}
@@ -2780,6 +3071,12 @@ export function TasksPage() {
           </div>
         </div>
       </Dialog>
+      <QuickActionsDialog
+        open={quickActionsOpen}
+        actions={quickActions}
+        onChange={updateQuickActions}
+        onClose={() => setQuickActionsOpen(false)}
+      />
       {/* Recent batch operations (review 6.3); refreshes when a batch lands its record. */}
       <BatchHistoryPanel refreshSignal={batchState?.record?.id} retryableActions={["release", "delete"]} onRetryFailed={retryHistoryRecord} />
       {batchPreview ? (

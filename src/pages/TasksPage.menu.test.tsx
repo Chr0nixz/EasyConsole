@@ -84,13 +84,13 @@ describe("MoreActionsMenu", () => {
     expect(await screen.findByRole("menuitem", { name: /Commit image|提交镜像/ })).toBeDisabled();
   });
 
-  it("exposes monitor in More when logs are on the primary strip", async () => {
+  it("leaves logs out of More when they are on the row, and offers monitor", async () => {
     const onMonitor = vi.fn();
     render(
       <MoreActionsMenu
         task={{ ...task, status: 7 }}
         {...defaultProps}
-        promoteLog
+        stripActions={["log"]}
         onMonitor={onMonitor}
       />,
     );
@@ -104,15 +104,13 @@ describe("MoreActionsMenu", () => {
     expect(onMonitor).toHaveBeenCalledWith({ ...task, status: 7 });
   });
 
-  it("omits clone from More when clone is on the primary strip", async () => {
+  it("omits the default bar's terminal, log and clone from More", async () => {
     const onMonitor = vi.fn();
     render(
       <MoreActionsMenu
         task={task}
         {...defaultProps}
-        promoteClone
-        promoteLog
-        showSshInfo={false}
+        stripActions={["terminal", "log", "clone"]}
         onMonitor={onMonitor}
       />,
     );
@@ -158,7 +156,7 @@ describe("MoreActionsMenu", () => {
   });
 
   it("hides connection info when the primary action already exposes it", async () => {
-    render(<MoreActionsMenu task={task} {...defaultProps} showSshInfo={false} />);
+    render(<MoreActionsMenu task={task} {...defaultProps} stripActions={["terminal"]} />);
 
     fireEvent.click(screen.getByRole("button"));
     const items = await screen.findAllByRole("menuitem");
@@ -207,5 +205,40 @@ describe("MoreActionsMenu", () => {
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
     expect(onOpenChange).toHaveBeenCalledWith("1", false);
+  });
+
+  it("leaves out every customized bar action and drops a section left empty", async () => {
+    render(
+      <MoreActionsMenu
+        task={task}
+        {...defaultProps}
+        stripActions={["download", "template", "pin", "raw"]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button"));
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((item) => item.textContent)).toEqual([
+      expect.stringMatching(/Logs|日志/),
+      expect.stringMatching(/Terminal|终端/),
+      expect.stringMatching(/Clone|克隆/),
+      expect.stringMatching(/Commit image|提交镜像/),
+    ]);
+    // Connect and lifecycle remain; the local section had nothing left, so no second divider.
+    expect(screen.getAllByRole("separator")).toHaveLength(1);
+  });
+
+  it("offers monitor in More whenever it is not on the row", async () => {
+    const onMonitor = vi.fn();
+    const { unmount } = render(<MoreActionsMenu task={task} {...defaultProps} onMonitor={onMonitor} />);
+
+    fireEvent.click(screen.getByRole("button"));
+    expect(await screen.findByRole("menuitem", { name: /Monitor|监控/ })).toBeInTheDocument();
+    unmount();
+
+    render(<MoreActionsMenu task={task} {...defaultProps} stripActions={["monitor"]} onMonitor={onMonitor} />);
+    fireEvent.click(screen.getByRole("button"));
+    await screen.findAllByRole("menuitem");
+    expect(screen.queryByRole("menuitem", { name: /Monitor|监控/ })).not.toBeInTheDocument();
   });
 });

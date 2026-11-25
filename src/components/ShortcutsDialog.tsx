@@ -22,6 +22,8 @@ const TASK_LIST_SHORTCUTS: ShortcutItem[] = [
   { keys: "x", labelKey: "shell.shortcutsTaskSelect" },
   { keys: "r", labelKey: "shell.shortcutsTaskRelease" },
   { keys: "e", labelKey: "shell.shortcutsTaskExtend" },
+  { keys: "c", labelKey: "shell.shortcutsTaskClone" },
+  { keys: "n", labelKey: "shell.shortcutsTaskNew" },
 ];
 
 const CREATE_FORM_SHORTCUTS: ShortcutItem[] = [
