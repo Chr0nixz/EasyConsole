@@ -1510,7 +1510,11 @@ export function TasksPage() {
   const handleBatchSettled = useCallback(
     (result: BatchRunResult<BatchPreviewItem>, record: BatchOperationRecord) => {
       const deleteFlow = record.action === "delete";
-      const failed = result.summary.failed > 0;
+      const { succeeded, failed: failedCount, unknown: unknownCount, total } = result.summary;
+      const failed = failedCount > 0;
+      // An unknown item may still be running (and billing) or may already be gone. Until
+      // someone checks, the run is not finished: it is reported like a failure, never as done.
+      const incomplete = failed || unknownCount > 0;
       const title = deleteFlow
         ? text("批量删除完成", "Batch deletion finished")
         : text("批量释放完成", "Batch release finished");
@@ -1518,14 +1522,16 @@ export function TasksPage() {
       // background (or left the page during) needs a toast.
       const mounted = pageMountedRef.current;
       if (!mounted || batchBackgroundedRef.current) {
-        if (failed && mounted) {
+        if (incomplete && mounted) {
           setBatchBackgrounded(false);
-        } else if (failed) {
+        } else if (incomplete) {
           toast.error(
-            text("批量操作部分失败", "Batch operation partially failed"),
+            unknownCount > 0
+              ? text("批量操作有结果未知的项", "Some batch items have unknown results")
+              : text("批量操作部分失败", "Batch operation partially failed"),
             text(
-              `${result.summary.succeeded}/${result.summary.total} 成功，${result.summary.failed} 失败；可在任务实例页的「最近批量操作」中查看。`,
-              `${result.summary.succeeded}/${result.summary.total} succeeded, ${result.summary.failed} failed; see Recent batch operations on the task list.`,
+              `${succeeded}/${total} 成功，${failedCount} 失败${unknownCount > 0 ? `，${unknownCount} 结果未知，请核对实例的实际状态` : ""}；可在任务实例页的「最近批量操作」中查看。`,
+              `${succeeded}/${total} succeeded, ${failedCount} failed${unknownCount > 0 ? `, ${unknownCount} unknown — check the instances' actual state` : ""}; see Recent batch operations on the task list.`,
             ),
           );
         } else {
@@ -1538,14 +1544,15 @@ export function TasksPage() {
       }
       void runLogger.log({
         source: "task",
-        level: failed ? "error" : "info",
+        level: failed ? "error" : incomplete ? "warning" : "info",
         action: deleteFlow ? "task.batchDelete" : "task.batchRelease",
-        result: failed ? "failure" : "success",
+        result: incomplete ? "failure" : "success",
         title,
         metadata: {
-          count: result.summary.total,
-          succeeded: result.summary.succeeded,
-          failed: result.summary.failed,
+          count: total,
+          succeeded,
+          failed: failedCount,
+          unknown: unknownCount,
           skipped: result.summary.skipped,
           recordId: record.id,
           retryOf: record.retryOf,

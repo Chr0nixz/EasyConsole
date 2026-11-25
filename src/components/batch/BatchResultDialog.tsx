@@ -21,9 +21,10 @@ export type BatchResultDialogProps = {
   pending?: boolean;
   onRetryFailed?: () => void;
   /**
-   * Verify `unknown` items (network-failed creates that may have landed) against
-   * the live task list. Only create-type batches wire this; release/delete
-   * batches have no duplicate-billing risk and leave unknown items as-is.
+   * Verify `unknown` items (creates whose request may have landed) against the
+   * live task list. Only create-type batches wire this; release/delete batches
+   * have no duplicate-billing risk on retry, so their unknown items get a hint
+   * to check the list instead (an unconfirmed release may still be billing).
    */
   onResolveUnknown?: () => void;
   /** True while the verification lookup is running; disables its button. */
@@ -122,12 +123,17 @@ export function BatchResultDialog({
           {stopping ? <span>{text(" · 正在停止，当前项完成后结束", " · Stopping after the current item")}</span> : null}
         </p>
 
-        {unknownCount > 0 && onResolveUnknown ? (
+        {unknownCount > 0 ? (
           <p className="rounded-md bg-app-panel px-3 py-2 text-xs text-app-muted">
-            {text(
-              "网络错误的结果未知：实例可能已经创建。请先核对，确认未创建的项才能重试，避免重复创建计费实例。",
-              "Network-failed items have unknown results: the instance may already exist. Verify first — only items confirmed as not created can be retried, to avoid double-creating billed instances.",
-            )}
+            {onResolveUnknown
+              ? text(
+                  "结果未知的项：请求可能已经生效，实例可能已经创建。请先核对，确认未创建的项才能重试，避免重复创建计费实例。",
+                  "Items with unknown results may already have taken effect, so the instance may already exist. Verify first — only items confirmed as not created can be retried, to avoid double-creating billed instances.",
+                )
+              : text(
+                  "结果未知的项：请求可能已经生效，也可能没有。请先在列表里核对实际状态，再决定是否重新操作。",
+                  "Items with unknown results may or may not have taken effect. Check their actual state in the list before acting on them again.",
+                )}
           </p>
         ) : null}
 

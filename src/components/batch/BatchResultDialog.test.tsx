@@ -148,10 +148,11 @@ describe("BatchResultDialog", () => {
     expect(screen.getByRole("button", { name: /核对中…|Verifying…/ })).toBeDisabled();
     first.unmount();
 
-    // Without a wired verification (release/delete batches) unknown items show as-is.
+    // Without a wired verification (release/delete batches) unknown items get a check-the-list hint.
     renderDialog(result);
     expect(screen.queryByRole("button", { name: /核对未知项|Verify unknown/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/可能已经创建|may already exist/)).not.toBeInTheDocument();
+    expect(screen.getByText(/在列表里核对实际状态|actual state in the list/)).toBeInTheDocument();
     expect(screen.getByText(/结果未知|Unknown/)).toBeInTheDocument();
   });
 });

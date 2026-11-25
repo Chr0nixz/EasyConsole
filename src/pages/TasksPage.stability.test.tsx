@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { browserRuntime } from "../lib/runtime";
 import { I18nProvider } from "../lib/i18n";
-import type { Task } from "../lib/types";
+import { ApiError, type Task } from "../lib/types";
+import { instanceApi } from "../lib/api";
 import { TasksPage } from "./TasksPage";
 
 const tasks: Task[] = [
@@ -215,5 +216,48 @@ describe("TasksPage row stability", () => {
       expect(screen.getByRole("separator", { name: /调整操作列宽|Resize Actions column/i })).toHaveAttribute("aria-valuenow", "304");
     });
     window.localStorage.removeItem("easy-console.tasks.quickActions");
+  });
+});
+
+describe("TasksPage batch release outcomes", () => {
+  const originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  const originalOffsetWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth");
+
+  beforeEach(() => {
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 800 });
+    Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, get: () => 1200 });
+  });
+
+  afterEach(() => {
+    vi.mocked(instanceApi.operateTask).mockReset();
+    if (originalOffsetHeight) Object.defineProperty(HTMLElement.prototype, "offsetHeight", originalOffsetHeight);
+    if (originalOffsetWidth) Object.defineProperty(HTMLElement.prototype, "offsetWidth", originalOffsetWidth);
+  });
+
+  it("brings the result dialog back when a backgrounded release ends with an unknown item", async () => {
+    let rejectRelease: (error: unknown) => void = () => {};
+    vi.mocked(instanceApi.operateTask).mockImplementation(
+      () => new Promise((_resolve, reject) => {
+        rejectRelease = reject;
+      }),
+    );
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("checkbox", { name: /选择实例 running-job|Select instance running-job/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^(释放 1 个|Release 1)$/ }));
+    const preview = within(await screen.findByRole("dialog", { name: /确认批量释放|Confirm Batch Release/ }));
+    fireEvent.click(preview.getByRole("button", { name: /释放 1 个实例|Release 1 instances/ }));
+    const progress = within(await screen.findByRole("dialog", { name: /批量释放结果|Batch release results/ }));
+    fireEvent.click(progress.getByRole("button", { name: /后台运行|Run in background/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /批量释放结果|Batch release results/ })).not.toBeInTheDocument());
+
+    // The release request times out: the instance may still be running and billing.
+    await act(async () => {
+      rejectRelease(new ApiError("socket hang up", { kind: "network" }));
+    });
+
+    const result = within(await screen.findByRole("dialog", { name: /批量释放结果|Batch release results/ }));
+    expect(result.getByTestId("batch-result-summary")).toHaveTextContent(/未知 1|1 unknown/);
+    expect(result.getByText(/在列表里核对实际状态|actual state in the list/)).toBeInTheDocument();
   });
 });
