@@ -1,3 +1,4 @@
+import { parseJsonResponseBody } from "../../src/lib/api-client";
 import type { RuntimeHttpRequest, RuntimeHttpResponse, RuntimeStorage, RuntimeTransport } from "../../src/lib/types";
 
 type FetchLike = typeof fetch;
@@ -127,7 +128,8 @@ export function createNodeRuntime(options: NodeRuntimeOptions = {}): RuntimeTran
         data = await response.text();
       } else {
         const text = await response.text();
-        data = text ? JSON.parse(text) : null;
+        // A non-2xx body may be an HTML error page: keep it as text so the status still maps.
+        data = parseJsonResponseBody(text, response.status);
       }
       return { status: response.status, headers: response.headers, data: data as T };
     } finally {

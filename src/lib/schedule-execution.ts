@@ -1,7 +1,7 @@
 import { holdScheduledTaskForReview, LEGACY_SCHEDULED_TASK_OWNER_KEY, mutateScheduledTasks, scheduledTaskOwnerMismatch, scheduleNextRun, STALE_LEASE_MS, resetStaleRunningTasks, updateScheduledTask } from "./scheduled-tasks";
 import type { AccountScope } from "./account-scope";
 import { applyScheduledReleasePolicy } from "./scheduled-release";
-import { isNetworkError } from "./api-client";
+import { isOutcomeUnknown } from "./api-client";
 import {
   activeExecutionAccount,
   appendExecutionLedgerEntry,
@@ -60,8 +60,8 @@ function unknownOutcomeReview(task: ScheduledTask, error: unknown, now: Date): S
     status: "needs_review",
     lastRunAt: now.toISOString(),
     lastError: i18nText(
-      `远程创建结果未知（网络错误）：${errorMessageOf(error)}。请先在控制台核对是否已创建，再决定是否重放。`,
-      `Remote create outcome unknown (network error): ${errorMessageOf(error)}. Verify on the console whether the task was created before replaying.`,
+      `远程创建结果未知：${errorMessageOf(error)}。请先在控制台核对是否已创建，再决定是否重放。`,
+      `Remote create outcome unknown: ${errorMessageOf(error)}. Verify on the console whether the task was created before replaying.`,
     ),
     leaseStartedAt: undefined,
     updatedAt: now.toISOString(),
@@ -410,15 +410,16 @@ export async function executeScheduledTask(
       return { skipped: false, outcome: "local-persist-failed", task: review, remoteTaskId, result };
     }
   } catch (error) {
-    // createTask itself failed. Network-level failures may have reached the
-    // server (outcome unknown): park in needs_review instead of failed so no
-    // automatic replay can duplicate a remote create.
-    const networkFailed = isNetworkError(error);
-    const failed = networkFailed
+    // createTask itself failed. A network failure, an unreadable response or
+    // a 5xx may still have created the instance (outcome unknown): park in
+    // needs_review instead of failed so no automatic replay can duplicate a
+    // remote create.
+    const outcomeUnknown = isOutcomeUnknown(error);
+    const failed = outcomeUnknown
       ? unknownOutcomeReview(leased, error, now)
       : failScheduledExecution(leased, error instanceof Error ? error.message : String(error), now);
     await tryPersistTaskState(storage, failed);
-    await recordExecutionOutcome(storage, leased, trigger, startedAt, networkFailed ? "unknown" : "failed", {
+    await recordExecutionOutcome(storage, leased, trigger, startedAt, outcomeUnknown ? "unknown" : "failed", {
       accountScope,
       error: errorMessageOf(error),
     });

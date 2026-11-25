@@ -219,3 +219,35 @@ describe("download timeout behavior", () => {
     await rejection;
   });
 });
+
+describe("JSON response parsing", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubTextResponse(status: number, body: string) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ status, headers: new Headers(), text: async () => body }) as unknown as Response),
+    );
+  }
+
+  it("keeps the status of a non-JSON error page instead of failing like a network error", async () => {
+    stubTextResponse(502, "<html><body>502 Bad Gateway</body></html>");
+
+    const response = await browserRuntime.request({ method: "POST", url: "http://host/api/instance/task" });
+
+    expect(response.status).toBe(502);
+    expect(response.data).toBe("<html><body>502 Bad Gateway</body></html>");
+  });
+
+  it("reports a 2xx body that is not JSON as an unreadable response with its status", async () => {
+    stubTextResponse(200, "<html>ok</html>");
+
+    await expect(browserRuntime.request({ method: "POST", url: "http://host/api/instance/task" })).rejects.toMatchObject({
+      name: "ApiError",
+      kind: "parse",
+      status: 200,
+    });
+  });
+});

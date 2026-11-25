@@ -1,5 +1,6 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { getActiveAccountScope } from "./account-scope";
+import { parseJsonResponseBody } from "./api-client";
 
 import { i18nText, type Locale } from "./i18n-text";
 import { createLayeredSecureStorage } from "./secure-storage";
@@ -488,7 +489,8 @@ async function fetchRequest<T = unknown>(request: RuntimeHttpRequest): Promise<R
       data = await response.text();
     } else {
       const text = await response.text();
-      data = text ? JSON.parse(text) : null;
+      // A non-2xx body may be an HTML error page: keep it as text so the status still maps.
+      data = parseJsonResponseBody(text, response.status);
     }
 
     return {

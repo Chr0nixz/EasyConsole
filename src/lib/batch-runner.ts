@@ -8,7 +8,7 @@
  * callers can render a complete change list and retry the failed subset.
  */
 
-import { isNetworkError } from "./api-client";
+import { isOutcomeUnknown } from "./api-client";
 
 export type BatchItemStatus = "pending" | "running" | "succeeded" | "failed" | "skipped" | "unknown";
 
@@ -90,12 +90,12 @@ export async function runBatch<TItem, TResult = unknown>(
       const result = await options.run(item, index);
       emit({ item, status: "succeeded", result });
     } catch (error) {
-      // A network-level failure never proves the mutation did not land: the
-      // request may have reached the server without the response making it
-      // back. Such items land as `unknown` — same semantics as the execution
-      // ledger's needs_review — so callers verify before retrying instead of
-      // blindly re-running a possibly billed create.
-      const status = isNetworkError(error) ? "unknown" : "failed";
+      // A network failure, an unreadable response or a 5xx never proves the
+      // mutation did not land: the server may have acted without a usable
+      // response making it back. Such items land as `unknown` — same
+      // semantics as the execution ledger's needs_review — so callers verify
+      // before retrying instead of blindly re-running a possibly billed create.
+      const status = isOutcomeUnknown(error) ? "unknown" : "failed";
       emit({ item, status, error: outcomeError(error) });
       if (!continueOnError) {
         for (let rest = index + 1; rest < items.length; rest += 1) {

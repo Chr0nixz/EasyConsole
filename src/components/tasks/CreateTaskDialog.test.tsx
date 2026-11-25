@@ -12,6 +12,9 @@ const mocks = vi.hoisted(() => ({
   tasks: vi.fn(),
   resources: vi.fn(),
   prices: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+  toastNotify: vi.fn(),
 }));
 
 vi.mock("../../lib/api", () => ({
@@ -47,7 +50,7 @@ vi.mock("../../lib/use-auth", () => ({
 }));
 
 vi.mock("../../lib/use-toast", () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), notify: vi.fn() }),
+  useToast: () => ({ success: mocks.toastSuccess, error: mocks.toastError, info: vi.fn(), notify: mocks.toastNotify }),
 }));
 
 vi.mock("../../lib/use-run-logger", () => ({
@@ -62,6 +65,7 @@ vi.mock("../storage/RemoteStoragePicker", () => ({
 import { CreateTaskDialog } from "./CreateTaskDialog";
 import { CREATE_TASK_UI_PREFS_STORAGE_KEY } from "../../lib/create-task-ui-prefs";
 import { RESOURCE_PRESETS_STORAGE_KEY } from "../../lib/resource-presets";
+import { ApiError } from "../../lib/types";
 
 function renderDialog(props?: Partial<React.ComponentProps<typeof CreateTaskDialog>>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -117,6 +121,32 @@ describe("CreateTaskDialog", () => {
 
     await waitFor(() => expect(mocks.createTask).toHaveBeenCalled());
     expect(mocks.createTask).toHaveBeenCalledWith(expect.objectContaining({ price: 2.5 }));
+  });
+
+  it("reports a create that may have landed as unknown, not failed", async () => {
+    mocks.toastError.mockReset();
+    mocks.toastNotify.mockReset();
+    mocks.createTask.mockRejectedValue(new ApiError("bad gateway", { kind: "http", status: 504 }));
+    renderDialog();
+    await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+
+    fireEvent.submit(document.querySelector("form")!);
+
+    expect(await screen.findByText(/上一次提交的结果未知|last submission has an unknown outcome/)).toBeInTheDocument();
+    expect(mocks.toastNotify).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", title: expect.stringMatching(/创建结果未知|Creation outcome unknown/) }));
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it("still reports a definite rejection as a failed create", async () => {
+    mocks.toastError.mockReset();
+    mocks.createTask.mockRejectedValue(new ApiError("quota exceeded", { kind: "business", code: 10040 }));
+    renderDialog();
+    await waitFor(() => expect(screen.getByLabelText(/镜像|Image/)).toHaveValue("img1"));
+
+    fireEvent.submit(document.querySelector("form")!);
+
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith(expect.stringMatching(/实例创建失败|Instance creation failed/), "quota exceeded"));
+    expect(screen.queryByText(/上一次提交的结果未知|last submission has an unknown outcome/)).not.toBeInTheDocument();
   });
 
   it("selects a listed default rate and submits the same value shown to the user", async () => {

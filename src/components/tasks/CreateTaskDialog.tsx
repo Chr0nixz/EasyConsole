@@ -29,6 +29,7 @@ import {
   type CreateTaskUiPrefs,
 } from "../../lib/create-task-ui-prefs";
 import { useAuth } from "../../lib/use-auth";
+import { isOutcomeUnknown } from "../../lib/api-client";
 import { useToast } from "../../lib/use-toast";
 import {
   addHours,
@@ -581,6 +582,32 @@ export function CreateTaskDialog({
           targetId: editTaskId,
           error: errorMessage(error, text("任务更新失败", "Task update failed")),
         });
+        return;
+      }
+      if (isOutcomeUnknown(error)) {
+        // A timeout, unreadable response or 5xx may still have created the instance. Saying
+        // "failed" would invite a second click on Create and a second billed instance.
+        const unknownTitle = text("创建结果未知", "Creation outcome unknown");
+        toast.notify({
+          kind: "warning",
+          title: unknownTitle,
+          description: text(
+            "实例可能已经创建。请先在实例列表中确认，再决定是否重新创建。",
+            "The instance may already exist. Check the instance list before creating it again.",
+          ),
+          durationMs: 15_000,
+        });
+        void runLogger.log({
+          source: "task",
+          level: "warning",
+          action: initialTask ? "task.cloneCreate" : "task.create",
+          result: "failure",
+          title: unknownTitle,
+          targetName: name.trim(),
+          error: errorMessage(error, unknownTitle),
+          metadata: { outcome: "unknown" },
+        });
+        invalidateTaskQueries(queryClient);
         return;
       }
       toast.error(text("实例创建失败", "Instance creation failed"), message);
@@ -1206,7 +1233,17 @@ export function CreateTaskDialog({
           </FormSection>
 
           {formError ? <div className="rounded-md bg-app-dangerSoft px-3 py-2 text-sm text-app-danger">{formError}</div> : null}
-          {mutation.isError ? <ErrorState error={mutation.error} /> : null}
+          {mutation.isError && !isEditMode && isOutcomeUnknown(mutation.error) ? (
+            <div className="rounded-md bg-app-warningSoft px-3 py-2 text-sm text-app-warningText" role="alert">
+              <p className="font-medium">
+                {text("上一次提交的结果未知，实例可能已经创建。", "The last submission has an unknown outcome; the instance may already exist.")}
+              </p>
+              <p className="mt-1">
+                {text("请先在实例列表中确认，确认没有创建后再重新提交。", "Check the instance list first, and submit again only if it was not created.")}
+                {mutation.error instanceof Error && mutation.error.message ? <span className="ml-1 opacity-80">{mutation.error.message}</span> : null}
+              </p>
+            </div>
+          ) : mutation.isError ? <ErrorState error={mutation.error} /> : null}
         </div>
         <div className="app-mobile-form-actions flex shrink-0 flex-col gap-3 border-t border-app-border bg-app-surface px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 flex-1 text-xs text-app-muted" role="group" aria-label={text("提交摘要", "Submission summary")}>

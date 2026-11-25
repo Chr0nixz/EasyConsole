@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiClient, UNAUTHORIZED_EVENT, extractToken, isAuthError, joinUrl, normalizeToken, unwrapEnvelope } from "./api-client";
+import {
+  ApiClient,
+  UNAUTHORIZED_EVENT,
+  extractToken,
+  httpStatusMessage,
+  isAuthError,
+  isOutcomeUnknown,
+  joinUrl,
+  normalizeToken,
+  parseJsonResponseBody,
+  unwrapEnvelope,
+} from "./api-client";
 import { ApiError, type RuntimeHttpRequest, type RuntimeTransport } from "./types";
 import * as transportSecurity from "./transport-security";
 
@@ -151,6 +162,18 @@ describe("api client", () => {
 
   it("unwraps successful envelopes", () => {
     expect(unwrapEnvelope({ code: 0, data: { id: 1 } })).toEqual({ id: 1 });
+  });
+
+  it("explains a bare HTTP status and keeps the number", async () => {
+    expect(httpStatusMessage(404)).toMatch(/没有这个接口或资源（HTTP 404）|no such endpoint or resource \(HTTP 404\)/);
+    expect(httpStatusMessage(403)).toMatch(/没有权限.*HTTP 403|No permission.*HTTP 403/);
+    expect(httpStatusMessage(502)).toMatch(/服务端出错（HTTP 502）|server returned an error \(HTTP 502\)/);
+    expect(httpStatusMessage(418)).toMatch(/请求失败（HTTP 418）|Request failed \(HTTP 418\)/);
+
+    const { runtime } = createRuntime();
+    runtime.request = async <T = unknown>() => ({ status: 404, headers: new Headers(), data: null as T });
+    const client = new ApiClient(runtime, "http://127.0.0.1:28080/api");
+    await expect(client.get("/missing")).rejects.toMatchObject({ status: 404, kind: "http", message: expect.stringContaining("HTTP 404") });
   });
 
   it("throws business errors", () => {
@@ -386,5 +409,60 @@ describe("api client", () => {
     ]);
     expect(c.source).toBe("c");
     expect(refreshCalls).toBe(2);
+  });
+});
+
+describe("unknown mutation outcomes", () => {
+  it("counts network failures, unreadable responses and 5xx as unknown", () => {
+    expect(isOutcomeUnknown(new ApiError("socket hang up", { kind: "network" }))).toBe(true);
+    expect(isOutcomeUnknown(new ApiError("bad body", { kind: "parse", status: 200 }))).toBe(true);
+    expect(isOutcomeUnknown(new ApiError("bad gateway", { kind: "http", status: 502 }))).toBe(true);
+    expect(isOutcomeUnknown(new ApiError("server error", { kind: "http", status: 500 }))).toBe(true);
+  });
+
+  it("treats 4xx, business errors and non-API errors as definite failures", () => {
+    expect(isOutcomeUnknown(new ApiError("missing", { kind: "http", status: 404 }))).toBe(false);
+    expect(isOutcomeUnknown(new ApiError("expired", { kind: "http", status: 401, code: 10000 }))).toBe(false);
+    expect(isOutcomeUnknown(new ApiError("quota", { kind: "business", code: 10040 }))).toBe(false);
+    expect(isOutcomeUnknown(new Error("boom"))).toBe(false);
+  });
+
+  it("parses JSON bodies and keeps non-JSON error pages as text", () => {
+    expect(parseJsonResponseBody("", 200)).toBeNull();
+    expect(parseJsonResponseBody('{"code":0}', 200)).toEqual({ code: 0 });
+    expect(parseJsonResponseBody("<html>502</html>", 502)).toBe("<html>502</html>");
+    expect(() => parseJsonResponseBody("<html>ok</html>", 200)).toThrow(ApiError);
+  });
+
+  it("maps a non-JSON 502 body to the status message", async () => {
+    const { runtime } = createRuntime();
+    runtime.request = async <T = unknown>() => ({ status: 502, headers: new Headers(), data: "<html>502 Bad Gateway</html>" as T });
+    const client = new ApiClient(runtime, "http://127.0.0.1:28080/api");
+
+    await expect(client.post("/instance/task", {})).rejects.toMatchObject({ kind: "http", status: 502, message: expect.stringContaining("HTTP 502") });
+  });
+
+  it("keeps the session when the refresh endpoint answers with a 5xx", async () => {
+    const { runtime } = createRuntime();
+    runtime.request = async <T = unknown>() => ({ status: 401, headers: new Headers(), data: null as T });
+    const client = new ApiClient(runtime, "http://host/api");
+    client.setToken("Bearer old");
+    const gatewayError = new ApiError("bad gateway", { kind: "http", status: 502 });
+    client.setRefreshTokenHandler(async () => {
+      throw gatewayError;
+    });
+
+    const unauthorized = vi.fn();
+    window.addEventListener(UNAUTHORIZED_EVENT, unauthorized);
+    let settled: PromiseSettledResult<unknown>;
+    try {
+      [settled] = await Promise.allSettled([client.get("/a")]);
+    } finally {
+      window.removeEventListener(UNAUTHORIZED_EVENT, unauthorized);
+    }
+
+    expect(settled.status).toBe("rejected");
+    if (settled.status === "rejected") expect(settled.reason).toBe(gatewayError);
+    expect(unauthorized).not.toHaveBeenCalled();
   });
 });

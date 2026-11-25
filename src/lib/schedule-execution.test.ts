@@ -354,6 +354,25 @@ describe("executeScheduledTask failure boundaries", () => {
     expect(reconciled[0]?.status).toBe("needs_review");
   });
 
+  it("parks the row in needs_review when the create gets a 5xx (outcome unknown)", async () => {
+    const storage = createMemoryStorage();
+    await saveScheduledTasks(storage, [makeTask()]);
+
+    await expect(
+      executeScheduledTask(storage, "sch-1", {
+        createTask: async () => {
+          throw new ApiError("bad gateway", { kind: "http", status: 502 });
+        },
+        force: true,
+        now: new Date("2026-07-21T10:00:05.000Z"),
+      }),
+    ).rejects.toThrow("bad gateway");
+
+    const row = (await loadScheduledTasks(storage))[0]!;
+    expect(row.status).toBe("needs_review");
+    const [entry] = await listExecutionLedger(storage);
+    expect(entry).toMatchObject({ outcome: "unknown" });
+  });
   it("never re-creates the remote task when a manual re-run hits the persisted needs_review row", async () => {
     // set#2 completion write fails; set#3 review marker succeeds.
     const storage = createScriptedStorage([2]);

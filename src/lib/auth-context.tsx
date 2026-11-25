@@ -24,7 +24,7 @@ import {
   writeAccountSettingsStore,
 } from "./app-settings";
 import { AuthContext, type LoginOptions } from "./auth-state";
-import { TOKEN_STORAGE_KEY, UNAUTHORIZED_EVENT, SessionChangedError, isNetworkError } from "./api-client";
+import { TOKEN_STORAGE_KEY, UNAUTHORIZED_EVENT, SessionChangedError, isOutcomeUnknown } from "./api-client";
 import { i18nText } from "./i18n-text";
 import { encryptPassword, decryptPassword } from "./password-crypto";
 import { browserRuntime } from "./runtime";
@@ -540,15 +540,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return newToken;
       } catch (error) {
         if (error instanceof SessionChangedError) throw error;
-        if (isNetworkError(error)) {
-          // Transient connectivity failure: let the client release the waiting
+        if (isOutcomeUnknown(error)) {
+          // Transient failure that says nothing about the token (network blip,
+          // unreadable response, 5xx): let the client release the waiting
           // queue with the original error without emitting unauthorized, so a
-          // network blip does not log the session out.
+          // gateway error does not log the session out.
           writeAuthLog({
             level: "warning",
             action: "auth.tokenRefresh",
             result: "failure",
-            title: i18nText("刷新登录令牌时网络中断", "Network interrupted while refreshing the sign-in token"),
+            title: i18nText("刷新登录令牌时网络或服务端出错", "Network or server error while refreshing the sign-in token"),
             error: error instanceof Error ? error.message : String(error),
           });
           throw error;

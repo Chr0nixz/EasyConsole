@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { instanceApi } from "../lib/api";
+import { isOutcomeUnknown } from "../lib/api-client";
 import { getActiveAccountScope } from "../lib/account-scope";
 import { getRuntimeSettings } from "../lib/app-settings";
 import { appendHeldOwnerMismatchEntry } from "../lib/execution-ledger";
@@ -276,19 +277,24 @@ export function BackgroundScheduledTaskRunner() {
               metadata: { remoteTaskId: result.remoteTaskId },
             });
           } catch (error) {
-            // A network-level failure is recorded as "unknown" and may have created the instance anyway.
+            // A network failure, unreadable response or 5xx is recorded as "unknown" and may
+            // have created the instance anyway, so it is not reported as a plain failure.
+            const outcomeUnknown = isOutcomeUnknown(error);
+            const failureTitle = outcomeUnknown
+              ? tt("定时任务结果未知，请核对", "Scheduled task outcome unknown — verify it")
+              : tt("定时任务执行失败", "Scheduled task execution failed");
             toast.error(
-              tt("定时任务执行失败", "Scheduled task execution failed"),
+              failureTitle,
               `${task.name}: ${error instanceof Error ? error.message : tt("请稍后重试", "Try again later")}`,
               reviewAction(tt("查看台账", "Open ledger")),
             );
             void appendRunLog(browserRuntime.storage, {
               source: "scheduled-task",
-              level: "error",
+              level: outcomeUnknown ? "warning" : "error",
               channel: browserRuntime.runLogChannel,
               action: "scheduledTask.execute",
               result: "failure",
-              title: tt("定时任务执行失败", "Scheduled task execution failed"),
+              title: failureTitle,
               targetName: task.name,
               targetId: task.id,
               error: errorMessage(error, tt("定时任务执行失败", "Scheduled task execution failed")),

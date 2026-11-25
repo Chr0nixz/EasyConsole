@@ -42,6 +42,19 @@ export function joinUrl(base: string, path: string) {
   return `${trimSlash(base)}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+/**
+ * A non-2xx response that carries no envelope. The message says what the status means and
+ * keeps the number, so the raw fact stays visible. It never suggests a retry: after a 5xx
+ * the request may still have gone through.
+ */
+export function httpStatusMessage(status: number) {
+  if (status === 403) return i18nText(`没有权限执行此操作（HTTP ${status}）`, `No permission for this operation (HTTP ${status})`);
+  if (status === 404) return i18nText(`服务端没有这个接口或资源（HTTP ${status}）`, `The server has no such endpoint or resource (HTTP ${status})`);
+  if (status === 429) return i18nText(`请求过于频繁（HTTP ${status}）`, `Too many requests (HTTP ${status})`);
+  if (status >= 500) return i18nText(`服务端出错（HTTP ${status}）`, `The server returned an error (HTTP ${status})`);
+  return i18nText(`请求失败（HTTP ${status}）`, `Request failed (HTTP ${status})`);
+}
+
 export function getMessage(envelope: Partial<ApiEnvelope<unknown>>) {
   return envelope.msg || envelope.message || i18nText("请求失败", "Request failed");
 }
@@ -58,6 +71,38 @@ export function isNetworkError(error: unknown): boolean {
     return error.kind === "network";
   }
   return false;
+}
+
+/**
+ * True when the server may have acted even though the client saw an error: a
+ * network failure or timeout, a response the client could not read, or any
+ * 5xx (a gateway can time out after the backend already ran the request).
+ * A mutation that ends this way has an unknown outcome. Callers must have it
+ * verified before replaying, never offer a blind retry: replaying a create
+ * can start a second billed instance.
+ */
+export function isOutcomeUnknown(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  if (error.kind === "network" || error.kind === "parse") return true;
+  return error.kind === "http" && typeof error.status === "number" && error.status >= 500;
+}
+
+/**
+ * Parse a `json` response body. Only a 2xx body has to be JSON. A non-2xx body
+ * that is not JSON (an nginx HTML 502 page, say) is kept as text so the client
+ * still maps the status code, instead of the transport throwing a SyntaxError
+ * that reads like a network failure. A 2xx body that is not JSON is a parse
+ * error that keeps the status: the request reached the server and may have
+ * taken effect.
+ */
+export function parseJsonResponseBody(text: string, status: number): unknown {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (status < 200 || status >= 300) return text;
+    throw new ApiError(i18nText("响应格式无法识别", "Response format is not recognized"), { kind: "parse", status });
+  }
 }
 
 /**
@@ -173,7 +218,7 @@ export class ApiClient {
       throw new ApiError(i18nText("登录已过期，请重新登录", "Sign-in expired. Please sign in again."), { status: 401, code: 10000, kind: "http" });
     }
     if (response.status < 200 || response.status >= 300) {
-      throw new ApiError(`HTTP ${response.status}`, { status: response.status, kind: "http" });
+      throw new ApiError(httpStatusMessage(response.status), { status: response.status, kind: "http" });
     }
 
     if (options.raw || options.responseType === "blob" || options.responseType === "text") {
@@ -235,12 +280,13 @@ export class ApiClient {
       // The session can no longer be refreshed: release every queued request.
       // Definitive refresh failures (refresh endpoint rejected the token,
       // handler returned null) reject the queue as unauthorized and surface one
-      // unauthorized event so the app logs out. Network-level failures and
-      // session changes (the account switched mid-refresh) release the queue
-      // with the original error but keep the session: the queued requests
-      // belong to a session that is no longer active, and the replacement
-      // session must not be logged out for them.
-      const transient = isNetworkError(error) || error instanceof SessionChangedError;
+      // unauthorized event so the app logs out. Failures that prove nothing
+      // about the token (network, unreadable response, 5xx) and session
+      // changes (the account switched mid-refresh) release the queue with the
+      // original error but keep the session: a gateway error is not a rejected
+      // token, and the replacement session must not be logged out for
+      // requests that belong to the previous one.
+      const transient = isOutcomeUnknown(error) || error instanceof SessionChangedError;
       const queueError = transient
         ? error
         : new ApiError(i18nText("登录已过期，请重新登录", "Sign-in expired. Please sign in again."), {

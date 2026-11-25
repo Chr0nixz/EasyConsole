@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiClient } from "../../src/lib/api-client";
+import { ApiClient, isOutcomeUnknown } from "../../src/lib/api-client";
 import { ApiError } from "../../src/lib/types";
 import { createNodeRuntime } from "./node-runtime";
 
@@ -55,6 +55,36 @@ describe("node runtime", () => {
       status: 401,
       code: 10000,
     } satisfies Partial<ApiError>);
+  });
+
+  it("maps an HTML gateway error page to its status, as an unknown outcome", async () => {
+    const runtime = createNodeRuntime({
+      fetch: async () => new Response("<html><body>504 Gateway Time-out</body></html>", { status: 504 }),
+    });
+    const client = new ApiClient(runtime, "http://host/api");
+
+    const error = await client.post("/instance/task", { name: "x" }).catch((reason: unknown) => reason);
+
+    expect(error).toMatchObject({ name: "ApiError", kind: "http", status: 504, message: expect.stringContaining("HTTP 504") });
+    expect(isOutcomeUnknown(error)).toBe(true);
+  });
+
+  it("reads an HTML 401 page as login expiry", async () => {
+    const runtime = createNodeRuntime({
+      fetch: async () => new Response("<html>401 Authorization Required</html>", { status: 401 }),
+    });
+    const client = new ApiClient(runtime, "http://host/api");
+
+    await expect(client.get("/demo")).rejects.toMatchObject({ kind: "http", status: 401, code: 10000 });
+  });
+
+  it("reports a 2xx body that is not JSON as an unreadable response", async () => {
+    const runtime = createNodeRuntime({
+      fetch: async () => new Response("<html>ok</html>", { status: 200 }),
+    });
+    const client = new ApiClient(runtime, "http://host/api");
+
+    await expect(client.post("/instance/task", {})).rejects.toMatchObject({ name: "ApiError", kind: "parse", status: 200 });
   });
 
   it("completes a blob download whose body outlives the timeout budget", async () => {

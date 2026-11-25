@@ -16,6 +16,7 @@ import { ExecutionLedgerPanel } from "../components/scheduled/ExecutionLedgerPan
 import { WorkspaceAccountBanner } from "../components/scheduled/WorkspaceAccountBanner";
 import { Button, Input, Panel, SegmentedControl, Select, StatePill, TableRegion, Textarea, type StateTone } from "../components/ui";
 import { imageApi, instanceApi } from "../lib/api";
+import { isOutcomeUnknown } from "../lib/api-client";
 import { getActiveAccountScope } from "../lib/account-scope";
 import { getRuntimeSettings } from "../lib/app-settings";
 import { runBatch } from "../lib/batch-runner";
@@ -685,18 +686,23 @@ export function ScheduledTasksPage() {
             return result;
           } catch (error) {
             await reload();
-            toast.error(text("定时任务执行失败", "Scheduled task execution failed"), `${target.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
+            // An unknown outcome leaves the plan in needs_review: the instance may exist.
+            const outcomeUnknown = isOutcomeUnknown(error);
+            const failureTitle = outcomeUnknown
+              ? text("定时任务结果未知，请核对", "Scheduled task outcome unknown — verify it")
+              : text("定时任务执行失败", "Scheduled task execution failed");
+            toast.error(failureTitle, `${target.name}: ${error instanceof Error ? error.message : text("请稍后重试", "Try again later")}`);
             void runLogger.log({
               source: "scheduled-task",
-              level: "error",
+              level: outcomeUnknown ? "warning" : "error",
               action: "scheduledTask.execute",
               result: "failure",
-              title: text("定时任务执行失败", "Scheduled task execution failed"),
+              title: failureTitle,
               targetName: target.name,
               targetId: target.id,
               error: errorMessage(error, text("定时任务执行失败", "Scheduled task execution failed")),
             });
-            // Already toasted and logged; rethrow so runBatch records the item as failed.
+            // Already toasted and logged; rethrow so runBatch records the item as failed or unknown.
             throw error;
           }
         },

@@ -188,6 +188,20 @@ describe("runBatch", () => {
     expect(result.summary).toEqual({ total: 2, succeeded: 1, failed: 0, skipped: 0, unknown: 1 });
   });
 
+  it("marks 5xx and unreadable responses as unknown, and 4xx as failed", async () => {
+    const result = await runBatch(["gateway", "parse", "missing"], {
+      delayMs: 0,
+      run: async (item) => {
+        if (item === "gateway") throw new ApiError("bad gateway", { kind: "http", status: 504 });
+        if (item === "parse") throw new ApiError("unreadable", { kind: "parse", status: 200 });
+        throw new ApiError("not found", { kind: "http", status: 404 });
+      },
+    });
+
+    expect(result.outcomes.map((outcome) => outcome.status)).toEqual(["unknown", "unknown", "failed"]);
+    expect(result.summary).toEqual({ total: 3, succeeded: 0, failed: 1, skipped: 0, unknown: 2 });
+  });
+
   it("keeps abort-style failures as failed", async () => {
     const result = await runBatch(["a"], {
       delayMs: 0,
