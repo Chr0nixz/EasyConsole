@@ -37,6 +37,7 @@ import {
   formatDateTimeLocalInput,
   formatExperimentTimedTaskName,
   formatHourlyRate,
+  formatCloneTaskName,
   formatTaskDefaultName,
   getStatusText,
   getTaskName,
@@ -113,7 +114,12 @@ function buildFormSnapshot({
 }): FormSnapshot {
   const parsedScript = parseScriptCommandEnv(initialTask?.script_path ?? "");
   return {
-    name: isEditMode ? (initialTask?.name ?? "") : formatTaskDefaultName(),
+    // A clone keeps its source's name under a new timestamp, so a rerun stays beside what it reran.
+    name: isEditMode
+      ? (initialTask?.name ?? "")
+      : initialTask
+        ? formatCloneTaskName(initialTask.name ?? initialTask.task_name)
+        : formatTaskDefaultName(),
     imageId: String(getTaskImageId(initialTask)),
     price: String(initialTask?.price ?? DEFAULT_PRICE),
     cpu: String(initialTask?.cpu ?? DEFAULT_CPU),

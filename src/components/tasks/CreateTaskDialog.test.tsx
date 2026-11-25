@@ -300,8 +300,8 @@ describe("CreateTaskDialog", () => {
     });
     await waitFor(() => expect(screen.getByText("克隆实例")).toBeInTheDocument());
     const nameInput = screen.getAllByRole("textbox")[0] as HTMLInputElement;
-    expect(nameInput.value).not.toBe("source-instance");
-    expect(nameInput.value.length).toBeGreaterThan(0);
+    // The source's name survives under a new timestamp, so the rerun sorts beside its source.
+    expect(nameInput.value).toMatch(/^source-instance-\d{12}$/);
   });
 
   it("shows form error when submitting with empty name", async () => {

@@ -9,6 +9,16 @@ export function formatTaskDefaultName(date = new Date()) {
   return `${date.getFullYear()}${pad2(date.getMonth() + 1)}${pad2(date.getDate())}${pad2(date.getHours())}${pad2(date.getMinutes())}`;
 }
 
+/**
+ * Default name for a clone: the source's own name with a fresh timestamp, so reruns of one
+ * experiment stay together in the list. The source's old timestamp (and a template marker or
+ * batch number around it) is dropped first; a source that was only a timestamp gets a new one.
+ */
+export function formatCloneTaskName(sourceName: string | undefined | null, date = new Date()) {
+  const stem = (sourceName ?? "").trim().replace(/(?:-tpl[a-zA-Z0-9]{1,10})?(?:^|[-_])\d{12}(?:-\d+)?$/, "");
+  return stem ? `${stem}-${formatTaskDefaultName(date)}` : formatTaskDefaultName(date);
+}
+
 /** Instance name derived from EXPERIMENT_ID plus a minute-resolution timestamp suffix. */
 export function formatExperimentTimedTaskName(experimentId: string, date = new Date()) {
   const id = experimentId.trim();

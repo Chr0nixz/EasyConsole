@@ -31,6 +31,9 @@ describe("local HTTP acceptance: implemented features", () => {
     });
     expect(control.ok).toBe(true);
     expect(await api.instanceApi.statics({})).toMatchObject({ total: 2 });
+    // use_time: hours from /instance/statics, seconds from /instance/task.
+    expect((await api.instanceApi.statics({}) as { items: Array<{ use_time?: number }> }).items[0].use_time).toBe(0.25);
+    expect((await api.instanceApi.tasks({ page: 1 })).items[0].use_time).toBe(900);
     expect(await api.resourceApi.resources()).toEqual([]);
     await api.instanceApi.createTask({ name: "local-created", cpu: 4, gpu: 0, memory: 16 } as never);
     expect((await api.instanceApi.tasks({ page: 1 })).items.map((item) => item.name)).toEqual([task.name, "local-failed", "local-created"]);

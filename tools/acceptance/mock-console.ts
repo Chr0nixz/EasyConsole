@@ -54,7 +54,10 @@ export async function startMockConsole(port = 0) {
     if (url.pathname === "/api/instance/console") { send({ run_task_count: 1, pending_task_count: 0, run_time: { day: 3600 }, cost_map: { day: 0 } }); return; }
     if (url.pathname === "/api/instance/task" && method === "GET") {
       const status = url.searchParams.get("status");
-      const items = status ? tasks.filter((item) => String(item.status) === status) : tasks;
+      // use_time is seconds here and hours from /instance/statics (see api_documentation.md).
+      // The seed holds hours, so an acceptance run can catch a formatter reading the wrong unit.
+      const items = (status ? tasks.filter((item) => String(item.status) === status) : tasks)
+        .map((item) => ({ ...item, use_time: Math.round(Number(item.use_time ?? 0) * 3600) }));
       send({ items, total: items.length }); return;
     }
     if (url.pathname === "/api/instance/task" && method === "POST") {

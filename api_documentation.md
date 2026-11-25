@@ -107,6 +107,8 @@ GET /api/instance/task?page=1&page_size=10
 Authorization: <token>
 ```
 
+`use_time` has a different unit on each endpoint: `/instance/task` returns seconds, `/instance/statics` returns hours. This is read from the client code and the original console bundle, not yet confirmed against the live API. The acceptance mock (`tools/acceptance/mock-console.ts`) keeps the same split.
+
 Create example:
 
 ```http

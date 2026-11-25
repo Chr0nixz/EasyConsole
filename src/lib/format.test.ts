@@ -8,6 +8,7 @@ import {
   formatHours,
   formatRelativeUpdatedAt,
   formatSecondsDuration,
+  formatCloneTaskName,
   formatTaskDefaultName,
   getTaskNodeName,
   getTaskReleaseCondition,
@@ -16,6 +17,18 @@ import {
 describe("format helpers", () => {
   it("formats default task names as compact local time", () => {
     expect(formatTaskDefaultName(new Date(2026, 4, 23, 0, 58, 32))).toBe("202605230058");
+  });
+
+  it("names a clone after its source with a fresh timestamp", () => {
+    const now = new Date(2026, 4, 23, 0, 58, 32);
+    expect(formatCloneTaskName("resnet-sweep", now)).toBe("resnet-sweep-202605230058");
+    // The source's own timestamp, template marker and batch number are replaced, not stacked.
+    expect(formatCloneTaskName("resnet-sweep-202605010900", now)).toBe("resnet-sweep-202605230058");
+    expect(formatCloneTaskName("exp-run_202605010900", now)).toBe("exp-run-202605230058");
+    expect(formatCloneTaskName("dev-tplab12cd-202605010900-02", now)).toBe("dev-202605230058");
+    // A source that was only a timestamp, or has no name, falls back to the plain default.
+    expect(formatCloneTaskName("202605010900", now)).toBe("202605230058");
+    expect(formatCloneTaskName(undefined, now)).toBe("202605230058");
   });
 
   it("formats experiment-timed instance names without mutating the experiment id", () => {
