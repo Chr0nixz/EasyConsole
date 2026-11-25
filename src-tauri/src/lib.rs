@@ -986,6 +986,37 @@ fn get_close_prompt_state(state: &Arc<DesktopRuntimeState>) -> bool {
         .unwrap_or(DEFAULT_CLOSE_PROMPT)
 }
 
+/// What closing the main window does, decided by the two close preferences.
+#[cfg(desktop)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainWindowCloseAction {
+    /// Ask in the renderer; it answers through `complete_desktop_close_prompt`.
+    Prompt,
+    /// Hide the main window; the tray, menu bar or Dock brings it back.
+    HideToTray,
+    /// Quit the app, on every platform.
+    Quit,
+}
+
+#[cfg(desktop)]
+fn close_action_for(close_prompt: bool, close_to_tray: bool) -> MainWindowCloseAction {
+    if close_prompt {
+        MainWindowCloseAction::Prompt
+    } else if close_to_tray {
+        MainWindowCloseAction::HideToTray
+    } else {
+        MainWindowCloseAction::Quit
+    }
+}
+
+#[cfg(desktop)]
+fn main_window_close_action(state: &Arc<DesktopRuntimeState>) -> MainWindowCloseAction {
+    close_action_for(
+        get_close_prompt_state(state),
+        get_close_to_tray_state(state),
+    )
+}
+
 #[cfg(desktop)]
 fn set_quit_requested(state: &Arc<DesktopRuntimeState>, requested: bool) {
     if let Ok(mut value) = state.quit_requested.lock() {
@@ -1838,18 +1869,24 @@ fn handle_desktop_event(
             event: WindowEvent::CloseRequested { api, .. },
             ..
         } if label == "main" && !is_quit_requested(desktop_state) => {
-            if get_close_prompt_state(desktop_state) {
-                api.prevent_close();
-                let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
-            } else if get_close_to_tray_state(desktop_state) {
-                api.prevent_close();
-                hide_main_window(app);
-            } else if cfg!(target_os = "macos") {
-                // On macOS, quit-on-close must also work with SSH pop-outs
-                // open; otherwise the main window is destroyed and cannot reopen.
-                api.prevent_close();
-                set_quit_requested(desktop_state, true);
-                app.exit(0);
+            match main_window_close_action(desktop_state) {
+                MainWindowCloseAction::Prompt => {
+                    api.prevent_close();
+                    let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
+                }
+                MainWindowCloseAction::HideToTray => {
+                    api.prevent_close();
+                    hide_main_window(app);
+                }
+                MainWindowCloseAction::Quit => {
+                    // Quit explicitly on every platform. Letting the close
+                    // through only destroys `main`; a hidden tray menu or an
+                    // SSH pop-out then keeps the process alive with no main
+                    // window to reopen, and its sessions are never cleaned up.
+                    api.prevent_close();
+                    set_quit_requested(desktop_state, true);
+                    app.exit(0);
+                }
             }
         }
         RunEvent::WindowEvent {
@@ -1880,12 +1917,16 @@ fn handle_desktop_event(
         }
         #[cfg(not(target_os = "macos"))]
         RunEvent::ExitRequested { api, .. } if !is_quit_requested(desktop_state) => {
-            if get_close_prompt_state(desktop_state) {
-                api.prevent_exit();
-                let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
-            } else if get_close_to_tray_state(desktop_state) {
-                api.prevent_exit();
-                hide_main_window(app);
+            match main_window_close_action(desktop_state) {
+                MainWindowCloseAction::Prompt => {
+                    api.prevent_exit();
+                    let _ = app.emit(DESKTOP_CLOSE_REQUESTED_EVENT, ());
+                }
+                MainWindowCloseAction::HideToTray => {
+                    api.prevent_exit();
+                    hide_main_window(app);
+                }
+                MainWindowCloseAction::Quit => {}
             }
         }
         #[cfg(target_os = "macos")]
@@ -1925,6 +1966,38 @@ mod tests {
     /// The active locale is process-global, so tests that touch it must not
     /// run concurrently; tests within a binary run in parallel by default.
     static LOCALE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn quit_on_close_quits_on_every_platform() {
+        // Both preferences off is "quit on close". It must not depend on the
+        // platform: letting the close through elsewhere leaves a process
+        // without a main window when a tray menu or SSH pop-out exists.
+        assert_eq!(close_action_for(false, false), MainWindowCloseAction::Quit);
+        assert_eq!(
+            close_action_for(false, true),
+            MainWindowCloseAction::HideToTray
+        );
+        assert_eq!(close_action_for(true, false), MainWindowCloseAction::Prompt);
+        assert_eq!(close_action_for(true, true), MainWindowCloseAction::Prompt);
+
+        let state = Arc::new(DesktopRuntimeState::default());
+        set_close_prompt_state(&state, false).unwrap();
+        set_close_to_tray_state(&state, false).unwrap();
+        assert_eq!(
+            main_window_close_action(&state),
+            MainWindowCloseAction::Quit
+        );
+        set_close_to_tray_state(&state, true).unwrap();
+        assert_eq!(
+            main_window_close_action(&state),
+            MainWindowCloseAction::HideToTray
+        );
+        set_close_prompt_state(&state, true).unwrap();
+        assert_eq!(
+            main_window_close_action(&state),
+            MainWindowCloseAction::Prompt
+        );
+    }
 
     #[test]
     fn ssh_window_capability_excludes_main_app_privileges() {
