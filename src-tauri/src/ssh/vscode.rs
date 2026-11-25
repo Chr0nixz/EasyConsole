@@ -46,15 +46,34 @@ fn vscode_keys_lock() -> &'static Mutex<()> {
     VSCODE_KEYS_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Loads the list of keys this install put on hosts. It is the only record of
+/// which `authorized_keys` files still hold an EasyConsole key, so a file that
+/// cannot be read or parsed is an error, never an empty list: treating it as
+/// empty would let the next install or revoke write back a single entry and
+/// lose the rest. Only a missing file means "no keys yet".
 #[cfg(desktop)]
-fn load_vscode_key_records(path: &Path) -> Vec<VscodeKeyRecord> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return Vec::new();
+fn load_vscode_key_records(path: &Path) -> Result<Vec<VscodeKeyRecord>, String> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(trf!(
+                "无法读取 VS Code key 记录 {}：{error}",
+                "Failed to read the VS Code key records at {}: {error}",
+                path.display()
+            ))
+        }
     };
     if text.trim().is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    serde_json::from_str(&text).unwrap_or_default()
+    serde_json::from_str(&text).map_err(|error| {
+        trf!(
+            "VS Code key 记录 {} 格式无法识别：{error}。为避免丢失已安装 key 的清单，本次未做任何修改。",
+            "The VS Code key records at {} are not in a recognized format: {error}. Nothing was changed, so the list of installed keys is not lost.",
+            path.display()
+        )
+    })
 }
 
 #[cfg(desktop)]
@@ -102,7 +121,7 @@ fn record_vscode_key(app: &AppHandle, record: VscodeKeyRecord) -> Result<(), Str
             "Failed to acquire the VS Code key record lock: {e}"
         )
     })?;
-    let mut records = load_vscode_key_records(&path);
+    let mut records = load_vscode_key_records(&path)?;
     records.retain(|entry| entry.alias != record.alias);
     records.insert(0, record);
     write_vscode_key_records(&path, &records)
@@ -117,7 +136,7 @@ fn remove_vscode_key_record(app: &AppHandle, alias: &str) -> Result<(), String> 
             "Failed to acquire the VS Code key record lock: {e}"
         )
     })?;
-    let mut records = load_vscode_key_records(&path);
+    let mut records = load_vscode_key_records(&path)?;
     records.retain(|entry| entry.alias != alias);
     write_vscode_key_records(&path, &records)
 }
@@ -406,14 +425,60 @@ fn strip_easy_console_block(current: &str, start_marker: &str, end_marker: &str)
     Some(next)
 }
 
-/// Replace the user's SSH config atomically, keeping a recoverable copy.
-///
-/// A plain `fs::write` here is dangerous: a partial write leaves a truncated
-/// config, which in turn produces an unpaired EasyConsole marker, which the
-/// block parser would then treat as "skip everything after it". That failure
-/// mode compounds, so the write must be all-or-nothing.
+/// How many dated backups of the user's SSH config are kept.
 #[cfg(desktop)]
-fn write_user_ssh_config(config_path: &Path, contents: &str) -> Result<(), String> {
+const SSH_CONFIG_BACKUPS_KEPT: usize = 5;
+
+/// Reads the user's SSH config before EasyConsole rewrites it.
+///
+/// Only a missing file counts as empty. Any other read error, and a file that
+/// is not valid UTF-8 (a GBK comment on a Chinese Windows install, say), aborts:
+/// rewriting from an empty view would replace the user's own hosts with the
+/// EasyConsole block, or with nothing at all on revoke.
+#[cfg(desktop)]
+fn read_user_ssh_config(config_path: &Path) -> Result<String, String> {
+    match fs::read(config_path) {
+        Ok(bytes) => String::from_utf8(bytes).map_err(|_| {
+            trf!(
+                "本机 SSH 配置 {} 不是 UTF-8 编码，EasyConsole 不会改写它，本次未做任何修改。请将文件另存为 UTF-8 后重试。",
+                "The local SSH config {} is not UTF-8 encoded, so EasyConsole will not rewrite it and nothing was changed. Save the file as UTF-8 and retry.",
+                config_path.display()
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(trf!(
+            "无法读取本机 SSH 配置 {}：{error}。本次未做任何修改。",
+            "Failed to read the local SSH config {}: {error}. Nothing was changed.",
+            config_path.display()
+        )),
+    }
+}
+
+/// The file a write to `config_path` must replace. A symlinked config (a common
+/// dotfiles setup) is written through to its target, so the link survives; a
+/// link whose target cannot be resolved is refused rather than replaced.
+#[cfg(desktop)]
+fn resolve_ssh_config_target(config_path: &Path) -> Result<PathBuf, String> {
+    let is_link = fs::symlink_metadata(config_path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false);
+    if !is_link {
+        return Ok(config_path.to_path_buf());
+    }
+    fs::canonicalize(config_path).map_err(|error| {
+        trf!(
+            "本机 SSH 配置 {} 是指向无法访问位置的符号链接：{error}。本次未做任何修改。",
+            "The local SSH config {} is a symbolic link whose target cannot be reached: {error}. Nothing was changed.",
+            config_path.display()
+        )
+    })
+}
+
+/// Copies the current config to `<name>.easy-console.<millis>-<seq>.bak` beside it
+/// and prunes all but the newest few dated copies. Each write gets its own
+/// backup, so a second write never overwrites the only copy of the original.
+#[cfg(desktop)]
+fn backup_user_ssh_config(config_path: &Path, source: &Path) -> Result<(), String> {
     let parent = config_path.parent().ok_or_else(|| {
         trf!(
             "无法定位本机 SSH 配置目录",
@@ -424,17 +489,86 @@ fn write_user_ssh_config(config_path: &Path, contents: &str) -> Result<(), Strin
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("config");
-    let tmp_path = parent.join(format!("{file_name}.easy-console.tmp"));
+    let prefix = format!("{file_name}.easy-console.");
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    // `<millis>-<seq>`: both parts are zero padded, so names sort in write order
+    // even when two writes land in the same millisecond.
+    let mut attempt = 0u32;
+    let mut bak_path = parent.join(format!("{prefix}{millis:013}-{attempt:03}.bak"));
+    while bak_path.exists() {
+        attempt += 1;
+        bak_path = parent.join(format!("{prefix}{millis:013}-{attempt:03}.bak"));
+    }
+    // fs::copy keeps the source's permissions, so a tightened config stays tight.
+    fs::copy(source, &bak_path).map_err(|error| {
+        trf!(
+            "无法备份本机 SSH 配置：{error}",
+            "Failed to back up the local SSH config: {error}"
+        )
+    })?;
+    prune_ssh_config_backups(parent, &prefix);
+    Ok(())
+}
+
+/// Removes dated backups beyond the newest `SSH_CONFIG_BACKUPS_KEPT`. Only names
+/// this module writes are touched; the undated `<name>.easy-console.bak` from
+/// older versions is left alone. Best effort: a failed prune never fails a write.
+#[cfg(desktop)]
+fn prune_ssh_config_backups(dir: &Path, prefix: &str) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut dated: Vec<String> = entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| {
+            name.strip_prefix(prefix)
+                .and_then(|rest| rest.strip_suffix(".bak"))
+                .is_some_and(|stamp| {
+                    !stamp.is_empty() && stamp.chars().all(|c| c.is_ascii_digit() || c == '-')
+                })
+        })
+        .collect();
+    if dated.len() <= SSH_CONFIG_BACKUPS_KEPT {
+        return;
+    }
+    // Zero-padded `<millis>-<seq>` stamps sort chronologically as text.
+    dated.sort();
+    for name in &dated[..dated.len() - SSH_CONFIG_BACKUPS_KEPT] {
+        let _ = fs::remove_file(dir.join(name));
+    }
+}
+
+/// Replace the user's SSH config atomically, keeping a recoverable copy.
+///
+/// A plain `fs::write` here is dangerous: a partial write leaves a truncated
+/// config, which in turn produces an unpaired EasyConsole marker, which the
+/// block parser would then treat as "skip everything after it". That failure
+/// mode compounds, so the write must be all-or-nothing.
+#[cfg(desktop)]
+fn write_user_ssh_config(config_path: &Path, contents: &str) -> Result<(), String> {
+    let target = resolve_ssh_config_target(config_path)?;
+    let target_parent = target.parent().ok_or_else(|| {
+        trf!(
+            "无法定位本机 SSH 配置目录",
+            "Failed to locate the local SSH config directory"
+        )
+    })?;
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config");
+    // The temp file sits beside the target so the final rename stays on one
+    // filesystem and is atomic.
+    let tmp_path = target_parent.join(format!("{file_name}.easy-console.tmp"));
 
     // Copy (not rename) so the original stays intact until the final rename.
-    if config_path.exists() {
-        let bak_path = parent.join(format!("{file_name}.easy-console.bak"));
-        fs::copy(config_path, &bak_path).map_err(|error| {
-            trf!(
-                "无法备份本机 SSH 配置：{error}",
-                "Failed to back up the local SSH config: {error}"
-            )
-        })?;
+    // Backups live beside the path the user knows (~/.ssh), not in a dotfiles
+    // directory the link points into.
+    if target.exists() {
+        backup_user_ssh_config(config_path, &target)?;
     }
 
     fs::write(&tmp_path, contents).map_err(|error| {
@@ -448,20 +582,62 @@ fn write_user_ssh_config(config_path: &Path, contents: &str) -> Result<(), Strin
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(config_path)
+        let mode = fs::metadata(&target)
             .ok()
             .map(|meta| meta.permissions().mode() & 0o777)
             .unwrap_or(0o600);
         let _ = fs::set_permissions(&tmp_path, fs::Permissions::from_mode(mode));
     }
 
-    fs::rename(&tmp_path, config_path).map_err(|error| {
+    fs::rename(&tmp_path, &target).map_err(|error| {
         let _ = fs::remove_file(&tmp_path);
         trf!(
             "无法提交本机 SSH 配置写入：{error}",
             "Failed to commit the local SSH config write: {error}"
         )
     })
+}
+
+/// Checks, before anything changes on a host, that the local side can be
+/// updated afterwards: the SSH config is readable as UTF-8, its EasyConsole
+/// block for `alias` is well formed (when `require_paired_block`), and the key
+/// records load. A remote step followed by a local failure would leave a key
+/// on the host that no config uses or no record lists.
+#[cfg(desktop)]
+fn preflight_local_vscode_state(
+    app: &AppHandle,
+    alias: &str,
+    require_paired_block: bool,
+) -> Result<(), String> {
+    let config_path = user_ssh_dir()?.join("config");
+    let current = read_user_ssh_config(&config_path)?;
+    if require_paired_block {
+        let start_marker = format!("# >>> EasyConsole {alias}");
+        let end_marker = format!("# <<< EasyConsole {alias}");
+        if strip_easy_console_block(&current, &start_marker, &end_marker).is_none() {
+            return Err(incomplete_marker_error(
+                &start_marker,
+                &end_marker,
+                &config_path,
+            ));
+        }
+    }
+    // An install always writes the config; a revoke only rewrites one that exists.
+    if require_paired_block || config_path.exists() {
+        resolve_ssh_config_target(&config_path)?;
+    }
+    load_vscode_key_records(&app_data_file(app, "vscode-keys.json")?)?;
+    Ok(())
+}
+
+#[cfg(desktop)]
+fn incomplete_marker_error(start_marker: &str, end_marker: &str, config_path: &Path) -> String {
+    trf!(
+        "本机 SSH 配置中的 EasyConsole 标记不完整：找到「{start_marker}」但缺少对应的「{end_marker}」。\
+         为避免误删配置，本次未做任何修改。请手动修复 {} 后重试。",
+        "Incomplete EasyConsole markers in the local SSH config: found \"{start_marker}\" but the matching \"{end_marker}\" is missing. To avoid deleting config by mistake, nothing was changed. Fix {} manually and retry.",
+        config_path.display()
+    )
 }
 
 #[cfg(desktop)]
@@ -492,18 +668,12 @@ fn write_vscode_ssh_config(
         )
     })?;
     let config_path = ssh_dir.join("config");
-    let current = fs::read_to_string(&config_path).unwrap_or_default();
+    let current = read_user_ssh_config(&config_path)?;
     let start_marker = format!("# >>> EasyConsole {alias}");
     let end_marker = format!("# <<< EasyConsole {alias}");
 
-    let mut next = strip_easy_console_block(&current, &start_marker, &end_marker).ok_or_else(|| {
-        trf!(
-            "本机 SSH 配置中的 EasyConsole 标记不完整：找到「{start_marker}」但缺少对应的「{end_marker}」。\
-             为避免误删配置，本次未做任何修改。请手动修复 {} 后重试。",
-            "Incomplete EasyConsole markers in the local SSH config: found \"{start_marker}\" but the matching \"{end_marker}\" is missing. To avoid deleting config by mistake, nothing was changed. Fix {} manually and retry.",
-            config_path.display()
-        )
-    })?;
+    let mut next = strip_easy_console_block(&current, &start_marker, &end_marker)
+        .ok_or_else(|| incomplete_marker_error(&start_marker, &end_marker, &config_path))?;
 
     if !next.ends_with('\n') {
         next.push('\n');
@@ -997,6 +1167,7 @@ async fn prepare_vscode_ssh(
     request: &SshConnectionRequest,
 ) -> Result<String, String> {
     let (alias, suffix) = vscode_ssh_alias_parts(request)?;
+    preflight_local_vscode_state(app, &alias, true)?;
     let (identity_file, public_key) = ensure_vscode_key(app, &suffix)?;
     install_vscode_public_key(app, request, &public_key).await?;
     write_vscode_ssh_config(app, request, &alias, &identity_file)?;
@@ -1031,6 +1202,9 @@ async fn revoke_vscode_setup(
 ) -> Result<(), String> {
     let (alias, suffix) = vscode_ssh_alias_parts(request)?;
     let key_path = vscode_ssh_app_dir(app)?.join(format!("easyconsole_vscode_{suffix}"));
+    // A revoke tolerates a hand-edited block (see below), but not a config it
+    // cannot read or records it cannot load: check before the host changes.
+    preflight_local_vscode_state(app, &alias, false)?;
 
     if remove_remote {
         revoke_vscode_remote_key(app, request, &key_path).await?;
@@ -1042,7 +1216,7 @@ async fn revoke_vscode_setup(
     let ssh_dir = user_ssh_dir()?;
     let config_path = ssh_dir.join("config");
     if config_path.exists() {
-        let current = fs::read_to_string(&config_path).unwrap_or_default();
+        let current = read_user_ssh_config(&config_path)?;
         let start_marker = format!("# >>> EasyConsole {alias}");
         let end_marker = format!("# <<< EasyConsole {alias}");
         if let Some(next) = strip_easy_console_block(&current, &start_marker, &end_marker) {
@@ -1088,7 +1262,7 @@ pub fn list_vscode_ssh_keys(
 ) -> Result<Vec<VscodeKeyRecord>, String> {
     crate::require_main_window(window.label())?;
     let path = app_data_file(&app, "vscode-keys.json")?;
-    Ok(load_vscode_key_records(&path))
+    load_vscode_key_records(&path)
 }
 
 /// True when a shared VS Code key from an install that predates per-host keys
@@ -1119,7 +1293,7 @@ pub fn cleanup_legacy_vscode_ssh_key(
     let ssh_dir = user_ssh_dir()?;
     let config_path = ssh_dir.join("config");
     if config_path.exists() {
-        let current = fs::read_to_string(&config_path).unwrap_or_default();
+        let current = read_user_ssh_config(&config_path)?;
         if let Some(next) = strip_config_blocks_referencing(&current, &key_path) {
             write_user_ssh_config(&config_path, &next)?;
         }
@@ -1314,6 +1488,149 @@ Host easyconsole-old
     }
 
     #[cfg(unix)]
+    #[test]
+    fn reads_a_missing_config_as_empty_and_refuses_a_non_utf8_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        assert_eq!(read_user_ssh_config(&config).unwrap(), "");
+
+        fs::write(&config, "Host box\n  HostName 10.0.0.2\n").unwrap();
+        assert_eq!(
+            read_user_ssh_config(&config).unwrap(),
+            "Host box\n  HostName 10.0.0.2\n"
+        );
+
+        // "# 中文注释" saved as GBK, as Notepad does on a Chinese Windows install.
+        let mut gbk = b"# ".to_vec();
+        gbk.extend_from_slice(&[0xd6, 0xd0, 0xce, 0xc4, 0xd7, 0xa2, 0xca, 0xcd]);
+        gbk.extend_from_slice(b"\nHost box\n  HostName 10.0.0.2\n");
+        fs::write(&config, &gbk).unwrap();
+        assert!(read_user_ssh_config(&config).is_err());
+        // Refusing to read leaves the file exactly as it was.
+        assert_eq!(fs::read(&config).unwrap(), gbk);
+    }
+
+    #[test]
+    fn keeps_a_dated_backup_per_write_and_prunes_to_the_newest_few() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        fs::write(&config, "Host original\n").unwrap();
+        // An undated backup from an older version must survive pruning.
+        fs::write(dir.path().join("config.easy-console.bak"), "legacy").unwrap();
+
+        write_user_ssh_config(&config, "Host first\n").unwrap();
+        write_user_ssh_config(&config, "Host second\n").unwrap();
+
+        let backups = |dir: &Path| {
+            let mut names: Vec<String> = fs::read_dir(dir)
+                .unwrap()
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .filter(|name| name.starts_with("config.easy-console.") && name.ends_with(".bak"))
+                .filter(|name| name != "config.easy-console.bak")
+                .collect();
+            names.sort();
+            names
+        };
+        let first_two = backups(dir.path());
+        assert_eq!(first_two.len(), 2);
+        // The second write did not overwrite the copy of the original.
+        let contents: Vec<String> = first_two
+            .iter()
+            .map(|name| fs::read_to_string(dir.path().join(name)).unwrap())
+            .collect();
+        assert!(contents.contains(&"Host original\n".to_string()));
+        assert!(contents.contains(&"Host first\n".to_string()));
+        assert_eq!(fs::read_to_string(&config).unwrap(), "Host second\n");
+
+        for index in 0..SSH_CONFIG_BACKUPS_KEPT + 3 {
+            write_user_ssh_config(&config, &format!("Host round-{index}\n")).unwrap();
+        }
+        assert_eq!(backups(dir.path()).len(), SSH_CONFIG_BACKUPS_KEPT);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("config.easy-console.bak")).unwrap(),
+            "legacy"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_a_symlinked_config_through_to_its_target() {
+        let home = tempfile::tempdir().unwrap();
+        let dotfiles = home.path().join("dotfiles");
+        let ssh_dir = home.path().join(".ssh");
+        fs::create_dir_all(&dotfiles).unwrap();
+        fs::create_dir_all(&ssh_dir).unwrap();
+        let target = dotfiles.join("ssh_config");
+        fs::write(&target, "Host original\n").unwrap();
+        let link = ssh_dir.join("config");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_user_ssh_config(&link, "Host original\nHost added\n").unwrap();
+
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "Host original\nHost added\n"
+        );
+        // The backup sits beside the link in ~/.ssh, not in the dotfiles directory.
+        let backup_dirs: Vec<bool> = [&ssh_dir, &dotfiles]
+            .iter()
+            .map(|dir| {
+                fs::read_dir(dir).unwrap().any(|entry| {
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(".bak")
+                })
+            })
+            .collect();
+        assert_eq!(backup_dirs, vec![true, false]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_to_replace_a_dangling_config_symlink() {
+        let home = tempfile::tempdir().unwrap();
+        let link = home.path().join("config");
+        std::os::unix::fs::symlink(home.path().join("missing"), &link).unwrap();
+
+        assert!(write_user_ssh_config(&link, "Host added\n").is_err());
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn key_records_load_empty_when_missing_and_fail_when_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vscode-keys.json");
+        assert!(load_vscode_key_records(&path).unwrap().is_empty());
+
+        let records = vec![VscodeKeyRecord {
+            alias: "easyconsole-7".into(),
+            host: "10.0.0.2".into(),
+            port: "22".into(),
+            username: "ubuntu".into(),
+            fingerprint: "SHA256:abc".into(),
+            installed_at: 1,
+        }];
+        write_vscode_key_records(&path, &records).unwrap();
+        assert_eq!(load_vscode_key_records(&path).unwrap().len(), 1);
+
+        fs::write(&path, "[{\"alias\": \"easyconsole-7\"").unwrap();
+        assert!(load_vscode_key_records(&path).is_err());
+        // A failed load never rewrites the file.
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[{\"alias\": \"easyconsole-7\""
+        );
+    }
+
     #[test]
     fn revoke_script_removes_only_matching_public_keys() {
         let home = tempfile::tempdir().unwrap();

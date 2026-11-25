@@ -325,6 +325,8 @@ StopForward { ruleId }
 | SSH-P2-05 命令加固 | `formatSshCommand`/`quoteSshArg`：字段过白名单后裸拼，非法字段拒绝渲染返回 null；TaskSshPanel 接入 `findSshConnectionIssue`（失败禁用入口并提示） | 复制文本永远不含未校验的 API 字段 | ✅ |
 | posix-rename 原子覆盖 | 覆盖提交先尝试 `posix-rename@openssh.com`（独立 RawSftpSession 通道），不支持时回落 remove+rename | mock server 可开关该扩展；集成测试断言扩展路径被实际使用 | ✅ |
 | 旧版 VS Code key 清理 | 撤销远端通过 awk 匹配算法和公钥 base64，不按注释批量删除；公钥文件缺失时只从已有私钥派生，无法确定公钥则保留本地配置与记录；同目录临时文件筛选成功后原子替换；设置页提供一次性“清理旧版共享密钥” | 保留其他密钥与相同注释的行；失败时不修改原文件；真实主机仍待验收 | ✅（Unix shell 回归测试已加入） |
+| 本机 SSH config 安全改写（2026-11-25 审阅 P1-4） | 只有文件不存在才当作空；其他读取错误和非 UTF-8 内容（如中文 Windows 上的 GBK 注释）直接报错、不改写；每次写入前另存 `config.easy-console.<毫秒>-<序号>.bak`，保留最新 5 份，旧版无日期的 `.bak` 不动；符号链接形式的 config 写到链接目标，链接保留，悬空链接拒绝改写；安装和撤销在改动远端之前先检查本机 config 与 `vscode-keys.json` 都可读 | Rust 单测覆盖 GBK 拒绝、逐次备份与裁剪、符号链接写穿、悬空链接拒绝；Windows 上的符号链接与非 UTF-8 文件仍待实机验证 | ✅ |
+| `vscode-keys.json` 损坏（审阅 P2-14） | 读取或解析失败返回错误，不再当作空列表；设置页提示文件路径，安装和撤销在修复前不写回 | 损坏文件保持原样；单测覆盖 | ✅ |
 | SSH-P2-11 全局会话中心 | `use-ssh-workspace` store + `SshWorkspaceProvider`/`SshWorkspaceGate` 挂载于 AppRoot；`AppSshTerminalDialog` 变为消费全局 store 的单例视口；TasksPage/TaskSshPanel/TerminalDialog 改走 workspace | 路由切换不再杀会话；登出自动关闭全部会话并重置状态；弹窗最小化/恢复、关闭确认、弹独立窗口行为保留 | ✅ |
 
 ### Phase 1：可靠性和认证能力（2-4 个迭代）

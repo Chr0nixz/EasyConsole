@@ -840,12 +840,16 @@ export function SettingsPage({ standalone = false }: { standalone?: boolean }) {
     try {
       setVscodeKeys(await browserRuntime.listVscodeSshKeys());
       setLegacyVscodeKey(await browserRuntime.hasLegacyVscodeKey());
-    } catch {
-      toast.error(t("settings.sshVscodeRevokeFailed"));
+    } catch (error) {
+      // Loading is not revoking: a damaged record file names its path and what to fix.
+      toast.error(
+        text("无法读取 VS Code key 记录", "Couldn't read the VS Code key records"),
+        error instanceof Error ? error.message : String(error),
+      );
     } finally {
       setVscodeKeysLoading(false);
     }
-  }, [t, toast]);
+  }, [text, toast]);
 
   useEffect(() => {
     void loadVscodeKeys();
